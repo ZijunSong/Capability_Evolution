@@ -1,0 +1,17 @@
+# Uniform capability weighting (Round 1 default; adaptive deferred).
+scope:
+  enabled: true
+  schema_version: scope.v3
+  capabilities:
+    enabled: [duplicate_evidence, premature_stop]
+    disabled: [irrelevant_evidence, invalid_citation]
+  weighting:
+    mode: uniform
+    enabled: false
+  sdi:
+    enabled: true
+    kl_coef: 0.01
+  recovery:
+    enabled: false
+  rl:
+    enabled: false

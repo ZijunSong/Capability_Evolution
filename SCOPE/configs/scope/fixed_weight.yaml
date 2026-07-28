@@ -1,0 +1,12 @@
+scope:
+  enabled: true
+  modules:
+    evidence_state: true
+    verification: true
+    budget_control: false
+  opd:
+    lambda_base: 0.01
+    adaptive_weighting: false
+    weighting:
+      enabled: false
+      mode: fixed

@@ -1,0 +1,15 @@
+{
+  "name": "bare",
+  "n": 830,
+  "answer_match_n": 11,
+  "answer_match_acc": 0.01325301204819277,
+  "note": "single-shot freeform; graded by normalized substring match vs gold",
+  "recall": null,
+  "trajectory_recall": null,
+  "final_answer_recall": null,
+  "precision": null,
+  "reward": null,
+  "mean_turns": 1.0,
+  "error_n": 0,
+  "error_rate": 0.0
+}

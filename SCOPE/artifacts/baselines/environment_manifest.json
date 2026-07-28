@@ -1,0 +1,32 @@
+{
+  "schema_version": "scope_baseline_manifest.v1",
+  "description": "Phase 0 baseline freeze for SCOPE. Fill metrics after evaluation runs.",
+  "harness_yamls": {
+    "full": "harness/configs/modules_full.yaml",
+    "minus_verification": "harness/configs/ablate_verification.yaml",
+    "minimal": "harness/configs/modules_minimal.yaml"
+  },
+  "scope_configs": {
+    "dual_mode": "configs/scope/dual_mode.yaml",
+    "minimal_runtime": "configs/scope/minimal_runtime.yaml",
+    "verification_only": "configs/scope/verification_only.yaml"
+  },
+  "data": {
+    "browsecomp_splits": "datagen/splits/browsecompplus_splits.json",
+    "paths_env": ".env.browsecomp.paths"
+  },
+  "fixed_budgets": {
+    "max_turns": 35,
+    "search_token_budget": 4096,
+    "seed": 42
+  },
+  "metrics_files": {
+    "full_harness": "artifacts/baselines/full_harness_metrics.json",
+    "minus_verification": "artifacts/baselines/minus_verification_metrics.json",
+    "minimal_runtime": "artifacts/baselines/minimal_runtime_metrics.json"
+  },
+  "notes": [
+    "Export baseline metrics with existing inference/queue_* scripts before enabling SCOPE OPD.",
+    "lifecycle / coevolution paths are frozen for SCOPE paper-1 and must not drive training."
+  ]
+}

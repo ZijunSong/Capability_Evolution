@@ -1,0 +1,16 @@
+name: bishop
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+      - -e ./tinker-cookbook
+      - -e .
+      - rank-bm25>=0.2.2
+      - datasketch>=1.6.5
+      - pytest>=8.3.3
+      - ruff>=0.14.3
+      - mypy>=1.18.2
+      - vllm>=0.13.0

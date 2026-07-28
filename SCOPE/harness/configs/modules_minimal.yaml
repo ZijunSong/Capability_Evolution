@@ -1,0 +1,73 @@
+# =============================================================================
+# IMMUTABLE PHASE-0 BASELINE — DO NOT EDIT / OPTIMIZE
+# Frozen at git tag: scope-phase0-freeze
+# Snapshot + checksums: artifacts/baselines/phase0_freeze/
+# Minimal Runtime is an immutable baseline. Create a NEW yaml for experiments.
+# =============================================================================
+# Minimal Runtime — irreducible executor-only Harness for Phase 0 baseline.
+#
+# Keep:
+#   - retrieval tools (search / grep / read) + BM25 backend
+#   - WorkingMemory structured state (pool / curated ids storage)
+#   - hard max_turns + deterministic context truncation
+#   - action schema / tool execution / legality checks
+#
+# Drop vs modules_full_v2.yaml (cognitive / learnable harness aids):
+#   - evidence_state: candidate_pool UX, content_dedup, evidence_graph,
+#     importance_tagging, subtractive_curation, auto_seed, review_memory,
+#     render_structured_state
+#   - verification: expose_verify_tool, store/render records,
+#     verification_aware_curation
+#   - context_budget soft aids: sentence_compression, structured rendering,
+#     recent_window, token_budget_marker, stop_budget_hint
+#   - recovery: always off
+#
+# Note: context_budget.enabled=false but deterministic_truncation=true —
+# C5 hard truncate remains active via module fallback semantics.
+retrieval:
+  module_id: retrieval
+  enabled: true
+  required: true
+  lifecycle_managed: false
+  chunk_neighbors: false
+  # Rollout scripts set --reranker none; keep false here for clarity.
+  rerank: false
+
+evidence_state:
+  module_id: evidence_state
+  enabled: false
+  lifecycle_managed: false
+  candidate_pool: false
+  content_dedup: false
+  evidence_graph: false
+  importance_tagging: false
+  subtractive_curation: false
+  auto_seed: false
+  review_memory: false
+  render_structured_state: false
+  preserve_minimal_selection: true
+
+verification:
+  module_id: verification
+  enabled: false
+  lifecycle_managed: false
+  expose_verify_tool: false
+  store_records: false
+  render_records: false
+  verification_aware_curation: false
+
+context_budget:
+  module_id: context_budget
+  enabled: false
+  lifecycle_managed: false
+  sentence_compression: false
+  structured_context_rendering: false
+  recent_window: false
+  token_budget_marker: false
+  stop_budget_hint: false
+  deterministic_truncation: true
+
+recovery:
+  module_id: recovery
+  enabled: false
+  lifecycle_managed: false

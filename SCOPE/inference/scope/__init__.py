@@ -1,0 +1,1 @@
+"""SCOPE evaluation helpers."""

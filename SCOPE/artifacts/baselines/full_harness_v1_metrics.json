@@ -1,0 +1,21 @@
+{
+  "name": "harness_v1",
+  "n": 830,
+  "recall": 0.010652653905665955,
+  "trajectory_recall": 0.06600645004259466,
+  "final_answer_recall": 0.01332903040734366,
+  "precision": 0.03139749474086823,
+  "reward": 0.010652653905665955,
+  "recall_gt0_n": 35,
+  "recall_gt0_rate": 0.04216867469879518,
+  "traj_gt0_n": 174,
+  "traj_gt0_rate": 0.20963855421686747,
+  "fa_gt0_n": 25,
+  "fa_gt0_rate": 0.030120481927710843,
+  "mean_turns": 5.2373493975903616,
+  "mean_n_curated": 1.0710843373493977,
+  "mean_n_pool": 24.53614457831325,
+  "error_n": 43,
+  "error_rate": 0.051807228915662654,
+  "mean_elapsed_s": 28.289156626506024
+}

@@ -1,0 +1,14 @@
+[
+  {
+    "query_id": "browsecomp_sample_1",
+    "query": "Which scientist won the Nobel Prize in Physics in 1921 and also developed the theory of relativity?"
+  },
+  {
+    "query_id": "browsecomp_sample_2",
+    "query": "What company founded in 1976 released the first commercially successful personal computer with a graphical user interface?"
+  },
+  {
+    "query_id": "browsecomp_sample_3",
+    "query": "In which year did the Mars rover Perseverance land in Jezero Crater?"
+  }
+]

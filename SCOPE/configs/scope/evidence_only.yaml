@@ -1,0 +1,13 @@
+scope:
+  enabled: true
+  modules:
+    evidence_state: true
+    verification: false
+    budget_control: false
+  guidance:
+    endorse: true
+    correct: true
+  opd:
+    lambda_base: 0.01
+    beta: 5.0
+    correct_scale: 1.0

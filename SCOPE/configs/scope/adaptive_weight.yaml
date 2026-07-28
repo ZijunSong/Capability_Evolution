@@ -1,0 +1,19 @@
+scope:
+  enabled: true
+  modules:
+    evidence_state: true
+    verification: true
+    budget_control: true
+  selector:
+    repeated_query: true
+    low_remaining_turns: true
+  opd:
+    lambda_base: 0.01
+    adaptive_weighting: true
+    weighting:
+      enabled: true
+      mode: full
+      ema_decay: 0.95
+      min_scale: 0.1
+      max_scale: 1.0
+      update_every: 20

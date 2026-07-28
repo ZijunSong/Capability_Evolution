@@ -1,0 +1,52 @@
+# Round-1 main SCOPE config: Duplicate Evidence + Premature Stop only.
+# No RL, no recovery, no adaptive weighting.
+scope:
+  enabled: true
+  schema_version: scope.v3
+  capabilities:
+    enabled:
+      - duplicate_evidence
+      - premature_stop
+    disabled:
+      - irrelevant_evidence
+      - invalid_citation
+  modules:
+    evidence_state: true
+    verification: true
+    budget_control: false
+  guidance:
+    endorse: true
+    correct: true
+  routing:
+    mode: verified_decision  # not dual_mode_opd
+    enforce_round1_filter: true
+  sdi:
+    enabled: true
+    kl_coef: 0.01
+    action_span_only: true
+    pairwise_ablation: false
+  recovery:
+    enabled: false
+  weighting:
+    mode: uniform  # adaptive deferred to Round 2+
+    enabled: false
+  rl:
+    enabled: false
+  opd:
+    # legacy fields kept for dual_mode ablation baseline
+    lambda_base: 0.01
+    beta: 5.0
+    correct_scale: 1.0
+    adaptive_weighting: false
+  dataset:
+    source: online_decision_state
+    capabilities: [duplicate_evidence, premature_stop]
+    query_level_split: true
+    valid_fraction: 0.1
+    targeted_probe_train_mask: 0
+  selector:
+    before_stop: true
+    after_curate: true
+    after_verify: true
+    after_review: true
+    after_pool_growth: true

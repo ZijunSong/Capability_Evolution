@@ -1,0 +1,56 @@
+# =============================================================================
+# IMMUTABLE PHASE-0 BASELINE — DO NOT EDIT / OPTIMIZE
+# Frozen at git tag: scope-phase0-freeze
+# Snapshot + checksums: artifacts/baselines/phase0_freeze/
+# Full Harness v2 is an immutable baseline. Create a NEW yaml for experiments.
+# =============================================================================
+# Harness-1 full operating point + robustness for weak chat policies (e.g. Qwen2.5-Instruct).
+# Diff vs modules_full.yaml:
+#   - deterministic_truncation: true  (hard truncate WM/context to avoid 32k overflows)
+#   - Used with Ultra ChatDecisionDriver (WorkingMemory + curate/end_search), not TokenBudget agent
+retrieval:
+  module_id: retrieval
+  enabled: true
+  required: true
+  lifecycle_managed: false
+  chunk_neighbors: false
+  rerank: true
+
+evidence_state:
+  module_id: evidence_state
+  enabled: true
+  lifecycle_managed: true
+  candidate_pool: true
+  content_dedup: true
+  evidence_graph: true
+  importance_tagging: true
+  subtractive_curation: true
+  auto_seed: true
+  review_memory: true
+  render_structured_state: true
+  preserve_minimal_selection: true
+
+verification:
+  module_id: verification
+  enabled: true
+  lifecycle_managed: true
+  expose_verify_tool: true
+  store_records: true
+  render_records: true
+  verification_aware_curation: true
+
+context_budget:
+  module_id: context_budget
+  enabled: true
+  lifecycle_managed: true
+  sentence_compression: true
+  structured_context_rendering: true
+  recent_window: true
+  token_budget_marker: true
+  stop_budget_hint: true
+  deterministic_truncation: true
+
+recovery:
+  module_id: recovery
+  enabled: false
+  lifecycle_managed: false

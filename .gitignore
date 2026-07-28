@@ -1,0 +1,109 @@
+# Capability_Evolution — do not upload logs / data / results / secrets / caches
+
+# --- secrets & local env ---
+.env
+.env.*
+!.env.example
+!.env.browsecomp.paths.example
+*.pem
+*.key
+credentials*.json
+secrets/
+
+# --- Python / build caches ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+venv/
+.envrc
+.python-version.local
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.history/
+.cache/
+*.egg
+
+# --- logs / tmp / experiment dumps ---
+logs/
+tmp/
+temp/
+*.log
+*.out
+*.err
+nohup.out
+wandb/
+mlruns/
+.tensorboard/
+runs/
+results/
+result/
+outputs/
+output/
+artifacts/raw/
+**/vllm_server.log
+**/nohup_*.log
+**/watch_*.log
+
+# --- data / corpora / indexes (too large; regenerate locally) ---
+data/
+datasets/
+**/indexes/
+**/bm25/
+*.parquet
+*.arrow
+*.feather
+*.sqlite
+*.db
+*.bin
+*.idx
+*.faiss
+
+# --- model weights / checkpoints ---
+models/
+checkpoints/
+ckpt/
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.onnx
+model_export/merged_model/
+model_export/adapter/
+
+# --- nested VCS / vendor dumps ---
+**/.git/
+!/.git/
+harness-1-upstream/
+**/node_modules/
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
+
+# --- LaTeX / notebooks scratch ---
+*.aux
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+.ipynb_checkpoints/
+
+# --- archives ---
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+*.7z
+
+# Keep frozen Phase-0 baseline metrics (small JSON summaries)
+!SCOPE/artifacts/baselines/
+!SCOPE/artifacts/baselines/**

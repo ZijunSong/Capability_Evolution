@@ -1,0 +1,27 @@
+# SCOPE Phase 0 — Minimal Runtime baseline (student inference only).
+# No shadow / OPD / lifecycle / co-evolution / M4 recovery / teacher guidance.
+scope:
+  enabled: false
+  description: >
+    Phase 0 Minimal Runtime: executor-only harness. Uses
+    harness/configs/modules_minimal.yaml. Do not enable shadow, OPD,
+    lifecycle, recovery, or teacher guidance for this baseline.
+  modules:
+    evidence_state: false
+    verification: false
+    budget_control: false
+    recovery: false
+  guidance:
+    endorse: false
+    correct: false
+  opd:
+    enabled: false
+  shadow:
+    enabled: false
+  runtime:
+    harness_yaml: harness/configs/modules_minimal.yaml
+    policy: api
+    driver: ultra_chat  # same ChatDecisionDriver entry as Full Harness v2
+    max_turns: 35
+    retrieval: bm25
+    model: Qwen2.5-7B-Instruct

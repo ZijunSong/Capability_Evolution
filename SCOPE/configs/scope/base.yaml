@@ -1,0 +1,48 @@
+scope:
+  enabled: true
+
+  modules:
+    evidence_state: true
+    verification: true
+    budget_control: false
+
+  selector:
+    before_stop: true
+    after_curate: true
+    after_verify: true
+    after_review: true
+    after_pool_growth: true
+    repeated_query: false
+    low_remaining_turns: false
+
+  guidance:
+    endorse: true
+    correct: true
+    ignore_invalid: true
+
+  visibility:
+    strict: true
+
+  candidate_generation:
+    backend: rule_based
+    num_candidates: 1
+
+  opd:
+    lambda_base: 0.01
+    beta: 5.0
+    correct_scale: 1.0
+    adaptive_weighting: false
+    weighting:
+      enabled: false
+      mode: fixed
+      ema_decay: 0.95
+      min_scale: 0.1
+      max_scale: 1.0
+      update_every: 20
+
+  reward:
+    alpha_citation: 0.0
+
+  runtime:
+    max_turns: 35
+    search_token_budget: 4096
