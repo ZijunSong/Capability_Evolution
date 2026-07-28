@@ -1,0 +1,4 @@
+# Local BrowseComp-Plus checkout path (do not commit a machine-absolute symlink).
+# Example:
+#   ln -s /path/to/BrowseComp-Plus SCOPE/datagen/BrowseComp-Plus
+# Or use SCOPE/external/BrowseComp-Plus.
