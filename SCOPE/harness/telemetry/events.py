@@ -17,6 +17,7 @@ SCOPE_EVENT_TYPES = frozenset(
         "guidance_routed",
         "candidate_generated",
         "candidate_validated",
+        "supervision_sample_emitted",
         "opd_transition_created",
         "loss_computed",
         "episode_end",
@@ -52,6 +53,12 @@ class ScopeStats:
     module_loss: dict[str, list[float]] = field(default_factory=dict)
     action_transitions: dict[str, int] = field(default_factory=dict)
 
+    shadow_mutation_count: int = 0
+    visibility_violation_count: int = 0
+    invalid_action_count: int = 0
+    verifier_reject_count: int = 0
+    capability_stats: dict[str, dict[str, int]] = field(default_factory=dict)
+
     def record_guidance(self, mode: str, module_id: str, reason_code: str) -> None:
         self.shadow_calls[module_id] = self.shadow_calls.get(module_id, 0) + 1
         if mode == "endorse":
@@ -64,16 +71,51 @@ class ScopeStats:
             self.reason_code_counts.get(reason_code, 0) + 1
         )
 
+    def record_capability_route(
+        self,
+        capability_id: str,
+        route: str,
+        *,
+        visibility_violation: bool = False,
+        shadow_mutation: bool = False,
+        invalid_action: bool = False,
+        verifier_reject: bool = False,
+    ) -> None:
+        bucket = self.capability_stats.setdefault(
+            capability_id,
+            {"calls": 0, "endorse": 0, "correct": 0, "ignore": 0},
+        )
+        bucket["calls"] += 1
+        key = route.lower()
+        if key in bucket:
+            bucket[key] += 1
+        else:
+            bucket["ignore"] += 1
+        if visibility_violation:
+            self.visibility_violation_count += 1
+        if shadow_mutation:
+            self.shadow_mutation_count += 1
+        if invalid_action:
+            self.invalid_action_count += 1
+        if verifier_reject:
+            self.verifier_reject_count += 1
+
     def to_dict(self) -> dict[str, Any]:
         total_g = max(1, self.endorse_count + self.correct_count + self.ignore_count)
+        n_shadow = max(1, sum(self.shadow_calls.values()))
         return {
             "shadow_calls": dict(self.shadow_calls),
             "endorse_ratio": self.endorse_count / total_g,
             "correct_ratio": self.correct_count / total_g,
             "ignore_ratio": self.ignore_count / total_g,
             "visibility_violations": self.visibility_violations,
+            "visibility_violation_rate": self.visibility_violation_count / n_shadow,
+            "shadow_mutation_rate": self.shadow_mutation_count / n_shadow,
+            "invalid_action_rate": self.invalid_action_count / n_shadow,
+            "verifier_reject_rate": self.verifier_reject_count / n_shadow,
             "candidate_pass_rate": self.candidate_pass / max(1, self.candidate_total),
             "reason_code_counts": dict(self.reason_code_counts),
+            "capability_stats": dict(self.capability_stats),
             "module_loss_mean": {
                 k: (sum(v) / len(v) if v else 0.0) for k, v in self.module_loss.items()
             },

@@ -1,0 +1,26 @@
+# Round 2 MAIN: compact operation + sample-normalized CE + route balancing
+scope:
+  enabled: true
+  schema_version: scope.v3
+  capabilities:
+    enabled:
+      - duplicate_evidence
+  sdi:
+    enabled: true
+    kl_coef: 0.01
+    loss_mode: sample_normalized_action_ce
+    route_balancing: true
+    compact_target: true
+  dataset:
+    dir: artifacts/datasets/dup_sdi_round2
+  train:
+    model_path: /data/ppnm/models/Qwen2.5-7B-Instruct
+    output_dir: outputs/scope_round2/training/round2_main
+    learning_rate: 2.0e-5
+    num_epochs: 3
+    batch_size: 4
+    grad_accum: 4
+    max_length: 4096
+    lora_rank: 16
+    lora_alpha: 32
+    seed: 42

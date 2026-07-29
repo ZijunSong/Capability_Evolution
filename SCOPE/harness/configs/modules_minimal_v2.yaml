@@ -1,0 +1,63 @@
+# H_min_v2 — irreducible runtime for Dup Round 2 closed-loop evaluation.
+#
+# Design (vs modules_minimal.yaml):
+#   KEEP irreducible runtime:
+#     - search/open/tool executor + BM25 retriever
+#     - WorkingMemory structured state (pool / curated ids)
+#     - hard max_turns + deterministic context truncation
+#     - external VerifyTool callable (student-initiated verify only)
+#   DROP cognitive Harness policy:
+#     - duplicate decision policy (no content_dedup / subtractive_curation)
+#     - evidence curation policy (no candidate_pool UX aids)
+#     - stop decision policy (no stop_budget_hint)
+#     - verification decision policy (no verification_aware_curation)
+#
+# verification_decision ≠ external_verification:
+#   VerifyTool is exposed; Harness does NOT auto-decide when to verify.
+retrieval:
+  module_id: retrieval
+  enabled: true
+  required: true
+  lifecycle_managed: false
+  chunk_neighbors: false
+  rerank: false
+
+evidence_state:
+  module_id: evidence_state
+  enabled: false
+  lifecycle_managed: false
+  candidate_pool: false
+  content_dedup: false
+  evidence_graph: false
+  importance_tagging: false
+  subtractive_curation: false
+  auto_seed: false
+  review_memory: false
+  render_structured_state: false
+  preserve_minimal_selection: true
+
+verification:
+  module_id: verification
+  enabled: true
+  lifecycle_managed: false
+  expose_verify_tool: true
+  store_records: true
+  render_records: true
+  verification_aware_curation: false
+  harness_auto_verify_decision: false
+
+context_budget:
+  module_id: context_budget
+  enabled: false
+  lifecycle_managed: false
+  sentence_compression: false
+  structured_context_rendering: false
+  recent_window: false
+  token_budget_marker: false
+  stop_budget_hint: false
+  deterministic_truncation: true
+
+recovery:
+  module_id: recovery
+  enabled: false
+  lifecycle_managed: false

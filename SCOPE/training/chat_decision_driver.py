@@ -351,6 +351,7 @@ class ChatDecisionDriver:
         self,
         *,
         on_critical_turn: Callable[[ChatTurnRecord], None] | None = None,
+        pre_step_hook: Callable[[DecisionState, Action], Action] | None = None,
     ) -> dict[str, Any]:
         await self.env.initial_observation()
         self._recent = []
@@ -375,6 +376,9 @@ class ChatDecisionDriver:
                     self._early_end_blocks += 1
                     self._recent.append(("blocked_end_search", reason))
                     action = self._block_to_curate_or_search(reason)
+
+            if pre_step_hook is not None:
+                action = pre_step_hook(state, action)
 
             cap = _action_to_capability(action)
             rec = ChatTurnRecord(

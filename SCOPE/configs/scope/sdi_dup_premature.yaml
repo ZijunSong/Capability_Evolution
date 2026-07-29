@@ -50,3 +50,4 @@ scope:
     after_verify: true
     after_review: true
     after_pool_growth: true
+    stop_calibration: true

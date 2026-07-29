@@ -1,7 +1,10 @@
-"""ActionRealizer: map LocalDecisionArtifact → executable CandidateAction.
+"""ActionRealizer: map capability operation → executable runtime action.
 
-Separates diagnosis (artifact) from concrete action realization.
-Round 1 prefers deterministic realizers for Dup / Premature.
+Round 2 architecture:
+    DecisionState → capability operation (KEEP_EVIDENCE / SKIP_DUPLICATE)
+        → ActionRealizer → runtime executable action
+
+Uses only student-visible state — no hidden teacher information.
 """
 
 from __future__ import annotations
@@ -13,12 +16,13 @@ from harness.artifacts.schema import PrivilegedArtifact
 from harness.capability.action_space import CapabilityAction, CapabilityActionType
 from harness.capability.capability_id import CapabilityId
 from harness.capability.state import DecisionState
+from harness.capability.dup_operation import DupOperation
 
 
 @dataclass(frozen=True)
 class CandidateAction:
     action: CapabilityAction
-    source: str  # "artifact_recommended" | "deterministic" | "intent_realized"
+    source: str  # "operation_realized" | "artifact_recommended" | "deterministic"
     notes: str = ""
 
     def to_dict(self) -> dict[str, Any]:
@@ -45,7 +49,82 @@ _OP_ALIASES: dict[str, CapabilityActionType] = {
 
 
 class ActionRealizer:
-    """Deterministic-first realizer for Round 1 capabilities."""
+    """Deterministic operation → runtime action realizer for Round 2."""
+
+    def realize_operation(
+        self,
+        state: DecisionState,
+        operation: DupOperation | str,
+        *,
+        candidate_id: str | None = None,
+        student_action: CapabilityAction | None = None,
+    ) -> CandidateAction:
+        """Map compact Dup operation to executable runtime action."""
+        op = DupOperation(str(operation).upper()) if not isinstance(operation, DupOperation) else operation
+        if op == DupOperation.SKIP_DUPLICATE:
+            return self._skip_duplicate(state, candidate_id, student_action)
+        return self._keep_evidence(state, candidate_id, student_action)
+
+    def _candidate_add_ids(
+        self,
+        state: DecisionState,
+        candidate_id: str | None,
+        student_action: CapabilityAction | None,
+    ) -> list[str]:
+        if candidate_id and candidate_id in set(state.pool_document_ids):
+            return [candidate_id]
+        if student_action and student_action.action_type == CapabilityActionType.CURATE_DOCUMENT:
+            adds = student_action.arguments.get("add_ids") or []
+            return [str(d) for d in adds if str(d) in set(state.pool_document_ids)]
+        return []
+
+    def _skip_duplicate(
+        self,
+        state: DecisionState,
+        candidate_id: str | None,
+        student_action: CapabilityAction | None,
+    ) -> CandidateAction:
+        remove_ids: list[str] = []
+        add_ids: list[str] = []
+        if student_action and student_action.action_type == CapabilityActionType.CURATE_DOCUMENT:
+            raw_adds = student_action.arguments.get("add_ids") or []
+            add_ids = [
+                str(d) for d in raw_adds
+                if str(d) != str(candidate_id or "")
+                and str(d) in set(state.pool_document_ids)
+            ]
+            if candidate_id and str(candidate_id) in set(state.curated_document_ids):
+                remove_ids = [str(candidate_id)]
+        return CandidateAction(
+            action=CapabilityAction(
+                action_type=CapabilityActionType.CURATE_DOCUMENT,
+                arguments={"add_ids": add_ids, "remove_ids": remove_ids},
+            ),
+            source="operation_realized",
+            notes="SKIP_DUPLICATE",
+        )
+
+    def _keep_evidence(
+        self,
+        state: DecisionState,
+        candidate_id: str | None,
+        student_action: CapabilityAction | None,
+    ) -> CandidateAction:
+        add_ids = self._candidate_add_ids(state, candidate_id, student_action)
+        if not add_ids and student_action:
+            return CandidateAction(
+                action=student_action,
+                source="operation_realized",
+                notes="KEEP_EVIDENCE_student",
+            )
+        return CandidateAction(
+            action=CapabilityAction(
+                action_type=CapabilityActionType.CURATE_DOCUMENT,
+                arguments={"add_ids": add_ids, "remove_ids": []},
+            ),
+            source="operation_realized",
+            notes="KEEP_EVIDENCE",
+        )
 
     def realize(
         self,

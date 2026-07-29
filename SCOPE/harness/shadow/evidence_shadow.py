@@ -297,9 +297,21 @@ class EvidenceShadow(ShadowModule):
                 reason = "EVIDENCE_UPDATE_VALID"
                 confidence = 0.7
 
-        from harness.capability.capability_id import REASON_CODE_TO_CAPABILITY
+        from harness.capability.capability_id import CapabilityId, REASON_CODE_TO_CAPABILITY
 
         cap = REASON_CODE_TO_CAPABILITY.get(reason)
+        if (
+            cap is None
+            and mode == GuidanceMode.ENDORSE
+            and student_action.action_type
+            in {
+                CapabilityActionType.CURATE_DOCUMENT,
+                CapabilityActionType.UPDATE_EVIDENCE,
+                CapabilityActionType.REVIEW_DOCS,
+            }
+        ):
+            # Student passed duplicate check — still attribute to duplicate_evidence
+            cap = CapabilityId.DUPLICATE_EVIDENCE
         op = ""
         op_args: dict = {}
         target = None

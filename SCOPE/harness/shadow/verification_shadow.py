@@ -6,6 +6,7 @@ from harness.artifacts.schema import GuidanceMode, PrivilegedArtifact
 from harness.artifacts.validators import ValidationResult, VerificationVerifier
 from harness.capability.action_space import CapabilityAction, CapabilityActionType
 from harness.capability.state import DecisionState
+from harness.capability.stop_calibration import evidence_sufficient_for_stop
 from harness.shadow.base import ShadowModule
 
 # Actions that mean the student is about to (or has) stop / answer.
@@ -14,6 +15,17 @@ _STOPPING_ACTIONS = frozenset(
         CapabilityActionType.STOP_AND_ANSWER,
         CapabilityActionType.ANSWER,
         CapabilityActionType.ABSTAIN,
+    }
+)
+
+_CONTINUING_ACTIONS = frozenset(
+    {
+        CapabilityActionType.SEARCH,
+        CapabilityActionType.GREP,
+        CapabilityActionType.OPEN_DOCUMENT,
+        CapabilityActionType.REVIEW_DOCS,
+        CapabilityActionType.CONTINUE_SEARCH,
+        CapabilityActionType.REWRITE_QUERY,
     }
 )
 
@@ -94,6 +106,7 @@ class VerificationShadow(ShadowModule):
         insufficient = _insufficient_evidence_for_stop(state)
 
         stopping = student_action.action_type in _STOPPING_ACTIONS
+        continuing = student_action.action_type in _CONTINUING_ACTIONS
         verifying = student_action.action_type == CapabilityActionType.VERIFY_CLAIM
 
         recommended: CapabilityAction | None = None
@@ -157,6 +170,17 @@ class VerificationShadow(ShadowModule):
             mode = GuidanceMode.ENDORSE
             reason = "VERIFICATION_SUPPORTED"
             confidence = 0.8
+        elif continuing and evidence_sufficient_for_stop(state):
+            # Bilateral stop calibration: student continues but evidence is sufficient.
+            mode = GuidanceMode.CORRECT
+            reason = "VERIFICATION_SUPPORTED"
+            confidence = 0.82
+            recommended = CapabilityAction(
+                action_type=CapabilityActionType.STOP_AND_ANSWER,
+                arguments={
+                    "reasoning": "Evidence coverage sufficient; stop and answer.",
+                },
+            )
         elif verifying:
             docs = student_action.arguments.get("doc_ids") or []
             claim = str(student_action.arguments.get("claim", "")).strip()
@@ -195,7 +219,7 @@ class VerificationShadow(ShadowModule):
 
         cap = REASON_CODE_TO_CAPABILITY.get(reason)
         # Stop decisions belong to premature_stop capability even when endorsed
-        if stopping:
+        if stopping or (continuing and recommended is not None):
             cap = CapabilityId.PREMATURE_STOP
         runtime_fields: list[str] = []
         if cap == CapabilityId.PREMATURE_STOP:
@@ -232,6 +256,8 @@ class VerificationShadow(ShadowModule):
                 "schema_version": self.schema_version,
                 "insufficient_evidence": insufficient,
                 "stopping": stopping,
+                "continuing": continuing,
+                "stop_calibration": continuing and recommended is not None,
                 "unsupported_stop": unsupported_stop,
             },
             capability_id=cap.value if cap else "",

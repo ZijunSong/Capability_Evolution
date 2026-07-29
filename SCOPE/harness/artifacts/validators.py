@@ -16,6 +16,13 @@ class ValidationResult:
     score: float
     reasons: tuple[str, ...]
 
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "valid": self.valid,
+            "score": self.score,
+            "reasons": list(self.reasons),
+        }
+
 
 class LocalVerifier(Protocol):
     def validate(

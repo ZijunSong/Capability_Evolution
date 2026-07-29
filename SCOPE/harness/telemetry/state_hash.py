@@ -72,10 +72,13 @@ def hash_decision_state_core(state_dict: dict[str, Any]) -> str:
 def env_purity_fingerprint(env: Any) -> dict[str, Any]:
     """Best-effort env fingerprint for shadow no-mutation audits."""
     fp: dict[str, Any] = {}
-    for attr in ("step", "_current_turn", "turn", "n_steps"):
+    for attr in ("_current_turn", "turn", "n_steps"):
         if hasattr(env, attr):
             try:
-                fp[attr] = getattr(env, attr)
+                val = getattr(env, attr)
+                if callable(val):
+                    continue
+                fp[attr] = val
             except Exception:
                 pass
     wm = getattr(env, "wm", None)

@@ -71,6 +71,8 @@ CAPABILITY_ALLOWED_OPS: dict[CapabilityId, frozenset[str]] = {
         {
             "skip_curate",
             "replace_evidence",
+            "KEEP_EVIDENCE",
+            "SKIP_DUPLICATE",
             "curate_document",
             CapabilityActionType.CURATE_DOCUMENT.value,
             CapabilityActionType.UPDATE_EVIDENCE.value,

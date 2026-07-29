@@ -1,0 +1,42 @@
+# Dup-only SDI Round-1: action-level CE + KL stabilization.
+# No RL / recovery / premature_stop / irrelevant.
+scope:
+  enabled: true
+  schema_version: scope.v3
+  capabilities:
+    enabled:
+      - duplicate_evidence
+    disabled:
+      - premature_stop
+      - irrelevant_evidence
+      - invalid_citation
+  sdi:
+    enabled: true
+    kl_coef: 0.01
+    action_span_only: true
+  recovery:
+    enabled: false
+  weighting:
+    enabled: false
+  rl:
+    enabled: false
+  dataset:
+    dir: artifacts/datasets/dup_sdi_round1
+    source: outputs/scope_v3_audit_100q/natural_100q/samples.jsonl
+    capability: duplicate_evidence
+    train_mask: 1
+    query_level_split: true
+    valid_fraction: 0.1
+    seed: 42
+  train:
+    model_path: /data/ppnm/models/Qwen2.5-7B-Instruct
+    output_dir: outputs/dup_sdi_round1
+    learning_rate: 2.0e-5
+    num_epochs: 3
+    batch_size: 4
+    grad_accum: 4
+    max_length: 4096
+    lora_rank: 16
+    lora_alpha: 32
+    warmup_ratio: 0.03
+    device: cuda

@@ -1,0 +1,23 @@
+scope:
+  capability: duplicate_evidence
+  sdi:
+    kl_coef: 0.01
+    loss_mode: operation_ce
+    route_balancing: true
+    class_balancing: true
+    compact_target: true
+  train:
+    model_path: /data/ppnm/models/Qwen2.5-7B-Instruct
+    learning_rate: 2.0e-5
+    num_epochs: 3
+    batch_size: 4
+    grad_accum: 4
+    max_length: 4096
+    lora_rank: 16
+    lora_alpha: 32
+    warmup_ratio: 0.03
+    device: cuda
+    seed: 42
+    output_dir: outputs/scope_round3/training/round3_op_main_seed42
+  dataset:
+    dir: artifacts/datasets/dup_sdi_round3

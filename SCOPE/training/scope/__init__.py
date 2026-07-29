@@ -8,7 +8,9 @@ from training.scope.schema import (
     VerificationFlags,
     WeightTerms,
 )
+from training.scope.pipeline import SupervisionPipelineResult, run_supervision_pipeline
 from training.scope.routing import RoutingResult, route_decision
+from training.scope.validators import InformationSafeGate, run_information_safe_gates
 from training.scope.losses import SDILossConfig, compute_sdi_loss, action_span_labels
 from training.scope.weighting import WeightingConfig, compute_weight_terms
 from training.scope.capability_stats import CapabilityStatsAggregator
@@ -19,8 +21,10 @@ __all__ = [
     "DecisionSupervisionSampleV3",
     "GateFlags",
     "Route",
+    "InformationSafeGate",
     "RoutingResult",
     "SDILossConfig",
+    "SupervisionPipelineResult",
     "VerificationFlags",
     "WeightTerms",
     "WeightingConfig",
@@ -28,4 +32,6 @@ __all__ = [
     "compute_sdi_loss",
     "compute_weight_terms",
     "route_decision",
+    "run_information_safe_gates",
+    "run_supervision_pipeline",
 ]

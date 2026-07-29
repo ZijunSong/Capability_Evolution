@@ -148,6 +148,7 @@ PY
 export base_url="${VLLM_URL}"
 export api_key="EMPTY"
 export model_name="${SERVED_MODEL_NAME}"
+export MODEL_NAME="${SERVED_MODEL_NAME}"
 
 ARGS=(
   --model-path "${MODEL_PATH}"
@@ -167,6 +168,7 @@ ARGS=(
   --policy api
   --no-manage-vllm
   --vllm-url "${VLLM_URL}"
+  --vllm-model-name "${SERVED_MODEL_NAME}"
 )
 if [[ "${RESUME}" == "1" ]]; then
   ARGS+=(--resume)

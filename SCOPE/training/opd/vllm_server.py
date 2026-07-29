@@ -48,6 +48,8 @@ def start_vllm_server(
     log_path: str | None = None,
     extra_env: dict[str, str] | None = None,
     enforce_eager: bool = True,
+    enable_auto_tool_choice: bool = False,
+    tool_call_parser: str | None = None,
 ) -> VLLMServerHandle:
     """Launch `vllm serve` and wait until the OpenAI API is ready."""
     cmd = [
@@ -70,6 +72,10 @@ def start_vllm_server(
     ]
     if enforce_eager:
         cmd.append("--enforce-eager")
+    if enable_auto_tool_choice:
+        cmd.append("--enable-auto-tool-choice")
+        if tool_call_parser:
+            cmd.extend(["--tool-call-parser", tool_call_parser])
 
     env = os.environ.copy()
     # Smoke-friendly defaults; override in production if needed.

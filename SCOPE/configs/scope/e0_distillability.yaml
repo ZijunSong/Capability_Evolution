@@ -1,0 +1,25 @@
+distillability:
+  min_effect_size: 0.01
+  min_effect_sensitivity: [0.005, 0.01, 0.02]
+  bootstrap_resamples: 1000
+  seed: 42
+  primary_metric: recall
+  n_queries: 100
+
+model:
+  path: /data/ppnm/models/Qwen2.5-7B-Instruct
+  max_turns: 35
+  max_tokens: 2048
+  temperature: 1.0
+
+capabilities:
+  - duplicate_evidence
+  - stop_decision
+  - evidence_curation
+  - verification_decision
+  - external_verification
+  - deterministic_truncation
+
+full_reuse:
+  path: outputs/harness_rollout_browsecomp_full_v2/harness_rollouts.jsonl
+  manifest: outputs/harness_rollout_browsecomp_full_v2/harness_rollout_manifest.json

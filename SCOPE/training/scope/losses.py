@@ -4,15 +4,26 @@ L_SDI = -w * log π(target_action | student_state)
 Optional KL stabilization against reference policy.
 
 Does NOT depend on teacher logits.
+
+Loss modes:
+  sample_normalized_action_ce — per-sample mean CE, then batch mean (Round 2 default)
+  legacy_token_ce — global token-mean CE (ablation)
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any, Sequence
 
 import torch
 import torch.nn.functional as F
+
+
+class LossMode(str, Enum):
+    SAMPLE_NORMALIZED_ACTION_CE = "sample_normalized_action_ce"
+    LEGACY_TOKEN_CE = "legacy_token_ce"
+    OPERATION_CE = "operation_ce"
 
 
 @dataclass
@@ -20,6 +31,8 @@ class SDILossConfig:
     kl_coef: float = 0.01
     ignore_index: int = -100
     label_smoothing: float = 0.0
+    loss_mode: LossMode = LossMode.SAMPLE_NORMALIZED_ACTION_CE
+    route_balancing: bool = False
 
 
 @dataclass
@@ -58,19 +71,14 @@ def action_span_labels(
     return labels
 
 
-def sdi_cross_entropy(
+def _per_token_ce(
     logits: torch.Tensor,
     labels: torch.Tensor,
     *,
-    sample_weights: torch.Tensor | None = None,
     ignore_index: int = -100,
     label_smoothing: float = 0.0,
-) -> tuple[torch.Tensor, int]:
-    """Token CE over action span; optional per-sample weights.
-
-    logits: [B, T, V], labels: [B, T]
-    """
-    # Shift for causal LM
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Return (per_token_ce [B,T], active_mask [B,T], per_sample_mean [B])."""
     shift_logits = logits[:, :-1, :].contiguous()
     shift_labels = labels[:, 1:].contiguous()
     bsz, seq, vocab = shift_logits.shape
@@ -83,17 +91,105 @@ def sdi_cross_entropy(
         ignore_index=ignore_index,
         label_smoothing=label_smoothing,
     ).view(bsz, seq)
-
     active = (shift_labels != ignore_index).float()
     tok_counts = active.sum(dim=1).clamp(min=1.0)
     per_sample = (per_tok * active).sum(dim=1) / tok_counts
+    return per_tok, active, per_sample
+
+
+def legacy_token_cross_entropy(
+    logits: torch.Tensor,
+    labels: torch.Tensor,
+    *,
+    ignore_index: int = -100,
+    label_smoothing: float = 0.0,
+) -> tuple[torch.Tensor, int]:
+    """Global token-mean CE — long actions dominate gradient mass."""
+    per_tok, active, _ = _per_token_ce(
+        logits, labels, ignore_index=ignore_index, label_smoothing=label_smoothing
+    )
+    n_active = int(active.sum().item())
+    if n_active == 0:
+        return per_tok.sum() * 0.0, 0
+    return (per_tok * active).sum() / active.sum().clamp(min=1.0), n_active
+
+
+def route_balance_weights(
+    routes: Sequence[str],
+    *,
+    enabled: bool,
+) -> torch.Tensor:
+    """Balance ENDORSE / CORRECT sample weights (training only)."""
+    if not enabled:
+        return torch.ones(len(routes), dtype=torch.float32)
+    counts: dict[str, int] = {}
+    for r in routes:
+        key = str(r).upper()
+        if key in {"ENDORSE", "CORRECT"}:
+            counts[key] = counts.get(key, 0) + 1
+    weights: list[float] = []
+    for r in routes:
+        key = str(r).upper()
+        if key in counts and counts[key] > 0:
+            weights.append(1.0 / counts[key])
+        else:
+            weights.append(1.0)
+    w = torch.tensor(weights, dtype=torch.float32)
+    # Normalize so mean weight = 1
+    return w * (len(w) / w.sum().clamp(min=1e-8))
+
+
+def operation_balance_weights(
+    operations: Sequence[str],
+    *,
+    enabled: bool,
+) -> torch.Tensor:
+    """Balance KEEP_EVIDENCE / SKIP_DUPLICATE sample weights."""
+    if not enabled:
+        return torch.ones(len(operations), dtype=torch.float32)
+    counts: dict[str, int] = {}
+    for op in operations:
+        key = str(op).upper()
+        if key in {"KEEP_EVIDENCE", "SKIP_DUPLICATE"}:
+            counts[key] = counts.get(key, 0) + 1
+    weights: list[float] = []
+    for op in operations:
+        key = str(op).upper()
+        if key in counts and counts[key] > 0:
+            weights.append(1.0 / counts[key])
+        else:
+            weights.append(1.0)
+    w = torch.tensor(weights, dtype=torch.float32)
+    return w * (len(w) / w.sum().clamp(min=1e-8))
+
+
+def sdi_cross_entropy(
+    logits: torch.Tensor,
+    labels: torch.Tensor,
+    *,
+    sample_weights: torch.Tensor | None = None,
+    ignore_index: int = -100,
+    label_smoothing: float = 0.0,
+    loss_mode: LossMode = LossMode.SAMPLE_NORMALIZED_ACTION_CE,
+) -> tuple[torch.Tensor, int]:
+    """Token CE over action span; optional per-sample weights.
+
+    logits: [B, T, V], labels: [B, T]
+    """
+    if loss_mode == LossMode.LEGACY_TOKEN_CE:
+        return legacy_token_cross_entropy(
+            logits, labels, ignore_index=ignore_index, label_smoothing=label_smoothing
+        )
+
+    _per_tok, active, per_sample = _per_token_ce(
+        logits, labels, ignore_index=ignore_index, label_smoothing=label_smoothing
+    )
 
     if sample_weights is None:
         weights = torch.ones_like(per_sample)
     else:
         weights = sample_weights.to(per_sample.dtype).to(per_sample.device)
 
-    # Only samples with at least one active token and positive weight
     mask = (active.sum(dim=1) > 0) & (weights > 0)
     n_active = int(mask.sum().item())
     if n_active == 0:
@@ -130,16 +226,25 @@ def compute_sdi_loss(
     labels: torch.Tensor,
     *,
     sample_weights: torch.Tensor | None = None,
+    routes: Sequence[str] | None = None,
     ref_logits: torch.Tensor | None = None,
     config: SDILossConfig | None = None,
 ) -> SDILossOutput:
     cfg = config or SDILossConfig()
+    weights = sample_weights
+    if routes and cfg.route_balancing:
+        rb = route_balance_weights(routes, enabled=True).to(logits.device)
+        if weights is None:
+            weights = rb
+        else:
+            weights = weights.to(rb.device) * rb
     sdi, n_active = sdi_cross_entropy(
         logits,
         labels,
-        sample_weights=sample_weights,
+        sample_weights=weights,
         ignore_index=cfg.ignore_index,
         label_smoothing=cfg.label_smoothing,
+        loss_mode=cfg.loss_mode,
     )
     if ref_logits is not None and cfg.kl_coef > 0:
         kl = kl_to_reference(

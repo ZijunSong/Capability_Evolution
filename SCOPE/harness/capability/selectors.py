@@ -7,6 +7,10 @@ from typing import Protocol
 
 from harness.capability.action_space import CapabilityAction, CapabilityActionType
 from harness.capability.state import DecisionState
+from harness.capability.stop_calibration import (
+    StopCalibrationConfig,
+    should_trigger_stop_calibration,
+)
 
 
 class CriticalStateSelector(Protocol):
@@ -22,6 +26,7 @@ class CriticalStateSelector(Protocol):
 @dataclass
 class SelectorConfig:
     before_stop: bool = True
+    before_curate: bool = True  # Round 3: evidence-admission decision points
     after_curate: bool = True
     after_verify: bool = True
     after_review: bool = True
@@ -31,7 +36,9 @@ class SelectorConfig:
     evidence_enabled: bool = True
     verification_enabled: bool = True
     budget_enabled: bool = False
+    stop_calibration: bool = True
     low_turn_threshold: int = 3
+    stop_calibration_config: StopCalibrationConfig | None = None
 
 
 @dataclass
@@ -58,6 +65,7 @@ class RuleBasedCriticalStateSelector:
 
         if self.config.verification_enabled:
             modules.extend(self._select_verification(state, student_action))
+            modules.extend(self._select_stop_calibration(state, student_action))
         if self.config.evidence_enabled:
             modules.extend(self._select_evidence(state, student_action))
         if self.config.budget_enabled:
@@ -132,12 +140,35 @@ class RuleBasedCriticalStateSelector:
                 break
         return hits
 
+    def _select_stop_calibration(
+        self,
+        state: DecisionState,
+        action: CapabilityAction,
+    ) -> list[str]:
+        if not self.config.stop_calibration:
+            return []
+        trigger, reason = should_trigger_stop_calibration(
+            state,
+            action,
+            config=self.config.stop_calibration_config,
+        )
+        if not trigger:
+            return []
+        self._emit("verification", reason, action)
+        return ["verification"]
+
     def _select_evidence(
         self,
         state: DecisionState,
         action: CapabilityAction,
     ) -> list[str]:
         hits: list[str] = []
+        # Round 3: decision-triggered duplicate capability at curate admission
+        if self.config.before_curate and action.action_type == CapabilityActionType.CURATE_DOCUMENT:
+            add_ids = action.arguments.get("add_ids") or []
+            if add_ids:
+                hits.append("duplicate_evidence")
+                self._emit("duplicate_evidence", "evidence_admission", action)
         if self.config.after_curate and action.action_type in {
             CapabilityActionType.CURATE_DOCUMENT,
             CapabilityActionType.UPDATE_EVIDENCE,
