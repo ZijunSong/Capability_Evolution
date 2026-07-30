@@ -24,6 +24,11 @@ class LossMode(str, Enum):
     SAMPLE_NORMALIZED_ACTION_CE = "sample_normalized_action_ce"
     LEGACY_TOKEN_CE = "legacy_token_ce"
     OPERATION_CE = "operation_ce"
+    DISCRIMINATIVE_CE = "discriminative_ce"
+    PAIRWISE_MARGIN = "pairwise_margin"
+    SINGLE_TOKEN = "single_token"
+    DISCRIMINATIVE_CE_SUM = "discriminative_ce_sum"
+    DISCRIMINATIVE_CE_MEAN = "discriminative_ce_mean"
 
 
 @dataclass

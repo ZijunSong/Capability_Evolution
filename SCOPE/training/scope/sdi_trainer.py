@@ -16,6 +16,11 @@ from training.scope.collator import collate_sdi_batch
 from training.scope.losses import LossMode, SDILossConfig, compute_sdi_loss, operation_balance_weights
 from training.scope.compact_target import compact_target_from_sample
 from harness.capability.dup_operation import DupOperation
+from training.scope.operation_objectives import (
+    ObjectiveId,
+    operation_loss,
+    resolve_typed_tokens,
+)
 from training.scope.operation_scorer import operation_ce_loss, score_operations
 
 
@@ -106,6 +111,21 @@ class DupSDITrainer:
         self.model.to(self.device)
         if self.ref_model is not None:
             self.ref_model.to(self.device)
+        self._typed_tokens = None
+        if cfg.loss_mode == LossMode.SINGLE_TOKEN.value:
+            self._typed_tokens = resolve_typed_tokens(self.tokenizer)
+
+    def _operation_objective_id(self) -> str:
+        mode = self.cfg.loss_mode
+        mapping = {
+            LossMode.OPERATION_CE.value: ObjectiveId.O0.value,
+            LossMode.DISCRIMINATIVE_CE.value: ObjectiveId.O1.value,
+            LossMode.PAIRWISE_MARGIN.value: ObjectiveId.O2.value,
+            LossMode.SINGLE_TOKEN.value: ObjectiveId.O3.value,
+            LossMode.DISCRIMINATIVE_CE_SUM.value: ObjectiveId.O5.value,
+            LossMode.DISCRIMINATIVE_CE_MEAN.value: ObjectiveId.O6.value,
+        }
+        return mapping.get(mode, mode)
 
     def _sample_target_operation(self, sample: dict[str, Any]) -> DupOperation | None:
         compact = compact_target_from_sample(sample)
@@ -125,25 +145,61 @@ class DupSDITrainer:
             or ""
         )
 
+    _OPERATION_LOSS_MODES = frozenset({
+        LossMode.OPERATION_CE.value,
+        LossMode.DISCRIMINATIVE_CE.value,
+        LossMode.PAIRWISE_MARGIN.value,
+        LossMode.SINGLE_TOKEN.value,
+        LossMode.DISCRIMINATIVE_CE_SUM.value,
+        LossMode.DISCRIMINATIVE_CE_MEAN.value,
+    })
+
+    def _operation_context(self, sample: dict[str, Any]) -> tuple[str | None, list[str]]:
+        compact = compact_target_from_sample(sample)
+        ds = sample.get("decision_state") or {}
+        curated = list(ds.get("curated_document_ids") or ds.get("curated_evidence_ids") or [])
+        cid = compact.candidate_id if compact else None
+        return cid, curated
+
     def _forward_loss_operation_ce(
         self, batch_examples: list[dict[str, Any]]
     ) -> tuple[torch.Tensor, dict[str, float]]:
         losses: list[torch.Tensor] = []
         ops: list[str] = []
+        objective = self._operation_objective_id()
+        use_legacy = self.cfg.loss_mode == LossMode.OPERATION_CE.value
         for ex in batch_examples:
             tgt = self._sample_target_operation(ex)
             if tgt is None:
                 continue
             ops.append(tgt.value)
-            losses.append(
-                operation_ce_loss(
-                    self.model,
-                    self.tokenizer,
-                    self._state_text(ex),
-                    tgt,
-                    device=self.device,
+            cid, curated = self._operation_context(ex)
+            if use_legacy:
+                losses.append(
+                    operation_ce_loss(
+                        self.model,
+                        self.tokenizer,
+                        self._state_text(ex),
+                        tgt,
+                        device=self.device,
+                        candidate_id=cid,
+                        curated_document_ids=curated,
+                    )
                 )
-            )
+            else:
+                losses.append(
+                    operation_loss(
+                        self.model,
+                        self.tokenizer,
+                        self._state_text(ex),
+                        tgt,
+                        objective=objective,
+                        device=self.device,
+                        typed_tokens=self._typed_tokens,
+                        candidate_id=cid,
+                        curated_document_ids=curated,
+                    )
+                )
         if not losses:
             z = torch.zeros((), device=self.device, requires_grad=True)
             return z, {"loss": 0.0, "sdi_loss": 0.0, "kl_loss": 0.0, "n_active": 0.0}
@@ -159,7 +215,7 @@ class DupSDITrainer:
         }
 
     def _forward_loss(self, batch_examples: list[dict[str, Any]]) -> tuple[torch.Tensor, dict[str, float]]:
-        if self.cfg.loss_mode == LossMode.OPERATION_CE.value:
+        if self.cfg.loss_mode in self._OPERATION_LOSS_MODES:
             return self._forward_loss_operation_ce(batch_examples)
         batch = collate_sdi_batch(
             batch_examples,
@@ -394,10 +450,38 @@ class DupSDITrainer:
         from training.scope.prompting import format_compact_prompt, format_sdi_prompt
 
         state_text = self._state_text(sample)
-        if self.cfg.loss_mode == LossMode.OPERATION_CE.value:
+        if self.cfg.loss_mode in self._OPERATION_LOSS_MODES:
             self.model.eval()
+            if self.cfg.loss_mode == LossMode.SINGLE_TOKEN.value:
+                from training.scope.prompting import format_operation_prompt
+
+                tt = self._typed_tokens or resolve_typed_tokens(self.tokenizer)
+                cid, curated = self._operation_context(sample)
+                prompt = format_operation_prompt(
+                    state_text, candidate_id=cid, curated_document_ids=curated,
+                )
+                prompt_ids = self.tokenizer.encode(prompt, add_special_tokens=False)
+                input_ids = torch.tensor(
+                    [prompt_ids], dtype=torch.long, device=self.device
+                )
+                logits = self.model(input_ids=input_ids).logits
+                last_logits = logits[0, -1, :]
+                pred_id = (
+                    tt.keep_id
+                    if last_logits[tt.keep_id] >= last_logits[tt.skip_id]
+                    else tt.skip_id
+                )
+                op = (
+                    DupOperation.KEEP_EVIDENCE
+                    if pred_id == tt.keep_id
+                    else DupOperation.SKIP_DUPLICATE
+                )
+                return {"operation": op.value}
+            cid, curated = self._operation_context(sample)
             result = score_operations(
-                self.model, self.tokenizer, state_text, device=self.device
+                self.model, self.tokenizer, state_text, device=self.device,
+                candidate_id=cid,
+                curated_document_ids=curated,
             )
             return {"operation": result.predicted.value}
 

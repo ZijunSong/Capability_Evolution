@@ -15,7 +15,7 @@ import torch.nn.functional as F
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
 from harness.capability.dup_operation import DupOperation
-from training.scope.prompting import format_operation_prompt
+from training.scope.prompting import format_operation_prompt, format_operation_prompt_from_sample
 
 VERBALIZERS: tuple[DupOperation, ...] = (
     DupOperation.KEEP_EVIDENCE,
@@ -80,10 +80,16 @@ def score_operations(
     *,
     device: torch.device | None = None,
     verbalizers: tuple[DupOperation, ...] = VERBALIZERS,
+    candidate_id: str | None = None,
+    curated_document_ids: list[str] | tuple[str, ...] | None = None,
 ) -> OperationScoreResult:
     """Score each verbalizer; return length-normalized scores and argmax."""
     dev = device or next(model.parameters()).device
-    prompt = format_operation_prompt(decision_state_text)
+    prompt = format_operation_prompt(
+        decision_state_text,
+        candidate_id=candidate_id,
+        curated_document_ids=curated_document_ids,
+    )
     scores: dict[str, float] = {}
     log_probs: dict[str, float] = {}
     for op in verbalizers:
@@ -107,10 +113,16 @@ def operation_ce_loss(
     target: DupOperation,
     *,
     device: torch.device | None = None,
+    candidate_id: str | None = None,
+    curated_document_ids: list[str] | tuple[str, ...] | None = None,
 ) -> torch.Tensor:
     """-log softmax(s)[target] with differentiable completion scoring."""
     dev = device or next(model.parameters()).device
-    prompt = format_operation_prompt(decision_state_text)
+    prompt = format_operation_prompt(
+        decision_state_text,
+        candidate_id=candidate_id,
+        curated_document_ids=curated_document_ids,
+    )
     score_tensors: list[torch.Tensor] = []
     for op in VERBALIZERS:
         prompt_ids = tokenizer.encode(prompt, add_special_tokens=False)

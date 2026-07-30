@@ -30,6 +30,52 @@ class DupBilateralShadow(ShadowModule):
     def __init__(self) -> None:
         self._verifier = EvidenceVerifier()
 
+    @classmethod
+    def from_serialized_student_state(
+        cls,
+        serialized: dict,
+    ) -> tuple[DupOperation, dict]:
+        """Replay KEEP/SKIP using only student-visible serialized fields.
+
+        Must not access raw environment objects, hidden pools, or teacher caches.
+        """
+        ds = serialized.get("decision_state") or {}
+        target = serialized.get("target_action") or {}
+        candidate_id = str(target.get("candidate_id", ""))
+        curated = tuple(
+            ds.get("curated_document_ids")
+            or ds.get("curated_evidence_ids")
+            or []
+        )
+        pool = set(ds.get("pool_document_ids") or []) | set(
+            ds.get("visible_document_ids") or []
+        )
+        visible_curated = [str(c) for c in curated]
+        is_dup = is_duplicate_candidate(candidate_id, visible_curated)
+        operation = (
+            DupOperation.SKIP_DUPLICATE if is_dup else DupOperation.KEEP_EVIDENCE
+        )
+        provenance = {
+            "candidate_evidence_id": candidate_id,
+            "candidate_in_pool": candidate_id in pool,
+            "curated_evidence_ids": visible_curated,
+            "duplicate_criterion": "candidate_id in curated_document_ids",
+            "duplicate_score": 1.0 if is_dup else 0.0,
+            "duplicate_reason": (
+                "DUPLICATE_EVIDENCE" if is_dup else "EVIDENCE_UPDATE_VALID"
+            ),
+            "teacher_required_fields": [
+                "decision_state.curated_document_ids",
+                "target_action.candidate_id",
+            ],
+            "student_visible": {
+                "curated_document_ids": True,
+                "candidate_id": True,
+                "pool_document_ids": bool(ds.get("pool_document_ids")),
+            },
+        }
+        return operation, provenance
+
     def analyze_candidate(
         self,
         state: DecisionState,
