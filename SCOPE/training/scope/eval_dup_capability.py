@@ -15,19 +15,13 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from harness.capability.dup_operation import DupOperation
+from training.scope.binary_operation_metrics import accumulate_from_pairs
 from training.scope.compact_target import (
     compact_target_from_sample,
     infer_operation_from_action,
 )
 from training.scope.dup_diagnostics import load_jsonl
 from training.scope.sdi_trainer import DupSDITrainer, SDITrainConfig
-
-
-def _prf(tp: int, fp: int, fn: int) -> dict[str, float]:
-    prec = tp / max(tp + fp, 1)
-    rec = tp / max(tp + fn, 1)
-    f1 = 2 * prec * rec / max(prec + rec, 1e-8)
-    return {"precision": prec, "recall": rec, "f1": f1, "tp": tp, "fp": fp, "fn": fn}
 
 
 def _parse_operation(pred: dict[str, Any] | None) -> DupOperation | None:
@@ -67,8 +61,7 @@ def evaluate_capability(
     confusion: dict[str, Counter] = defaultdict(Counter)
     route_op_correct: dict[str, list[int]] = defaultdict(lambda: [0, 0])
 
-    keep_tp = keep_fp = keep_fn = 0
-    skip_tp = skip_fp = skip_fn = 0
+    pairs: list[tuple[DupOperation | None, DupOperation | None]] = []
 
     for sample in samples:
         pred = trainer._greedy_action(sample)
@@ -83,6 +76,7 @@ def evaluate_capability(
             op_correct += 1
         if tgt_op:
             confusion[tgt_op.value][pred_op.value if pred_op else "PARSE_FAIL"] += 1
+            pairs.append((tgt_op, pred_op))
         route = str(sample.get("route", "")).upper()
         if tgt_op:
             route_op_correct[route][1] += 1
@@ -97,32 +91,19 @@ def evaluate_capability(
         if pred_norm == tgt_norm:
             exact_match += 1
 
-        if tgt_op == DupOperation.KEEP_EVIDENCE:
-            if pred_op == DupOperation.KEEP_EVIDENCE:
-                keep_tp += 1
-            else:
-                keep_fn += 1
-            if pred_op == DupOperation.SKIP_DUPLICATE:
-                keep_fp += 1
-        elif tgt_op == DupOperation.SKIP_DUPLICATE:
-            if pred_op == DupOperation.SKIP_DUPLICATE:
-                skip_tp += 1
-            else:
-                skip_fn += 1
-            if pred_op == DupOperation.KEEP_EVIDENCE:
-                skip_fp += 1
-
     route_acc = {
         r: hits / max(total, 1)
         for r, (hits, total) in route_op_correct.items()
     }
 
+    bin_metrics = accumulate_from_pairs(pairs)
+    metrics_dict = bin_metrics.to_dict()
+
     return {
         "n_valid": n,
         "operation_accuracy": op_correct / max(n, 1),
         "operation_confusion_matrix": {k: dict(v) for k, v in confusion.items()},
-        "KEEP_EVIDENCE": _prf(keep_tp, keep_fp, keep_fn),
-        "SKIP_DUPLICATE": _prf(skip_tp, skip_fp, skip_fn),
+        **metrics_dict,
         "argument_accuracy": arg_f1_sum / max(n, 1),
         "argument_set_f1": arg_f1_sum / max(n, 1),
         "parse_rate": parse_ok / max(n, 1),
