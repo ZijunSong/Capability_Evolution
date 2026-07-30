@@ -19,6 +19,7 @@ from harness.shadow.action_realizer import ActionRealizer
 from harness.shadow.dup_bilateral_shadow import DupBilateralShadow
 from training.train_rl import CurateTool
 from harness.trajectory import Action
+from training.scope.decision_config import DupDecisionConfig, DEFAULT_DECISION_CONFIG
 from training.scope.dup_telemetry import AdmissionEvent, DupTelemetryAggregator
 from training.scope.operation_scorer import score_operations
 
@@ -28,6 +29,9 @@ class DupOperationRuntimeConfig:
     enabled: bool = True
     record_shadow: bool = True
     fail_on_unsupported: bool = True
+    decision_config: DupDecisionConfig = DEFAULT_DECISION_CONFIG
+    checkpoint: str = ""
+    seed: int = 0
 
 
 class DupOperationRuntime:
@@ -62,15 +66,20 @@ class DupOperationRuntime:
 
     def score_and_predict(
         self, state: DecisionState
-    ) -> DupOperation:
+    ) -> tuple[DupOperation, dict[str, float]]:
         if self._vllm_scorer is not None:
-            return self._vllm_scorer.score(self._state_text(state)).predicted
+            result = self._vllm_scorer.score(self._state_text(state))
+            return result.predicted, dict(result.scores)
         if self.model is None or self.tokenizer is None:
             raise RuntimeError("DupOperationRuntime requires model or vllm_scorer")
         result = score_operations(
             self.model, self.tokenizer, self._state_text(state), device=self.device
         )
-        return result.predicted
+        sk = result.scores[DupOperation.KEEP_EVIDENCE.value]
+        ss = result.scores[DupOperation.SKIP_DUPLICATE.value]
+        margin = ss - sk
+        predicted = self.config.decision_config.predict_from_margin(margin)
+        return predicted, dict(result.scores)
 
     def realize_action(
         self,
@@ -93,8 +102,13 @@ class DupOperationRuntime:
         if not points:
             return action
 
-        predicted = self.score_and_predict(state)
+        predicted, score_map = self.score_and_predict(state)
         primary_cid = points[0].candidate_evidence_id
+
+        sk = score_map.get(DupOperation.KEEP_EVIDENCE.value, 0.0)
+        ss = score_map.get(DupOperation.SKIP_DUPLICATE.value, 0.0)
+        margin = ss - sk
+        cfg = self.config.decision_config
 
         cand = self.realizer.realize_operation(
             state,
@@ -137,6 +151,22 @@ class DupOperationRuntime:
                     turn_id=state.turn_id,
                 )
             )
+            # Extended score telemetry for Round 6 audit
+            self.telemetry.score_events.append({
+                    "episode_id": state.episode_id,
+                    "qid": query_id,
+                    "turn": state.turn_id,
+                    "checkpoint": self.config.checkpoint,
+                    "seed": self.config.seed,
+                    "label": shadow_op,
+                    "score_keep": sk,
+                    "score_skip": ss,
+                    "margin_skip_minus_keep": margin,
+                    "threshold": cfg.threshold,
+                    "decision_bias": cfg.decision_bias,
+                    "predicted_operation": predicted.value,
+                    "executed_operation": predicted.value,
+                })
 
         return Action(
             tools=[self._curate_tool],

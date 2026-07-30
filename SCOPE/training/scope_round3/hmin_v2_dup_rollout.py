@@ -109,6 +109,11 @@ def parse_args() -> argparse.Namespace:
         default=False,
         help="Base rollout without dup operation (for labeling)",
     )
+    p.add_argument("--decision-threshold", type=float, default=0.0)
+    p.add_argument("--decision-bias", type=float, default=0.0)
+    p.add_argument("--decision-config", type=Path, default=None)
+    p.add_argument("--dup-seed", type=int, default=0)
+    p.add_argument("--checkpoint-label", default="")
     return p.parse_args()
 
 
@@ -119,14 +124,26 @@ def _load_dup_runtime(
     *,
     vllm_client=None,
     vllm_model: str | None = None,
+    decision_config=None,
+    checkpoint_label: str = "",
+    seed: int = 0,
 ) -> DupOperationRuntime | None:
+    from training.scope.decision_config import DupDecisionConfig, DEFAULT_DECISION_CONFIG
+
+    cfg = decision_config or DEFAULT_DECISION_CONFIG
+    rt_cfg = DupOperationRuntimeConfig(
+        decision_config=cfg,
+        checkpoint=checkpoint_label,
+        seed=seed,
+    )
     if vllm_client is not None and vllm_model:
         from training.scope.vllm_operation_scorer import VllmOperationScorer
 
         return DupOperationRuntime(
             None,
             None,
-            vllm_scorer=VllmOperationScorer(vllm_client, vllm_model),
+            config=rt_cfg,
+            vllm_scorer=VllmOperationScorer(vllm_client, vllm_model, decision_config=cfg),
         )
     dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
@@ -142,7 +159,7 @@ def _load_dup_runtime(
     model.eval()
     dev = torch.device(device if torch.cuda.is_available() else "cpu")
     model.to(dev)
-    return DupOperationRuntime(model, tokenizer, device=dev)
+    return DupOperationRuntime(model, tokenizer, device=dev, config=rt_cfg)
 
 
 async def main_async(args: argparse.Namespace) -> None:
@@ -231,6 +248,18 @@ async def main_async(args: argparse.Namespace) -> None:
     )
 
     dup_rt: DupOperationRuntime | None = None
+    decision_cfg = None
+    if args.decision_config and args.decision_config.exists():
+        from training.scope.decision_config import DupDecisionConfig
+
+        decision_cfg = DupDecisionConfig.load(args.decision_config)
+    elif args.decision_threshold != 0.0 or args.decision_bias != 0.0:
+        from training.scope.decision_config import DupDecisionConfig
+
+        decision_cfg = DupDecisionConfig(
+            threshold=args.decision_threshold,
+            decision_bias=args.decision_bias,
+        )
     if args.dup_operation and not args.collect_states_only:
         dup_rt = _load_dup_runtime(
             args.model_path,
@@ -238,6 +267,9 @@ async def main_async(args: argparse.Namespace) -> None:
             os.environ.get("CUDA_VISIBLE_DEVICES", "0").split(",")[0] or "cuda",
             vllm_client=client,
             vllm_model=model_name,
+            decision_config=decision_cfg,
+            checkpoint_label=args.checkpoint_label or args.model_path,
+            seed=args.dup_seed,
         )
 
     global_telemetry = DupTelemetryAggregator()

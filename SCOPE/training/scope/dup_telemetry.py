@@ -40,6 +40,7 @@ class DupTelemetryAggregator:
     """Aggregate admission events into Round 3 primary behavioral metrics."""
 
     events: list[AdmissionEvent] = field(default_factory=list)
+    score_events: list[dict[str, Any]] = field(default_factory=list)
     operation_parse_failures: int = 0
     action_realizer_failures: int = 0
     hidden_fallback_count: int = 0
