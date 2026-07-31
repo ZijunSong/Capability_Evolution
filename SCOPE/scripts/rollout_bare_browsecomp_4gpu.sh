@@ -13,6 +13,7 @@ MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-2048}"
 TEMPERATURE="${TEMPERATURE:-1.0}"
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-8192}"
 VLLM_PORT="${VLLM_PORT:-8770}"
+PARALLEL="${PARALLEL:-8}"
 RESUME="${RESUME:-1}"
 
 source "${CONDA_BASE}/etc/profile.d/conda.sh"
@@ -39,6 +40,7 @@ echo "Split:          ${SPLIT} (limit=${LIMIT:-all})"
 echo "max_new_tokens: ${MAX_NEW_TOKENS}"
 echo "temperature:    ${TEMPERATURE}"
 echo "max_model_len:  ${MAX_MODEL_LEN}"
+echo "parallel:       ${PARALLEL}"
 echo "Output:         ${OUTPUT_DIR}"
 echo
 
@@ -50,6 +52,7 @@ ARGS=(
   --max-model-len "${MAX_MODEL_LEN}"
   --vllm-port "${VLLM_PORT}"
   --tensor-parallel-size 4
+  --parallel "${PARALLEL}"
   --output-dir "${OUTPUT_DIR}"
 )
 if [[ "${RESUME}" == "1" ]]; then

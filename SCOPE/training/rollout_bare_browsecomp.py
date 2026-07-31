@@ -64,6 +64,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-resume", action="store_false", dest="resume")
     parser.add_argument("--no-download", action="store_true")
     parser.add_argument(
+        "--parallel",
+        type=int,
+        default=8,
+        help="Concurrent in-flight bare generation requests to vLLM (default: 8)",
+    )
+    parser.add_argument(
         "--use-llm-api",
         action="store_true",
         help="Force OpenAI-compatible API from BiSHOP/.env (base_url, api_key, model_name)",
@@ -96,7 +102,7 @@ def main() -> None:
 
     print(
         f"[bare] Loaded {len(records)} queries "
-        f"(split={args.split}, mode=bare, no Harness)"
+        f"(split={args.split}, mode=bare, no Harness, parallel={args.parallel})"
     )
 
     vllm_handle: VLLMServerHandle | None = None
@@ -138,6 +144,7 @@ def main() -> None:
             temperature=args.temperature,
             output_jsonl=jsonl_path,
             resume=args.resume,
+            parallel=args.parallel,
         )
         path = save_bare_trajectories(
             [],
@@ -150,6 +157,7 @@ def main() -> None:
                 "max_new_tokens": args.max_new_tokens,
                 "temperature": args.temperature,
                 "max_model_len": args.max_model_len,
+                "parallel": args.parallel,
                 "split": args.split,
                 "queries_source": args.queries_json or "browsecompplus_full",
                 "resume": args.resume,
