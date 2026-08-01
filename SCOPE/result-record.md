@@ -9,6 +9,42 @@
 
 ---
 
+## Qwen rollout 八组实验汇总（2026-08-01）
+
+**范围：** SCOPE 仓库下 Qwen3-1.7B / Qwen3-30B，在 HotpotQA 与 BrowseComp+ 上分别运行 bare rollout 与 full harness rollout，共 8 组。当前结论是 **7/8 已完成，唯一未完成项为 Qwen3-30B BrowseComp+ harness rollout**。
+
+### 统一 setting
+
+| 维度 | HotpotQA | BrowseComp+ |
+| --- | --- | --- |
+| 数据 | `external/hotpotqa_subset_queries.json` 或 `HotpotQA_raw_data_20260730.tar.gz::HotpotQA/hotpot_dev_fullwiki_v1.json` | `external/BrowseComp-Plus/` full 830 queries，BM25 index=`external/BrowseComp-Plus/indexes/bm25` |
+| bare rollout | vLLM backend，temperature=1.0，max_new_tokens=2048，max_model_len=8192 | vLLM backend，temperature=1.0，max_new_tokens=2048，max_model_len=8192，split=`all` |
+| harness rollout | `hotpotqa_local_context` retrieval，max_turns=35，max_tokens=2048，temperature=1.0 | `modules_full_v2.yaml`，BM25 retrieval，max_turns=35，max_tokens=2048，temperature=1.0，reranker=`none` |
+| Qwen3-1.7B | `/mnt/songzijun/models/Qwen3-1.7B` | `/mnt/songzijun/models/Qwen3-1.7B` |
+| Qwen3-30B | `/mnt/songzijun/models/Qwen3-30B-A3B-Instruct-2507` | `/mnt/songzijun/models/Qwen3-30B-A3B-Instruct-2507` |
+
+### 完成状态与结果
+
+| 模型 | 数据集 | 模式 | 状态 | 输出目录 | records / target | errors | recall | trajectory_recall | final_answer_recall | reward | 备注 |
+| --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| Qwen3-1.7B | HotpotQA | bare | ✅ completed | `outputs/bare_rollout_hotpotqa_qwen3_1p7b_4gpu/` | 7405 / 7405 | 0 | n/a | n/a | n/a | n/a | 7405 unique query_ids，bad_json=0 |
+| Qwen3-1.7B | HotpotQA | harness | ✅ completed | `outputs/harness_rollout_hotpotqa_qwen3_1p7b_4gpu/` | 14580 / 14580 | 43 | 0.050274 | 0.064952 | 0.050274 | 0.181716 | 7405 unique query_ids，parallel=64，bad_json=0 |
+| Qwen3-1.7B | BrowseComp+ | bare | ✅ completed | `outputs/bare_rollout_browsecomp_qwen3_1_7b_4gpu/` | 830 / 830 | 0 | n/a | n/a | n/a | n/a | split=`all`，bad_json=0 |
+| Qwen3-1.7B | BrowseComp+ | harness | ✅ completed | `outputs/harness_rollout_browsecomp_qwen3_1_7b_8gpu_parallel32/` | 830 / 830 | 0 | 0.028161 | 0.202500 | 0.038333 | 0.160796 | manifest parallel=64，max_model_len=32768，bad_json=0 |
+| Qwen3-30B | HotpotQA | bare | ✅ completed | `outputs/bare_rollout_hotpotqa_qwen3_30b_8gpu_20260730/` | 7405 / 7405 | 0 | n/a | n/a | n/a | n/a | bad_json=0 |
+| Qwen3-30B | HotpotQA | harness | ✅ completed | `outputs/harness_rollout_hotpotqa_qwen3_30b_8gpu_parallel32_20260731_151339/` | 7405 / 7405 | 0 | 0.063336 | 0.070763 | 0.063336 | 0.212855 | parallel=64，bad_json=0 |
+| Qwen3-30B | BrowseComp+ | bare | ✅ completed | `outputs/bare_rollout_browsecomp_qwen3_30b_8gpu_20260730/` | 830 / 830 | 0 | n/a | n/a | n/a | n/a | split=`all`，bad_json=0 |
+| Qwen3-30B | BrowseComp+ | harness | ❌ incomplete | `outputs/harness_rollout_browsecomp_qwen3_30b_8gpu_parallel64_20260801_125717/` | 0 / 830 | n/a | n/a | n/a | n/a | n/a | no `harness_rollouts.jsonl` / no manifest；pid not alive |
+
+### 当前结论
+
+1. HotpotQA 上，Qwen3-30B harness 的 recall / reward 高于 Qwen3-1.7B harness：recall 0.063336 vs 0.050274，reward 0.212855 vs 0.181716。
+2. BrowseComp+ 上，Qwen3-1.7B harness 已完整跑完 830 题，recall=0.028161，trajectory_recall=0.202500；Qwen3-30B 只有 bare 完整结果，harness 尚无可用结果文件，不能做完整横向比较。
+3. bare rollout 均只记录生成轨迹，不含 recall/reward 类指标；可用于后续训练/审计数据，不应和 harness metric 直接比较。
+4. Qwen3-30B BrowseComp+ harness 的最近尝试已完成 vLLM ready、BM25 preflight 和 830 pending episodes 初始化，但没有写出 `harness_rollouts.jsonl` / manifest，且 `vllm_server.pid=16495` 已不存活；判定为未完成而非完成失败可评分。
+
+---
+
 ## 分支与实验对照
 
 > **说明：** 早期实验（Phase 0、Round-1、v3 协议、E0）均在 `main` 基线上以**本地未提交代码**跑通；Round 2/3 代码最终合并提交于 `scope/dup-round3-bilateral`。实验**产物目录**与 git 分支解耦——换分支不会移动 `outputs/`。
