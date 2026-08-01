@@ -1,16 +1,11 @@
-# SCOPE 实验记录
+## 当前结论（2026-08-01）
 
-> 按 `method.md` pipeline 组织。状态标记：`✅ 已完成` · `🔄 进行中` · `📋 TODO` · `⏸ 暂缓` · `❌ 不做`
-
----
-
-## 当前结论（2026-07-30）
-
-- **已成立：** same-state shadow / info-safe protocol、Dup 双侧数据构造、typed action interface（Wave4 plumbing ✅）、Round 3 全链路 100q closed-loop（9 变体含 Base 全部 merged）。
-- **尚未成立：** “Dup 已成功内化”“operation_ce 优于 compact target”“4/6 capability 为 runtime-only”。
-- **Round 3 最终判定：** `ROUND3_POSITIVE_SIGNAL=false` · `RECOMMEND_830=false` — operation_ce 主模型 offline 塌缩全 KEEP，闭环反而显著恶化 DupCurateRate / FalseSkipRate；`compact_json` 是唯一行为接近 Base 的变体。
-- **当前 P0：** offline F1 evaluator sanity check；operation_ce majority collapse 根因（verbalizer prior / effective class weight / gradient）；在 Dup 建立可信 positive signal 前不扩 830、不做 weighting。
-- **主线优先级：** measurement validity → Dup objective 修复 → E1 核心 baseline → targeted E0/第二 capability → 830 retention → weighting/recovery/generalization。
+- **已成立：** same-state shadow / info-safe · measurement+scorer · Round5 O7 offline 双侧分离 · **Round6 offline cross-score AUROC=1.0（valid522 + 全部 B6 states）** · runtime parity=1.0（adapter/merged/HF）。
+- **尚未成立：** Dup **closed-loop internalization** positive signal · 校准后仍 **FSR≈1.0** · reward 低于 Base · **`RECOMMEND_830=false`**。
+- **Round 6 判定：** `H_RUNTIME/H_SHIFT/H_CALIB/H_FEEDBACK` 均为 false；`ROUND6_CLOSED_LOOP_POSITIVE=false`。
+- **关键发现：** offline 排序与 AUROC 完美，但 per-seed margin 阈值校准 **不能** 将闭环行为拉到 FSR≤5%；O7 在 holdout 上表现为 **几乎全部 SKIP**（先验≈1），非可控 duplicate rejection。
+- **当前 P0：** live closed-loop decision 路径 / score scale 与 offline replay 差异；禁止扩 830、E1、weighting、multi-capability。
+- **主线：** 修 live admission 决策一致性 → 再评估是否需 on-policy Dagg。
 
 ---
 
@@ -31,9 +26,15 @@ main @ 3e95fad（origin/main）
   │     仅本地工作分支指针（与 main 同 commit，**未 push**）
   │     Round 2 实验在此分支名上跑，但代码当时未入库
   │
-  └── scope/dup-round3-bilateral @ ad072b9（origin 已 push，当前 HEAD）
-        一次性提交 Round 2 + Round 3 全部代码（115 files）
-        Round 3 实验 + post-train 在此分支继续
+  ├── scope/dup-round3-bilateral @ ad072b9（origin 已 push）
+  │     一次性提交 Round 2 + Round 3 全部代码（115 files）
+  │
+  ├── scope/dup-round4-objective-repair @ 6b4e88b
+  │     measurement / scorer audit + overfit128（objective 未过）
+  │
+  └── scope/dup-round5-learnability @ 6b4e88b + **本地未提交** Round5 代码
+        Observability / objective tournament / O7 full screen / 100q CL
+        （`scripts/scope_round5/` · `training/scope_round5/` 仍为 untracked）
 ```
 
 ### 实验 ↔ 分支 ↔ 产物 一览
@@ -46,6 +47,8 @@ main @ 3e95fad（origin/main）
 | E0 Distillability 100q   | Stage 0         | `main` + 本地                             | `3e95fad` 基线   | —                                     | `outputs/scope_e0_distillability/` · `artifacts/capability/distillability_map.json` |
 | Round 2 Behavioral Audit | Round 2         | `scope/dup-round2-behavioral`（工作分支） | 代码在 `ad072b9` | ❌ 未 push                             | `outputs/scope_round2/` · `artifacts/datasets/dup_sdi_round2/` · `artifacts/datasets/round2_audit_100q/` |
 | Round 3 Bilateral        | Round 3         | `scope/dup-round3-bilateral`              | **`ad072b9`**    | ✅ `origin/scope/dup-round3-bilateral` | `outputs/scope_round3/` · `artifacts/datasets/dup_sdi_round3/` |
+| Round 4 Objective Repair | Round 4         | `scope/dup-round4-objective-repair`       | `6b4e88b` / `e3d5afa` | ❌ 未确认 push                    | `outputs/scope_round4/` |
+| Round 5 Learnability     | Round 5         | `scope/dup-round5-learnability`           | `6b4e88b` + 本地 | ❌ 未 push                             | `outputs/scope_round5/` |
 
 ### 复现注意事项
 
@@ -53,17 +56,22 @@ main @ 3e95fad（origin/main）
 | -------------------------- | ----------------------------------------- | ------------------------------------------------------------ |
 | 仅复现 Phase 0 基线        | `main` @ `3e95fad`                        | 不含 Round 2/3 脚本                                          |
 | 复现 Round 2 训练/评估脚本 | `scope/dup-round3-bilateral` @ `ad072b9`  | Round 2 代码未在 `dup-round2-behavioral` 上单独 commit       |
-| 复现 Round 3 + 当前开发    | `scope/dup-round3-bilateral` @ `ad072b9`+ | 当前活跃分支                                                 |
+| 复现 Round 3               | `scope/dup-round3-bilateral` @ `ad072b9`  | —                                                            |
+| 复现 Round 4/5 数值        | **无需切换分支**                          | 直接读 `outputs/scope_round4|5/`；R5 脚本需本地工作树        |
+| 复现 Round 5 编排          | `scope/dup-round5-learnability` + 本地    | `scripts/scope_round5/` 当时未入库                           |
 | 复现历史实验数值           | **无需切换分支**                          | 直接读 `outputs/` 下 JSON/MD；数据集在 `artifacts/datasets/`（未进 git，需本地保留） |
 
 ### 共享协议资产（跨分支冻结）
 
 | 资产                           | 路径                                                       | 首次冻结       | 使用方                          |
 | ------------------------------ | ---------------------------------------------------------- | -------------- | ------------------------------- |
-| BrowseComp+ 100q manifest      | `artifacts/datasets/round2_audit_100q/query_manifest.json` | Round 2 Wave 1 | Round 2 Wave 1–4 · Round 3 全部 |
-| \(H_{\min,\text{v2}}\) runtime | `harness/configs/modules_minimal_v2.yaml`                  | Round 2        | Round 2/3 rollout · closed-loop |
+| BrowseComp+ 100q manifest      | `artifacts/datasets/round2_audit_100q/query_manifest.json` | Round 2 Wave 1 | Round 2–5 closed-loop           |
+| \(H_{\min,\text{v2}}\) runtime | `harness/configs/modules_minimal_v2.yaml`                  | Round 2        | Round 2–5 rollout · closed-loop |
 | Round-1 merged 对照模型        | `outputs/dup_sdi_round1/merged_hf`                         | Round 1        | Round 2 Wave 1 · Round 3 Wave 4 |
 | Distillability map             | `artifacts/capability/distillability_map.json`             | E0 07-29 10:55 | 830q Go/No-Go 参考              |
+| Round3 Dup train/valid         | `artifacts/datasets/dup_sdi_round3/`                       | Round 3        | Round 3–5 训练/offline          |
+| Round4 overfit128              | `artifacts/datasets/dup_sdi_round4_overfit128/`            | Round 4        | Round 4 B4 · Round 5 B3         |
+| Round5 O7 merged checkpoints   | `outputs/scope_round5/merged/o7_r64_seed{42,43,44}`        | Round 5 B6     | 100q closed-loop                |
 
 ---
 
@@ -1026,47 +1034,26 @@ NEXT_ACTION = (1) 修复 offline F1 evaluator sanity check
 
 ## 全局待办（按优先级）
 
-> 原则：先证明“测得对”，再证明“学得到”，最后才扩大规模 / 多能力。当前最大风险不是样本量，而是 evaluator、telemetry 和 objective validity。
+> 原则：先证明“测得对”，再证明“学得到”，最后才扩大规模 / 多能力。  
+> Round 4/5 后：**measurement / observability / offline learnability（O7）已过**；当前最大风险是 **offline↔closed-loop 行为不一致**。
 
 ```text
-[P0-A] Offline evaluator sanity check
-  - 用 all-KEEP / all-SKIP / handcrafted mixed predictions 校验 precision / recall / F1 / macro-F1
-  - 修复或重命名当前疑似被误标的 F1 指标
-  - 重跑 Base、Round2-main、Round3 8 variants 的统一 operation eval
+[P0 ✅] Offline evaluator + scorer consistency（Round 4 B1/B2）
+[P0 ✅] DecisionState observability（Round 5 B1：无 label collision）
+[P0 ✅] Objective learnability offline（Round 5：O7 overfit D128 + valid bal_acc=1.0）
 
-[P0-B] Closed-loop telemetry / ActionRealizer sanity check
-  - Wave4 plumbing ✅（plumbing_ok=true）；Base DCR=0 与全 KEEP admission 一致
-  - 仍建议构造已知 unique/duplicate 小型 episode 做 forced KEEP/SKIP 单元校验
+[P0-NOW] O7 closed-loop 校准 / seed 一致性  ← 当前最紧迫
+  - 解释 seed42≈KEEP vs seed43/44 高 FSR
+  - 检查 runtime score 路径、决策阈值、状态分布相对 valid 的偏移
+  - 目标：相对 Base 改善 duplicate rejection，且 FSR 可控、reward 不崩
 
-[P0-C] Diagnose Round3 operation_ce majority collapse  ← 当前最紧迫
-  - offline 全 KEEP + closed-loop 大量误 SKIP：train/infer score 一致性断裂
-  - 检查 verbalizer prior、effective class weight、train vs rollout score margin
-  - 对比 compact_json（行为正常）vs operation_ce（行为恶化）的 score 分布
-
-[P0-D] Closed-loop 100q 已完成（07-30）；结论：main 未通过，compact_json 为唯一候选
-  - 无需再跑全量 8-way；后续只针对 objective 修复后重训 main 3 seeds
-
-[P1-A] Dup positive-signal gate
-  - 双侧 operation 不塌缩到单一类
-  - 相对 Base 改善 duplicate behavior
-  - task retention 不出现明显退化
+[P1-A] Dup positive-signal gate（仍未过）
+  - 双侧不塌缩 + 3 seeds 一致 + DCR/FSR 改善 + task retention
   - 通过后才允许 830q retention / E6
 
 [P1-B] E0 targeted probe 修复，而不是直接 830
-  - Stop：获得 STOP→CONTINUE 与 CONTINUE→STOP 双侧 coverage
-  - Verification：确保 PROC intervention > 0
-  - Truncation：event-enriched long-trajectory subset，确保 truncation_events > 0
-  - External verification：拆 routing decision 与 external execution
-
-[P1-C] E1 核心方法基线
-  - full-harness trace/SFT(or OPHSD-style) vs same-state local distillation vs +info-safe gate
-  - 这是证明 SCOPE 不只是“普通 Harness SFT/SEED”的关键对照，优先于 capability weighting
-
-[P2] 通过至少一个 capability 后：Module Lifecycle / Retention 830 + E2 正式双侧消融
-[P2] 再引入第二 capability（优先修好的 Stop），验证 capability heterogeneity
-[P3] Capability Weighting（E3）：至少两个有效 capability 后再做
-[P3] Recovery（E4）：仅当真实 dead-end / premature-stop failure 足够多时启用
-[P4] E5 Black-box Teacher · Fresh-corpus / Cross-Harness 泛化
+[P1-C] E1 local vs full-harness（后置于 Dup 闭环正信号）
+[P2+] weighting / Recovery / multi-capability / RL — 暂缓
 ```
 
 **明确暂缓**
@@ -1075,6 +1062,7 @@ NEXT_ACTION = (1) 修复 offline F1 evaluator sanity check
 - Round 1 LoRA 的 830 eval：已被 Round 2/3 诊断淘汰，不再作为主线。
 - 多能力联合 SDI / weighting：Dup 单能力尚未建立可信 positive signal。
 - Premature 训练：CONTINUE→STOP 监督覆盖仍为 0。
+- **830 / E1：** Round 5 `ROUND5_POSITIVE_SIGNAL=false`，按 barrier **禁止扩规模**。
 
 
 ## 进度总览
@@ -1085,17 +1073,18 @@ NEXT_ACTION = (1) 修复 offline F1 evaluator sanity check
 | Round 1               | ✅ 历史完成 | 序列拟合成功，行为内化未成立                                 |
 | Round 2               | ✅ 诊断完成 | 发现 loss-mass / one-sided / action-interface 问题；旧 Wave4 被 R3 替代 |
 | Round 3               | ✅ 完成     | 双侧数据+typed runtime+100q CL 全完成；`ROUND3_POSITIVE_SIGNAL=false`；operation_ce 塌缩为 P0 |
-| **Round 4**           | ✅ 完成     | measurement/scorer 验证通过；`operation_ce` objective 未通过 overfit128；**不进入 B5** |
+| Round 4               | ✅ 完成     | measurement/scorer 验证通过；`operation_ce` objective 未通过 overfit128；**不进入 B5** |
+| **Round 5**           | ✅ 完成     | Observability+O7 offline PASS；100q CL **无 positive signal**；`RECOMMEND_830=false` |
 | Step 1–5              | 🔄          | Dup 主链已通；Stop bilateral coverage 未通                   |
 | Step 6 Weighting      | ⏸          | 等 ≥2 个可信 capability                                      |
 | Step 7 Recovery       | ⏸          | 按 failure mass 决定                                         |
-| Step 8 Optimize       | 🔄          | R1/R2/R3 checkpoints 已有；R3 main 未建立 positive signal     |
+| Step 8 Optimize       | 🔄          | R1–R5 checkpoints 已有；Dup 闭环 positive signal 仍未建立     |
 | Step 9 Lifecycle / E6 | 🔄          | Phase0 830 完成；trained H_min_v2 830 暂缓                   |
-| E1                    | 📋 P1       | local vs full-harness distillation 核心基线                  |
-| E2                    | 🔄          | 双侧 controls 已有；closed-loop 完成；待 evaluator 修复后重评  |
+| E1                    | 📋 P1       | local vs full-harness distillation 核心基线；**仍后置于 Dup 闭环正信号** |
+| E2                    | 🔄          | 双侧 controls + R5 O7 offline 成立；闭环行为未校准             |
 | E3–E5                 | ⏸/📋        | 后置                                                         |
 
-**当前一句话结论：** Round 4 证实 measurement 与 scorer 管线正确（B1/B2 PASS），但 `operation_ce` 在 128 条平衡数据上仍无法过拟合（B4 FAIL）——根因在 objective/loss 实现而非 evaluator 或 train/infer 不一致；`compact_json` 仍是唯一有微弱双侧信号的变体；**暂停 Barrier 5，继续查 objective**。
+**当前一句话结论：** Round 5 证明 DecisionState 可观测且 **O7（discriminative_ce + LoRA r=64）offline 可完美过拟合/双侧分离**，但三 seeds 闭环行为不一致（seed42≈KEEP、seed43/44 高 FSR），**不构成 Dup positive internalization signal，禁止扩 830**。
 
 ---
 
@@ -1211,13 +1200,333 @@ artifacts/datasets/dup_sdi_round4_overfit128/  # 128-sample 平衡集
 
 ---
 
-### 下一步（按 0730-todo1.md）
+### 下一步（按 0730-todo1.md）→ 已进入 Round 5
 
 ```text
-B4 FAIL → 继续查 operation_ce objective implementation
-        → 不做 Barrier 5 大规模 ablation
-        → 不做 830 / 第二 capability
+B4 FAIL → Round 5：Observability + objective tournament + O7 full screen + 100q CL
+        → 见下一节 Round 5（2026-07-30 完成）
 ```
 
-优先排查：SKIP verbalizer loss mass、class weight 是否被 sample normalization 抵消、length-normalized seq logprob 对 SKIP 的可学习性。
+---
 
+## Round 5 — Operation Observability & Learnability（07-30）
+
+**Git：** `scope/dup-round5-learnability`（自 `scope/dup-round4-objective-repair` @ `6b4e88b`；Round5 脚本/训练代码当时多为**本地未提交**）
+
+**文档：** `0730-todo2.md`  
+**产物根：** `outputs/scope_round5/`  
+**报告：** `outputs/scope_round5/ROUND5_REPORT.md`  
+**环境快照：** `outputs/scope_round5/environment_snapshot.txt`
+
+**时间线：** 2026-07-30 16:43（B0）→ 20:46（B4/B5 marker）→ 22:47（B6 定向续跑完成）
+
+---
+
+### Gate 结论
+
+| Flag | 值 | 含义 |
+| --- | --- | --- |
+| `B1_PASS` / Observability | **true** | effective-input 无 KEEP/SKIP 标签冲突；shadow agreement=100%；truncation=0% |
+| `B2_PASS` / Objective math | **true** | KEEP/SKIP one-step margin 方向正确；LoRA 有梯度与参数更新 |
+| `B3_PASSED_OBJECTIVES` | **O7 only** | 仅 O7 通过 D2→D8→D32→D128 cascade |
+| `B4_PASS` | **true** | O7×3 seeds valid 双侧 discrimination=1.0；Top-2=`o7_r64_seed44/43` |
+| `B5_COMPLETE` | marker only | **未实际跑 50q**（`closed_loop/b5_50q/` 为空；supervisor 7s 内写完 marker） |
+| `B6_COMPLETE` | **true** | Base + O7×3seeds + compact_json 各 100q 闭环完成 |
+| `ROUND5_OBSERVABILITY_VALID` | **true**（据 B1） | label = f(student-visible DecisionState) 成立 |
+| `ROUND5_OBJECTIVE_VALID` | **true**（offline） | O7 可 overfit 且 full-valid 双侧分离 |
+| `ROUND5_CLOSED_LOOP_POSITIVE` | **false** | 三 seeds 行为不一致；43/44 高 FSR；reward↓ vs Base |
+| `ROUND5_POSITIVE_SIGNAL` | **false** | 未同时满足 todo 六条正信号条件 |
+| `RECOMMEND_830` | **false** | 禁止扩 830 |
+
+---
+
+### Setting（冻结）
+
+| 项 | 值 |
+| --- | --- |
+| Base model | `/data/ppnm/models/Qwen2.5-7B-Instruct` |
+| Runtime | \(H_{\min,\text{v2}}\) · `harness/configs/modules_minimal_v2.yaml` |
+| Train / Valid | Round3 `dup_sdi_round3` 1807 / 522（sha256 `a0168283…`） |
+| Overfit128 | Round4 `dup_sdi_round4_overfit128`（sha256 `ea31a1b9…`） |
+| 100q manifest | `artifacts/datasets/round2_audit_100q/query_manifest.json`（sha256 `47b12f76…`） |
+| CUDA / PyTorch / transformers / peft | 13.0 / 2.11.0+cu130 / 5.14.1 / 0.19.1 |
+| 闭环调度 | 最多 4 并发 vLLM；4×25 shard；wave 内 75s stagger |
+| 编排 | `scripts/scope_round5/pipeline_supervisor.sh`（B6 末段因 hang 改为 `targeted_b6_resume.sh`） |
+
+**Objective 定义（B3 tournament）**
+
+| ID | loss_mode | 其他 |
+| --- | --- | --- |
+| O0 | `operation_ce`（legacy） | LoRA r=16 |
+| O1 | `discriminative_ce` | r=16 |
+| O2 | `pairwise_margin` | r=16 |
+| O3 | `single_token` | r=16 |
+| O4 | `sample_normalized_action_ce` + compact_target | r=16 |
+| O5 | `discriminative_ce_sum` | r=16 |
+| O6 | `discriminative_ce_mean` | r=16 |
+| **O7** | **`discriminative_ce`** | **r=64, α=128** |
+
+嵌套 overfit：`D2 ⊂ D8 ⊂ D32 ⊂ D128`（平衡 KEEP/SKIP）；无 class/route balance；KL=0；cascade 失败即停。
+
+**B4 全量训练：** O7×seed{42,43,44} + compact_json×seed{42,43,44}；3 epochs；lr=2e-5；bs=4×accum=4；max_length=4096。
+
+---
+
+### Barrier 0 — 环境冻结 ✅
+
+产物：`environment_snapshot.txt` · HEAD `6b4e88b` · branch `scope/dup-round5-learnability`
+
+---
+
+### Barrier 1 — DecisionState Observability ✅
+
+对 overfit128 / train1807 / valid522 dump effective student input（DecisionState→renderer→chat template→tokenizer→truncation）。
+
+| 检查 | 结果 |
+| --- | --- |
+| unique effective inputs | 2327 |
+| exact collision groups | 130 |
+| **conflicting-label groups** | **0** |
+| serialized-state shadow agreement | **100%**（≥99% gate） |
+| truncation rate（KEEP/SKIP/overall） | **0%** |
+
+产物：`observability/effective_inputs*.jsonl` · `LABEL_COLLISION_REPORT.md` · `observability_report.json`
+
+**结论：** KEEP/SKIP label **可由 student-visible DecisionState 推导**；Round4 FAIL 不能归因于不可观测标签冲突。
+
+---
+
+### Barrier 2 — Objective 数学与梯度 ✅
+
+| 探针 | loss_before→after | margin Δ | 方向 | LoRA grad / Δθ |
+| --- | ---: | ---: | --- | --- |
+| KEEP one-step | 0.0019→0.0019 | −6.28→−11.06（Δ−4.78） | ✅ 更偏 KEEP | 有更新 |
+| SKIP one-step | 5.5→5.5 | −5.52→−0.02（Δ+5.50） | ✅ 更偏 SKIP | grad≈17.8 |
+
+产物：`b2_objective/b2_report.json`
+
+---
+
+### Barrier 3 — 8-GPU Micro-Overfit Tournament ✅（仅 O7）
+
+| Objective | D2 | D8 | D32 | D128 | All Pass |
+| --- | --- | --- | --- | --- | --- |
+| O0–O3, O5–O6 | ❌ acc=0.5（全 KEEP） | — | — | — | ❌ |
+| O4 | ❌ acc=0.0（PARSE_FAIL） | — | — | — | ❌ |
+| **O7** | ✅ 100% | ✅ 100% | ✅ 100% | ✅ 100% | ✅ |
+
+O7 D128 post：acc/macro-F1/bal-acc/KEEP&SKIP recall 全部 **1.0**；margin_KEEP≈−7.06，margin_SKIP≈+7.20。
+
+**关键对照：** O1 与 O7 **loss 相同**（`discriminative_ce`），仅 LoRA r=16→64；O1 卡在 D2，O7 贯通 D128。  
+→ Round4 overfit128 失败的主因包含 **adapter 容量不足**，不只是 loss 公式名。
+
+产物：`micro_overfit/MICRO_OVERFIT_MATRIX.md` · `micro_overfit/O7/`
+
+---
+
+### Barrier 4 — Full 1807/522 Objective Screen ✅
+
+Valid=522（KEEP=423, SKIP=99）offline：
+
+| Variant | bal_acc | macro_f1 | KEEP recall | SKIP recall | gate | mean_m_KEEP | mean_m_SKIP |
+| --- | ---: | ---: | ---: | ---: | --- | ---: | ---: |
+| o7_r64_seed42 | **1.000** | **1.000** | 1.000 | 1.000 | ✅ | −8.19 | +6.81 |
+| o7_r64_seed43 | **1.000** | **1.000** | 1.000 | 1.000 | ✅ | −7.09 | +6.50 |
+| o7_r64_seed44 | **1.000** | **1.000** | 1.000 | 1.000 | ✅ | −6.85 | +6.00 |
+| compact_json_seed42 | 0.511 | 0.491 | 0.962 | 0.061 | ✅ | −3.83 | −4.17 |
+| compact_json_seed43 | 0.499 | 0.447 | 0.998 | 0.000 | ❌ | −4.42 | −4.60 |
+| compact_json_seed44 | 0.518 | 0.492 | 0.986 | 0.051 | ✅ | −4.10 | −4.33 |
+
+**Top-2：** `o7_r64_seed44`, `o7_r64_seed43`（`B4_TOP2`）  
+产物：`b4_full/` · `B4_GATE.json` · merged HF：`merged/o7_r64_seed{42,43,44}` · `merged/compact_json_seed42`
+
+---
+
+### Barrier 5 — Top-2 × 50q ⚠️ 跳过
+
+`B5_COMPLETE` 于 20:46:58 写入，但 `closed_loop/b5_50q/` **无任何 shard 产物**。pipeline 在数秒内进入 B6。  
+**记录为 infra 捷径/缺陷，不作为 50q 行为证据。** 行为结论以 B6 100q 为准。
+
+---
+
+### Barrier 6 — Best Objective × 3 Seeds × 100q ✅（无正信号）
+
+比较：`Base` · `best_o7_{42,43,44}` · `compact_json`（seed42）；各 4×25 shard，`--dup-operation`。
+
+**运维备注：** Best-44/shard1 曾卡在 `qid=535` `grep_corpus` ~26min 无推进；kill 后 `--resume` 定向续跑（23→25），再跑 compact_json；22:47 全完成。shard1 的 `summary.json` 仅统计续跑 2 条，下表指标改从 **全部 `dup_admission_events.jsonl` + `episodes.jsonl` 重聚合**。
+
+| Variant | n_ep | DCR ↓ | FSR ↓ | SKIP recall | KEEP recall | n_pred_SKIP / n_events | mean reward | mean recall |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| **Base** | 100 | **0.000** | **0.000** | 0.000 | 1.000 | 0 / 16694 | **0.203** | **0.030** |
+| O7-seed42 | 100 | 0.000 | 0.000 | 0.005 | 1.000 | 17 / 17055 | 0.134 | 0.023 |
+| O7-seed43 | 100 | 0.010 | **0.517** | 0.289 | 0.483 | 7093 / 14602 | 0.157 | 0.024 |
+| O7-seed44 | 100 | 0.045 | **0.366** | 0.232 | 0.634 | 5489 / 15958 | 0.144 | 0.017 |
+| compact_json | 100 | 0.000 | 0.000 | 0.000 | 1.000 | 0 / 12218 | 0.136 | 0.029 |
+
+（DCR=`duplicate_curate_rate`；FSR=`false_skip_rate` / unique reject；与 Round3 Base DCR=0 定义一致——KEEP 路径下 duplicate 的 `actually_curated` 可为 false。）
+
+**闭环解读**
+
+1. **Offline≠Closed-loop：** O7 三 seeds valid 上 SKIP recall=1.0，但闭环 seed42 几乎不发 SKIP；43/44 大量 SKIP 且误伤 unique（FSR 37–52%）。
+2. **三 seeds 方向不一致：** 不满足 “3 seeds 方向一致”。
+3. **相对 Base：** 无稳定的 “duplicate rejection 改善 + unique rejection 可控”；reward 全面低于 Base。
+4. **compact_json：** 行为仍接近 Base（全 KEEP admission），offline 仅微弱 SKIP。
+
+产物：`closed_loop/b6_100q/{base,best_o7_42,best_o7_43,best_o7_44,compact_json}/`
+
+---
+
+### Round 5 Positive Signal 判定（对照 0730-todo2）
+
+| # | 条件 | 结果 |
+| --- | --- | --- |
+| 1 | D128 能稳定 overfit | ✅ O7 |
+| 2 | full valid 双侧 discrimination | ✅ O7×3 seeds bal_acc=1.0 |
+| 3 | 3 seeds 方向一致 | ❌ 闭环 42 vs 43/44 分裂 |
+| 4 | duplicate rejection 相对 Base 改善 | ❌ 无稳定改善（DCR 未优于 Base 叙事） |
+| 5 | unique rejection 可控 | ❌ seed43/44 FSR 过高 |
+| 6 | recall / reward 无系统性下降 | ❌ reward 相对 Base 下降 |
+
+→ **`ROUND5_POSITIVE_SIGNAL=false` · `RECOMMEND_830=false`**
+
+---
+
+### 工程与事故记录
+
+1. **B5 空跑：** marker 写入但无 50q 产物；后续勿把 B5 当证据。
+2. **B6 Best-44/shard1 hang：** `grep_corpus` 卡住；kill + `--resume` 定向续跑成功。
+3. **kill 竞态：** 首次 kill 曾误写 `B6_COMPLETE` 并跳过未完成 shard；已清 marker 后用 `logs/targeted_b6_resume.sh` 重跑剩余任务。
+4. **代码入库状态：** `scripts/scope_round5/`、`training/scope_round5/`、`training/scope/operation_objectives.py` 等在记录时仍为 untracked/modified，复现需保留本地工作树或另行 commit。
+
+---
+
+### 代码与脚本（本轮）
+
+```
+training/scope/operation_objectives.py
+training/scope_round5/          # B1–B4/B6 helpers + build_round5_report
+scripts/scope_round5/           # pipeline_supervisor / run_b3–b6 / resume
+tests/scope/test_operation_objectives.py
+outputs/scope_round5/           # 全部 barrier 产物（只读历史 R1–R4）
+```
+
+---
+---
+
+## Round 6 — Closed-loop Calibration & On-Policy Shift Audit（07-31 ~ 08-01）
+
+**Git：** `scope/dup-round6-closedloop-calibration` @ `61f1348c9ac32c4b89dc0db4f1ba087a3c239539`
+
+**文档：** `0731-todo1.md`
+**产物根：** `outputs/scope_round6/`
+**报告：** `outputs/scope_round6/ROUND6_REPORT.md`
+**记录更新时间：** 2026-08-01 12:22 CST
+
+### Gate 结论
+
+| Flag | 值 |
+| --- | --- |
+| `H_RUNTIME` | **False** |
+| `H_CALIB` | **False** |
+| `H_SHIFT` | **False** |
+| `H_FEEDBACK` | **False** |
+| adapter↔merged parity | 1.0 |
+| HF↔runtime parity | 1.0 |
+| `ROUND6_CLOSED_LOOP_POSITIVE` | **false** |
+| `RECOMMEND_830` | **false** |
+
+### Setting（冻结）
+
+| 项 | 值 |
+| --- | --- |
+| Base model | `Qwen2.5-7B-Instruct` |
+| O7 checkpoint | `outputs/scope_round5/merged/o7_r64_seed{42,43,44}` |
+| Loss / LoRA | `discriminative_ce` · r=64 · α=128（与 Round5 O7 相同） |
+| Runtime | \(H_{\min,\text{v2}}\) · `modules_minimal_v2.yaml` |
+| 100q manifest | `round2_audit_100q/query_manifest.json` |
+| Closed-loop | max_turns=35 · max_tokens=2048 · temperature=1.0 · BM25 |
+| Calibration slice | shard0（25q）closed-loop states |
+| Prospective 25q | shard1（C-CALIB） |
+| Holdout 50q | shard2+shard3（Phase D） |
+| τ_seed42 / 43 / 44 | -5.177083333333334 / -5.166666666666666 / -3.90625 |
+| τ_shared | -4.75 |
+| Decision rule | SKIP iff margin ≥ τ（`score_skip - score_keep`） |
+
+### Phase B — Cross-score 核心结论
+
+同一 checkpoint × 多 state source 离线重打分（merged HF scorer）：
+
+- valid522 与全部 B6 admission states 上 **AUROC=1.0**（三 seeds 一致）
+- 同一 states 上 **BalancedAcc@threshold=0 亦为 1.0**（offline 排序完美）
+- **H_RUNTIME / H_SHIFT / H_CALIB / H_FEEDBACK 均为 false**
+- 推论：Round5 闭环失败**不是** runtime parity 或 on-policy AUROC 崩塌；问题在 **closed-loop 决策边界 / 行为层**（校准后仍高 FSR）
+
+产物：`phase_b/CROSS_SCORE_MATRIX.csv` · `ROOT_CAUSE_GATE.json` · `STATE_SHIFT_REPORT.md`
+
+### Phase C-CALIB — shard1 25q（校准后前瞻）
+
+| Run | DupRejectRecall | FSR | BalancedAcc | mean_reward |
+| --- | ---: | ---: | ---: | ---: |
+| per_seed/seed42 | 1.000 | 1.000 | 0.500 | 0.354 |
+| per_seed/seed43 | 1.000 | 1.000 | 0.500 | 0.295 |
+| per_seed/seed44 | 1.000 | 0.994 | 0.503 | 0.265 |
+| shared/seed42 | 1.000 | 0.970 | 0.515 | 0.147 |
+| shared/seed43 | 1.000 | 1.000 | 0.500 | 0.295 |
+| shared/seed44 | 1.000 | 1.000 | 0.500 | 0.298 |
+| threshold_zero/seed43 | 0.000 | 0.000 | 0.500 | 0.227 |
+
+**解读：** per-seed τ 在 shard0 上可达 FSR≤5%；但 shard1 闭环中 O7 仍 **几乎全部 pred SKIP**（DupRejectRecall≈1 但 FSR≈1），校准 **未** 转化为可接受闭环行为。
+
+### Phase D — Holdout 50q（shard2+shard3）
+
+| Run | n_ep | DupRejectRecall | FSR | BalancedAcc | SKIP prior | reward | recall |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| base/shard2 | 25 | 0.000 | 0.000 | 0.500 | 0.000 | 0.160 | 0.026 |
+| base/shard3 | 25 | 0.000 | 0.000 | 0.500 | 0.000 | 0.041 | 0.018 |
+| seed42/shard2 | 25 | 1.000 | 1.000 | 0.500 | 1.000 | 0.259 | 0.074 |
+| seed42/shard3 | 25 | 1.000 | 1.000 | 0.500 | 1.000 | 0.133 | 0.062 |
+| seed43/shard2 | 25 | 1.000 | 1.000 | 0.500 | 1.000 | 0.356 | 0.082 |
+| seed43/shard3 | 25 | 1.000 | 1.000 | 0.500 | 1.000 | 0.157 | 0.041 |
+| seed44/shard2 | 25 | 1.000 | 0.996 | 0.502 | 0.996 | 0.264 | 0.064 |
+| seed44/shard3 | 25 | 1.000 | 1.000 | 0.500 | 1.000 | 0.127 | 0.012 |
+
+**解读：**
+
+1. **Base：** DupRejectRecall=0（从不 SKIP），FSR=0；与 Round5 一致。
+2. **O7 + per-seed τ：** 校准后闭环仍 **SKIP 先验≈1.0**，FSR≈0.97–1.0；DupRejectRecall 高但来自 **误伤 unique**，非成功 duplicate internalization。
+3. **任务保持失败：** mean_reward 系统性低于 Base（~0.04–0.26 vs Base ~0.16/0.04 on holdout shards）。
+4. **Round6 正信号 gate 未过：** 要求 DupRejectRecall≥0.10 且 FSR≤0.05 且 BalancedAcc>0.50 — O7 满足前者但 **FSR 严重超标**。
+
+### Round 6 最终判定
+
+```text
+ROUND6_CLOSED_LOOP_POSITIVE = false
+RECOMMEND_830 = false
+C-SHIFT (Dagg retrain) = 未触发（H_SHIFT=false）
+```
+
+### 工程备注
+
+1. Phase D 首次运行 `get_tau()` JSON key bug（int vs str）导致 O7 holdout 未启动；已修复并用 `resume_holdout_o7.sh` 补跑。
+2. `seed43/shard2` 曾在 query 335 卡住 9/25；kill 后 `--resume` 续跑剩余 16 题。
+3. 所有闭环指标从 `episodes.jsonl` + `dup_admission_events.jsonl` 重聚合。
+
+### 代码与脚本
+
+```text
+training/scope/decision_config.py
+training/scope_round6/
+scripts/scope_round6/
+tests/scope/test_round6_scorer.py
+outputs/scope_round6/
+```
+
+### 下一步
+
+```text
+RECOMMEND_830=false → 禁止扩 830 / E1 / weighting / multi-capability
+P0 转向：为何 offline margin 完美 + τ 校准后 closed-loop 仍全 SKIP？
+  → runtime vLLM scorer vs HF 在 live admission 路径是否仍一致
+  → τ 在 offline replay margin 上有效但对 live score scale 无效
+  → 考虑 on-policy Dagg 前需先修 live decision 路径或 score telemetry 对齐
+```

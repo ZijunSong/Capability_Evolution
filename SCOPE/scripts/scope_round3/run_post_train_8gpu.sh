@@ -59,8 +59,8 @@ run_cl 6 round3_endorse_only_op 8926 &
 run_cl 7 round3_op_no_balance 8927 &
 wait
 
-echo "=== Wave4 (4 checkpoints, re-run) ==="
-PHASE=wave4 bash "${REPO_ROOT}/scripts/scope_round3/run_all_8gpu.sh" || true
+echo "=== Wave4 comparison (shard0+1 merge only) ==="
+python training/scope_round3/wave4_compare.py --root "${ROOT}/wave4_diagnostic"
 
 echo "=== Final report ==="
 python training/scope_round3/final_report.py --root "${ROOT}"
