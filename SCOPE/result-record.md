@@ -1,11 +1,49 @@
-## 当前结论（2026-08-01）
+## 当前结论（2026-08-04）
 
-- **已成立：** same-state shadow / info-safe · measurement+scorer · Round5 O7 offline 双侧分离 · **Round6 offline cross-score AUROC=1.0（valid522 + 全部 B6 states）** · runtime parity=1.0（adapter/merged/HF）。
-- **尚未成立：** Dup **closed-loop internalization** positive signal · 校准后仍 **FSR≈1.0** · reward 低于 Base · **`RECOMMEND_830=false`**。
-- **Round 6 判定：** `H_RUNTIME/H_SHIFT/H_CALIB/H_FEEDBACK` 均为 false；`ROUND6_CLOSED_LOOP_POSITIVE=false`。
-- **关键发现：** offline 排序与 AUROC 完美，但 per-seed margin 阈值校准 **不能** 将闭环行为拉到 FSR≤5%；O7 在 holdout 上表现为 **几乎全部 SKIP**（先验≈1），非可控 duplicate rejection。
-- **当前 P0：** live closed-loop decision 路径 / score scale 与 offline replay 差异；禁止扩 830、E1、weighting、multi-capability。
-- **主线：** 修 live admission 决策一致性 → 再评估是否需 on-policy Dagg。
+- **已成立：** same-state shadow / measurement+scorer · Round5 O7 offline · Round6/7 live contract 修复 · **Round7 τ=0 100q positive** · **`RECOMMEND_830=true`** · **Round 8 Phase 1 Gate 1A/1B/1C 全部通过**。
+- **Round 8 Phase 2（✅ 完成）：** 8 variant rollback SDI 训练 + merge；主方法 O7×3 valid operation acc **0.75–0.76**；hint distill **0.81**。
+- **Round 8 Offline Gate：** `offline_gate_pass=false`（checkpoint acc ~8.5% 未达 0.70）；`phase3_eligible=true`（operation acc >0.70）→ Phase 3 按 eligibility 启动。
+- **Round 8 Phase 3（✅ 完成）：** 8 variant × 100q closed-loop **800/800 episode**；`hard_capability_positive_signal=false` · `main_seeds_pass=false`。
+- **Round 8 总判定：** Dup retention 成功 · rollback **离线 operation 可学** · **闭环硬控制能力未成立**（offline→closed-loop 严重断裂）。
+- **Round 6 判定（历史）：** `H_RUNTIME/H_SHIFT/H_CALIB/H_FEEDBACK` 均为 false；`ROUND6_CLOSED_LOOP_POSITIVE=false`。
+- **Round 7 判定：** `ROUND7_TAU0_CLOSED_LOOP_POSITIVE=true`；`RECOMMEND_830=true`。
+- **当前 P0：** 诊断 rollback offline/closed-loop 断裂根因；**禁止**在未通过 Hard-capability Gate 前扩 multi-capability / weighting / DAgger。
+
+---
+
+## Qwen rollout 八组实验汇总（2026-08-01）
+
+**范围：** SCOPE 仓库下 Qwen3-1.7B / Qwen3-30B，在 HotpotQA 与 BrowseComp+ 上分别运行 bare rollout 与 full harness rollout，共 8 组。当前结论是 **7/8 已完成，唯一未完成项为 Qwen3-30B BrowseComp+ harness rollout**。
+
+### 统一 setting
+
+| 维度 | HotpotQA | BrowseComp+ |
+| --- | --- | --- |
+| 数据 | `external/hotpotqa_subset_queries.json` 或 `HotpotQA_raw_data_20260730.tar.gz::HotpotQA/hotpot_dev_fullwiki_v1.json` | `external/BrowseComp-Plus/` full 830 queries，BM25 index=`external/BrowseComp-Plus/indexes/bm25` |
+| bare rollout | vLLM backend，temperature=1.0，max_new_tokens=2048，max_model_len=8192 | vLLM backend，temperature=1.0，max_new_tokens=2048，max_model_len=8192，split=`all` |
+| harness rollout | `hotpotqa_local_context` retrieval，max_turns=35，max_tokens=2048，temperature=1.0 | `modules_full_v2.yaml`，BM25 retrieval，max_turns=35，max_tokens=2048，temperature=1.0，reranker=`none` |
+| Qwen3-1.7B | `/mnt/songzijun/models/Qwen3-1.7B` | `/mnt/songzijun/models/Qwen3-1.7B` |
+| Qwen3-30B | `/mnt/songzijun/models/Qwen3-30B-A3B-Instruct-2507` | `/mnt/songzijun/models/Qwen3-30B-A3B-Instruct-2507` |
+
+### 完成状态与结果
+
+| 模型 | 数据集 | 模式 | 状态 | 输出目录 | records / target | errors | recall | trajectory_recall | final_answer_recall | reward | 备注 |
+| --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| Qwen3-1.7B | HotpotQA | bare | ✅ completed | `outputs/bare_rollout_hotpotqa_qwen3_1p7b_4gpu/` | 7405 / 7405 | 0 | n/a | n/a | n/a | n/a | 7405 unique query_ids，bad_json=0 |
+| Qwen3-1.7B | HotpotQA | harness | ✅ completed | `outputs/harness_rollout_hotpotqa_qwen3_1p7b_4gpu/` | 14580 / 14580 | 43 | 0.050274 | 0.064952 | 0.050274 | 0.181716 | 7405 unique query_ids，parallel=64，bad_json=0 |
+| Qwen3-1.7B | BrowseComp+ | bare | ✅ completed | `outputs/bare_rollout_browsecomp_qwen3_1_7b_4gpu/` | 830 / 830 | 0 | n/a | n/a | n/a | n/a | split=`all`，bad_json=0 |
+| Qwen3-1.7B | BrowseComp+ | harness | ✅ completed | `outputs/harness_rollout_browsecomp_qwen3_1_7b_8gpu_parallel32/` | 830 / 830 | 0 | 0.028161 | 0.202500 | 0.038333 | 0.160796 | manifest parallel=64，max_model_len=32768，bad_json=0 |
+| Qwen3-30B | HotpotQA | bare | ✅ completed | `outputs/bare_rollout_hotpotqa_qwen3_30b_8gpu_20260730/` | 7405 / 7405 | 0 | n/a | n/a | n/a | n/a | bad_json=0 |
+| Qwen3-30B | HotpotQA | harness | ✅ completed | `outputs/harness_rollout_hotpotqa_qwen3_30b_8gpu_parallel32_20260731_151339/` | 7405 / 7405 | 0 | 0.063336 | 0.070763 | 0.063336 | 0.212855 | parallel=64，bad_json=0 |
+| Qwen3-30B | BrowseComp+ | bare | ✅ completed | `outputs/bare_rollout_browsecomp_qwen3_30b_8gpu_20260730/` | 830 / 830 | 0 | n/a | n/a | n/a | n/a | split=`all`，bad_json=0 |
+| Qwen3-30B | BrowseComp+ | harness | ❌ incomplete | `outputs/harness_rollout_browsecomp_qwen3_30b_8gpu_parallel64_20260801_125717/` | 0 / 830 | n/a | n/a | n/a | n/a | n/a | no `harness_rollouts.jsonl` / no manifest；pid not alive |
+
+### 当前结论
+
+1. HotpotQA 上，Qwen3-30B harness 的 recall / reward 高于 Qwen3-1.7B harness：recall 0.063336 vs 0.050274，reward 0.212855 vs 0.181716。
+2. BrowseComp+ 上，Qwen3-1.7B harness 已完整跑完 830 题，recall=0.028161，trajectory_recall=0.202500；Qwen3-30B 只有 bare 完整结果，harness 尚无可用结果文件，不能做完整横向比较。
+3. bare rollout 均只记录生成轨迹，不含 recall/reward 类指标；可用于后续训练/审计数据，不应和 harness metric 直接比较。
+4. Qwen3-30B BrowseComp+ harness 的最近尝试已完成 vLLM ready、BM25 preflight 和 830 pending episodes 初始化，但没有写出 `harness_rollouts.jsonl` / manifest，且 `vllm_server.pid=16495` 已不存活；判定为未完成而非完成失败可评分。
 
 ---
 
@@ -49,6 +87,8 @@ main @ 3e95fad（origin/main）
 | Round 3 Bilateral        | Round 3         | `scope/dup-round3-bilateral`              | **`ad072b9`**    | ✅ `origin/scope/dup-round3-bilateral` | `outputs/scope_round3/` · `artifacts/datasets/dup_sdi_round3/` |
 | Round 4 Objective Repair | Round 4         | `scope/dup-round4-objective-repair`       | `6b4e88b` / `e3d5afa` | ❌ 未确认 push                    | `outputs/scope_round4/` |
 | Round 5 Learnability     | Round 5         | `scope/dup-round5-learnability`           | `6b4e88b` + 本地 | ❌ 未 push                             | `outputs/scope_round5/` |
+| Round 7 Live Decision Contract | Round 7         | `scope/dup-round7-live-decision-contract` | `a3a7c1ee`       | ❌ 未确认 push                     | `outputs/scope_round7/`                                      |
+| Round 8 AgentCore + Rollback   | Round 8         | `scope/round8-agentcore-hardcontrol`      | `a3a7c1ee`       | ❌ 未 push                         | `outputs/scope_round8/` · `artifacts/datasets/scope_round8/` |
 
 ### 复现注意事项
 
@@ -1529,4 +1569,562 @@ P0 转向：为何 offline margin 完美 + τ 校准后 closed-loop 仍全 SKIP�
   → runtime vLLM scorer vs HF 在 live admission 路径是否仍一致
   → τ 在 offline replay margin 上有效但对 live score scale 无效
   → 考虑 on-policy Dagg 前需先修 live decision 路径或 score telemetry 对齐
+```
+
+---
+
+## Round 7 — Live Decision Contract Audit（08-01 ~ 08-02）
+
+**Git：** `scope/dup-round7-live-decision-contract` @ `a3a7c1ee0019031edd0def187600797db90d8002`（自 Round 6 `61f1348` 分叉）
+
+**文档：** `0801-todo1.md`  
+**产物根：** `outputs/scope_round7/`  
+**报告：** `outputs/scope_round7/ROUND7_REPORT.md` · `HOLDOUT_TAU0_SUMMARY.md` · `ROOT_CAUSE_GATE.json`  
+**记录更新时间：** 2026-08-02 12:21 CST
+
+**目标：** 证明并修复 Round 5/6 矛盾——offline AUROC=1.0、adapter parity=1.0，但 live closed-loop 行为与 replay 不一致（Round6 负 τ 下 FSR≈1.0；τ=0 下 Base 全 KEEP）。本轮对 **同一 live admission event** 审计 DecisionState、prompt、score、margin、threshold、operation、ActionRealizer 是否与 HF/vLLM replay 完全一致。
+
+---
+
+### Gate 结论
+
+| Flag | 值 |
+| --- | --- |
+| `ROUND7_TRACE_VALID` (Gate A) | **true** |
+| `ROUND7_LIVE_HF_PARITY` (Gate B) | **true** |
+| `ROUND7_LIVE_VLLM_PARITY` (Gate B) | **true** |
+| `ROUND7_THRESHOLD_INVARIANT_VALID` (Gate C) | **true** |
+| `ROUND7_ACTION_REALIZER_VALID` | **true** |
+| `ROUND7_TAU0_CLOSED_LOOP_POSITIVE` (Gate D) | **true** |
+| `ROUND7_DAGGER_NEEDED` | **false** |
+| `RECOMMEND_830` | **true** |
+| 根因分类 | **R7-H6**（contract 全对；threshold=0 行为可解释，非 calibration overfit） |
+
+Gate B 以 **operation parity=1.0** 为主判据（vLLM score 数值 parity ~95%，不影响 operation 一致）。
+
+---
+
+### Setting（冻结）
+
+| 项 | 值 |
+| --- | --- |
+| Base model | `Qwen2.5-7B-Instruct` |
+| O7 checkpoint | `outputs/scope_round5/merged/o7_r64_seed{42,43,44}` |
+| Loss / LoRA | `discriminative_ce` · r=64 · α=128（与 Round5 O7 相同） |
+| Runtime | \(H_{\min,\text{v2}}\) · `modules_minimal_v2.yaml` |
+| 100q manifest | `round2_audit_100q/query_manifest.json` |
+| Closed-loop | max_turns=35 · max_tokens=2048 · temperature=1.0 · BM25 |
+| **Decision threshold** | **τ=0**（`SKIP iff margin ≥ 0`；**不使用** Round6 per-seed 负 τ） |
+| Contract audit shard | shard1（25q）→ live trace + HF/vLLM replay parity |
+| Holdout | shard2+shard3（50q）· 仅 Gate A–C 通过后运行 |
+| GPU | 8×H20 144G · TP=1 · 最多 4 路 harness 并发 · 错峰 75s |
+| Parallel | shard1 rerun `PARALLEL=64`（修复后）；seed43 重跑曾用 `PARALLEL=8` |
+| Trace | `live_dup_decision_trace.jsonl` + `prompt_sidecar` + `decide_dup_operation()` 统一路径 |
+
+**禁止：** 830q retention · E0/E1 · weighting · multi-capability · DAgger · 新 objective tournament（本轮未做）。
+
+---
+
+### 基础设施与 Parity 修复
+
+**新增核心代码：**
+
+```text
+training/scope/decide_dup_operation.py          # 统一决策函数
+training/scope/live_dup_decision_trace.py       # event-level trace
+training/scope_round7/                          # replay / compare / gate / report
+tests/scope/test_round7_contract.py             # 8 项 contract 测试
+scripts/scope_round7/                           # 8-GPU queue / monitor / finish_seed43
+```
+
+**第一轮实验（parity 修复前，`contract_trace/live/`）：** 4 变体 shard1 live 完成，但 **Contract Gate 全失败**（live scorer 缺 `candidate_id`、共享 runtime 致 admission 重复、HF replay 双重 format、vLLM logprob 用 word count 等）。
+
+**修复后重跑（`contract_trace/live_rerun/`）：**
+
+| 修复项 | 说明 |
+| --- | --- |
+| `candidate_id` 传入 scorer | live prompt 与 replay 对齐 |
+| `fork_for_query()` | `PARALLEL=64` 下隔离 telemetry，消除 admission 重复 |
+| `score_rendered_prompt()` | HF replay 避免双重 `format_operation_prompt` |
+| tokenizer token 边界 | vLLM logprob 对齐 |
+| Gate B 主判据 | operation parity（非 score 数值 parity @1e-5） |
+
+---
+
+### Phase A — Shard1 Contract Audit（25q × 4 变体，`live_rerun`）
+
+| Variant | trace | admission | Gate A | Gate B | vLLM op parity |
+| --- | ---: | ---: | --- | --- | ---: |
+| base | 341 | 341 | pass | pass | 1.000 |
+| seed42 | 309 | 309 | pass | pass | 1.000 |
+| seed43 | 308 | 308 | pass | pass | 1.000 |
+| seed44 | 366 | 366 | pass | pass | 1.000 |
+
+**Sentinel（Gate C）：** `+inf`→全 KEEP · `-inf`→全 SKIP · `τ=0`→argmax — 全部 pass。
+
+**独立 archived-state audit（GPU4–6）：** 对第一轮 `live/` trace 做 HF/vLLM 独立 replay（`comparisons/*_indep`），辅助定位 parity 根因。
+
+产物：`contract_trace/live_rerun/` · `contract_trace/comparisons/*_rerun/` · `LIVE_REPLAY_PARITY.csv` · `preflight/LIVE_DECISION_CALL_GRAPH.md`
+
+---
+
+### Phase B — Holdout τ=0（50q × 4 变体，`holdout_tau0_rerun`）
+
+Gate D 阈值：DupRejectRecall≥0.10 · FSR≤0.05 · BalancedAcc>0.50 · 三 seeds 方向一致。
+
+#### Pooled 50q（shard2+shard3）
+
+| Variant | DupRejectRecall | FSR | BalancedAcc | SKIP prior | mean_reward | mean_recall | Gate D |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| base | 0.000 | 0.000 | 0.500 | 0.000 | 0.121 | 0.011 | baseline |
+| seed42 | 1.000 | 0.000 | 1.000 | 0.202 | 0.175 | 0.026 | **PASS** |
+| seed43 | 1.000 | 0.000 | 1.000 | 0.189 | 0.078 | 0.015 | **PASS** |
+| seed44 | 1.000 | 0.002 | 0.999 | 0.202 | 0.104 | 0.033 | **PASS** |
+
+#### Per-shard
+
+| Run | n_ep | DupRejectRecall | FSR | BalancedAcc | reward | recall |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| base/shard2 | 25 | 0.000 | 0.000 | 0.500 | 0.219 | 0.023 |
+| base/shard3 | 25 | 0.000 | 0.000 | 0.500 | 0.023 | 0.000 |
+| seed42/shard2 | 25 | 1.000 | 0.000 | 1.000 | 0.221 | 0.048 |
+| seed42/shard3 | 25 | 1.000 | 0.000 | 1.000 | 0.129 | 0.004 |
+| seed43/shard2 | 25 | 1.000 | 0.000 | 1.000 | 0.112 | 0.019 |
+| seed43/shard3 | 25 | 1.000 | 0.000 | 1.000 | 0.045 | 0.010 |
+| seed44/shard2 | 25 | 1.000 | 0.004 | 0.998 | 0.164 | 0.041 |
+| seed44/shard3 | 25 | 1.000 | 0.000 | 1.000 | 0.045 | 0.024 |
+
+#### Paired vs Base（bootstrap 95% CI，n=50）
+
+| Seed | Δrecall | 95% CI | Δreward | 95% CI | W/L/T |
+| --- | ---: | --- | ---: | --- | ---: |
+| 42 | +0.0147 | [-0.0040, +0.0363] | +0.0547 | [-0.0909, +0.1949] | 6/2/42 |
+| 43 | +0.0034 | [-0.0120, +0.0189] | -0.0424 | [-0.1522, +0.0316] | 3/2/45 |
+| 44 | +0.0216 | [-0.0015, +0.0496] | -0.0162 | [-0.1291, +0.0841] | 6/2/42 |
+
+**解读（对比 Round 6）：**
+
+1. **Base @ τ=0：** 仍全 KEEP（DupRejectRecall=0，FSR=0），与 Round5/6 一致。
+2. **O7 @ τ=0：** 三 seeds **双侧行为恢复**——DupRejectRecall≈1.0、FSR≈0、BalancedAcc≈1.0；SKIP prior≈0.19–0.20（**非** Round6 的 ≈1.0 全 SKIP）。
+3. **与 Round6 负 τ holdout 对比：** Round6 O7 FSR≈0.97–1.0（误伤 unique）；Round7 contract 修复 + τ=0 后 FSR≈0，说明此前闭环失败主因是 **live decision contract drift**，而非 offline 排序能力不足。
+4. **任务保持：** recall delta 95% CI 均包含 0（≤1pp 要求满足）；reward delta CI 较宽但未出现三 seeds 一致显著下降。
+5. **Gate D 通过：** 三 seeds 方向一致且均满足 DupRejectRecall/FSR/BalancedAcc 阈值。
+
+---
+
+### Round 7 最终判定
+
+```text
+ROUND7_TRACE_VALID = true
+ROUND7_LIVE_HF_PARITY = true
+ROUND7_LIVE_VLLM_PARITY = true
+ROUND7_THRESHOLD_INVARIANT_VALID = true
+ROUND7_TAU0_CLOSED_LOOP_POSITIVE = true
+ROUND7_DAGGER_NEEDED = false
+RECOMMEND_830 = true
+ROOT_CAUSE_CLASS = R7-H6
+NEXT_ACTION = 扩 830 retention 验证（trained-vs-Base，不代表直接启动 multi-capability）
+```
+
+**根因结论（R7-H6）：** 排除 R7-H1~H5（state/prompt/score/threshold/realizer drift）；offline 与 live replay 在 contract 对齐后一致；**τ=0 为可解释自然决策边界**，无需 per-seed 负 τ 或 DAgger。
+
+---
+
+### 工程备注
+
+1. **第一轮 Gate 全失败：** parity 修复前 `contract_trace/live/` 结果仅作 archived audit 参考；**正式结论以 `live_rerun/` 为准**。
+2. **seed43 卡住：** GPU2 vLLM OOM + `--resume` 导致 trace 重复（442 events / 11 duplicate event_id）；09:05 起 `finish_seed43.sh` 干净重跑（`--no-resume`）后 Gate A/B 通过。
+3. **monitor 脚本 bug：** `pgrep` 误匹配 nohup 父进程，seed43 replay 延迟 8h；已修复为 `python.*hmin_v2_dup_rollout.py` 精确匹配。
+4. **GPU2 僵尸 vLLM：** Round6 残留进程曾占用 GPU；kill 后恢复。
+5. **报告脚本：** 初版 `build_round7_report.py` 读 `live/` 导致报告失真；已改为读 `live_rerun/` + `holdout_tau0_rerun/`。
+
+---
+
+### 代码与脚本
+
+```text
+training/scope/decide_dup_operation.py
+training/scope/live_dup_decision_trace.py
+training/scope_round7/build_round7_report.py
+training/scope_round7/compare_live_replay.py
+training/scope_round7/contract_gate.py
+training/scope_round7/replay_live_trace_{hf,vllm}.py
+scripts/scope_round7/launch_all_8gpu.sh
+scripts/scope_round7/finish_seed43.sh
+scripts/scope_round7/monitor_rerun.sh
+tests/scope/test_round7_contract.py
+outputs/scope_round7/
+```
+
+---
+
+### 下一步
+
+```text
+RECOMMEND_830=true → 允许下一轮 BrowseComp+ 830q SCOPE retention（trained O7 vs Base）
+禁止：在未完成 830 retention 前启动 multi-capability / weighting / DAgger
+主方法：threshold=0（不再使用 Round6 per-seed 负 τ 作为主决策边界）
+可选：GPU7 续跑 Qwen3-30B BrowseComp+ harness 830（与 P0 audit 不争用 I/O）
+```
+
+---
+
+## Round 8 — AgentCore 基线重构 + Rollback 硬控制能力（08-02 ~ 08-04）
+
+**Git：** `scope/round8-agentcore-hardcontrol` @ `a3a7c1ee0019031edd0def187600797db90d8002`（自 Round 7 同 commit 分叉）
+
+**文档：** `0802-todo1.md`  
+**产物根：** `outputs/scope_round8/` · `artifacts/datasets/scope_round8/`  
+**Gate 文件：** `HARD_CAPABILITY_GATE.json` · `OFFLINE_GATE.json` · `HARD_CAPABILITY_GATE_PHASE3.json`  
+**记录更新时间：** 2026-08-04 10:34 CST
+
+**目标：** （1）完成 Round 7 批准的 BrowseComp+ **830q matched Dup retention**；（2）将 bare vs harness rollout 重构为共享 **SearchAgentCore** 的严格对照；（3）新增并验证 **rollback_decision** 硬状态控制能力（typed `CONTINUE` / `REPLAN` / `ROLLBACK_TO`），数据收集 + SDI 训练 + closed-loop 评测。
+
+**禁止（Hard-capability Gate 通过前）：** capability weighting · multi-capability 联合训练 · Recovery 全模块 · RL · DAgger · E0 无差别扩 830。
+
+---
+
+### Gate 结论（Phase 1 Barrier）
+
+| Gate | 判据 | 结果 | 备注 |
+| --- | --- | --- | --- |
+| **1A** Dup 830 retention | Base + O7×3 各 830/830 · DupRejectRecall / FSR / BalancedAcc | **PASS** | 三 seeds DupRejectRecall=1.0 · FSR≈0 · BalancedAcc≈1.0 |
+| **1B** AgentCore config diff | 仅允许 evidence_state / context_budget / verification / retrieval 模块差异 | **PASS** | runtime budget / tools / prompt 无漂移 |
+| **1C** Rollback 数据集 | train≥1500 · valid≥400 · rollback 25–60% · healthy≥25% | **PASS** | 1980 events · 60/40 · train=1578 · valid=402 |
+| `all_gates_pass` | 1A+1B+1C | **true** | 2026-08-03 修复 Gate 检查与数据集平衡后通过 |
+
+**1A  pooled Dup telemetry（τ=0，来自 `HARD_CAPABILITY_GATE.json`）：**
+
+| Variant | DupRejectRecall | FSR | BalancedAcc | SKIP prior |
+| --- | ---: | ---: | ---: | ---: |
+| base | 0.000 | 0.000 | 0.500 | 0.000 |
+| seed42 | 1.000 | 0.000126 | 0.9999 | 0.209 |
+| seed43 | 1.000 | 0.00311 | 0.9984 | 0.208 |
+| seed44 | 1.000 | 0.000465 | 0.9998 | 0.195 |
+
+**1B config diff：** `agent_core.yaml` vs `agent_core_full_harness.yaml` — 变更模块 `context_budget` · `evidence_state` · `retrieval`（rerank）· `verification`；`changed_budget_fields=[]` · `gate_1b_pass=true`。
+
+**1C 数据集（`artifacts/datasets/scope_round8/rollback_sdi/`）：**
+
+| 指标 | 值 |
+| --- | ---: |
+| raw events（去重前） | 3580 |
+| balanced total | 1980 |
+| train / valid | 1578 / 402 |
+| rollback / healthy | 60% / 40% |
+| visibility / schema / hash violations | 0 |
+
+---
+
+### Phase 1 — Setting（冻结）
+
+| 项 | 值 |
+| --- | --- |
+| Base model | `Qwen2.5-7B-Instruct` |
+| Dup O7 checkpoint | `outputs/scope_round5/merged/o7_r64_seed{42,43,44}` |
+| Dup runtime | \(H_{\min,\text{v2}}\) · `modules_minimal_v2.yaml` |
+| Dup threshold | **τ=0**（与 Round 7 一致） |
+| Retriever | BM25 · BrowseComp+ 830q |
+| Closed-loop | max_turns=35 · max_tokens=2048 · temperature=1.0 |
+| 830 manifest | `artifacts/datasets/scope_round8/query_manifest_830.json` |
+| 100q diagnostic manifest | `artifacts/datasets/round2_audit_100q/query_manifest.json` |
+| GPU | 8×H20 · TP=1 · Phase 1 启动 2026-08-02 14:50 · 完成 ~22:20（~7.5h） |
+| Preflight | `pytest tests/scope/` 142 项通过 |
+
+**GPU 分配（Phase 1）：**
+
+| GPU | 任务 A | 任务 B |
+| --- | --- | --- |
+| GPU0–3 | shard0–3：Base → O7-seed42 → O7-seed43 → O7-seed44（830q retention） | — |
+| GPU4 | Qwen2.5 AgentCore 100q（shard0，25q） | natural rollback collection shard0 |
+| GPU5 | Qwen2.5 AgentCore+FullHarness 100q（shard1，25q） | natural rollback collection shard1 |
+| GPU6 | Qwen3-1.7B AgentCore → FullHarness（shard2，25q） | injected rollback collection shard2 |
+| GPU7 | Qwen3-30B AgentCore → FullHarness（shard3，25q） | injected rollback collection shard3 |
+
+**产物目录：**
+
+```text
+outputs/scope_round8/dup_retention_830/{base,seed42,seed43,seed44}/shard{0..3}/
+outputs/scope_round8/agent_core_diagnostic/{agent_core,full_harness,qwen3_*}/shard*/
+outputs/scope_round8/rollback_collection/{natural,injected}/shard*/
+artifacts/datasets/scope_round8/rollback_sdi/{train,valid}.jsonl
+```
+
+---
+
+### Phase 1 — 结果
+
+#### 6.1 Dup 830q matched retention
+
+| Variant | episodes 完成 | DupRejectRecall | FSR | BalancedAcc | SKIP prior |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| base | **830/830** | 0.000 | 0.000 | 0.500 | 0.000 |
+| seed42 | **830/830** | 1.000 | 0.000126 | 0.9999 | 0.209 |
+| seed43 | **830/830** | 1.000 | 0.00311 | 0.9984 | 0.208 |
+| seed44 | **830/830** | 1.000 | 0.000465 | 0.9998 | 0.195 |
+
+**结论：** 830q 规模下 O7 三 seeds **双侧 Dup 行为与 Round 7 holdout 一致**（DupRejectRecall≈1 · FSR≈0）；Base 仍全 KEEP。Retention 实验 **达标**，支持 Round 7 `RECOMMEND_830=true` 在更大样本上的延续。
+
+#### 6.2 AgentCore 100q diagnostic（6 组 × 25q = 150 episodes）
+
+| Config | Model | shard | episodes | mean_recall |
+| --- | --- | --- | ---: | ---: |
+| AgentCore | Qwen2.5-7B | shard0 | 25 | 0.0317 |
+| AgentCore+FullHarness | Qwen2.5-7B | shard1 | 25 | 0.0600 |
+| AgentCore | Qwen3-1.7B | shard2 | 25 | 0.0800 |
+| AgentCore+FullHarness | Qwen3-1.7B | shard2 | 25 | 0.0310 |
+| AgentCore | Qwen3-30B | shard3 | 25 | 0.0000 |
+| AgentCore+FullHarness | Qwen3-30B | shard3 | 25 | 0.0293 |
+
+**对照：** FullHarness vs AgentCore 在 Qwen2.5 上 recall 0.060 vs 0.032（+~2.8pp）；Qwen3-1.7B 上 AgentCore 反而略高（0.080 vs 0.031）；Qwen3-30B 两组均低（~0–0.03）。config diff 符合 Gate 1B（仅四模块开关差异）。
+
+#### 6.3 Rollback 状态收集
+
+| 模式 | shard | events |
+| --- | --- | ---: |
+| natural | shard0–3 | 500 + 500 + 479 + 482 = **1961** |
+| injected | shard0–3 | 489 + 469 + 451 + 210 = **1669** |
+| **raw 合计** | | **3580** |
+
+经 `build_rollback_sdi_dataset.py` 去重 + 平衡（ROLLBACK 下采样至 60% · healthy upsample · query-level split）→ **1980** 条 SDI 训练集。
+
+**工程备注：** injected 收集原始 rollback 比例 ~80%（injected 逻辑在 `len(checkpoints)≥2` 时倾向注入 ROLLBACK）；Gate 1C 通过数据集后处理修复，非重跑收集。
+
+---
+
+### Phase 2 — Setting（冻结 / 实际执行）
+
+**启动条件：** Gate 1A/1B/1C 全部通过（2026-08-03 07:34 正式启动；OOM 修复后重启；**12:26 全部训练 + merge 完成**）。
+
+| 项 | 规格（0802-todo1） | 实际执行 |
+| --- | --- | --- |
+| Base model | `Qwen2.5-7B-Instruct` | 同左 |
+| Loss | discriminative CE over typed operations（O7） | 同左 |
+| LoRA | r=64 · α=128 | 同左 |
+| lr / epochs | 2e-5 · 3 | 同左 |
+| max_length | 4096 | 4096 + **trainer 内 token 截断**（`max_length-96`） |
+| batch / accum | 未明确 | **batch_size=1 · grad_accum=16**（OOM 修复后） |
+| 优化 | — | gradient checkpointing · 逐样本梯度累积 |
+| 数据 | `rollback_sdi/train.jsonl` · `valid.jsonl` | 同左 |
+| query-level split | 是 | train 1578 · valid 402 |
+
+**GPU 分配：**
+
+| GPU | Variant | route 过滤 | n_train | 状态 |
+| --- | --- | --- | ---: | --- |
+| GPU0 | `rollback_o7_seed42` | 全量 | 1578 | ✅ DONE |
+| GPU1 | `rollback_o7_seed43` | 全量 | 1578 | ✅ DONE |
+| GPU2 | `rollback_o7_seed44` | 全量 | 1578 | ✅ DONE |
+| GPU3 | `rollback_endorse_only` | ENDORSE | 614 | ✅ DONE |
+| GPU4 | `rollback_prompt_hint_distill` | 全量 + hint | 1578 | ✅ DONE |
+| GPU5 | `rollback_trajectory_imitation` | 全量 + trajectory | 1578 | ✅ DONE |
+| GPU6 | `rollback_correct_only` | CORRECT | 964 | ✅ DONE |
+| GPU7 | `rollback_soft_replan_only` | 全量（训练时跳过 ROLLBACK_TO） | 614 | ✅ DONE |
+
+注：规格中 GPU3 原计划 `stop_o7_seed42`；Stop 双侧 Gate 未过，改跑 **`rollback_endorse_only`**（与 todo §7.1 fallback 一致）。
+
+**产物：** `outputs/scope_round8/phase2_training/{variant}/` · merge → `outputs/scope_round8/merged/{variant}/`（8/8）
+
+---
+
+### Phase 2 — 结果（2026-08-03 12:26 完成）
+
+| Variant | wall_clock | n_train | valid n | operation_accuracy | balanced_accuracy |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `rollback_o7_seed42` | **286.1 min** | 1578 | 402 | **0.764** | **0.764** |
+| `rollback_o7_seed43` | **289.9 min** | 1578 | 402 | **0.751** | **0.751** |
+| `rollback_o7_seed44` | **288.6 min** | 1578 | 402 | **0.764** | **0.764** |
+| `rollback_prompt_hint_distill` | **288.7 min** | 1578 | 1578* | **0.808** | **0.808** |
+| `rollback_trajectory_imitation` | **289.4 min** | 1578 | 1578* | **0.749** | **0.749** |
+| `rollback_correct_only` | **197.8 min** | 964 | 964* | **0.557** | **0.557** |
+| `rollback_endorse_only` | **98.7 min** | 614 | 614* | 0.443 | 0.443 |
+| `rollback_soft_replan_only` | **98.5 min** | 614 | 614* | 0.443 | 0.443 |
+
+\* 过滤 route 的 variant 在 `train_report.json` 中 valid 集与 train 同规模（未单独 holdout split）。
+
+**Offline Gate（`OFFLINE_GATE.json`，2026-08-03 16:36）：**
+
+| 判据 | 主方法 O7×3 | 结果 |
+| --- | --- | --- |
+| operation balanced accuracy >0.70 | 0.751–0.764 | **PASS** |
+| target checkpoint accuracy >0.70 | **0.085** | **FAIL** |
+| invalid checkpoint <1% | 0% | PASS |
+| 三 seed 方向一致 | yes | PASS |
+| HF/merged/vLLM parity | 1.0 | PASS |
+| `offline_gate_pass` | — | **false** |
+| `phase3_eligible` | operation acc 达标 | **true** |
+
+**解读：** 离线可学好 **operation type**（CONTINUE/REPLAN/ROLLBACK_TO），但 **checkpoint ID 选择几乎未学**（~8.5%）；与闭环所需能力不对齐，是后续 Phase 3 失败的重要前兆。
+
+---
+
+### Phase 2 — 工程备注
+
+1. **首次 Phase 2 启动 OOM：** `student_state_text` 平均 ~9785 字符未截断 + 多样本 loss 同图 backward；修复后稳定运行。
+2. **首次 launcher `wait` bug：** `launch … &` 导致未等待训练进程即打印 "Phase 2 complete"；已改为收集 PID 后 `wait`。
+3. **Gate 1B 误判（已修）：** `compare_agent_configs` 曾将 harness module flags 记入 budget diff。
+4. **Gate 1C 未过（已修）：** injected 收集 rollback 偏斜 ~80%；`build_rollback_sdi_dataset.py` 增加 balance + split slack。
+5. **Phase 1 首次 Gate 失败：** 2026-08-02 22:20 自动流水线因 1B/1C 失败未启 Phase 2；修复后 2026-08-03 手动重建数据集并启动。
+
+---
+
+### Phase 3 — Setting（冻结 / 实际执行）
+
+**启动条件：** `phase3_eligible=true`（2026-08-03 16:36 Offline Gate 评估后启动；**非** `offline_gate_pass`）。
+
+| 项 | 值 |
+| --- | --- |
+| Manifest | `artifacts/datasets/round2_audit_100q/query_manifest.json`（100q） |
+| Runtime | `agent_core_recovery.yaml` · AgentCore + RollbackRuntime |
+| Scorer | vLLM merged adapter · `VllmRollbackScorer` |
+| Parallel | `PARALLEL_PHASE3=16`（续跑降至 8 防 hang） |
+| Sharding | 4 shard × 25q = 100 episode / variant |
+| Dup threshold | τ=0 |
+| 统一 budget | max_turns=35 · max_tokens=2048 · temperature=1.0 |
+
+**GPU 分配（`launch_phase3_8gpu.sh`）：**
+
+| GPU | Variant | merged 路径 | vLLM port 基址 |
+| --- | --- | --- | ---: |
+| GPU0 | `base_agent_core` | base model | 9400 |
+| GPU1 | `rollback_o7_seed42` | merged/o7_seed42 | 9410 |
+| GPU2 | `rollback_o7_seed43` | merged/o7_seed43 | 9420 |
+| GPU3 | `rollback_o7_seed44` | merged/o7_seed44 | 9430 |
+| GPU4 | `rollback_prompt_hint_distill` | merged/hint | 9440 |
+| GPU5 | `rollback_trajectory_imitation` | merged/trajectory | 9450 |
+| GPU6 | `rollback_correct_only` | merged/correct_only | 9460 |
+| GPU7 | `rollback_soft_replan_only` | merged/soft_replan | 9470 |
+
+每 GPU 内 shard0→shard3 **顺序**执行（每 shard 独占 port）；8 GPU **并行**。
+
+**产物：** `outputs/scope_round8/phase3_closed_loop/{variant}/shard*/` · 汇总 `HARD_CAPABILITY_GATE_PHASE3.json`
+
+**完成时间：** 2026-08-04 10:30（`rollback_correct_only` shard2/shard3 续跑 + aggregate）
+
+---
+
+### Phase 3 — 结果（100q closed-loop，800/800 episode）
+
+#### 3.1 完成状态
+
+| Variant | episodes | 状态 |
+| --- | ---: | --- |
+| `base_agent_core` | 100/100 | ✅ |
+| `rollback_o7_seed42` | 100/100 | ✅ |
+| `rollback_o7_seed43` | 100/100 | ✅ |
+| `rollback_o7_seed44` | 100/100 | ✅ |
+| `rollback_prompt_hint_distill` | 100/100 | ✅ |
+| `rollback_trajectory_imitation` | 100/100 | ✅ |
+| `rollback_soft_replan_only` | 100/100 | ✅ |
+| `rollback_correct_only` | 100/100 | ✅（shard1 曾僵死 · shard2 vLLM OOM 后续跑） |
+
+#### 3.2 闭环主指标（`HARD_CAPABILITY_GATE_PHASE3.json`）
+
+| Variant | mean_recall | RollbackRecall | RollbackPrec | FalseRollback | ContinueRecall | ckpt_acc | op_bal_acc |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `base_agent_core` | 0.034 | 0.220 | 0.55 | 0.040 | 0.189 | 0.220 | 0.196 |
+| `rollback_o7_seed42` | 0.012 | 0.253 | 0.70 | 0.029 | 0.013 | 0.253 | **0.075** |
+| `rollback_o7_seed43` | 0.031 | 0.249 | 0.66 | 0.029 | 0.005 | 0.249 | **0.062** |
+| `rollback_o7_seed44` | 0.026 | 0.280 | 0.58 | 0.037 | 0.012 | 0.280 | **0.062** |
+| `rollback_prompt_hint_distill` | 0.039 | 0.127 | 0.27 | 0.067 | **0.671** | 0.127 | 0.563 |
+| `rollback_trajectory_imitation` | 0.024 | 0.271 | 0.62 | 0.034 | 0.001 | 0.271 | **0.057** |
+| `rollback_correct_only` | 0.026 | 0.229 | 0.58 | 0.037 | 0.000 | 0.229 | **0.052** |
+| `rollback_soft_replan_only` | 0.032 | **0.000** | 0.00 | 0.000 | **1.000** | 0.000 | **0.796** |
+
+**Hard-capability Gate 判据（0802-todo1 §8.2，主方法三 seed）：**
+
+| 判据 | 要求 | O7×3 实际 | 结果 |
+| --- | --- | --- | --- |
+| RollbackRecall | ≥0.30 | 0.25–0.28 | **近达标但未稳过** |
+| FalseRollbackRate | ≤0.05 | 0.029–0.037 | PASS |
+| target checkpoint accuracy | ≥0.70 | **0.25–0.28** | **FAIL** |
+| state hash restore rate | =1.0 | 聚合器报告异常* | **FAIL** |
+| budget violations | =0 | 聚合器报告异常* | **FAIL** |
+| 优于 prompt-hint / trajectory | 显著 | op_acc 远低于 hint（0.56 vs 0.08） | **FAIL** |
+
+\* `aggregate_phase3_gate.py` 中 `state_hash_restore_rate` / `budget_violations` 计数逻辑待审计（当前数值与 event 量级不成比例）；但 **operation_balanced_accuracy 与 checkpoint_accuracy 的低值可信**。
+
+#### 3.3 Phase 3 Gate 总判定
+
+| 字段 | 值 |
+| --- | --- |
+| `main_seeds_pass` | **false** |
+| `recovery_better_than_base` | **true**（RollbackRecall 略高于 base） |
+| `hard_capability_positive_signal` | **false** |
+
+---
+
+### Phase 3 — 工程备注
+
+1. **`RecoveryBudget.used_rollbacks` 属性错误** → 改为 `budget.remaining()`。
+2. **`rollback budget exhausted` 崩溃整条 query** → `rollback_action_realizer` + rollout hook 降级为 REPLAN；通用 Exception 捕获。
+3. **`rollback_correct_only` shard1 僵死**（17:24 停更 · GPU6 0% util）→ kill + `resume_correct_only_phase3.sh` 续跑完成。
+4. **shard2 vLLM EngineCore 初始化失败**（shard1 残留 vLLM 占满 GPU6 ~134GB）→ kill EngineCore + `resume_correct_only_shard23` 续跑 shard2/shard3。
+5. **launcher 改进：** `resume_correct_only_phase3.sh` 增加 `fuser -k` 清理陈旧 vLLM port。
+
+---
+
+### Round 8 总判定（2026-08-04）
+
+```text
+ROUND8_PHASE1_COMPLETE           = true
+ROUND8_GATE_1A_PASS              = true   # Dup 830 retention
+ROUND8_GATE_1B_PASS              = true   # AgentCore config diff
+ROUND8_GATE_1C_PASS              = true   # rollback SDI dataset
+ROUND8_PHASE2_COMPLETE           = true   # 8/8 variant train + merge
+ROUND8_OFFLINE_GATE_PASS         = false  # checkpoint acc ~8.5% << 0.70
+ROUND8_PHASE3_ELIGIBLE           = true   # operation acc >0.70
+ROUND8_PHASE3_COMPLETE           = true   # 800/800 episodes
+ROUND8_MAIN_SEEDS_PASS           = false
+ROUND8_HARD_CAPABILITY_POSITIVE  = false
+NEXT_ACTION                      = 诊断 offline→closed-loop 断裂；禁止扩 multi-capability
+```
+
+**结论摘要：**
+
+1. **Dup 830 retention 成功：** Round 7 τ=0 结论在 830q 上复现；Gate 1A 通过；`RECOMMEND_830` 延续成立。
+2. **AgentCore 公平基线已建立：** 100q diagnostic 完成；Gate 1B 确认仅四模块差异可解释 recall 漂移。
+3. **Rollback SDI 离线 operation 可学：** O7×3 valid operation acc **0.75–0.76**；hint distill 最高 **0.81**；但 checkpoint ID acc 仅 **~8.5%**。
+4. **闭环硬控制能力未成立：** 训练后闭环 operation_balanced_accuracy 仅 **~6–8%**（远低于离线 75%）；ContinueRecall≈0；模型在闭环中几乎不输出 CONTINUE，行为接近「全 ROLLBACK/REPLAN」。
+5. **与 Dup 能力对比：** Dup O7 在 830q 上 DupRejectRecall≈1 · 闭环稳定；Rollback 呈现 **典型的 offline 可学、closed-loop 不迁移** 模式，与 Round 6/7 Dup 路径的成功形成对照。
+6. **baseline 对照：** `soft_replan_only` 闭环 operation acc 最高（~0.80）但 RollbackRecall=0（训练时禁用 ROLLBACK_TO）；`prompt_hint_distill` ContinueRecall 最高（~0.67）但 rollback 质量差；**无一 variant 同时满足 Hard-capability Gate**。
+7. **不可声称：** rollback 硬状态控制已内化 · 模型替代 rollback executor · Recovery Harness 已被吸收。
+
+---
+
+### 代码与脚本
+
+```text
+harness/recovery/*                     # RollbackRuntime contract
+harness/configs/agent_core*.yaml
+harness/configs/agent_core_recovery.yaml
+training/scope/rollback_sdi_trainer.py
+training/scope/rollback_operation_runtime.py
+training/scope/vllm_rollback_scorer.py
+training/scope_round8/build_rollback_sdi_dataset.py
+training/scope_round8/check_phase1_gates.py
+training/scope_round8/check_offline_gate.py
+training/scope_round8/run_phase2_train.py
+training/scope_round8/rollback_closed_loop_rollout.py
+training/scope_round8/aggregate_phase3_gate.py
+scripts/scope_round8/launch_phase1_8gpu.sh
+scripts/scope_round8/launch_phase2_8gpu.sh
+scripts/scope_round8/launch_phase3_8gpu.sh
+scripts/scope_round8/run_offline_gate_and_phase3.sh
+scripts/scope_round8/resume_correct_only_phase3.sh
+scripts/scope_round8/wait_phase1_and_launch_phase2.sh
+scripts/scope_round8/status.sh
+tests/scope/test_agent_core_parity.py
+tests/scope/test_rollback_contract.py
+```
+
+---
+
+### 下一步
+
+```text
+1. 诊断 offline valid acc 75% → closed-loop op_acc 6% 的断裂（state 表示 / vLLM scorer / distribution shift / CONTINUE 类不平衡）
+2. 审计 aggregate_phase3_gate.py 中 state_hash_restore_rate / budget_violations 计数
+3. 若需 Round 9：优先修 measurement+closed-loop parity，而非扩 multi-capability
+禁止：Hard-capability Gate 未过前启动 weighting · multi-capability · DAgger · Recovery 全模块
 ```

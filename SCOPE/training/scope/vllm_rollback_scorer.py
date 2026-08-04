@@ -1,4 +1,4 @@
-"""Score KEEP/SKIP via running vLLM OpenAI API (no second model load)."""
+"""Score rollback typed operations via running vLLM (no second full model load)."""
 
 from __future__ import annotations
 
@@ -7,18 +7,23 @@ from typing import Any
 
 from openai import OpenAI
 
-from harness.capability.dup_operation import DupOperation
-from training.scope.decision_config import DupDecisionConfig, DEFAULT_DECISION_CONFIG
-from training.scope.operation_scorer import VERBALIZERS, OperationScoreResult
-from training.scope.prompting import format_operation_prompt
+from harness.capability.rollback_operation import RollbackOperation
+from training.scope.rollback_operation_objectives import format_rollback_operation_prompt
 
 
 @dataclass
-class VllmOperationScorer:
+class RollbackScoreResult:
+    scores: dict[str, float]
+    predicted: RollbackOperation
+    log_probs: dict[str, float]
+
+
+@dataclass
+class VllmRollbackScorer:
     client: OpenAI
     model: str
-    decision_config: DupDecisionConfig = DEFAULT_DECISION_CONFIG
     model_path: str | None = None
+    hint: str = ""
     _tokenizer: Any = field(default=None, init=False, repr=False)
 
     def _get_tokenizer(self) -> Any:
@@ -43,7 +48,6 @@ class VllmOperationScorer:
             suffix = [lp for i, lp in enumerate(lps) if lp is not None and i >= prompt_n]
             if suffix:
                 return suffix[:comp_n]
-        # Fallback: last N token logprobs where N = verbalizer token count or 1
         comp_n = 1
         if tok is not None:
             comp_n = max(len(tok.encode(verbalizer, add_special_tokens=False)), 1)
@@ -54,17 +58,20 @@ class VllmOperationScorer:
         self,
         decision_state_text: str,
         *,
-        candidate_id: str | None = None,
-        curated_document_ids: list[str] | tuple[str, ...] | None = None,
-    ) -> OperationScoreResult:
-        prompt = format_operation_prompt(
+        available_checkpoints: list[dict] | None = None,
+    ) -> RollbackScoreResult:
+        prompt = format_rollback_operation_prompt(
             decision_state_text,
-            candidate_id=candidate_id,
-            curated_document_ids=curated_document_ids,
+            available_checkpoints=available_checkpoints,
+            hint=self.hint,
         )
         scores: dict[str, float] = {}
         log_probs: dict[str, float] = {}
-        for op in VERBALIZERS:
+        for op in (
+            RollbackOperation.CONTINUE,
+            RollbackOperation.REPLAN,
+            RollbackOperation.ROLLBACK_TO,
+        ):
             completion = prompt + op.value
             resp = self.client.completions.create(
                 model=self.model,
@@ -78,34 +85,17 @@ class VllmOperationScorer:
             mean_lp = sum(tok_lps) / max(len(tok_lps), 1) if tok_lps else -1e9
             scores[op.value] = mean_lp
             log_probs[op.value] = mean_lp * max(len(tok_lps), 1)
-        sk = scores[DupOperation.KEEP_EVIDENCE.value]
-        ss = scores[DupOperation.SKIP_DUPLICATE.value]
-        predicted = self.decision_config.predict_from_scores(sk, ss)
-        return OperationScoreResult(
-            scores=scores, predicted=predicted, log_probs=log_probs
-        )
-
-    def score_prompt(self, prompt: str) -> OperationScoreResult:
-        """Score a fully rendered prompt (for exact replay from trace)."""
-        scores: dict[str, float] = {}
-        log_probs: dict[str, float] = {}
-        for op in VERBALIZERS:
-            completion = prompt + op.value
-            resp = self.client.completions.create(
-                model=self.model,
-                prompt=completion,
-                max_tokens=0,
-                echo=True,
-                logprobs=1,
-            )
-            choice = resp.choices[0]
-            tok_lps = self._completion_token_logprobs(choice, prompt, op.value)
-            mean_lp = sum(tok_lps) / max(len(tok_lps), 1) if tok_lps else -1e9
-            scores[op.value] = mean_lp
-            log_probs[op.value] = mean_lp * max(len(tok_lps), 1)
-        sk = scores[DupOperation.KEEP_EVIDENCE.value]
-        ss = scores[DupOperation.SKIP_DUPLICATE.value]
-        predicted = self.decision_config.predict_from_scores(sk, ss)
-        return OperationScoreResult(
+        logits = [
+            scores[RollbackOperation.CONTINUE.value],
+            scores[RollbackOperation.REPLAN.value],
+            scores[RollbackOperation.ROLLBACK_TO.value],
+        ]
+        idx = max(range(3), key=lambda i: logits[i])
+        predicted = [
+            RollbackOperation.CONTINUE,
+            RollbackOperation.REPLAN,
+            RollbackOperation.ROLLBACK_TO,
+        ][idx]
+        return RollbackScoreResult(
             scores=scores, predicted=predicted, log_probs=log_probs
         )

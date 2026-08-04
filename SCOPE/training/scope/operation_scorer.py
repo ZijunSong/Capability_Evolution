@@ -73,6 +73,32 @@ def _completion_logprob(
     return mean_lp, n_tok
 
 
+def score_rendered_prompt(
+    model: PreTrainedModel,
+    tokenizer: PreTrainedTokenizerBase,
+    rendered_prompt: str,
+    *,
+    device: torch.device | None = None,
+    verbalizers: tuple[DupOperation, ...] = VERBALIZERS,
+) -> OperationScoreResult:
+    """Score verbalizers on an already-rendered operation prompt (exact replay)."""
+    dev = device or next(model.parameters()).device
+    scores: dict[str, float] = {}
+    log_probs: dict[str, float] = {}
+    for op in verbalizers:
+        lp, n_tok = _completion_logprob(
+            model, tokenizer, rendered_prompt, op.value, device=dev
+        )
+        scores[op.value] = lp
+        log_probs[op.value] = lp * max(n_tok, 1)
+    best = max(scores, key=scores.get)  # type: ignore[arg-type]
+    return OperationScoreResult(
+        scores=scores,
+        predicted=DupOperation(best),
+        log_probs=log_probs,
+    )
+
+
 def score_operations(
     model: PreTrainedModel,
     tokenizer: PreTrainedTokenizerBase,

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from harness.capability.dup_operation import DupOperation
+from training.scope.decide_dup_operation import decide_dup_operation
 
 
 @dataclass(frozen=True)
@@ -21,10 +22,11 @@ class DupDecisionConfig:
         return self.threshold + self.decision_bias
 
     def predict_from_scores(self, score_keep: float, score_skip: float) -> DupOperation:
-        margin = score_skip - score_keep
-        if margin >= self.effective_threshold():
-            return DupOperation.SKIP_DUPLICATE
-        return DupOperation.KEEP_EVIDENCE
+        return decide_dup_operation(
+            score_keep=score_keep,
+            score_skip=score_skip,
+            threshold=self.effective_threshold(),
+        ).predicted_operation
 
     def predict_from_margin(self, margin: float) -> DupOperation:
         if margin >= self.effective_threshold():

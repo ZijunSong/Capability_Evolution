@@ -19,9 +19,16 @@ from harness.shadow.action_realizer import ActionRealizer
 from harness.shadow.dup_bilateral_shadow import DupBilateralShadow
 from training.train_rl import CurateTool
 from harness.trajectory import Action
+from training.scope.decide_dup_operation import decide_dup_operation
 from training.scope.decision_config import DupDecisionConfig, DEFAULT_DECISION_CONFIG
 from training.scope.dup_telemetry import AdmissionEvent, DupTelemetryAggregator
+from training.scope.live_dup_decision_trace import (
+    LiveDupDecisionTraceWriter,
+    make_trace_from_decision,
+    sha256_text,
+)
 from training.scope.operation_scorer import score_operations
+from training.scope.prompting import format_operation_prompt
 
 
 @dataclass
@@ -57,6 +64,23 @@ class DupOperationRuntime:
         self.telemetry = DupTelemetryAggregator()
         self._curate_tool = CurateTool()
         self._vllm_scorer = vllm_scorer
+        self._trace_writer: LiveDupDecisionTraceWriter | None = None
+        self._decision_index = 0
+
+    def set_trace_writer(self, writer: LiveDupDecisionTraceWriter | None) -> None:
+        self._trace_writer = writer
+
+    def fork_for_query(self) -> DupOperationRuntime:
+        """Per-query runtime sharing scorer; isolated telemetry and decision index."""
+        rt = DupOperationRuntime(
+            self.model,
+            self.tokenizer,
+            device=self.device,
+            config=self.config,
+            vllm_scorer=self._vllm_scorer,
+        )
+        rt.set_trace_writer(self._trace_writer)
+        return rt
 
     def supports_typed_operation(self) -> bool:
         return self.config.enabled
@@ -65,20 +89,40 @@ class DupOperationRuntime:
         return state.rendered_context or state.query or ""
 
     def score_and_predict(
-        self, state: DecisionState
+        self,
+        state: DecisionState,
+        *,
+        candidate_id: str | None = None,
+        curated_document_ids: list[str] | tuple[str, ...] | None = None,
     ) -> tuple[DupOperation, dict[str, float]]:
+        curated = curated_document_ids if curated_document_ids is not None else list(
+            state.curated_document_ids
+        )
+        state_text = self._state_text(state)
         if self._vllm_scorer is not None:
-            result = self._vllm_scorer.score(self._state_text(state))
+            result = self._vllm_scorer.score(
+                state_text,
+                candidate_id=candidate_id,
+                curated_document_ids=curated,
+            )
             return result.predicted, dict(result.scores)
         if self.model is None or self.tokenizer is None:
             raise RuntimeError("DupOperationRuntime requires model or vllm_scorer")
         result = score_operations(
-            self.model, self.tokenizer, self._state_text(state), device=self.device
+            self.model,
+            self.tokenizer,
+            state_text,
+            device=self.device,
+            candidate_id=candidate_id,
+            curated_document_ids=curated,
         )
         sk = result.scores[DupOperation.KEEP_EVIDENCE.value]
         ss = result.scores[DupOperation.SKIP_DUPLICATE.value]
-        margin = ss - sk
-        predicted = self.config.decision_config.predict_from_margin(margin)
+        predicted = decide_dup_operation(
+            score_keep=sk,
+            score_skip=ss,
+            threshold=self.config.decision_config.effective_threshold(),
+        ).predicted_operation
         return predicted, dict(result.scores)
 
     def realize_action(
@@ -102,13 +146,23 @@ class DupOperationRuntime:
         if not points:
             return action
 
-        predicted, score_map = self.score_and_predict(state)
         primary_cid = points[0].candidate_evidence_id
+        predicted, score_map = self.score_and_predict(
+            state,
+            candidate_id=primary_cid,
+            curated_document_ids=list(state.curated_document_ids),
+        )
 
         sk = score_map.get(DupOperation.KEEP_EVIDENCE.value, 0.0)
         ss = score_map.get(DupOperation.SKIP_DUPLICATE.value, 0.0)
-        margin = ss - sk
+        decision = decide_dup_operation(
+            score_keep=sk,
+            score_skip=ss,
+            threshold=self.config.decision_config.effective_threshold(),
+        )
+        margin = decision.margin
         cfg = self.config.decision_config
+        predicted_pre = predicted
 
         cand = self.realizer.realize_operation(
             state,
@@ -118,11 +172,48 @@ class DupOperationRuntime:
         )
         if cand is None:
             self.telemetry.action_realizer_failures += 1
+            if self._trace_writer is not None:
+                state_dict = state.to_dict() if hasattr(state, "to_dict") else {}
+                prompt = format_operation_prompt(
+                    self._state_text(state),
+                    candidate_id=primary_cid,
+                    curated_document_ids=list(state.curated_document_ids),
+                )
+                trace = make_trace_from_decision(
+                    query_id=query_id,
+                    turn_index=state.turn_id,
+                    decision_index=self._decision_index,
+                    decision_state=state_dict,
+                    rendered_prompt=prompt,
+                    input_ids=[],
+                    score_keep=sk,
+                    score_skip=ss,
+                    threshold=cfg.effective_threshold(),
+                    threshold_source="per_seed" if cfg.threshold != 0.0 else "fixed_zero",
+                    threshold_key=f"seed{self.config.seed}",
+                    predicted_pre=predicted_pre,
+                    predicted_post=predicted_pre,
+                    candidate_evidence_id=primary_cid,
+                    shadow_label="",
+                    shadow_route="",
+                    actually_curated=False,
+                    action_payload={},
+                    model_id=self.config.checkpoint,
+                    checkpoint_path=self.config.checkpoint,
+                    checkpoint_sha256=sha256_text(self.config.checkpoint),
+                    seed=self.config.seed,
+                    backend="vllm_live" if self._vllm_scorer else "hf_replay",
+                    fallback_used=True,
+                    fallback_reason="action_realizer_failure",
+                )
+                self._trace_writer.write(trace)
+                self._decision_index += 1
             return action
 
         realized = cand.action
         add_ids = realized.arguments.get("add_ids") or []
         remove_ids = realized.arguments.get("remove_ids") or []
+        predicted_post = predicted_pre
 
         if self.config.record_shadow:
             shadow_art = self.shadow.analyze_candidate(
@@ -167,6 +258,43 @@ class DupOperationRuntime:
                     "predicted_operation": predicted.value,
                     "executed_operation": predicted.value,
                 })
+            if self._trace_writer is not None:
+                state_dict = state.to_dict() if hasattr(state, "to_dict") else {}
+                prompt = format_operation_prompt(
+                    self._state_text(state),
+                    candidate_id=primary_cid,
+                    curated_document_ids=list(state.curated_document_ids),
+                )
+                input_ids: list[int] = []
+                if self.tokenizer is not None:
+                    input_ids = self.tokenizer.encode(prompt, add_special_tokens=False)
+                trace = make_trace_from_decision(
+                    query_id=query_id,
+                    turn_index=state.turn_id,
+                    decision_index=self._decision_index,
+                    decision_state=state_dict,
+                    rendered_prompt=prompt,
+                    input_ids=input_ids,
+                    score_keep=sk,
+                    score_skip=ss,
+                    threshold=cfg.effective_threshold(),
+                    threshold_source="per_seed" if cfg.threshold != 0.0 else "fixed_zero",
+                    threshold_key=f"seed{self.config.seed}",
+                    predicted_pre=predicted_pre,
+                    predicted_post=predicted_post,
+                    candidate_evidence_id=primary_cid,
+                    shadow_label=shadow_op,
+                    shadow_route=route,
+                    actually_curated=actually,
+                    action_payload=realized.to_dict(),
+                    model_id=self.config.checkpoint,
+                    checkpoint_path=self.config.checkpoint,
+                    checkpoint_sha256=sha256_text(self.config.checkpoint),
+                    seed=self.config.seed,
+                    backend="vllm_live" if self._vllm_scorer else "hf_replay",
+                )
+                self._trace_writer.write(trace)
+                self._decision_index += 1
 
         return Action(
             tools=[self._curate_tool],

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""H_min_v2 closed-loop rollout with Dup operation + ActionRealizer (Round 3)."""
+"""AgentCore fairness diagnostic rollout (Round 8 A1/A3)."""
 
 from __future__ import annotations
 
@@ -17,10 +17,7 @@ _REPO = Path(__file__).resolve().parents[2]
 if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
 
-import torch
 import yaml
-from peft import PeftModel
-from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from harness.agent import OpenAIAgentInferenceModel
 from harness.harness_config import apply_harness_config, load_harness_config
@@ -32,8 +29,7 @@ from training.opd.harness_rollout import check_retrieval_backend, load_completed
 from training.opd.rollout_worker import QueryRecord
 from training.opd.vllm_server import start_vllm_server
 from training.scope.distillability.metrics import enrich_episode_metrics
-from training.scope.dup_operation_runtime import DupOperationRuntime, DupOperationRuntimeConfig
-from training.scope.dup_telemetry import DupTelemetryAggregator
+from training.scope_round3.hmin_v2_dup_rollout import _load_shard_queries
 from training.train_rl import SlidingWindowSearchEnv
 
 
@@ -44,20 +40,6 @@ def _git_commit() -> str:
         ).strip()
     except Exception:
         return "unknown"
-
-
-def _load_shard_queries(
-    manifest_path: Path, shard: str, n_shards: int = 8
-) -> list[str]:
-    data = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if shard in data.get("shards", {}):
-        return [str(x) for x in data["shards"][shard]]
-    qids = [str(x) for x in data.get("query_ids", [])]
-    idx = int(shard.replace("shard", ""))
-    size = len(qids) // n_shards
-    start = idx * size
-    end = start + size if idx < n_shards - 1 else len(qids)
-    return qids[start:end]
 
 
 def _load_records(manifest_path: Path, shard_qids: list[str]) -> list[QueryRecord]:
@@ -77,19 +59,19 @@ def parse_args() -> argparse.Namespace:
         default=_REPO / "artifacts/datasets/round2_audit_100q/query_manifest.json",
     )
     p.add_argument("--shard", type=str, default="shard0")
-    p.add_argument("--n-shards", type=int, default=8)
+    p.add_argument("--n-shards", type=int, default=4)
     p.add_argument("--model-path", default="/data/ppnm/models/Qwen2.5-7B-Instruct")
-    p.add_argument("--adapter-path", type=Path, default=None)
     p.add_argument(
         "--harness-config",
-        default=str(_REPO / "harness/configs/modules_minimal_v2.yaml"),
+        default=str(_REPO / "harness/configs/agent_core.yaml"),
     )
+    p.add_argument("--label", default="agent_core")
     p.add_argument("--max-turns", type=int, default=35)
     p.add_argument("--max-tokens", type=int, default=2048)
     p.add_argument("--temperature", type=float, default=1.0)
-    p.add_argument("--vllm-port", type=int, default=8900)
+    p.add_argument("--vllm-port", type=int, default=9300)
     p.add_argument("--tensor-parallel-size", type=int, default=1)
-    p.add_argument("--parallel", type=int, default=1)
+    p.add_argument("--parallel", type=int, default=32)
     p.add_argument("--query-timeout-s", type=float, default=600.0)
     p.add_argument("--resume", action="store_true", default=True)
     p.add_argument("--no-resume", action="store_false", dest="resume")
@@ -97,80 +79,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--no-manage-vllm", action="store_false", dest="manage_vllm")
     p.add_argument("--vllm-url", default=None)
     p.add_argument("--bm25-index-path", default=None)
-    p.add_argument(
-        "--dup-operation",
-        action="store_true",
-        default=False,
-        help="Enable typed KEEP/SKIP operation + ActionRealizer",
-    )
-    p.add_argument(
-        "--collect-states-only",
-        action="store_true",
-        default=False,
-        help="Base rollout without dup operation (for labeling)",
-    )
-    p.add_argument("--decision-threshold", type=float, default=0.0)
-    p.add_argument("--decision-bias", type=float, default=0.0)
-    p.add_argument("--decision-config", type=Path, default=None)
-    p.add_argument("--dup-seed", type=int, default=0)
-    p.add_argument("--checkpoint-label", default="")
-    p.add_argument(
-        "--round7-trace",
-        action="store_true",
-        default=False,
-        help="Write LiveDupDecisionTrace JSONL (Round 7 contract audit)",
-    )
     return p.parse_args()
-
-
-def _load_dup_runtime(
-    model_path: str,
-    adapter_path: Path | None,
-    device: str,
-    *,
-    vllm_client=None,
-    vllm_model: str | None = None,
-    decision_config=None,
-    checkpoint_label: str = "",
-    seed: int = 0,
-) -> DupOperationRuntime | None:
-    from training.scope.decision_config import DupDecisionConfig, DEFAULT_DECISION_CONFIG
-
-    cfg = decision_config or DEFAULT_DECISION_CONFIG
-    rt_cfg = DupOperationRuntimeConfig(
-        decision_config=cfg,
-        checkpoint=checkpoint_label,
-        seed=seed,
-    )
-    if vllm_client is not None and vllm_model:
-        from training.scope.vllm_operation_scorer import VllmOperationScorer
-
-        return DupOperationRuntime(
-            None,
-            None,
-            config=rt_cfg,
-            vllm_scorer=VllmOperationScorer(
-                vllm_client,
-                vllm_model,
-                decision_config=cfg,
-                model_path=model_path,
-            ),
-        )
-    dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
-    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-    if tokenizer.pad_token_id is None:
-        tokenizer.pad_token = tokenizer.eos_token
-    base = AutoModelForCausalLM.from_pretrained(
-        model_path, torch_dtype=dtype, trust_remote_code=True
-    )
-    if adapter_path and adapter_path.exists():
-        model = PeftModel.from_pretrained(base, str(adapter_path))
-    else:
-        model = base
-    model.eval()
-    dev = torch.device(device if torch.cuda.is_available() else "cpu")
-    model.to(dev)
-    return DupOperationRuntime(model, tokenizer, device=dev, config=rt_cfg)
 
 
 async def main_async(args: argparse.Namespace) -> None:
@@ -199,12 +108,11 @@ async def main_async(args: argparse.Namespace) -> None:
 
     resolved = {
         "model_path": args.model_path,
-        "adapter_path": str(args.adapter_path) if args.adapter_path else None,
         "harness_config": args.harness_config,
         "manifest": str(args.manifest),
         "shard": args.shard,
+        "label": args.label,
         "query_ids": shard_qids,
-        "dup_operation": args.dup_operation,
         "git_commit": _git_commit(),
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -223,7 +131,6 @@ async def main_async(args: argparse.Namespace) -> None:
 
     episodes_path = out_dir / "episodes.jsonl"
     states_path = out_dir / "decision_states.jsonl"
-    telemetry_path = out_dir / "dup_admission_events.jsonl"
     done = load_completed_query_ids(episodes_path) if args.resume else set()
     pending = [r for r in records if r.query_id not in done]
 
@@ -231,7 +138,7 @@ async def main_async(args: argparse.Namespace) -> None:
     base_url = args.vllm_url or f"http://127.0.0.1:{args.vllm_port}/v1"
     os.environ["base_url"] = base_url
     os.environ["api_key"] = "EMPTY"
-    os.environ["model_name"] = "hmin-v2-rollout"
+    os.environ["model_name"] = "agent-core-rollout"
     get_llm_settings.cache_clear()
 
     if args.manage_vllm and args.vllm_url is None:
@@ -240,7 +147,7 @@ async def main_async(args: argparse.Namespace) -> None:
             port=args.vllm_port,
             tensor_parallel_size=args.tensor_parallel_size,
             max_model_len=32768,
-            served_model_name="hmin-v2-rollout",
+            served_model_name="agent-core-rollout",
             log_path=str(out_dir / "vllm_server.log"),
             enable_auto_tool_choice=True,
             tool_call_parser="hermes",
@@ -258,45 +165,11 @@ async def main_async(args: argparse.Namespace) -> None:
         api_style="chat_completions",
     )
 
-    dup_rt: DupOperationRuntime | None = None
-    decision_cfg = None
-    if args.decision_config and args.decision_config.exists():
-        from training.scope.decision_config import DupDecisionConfig
-
-        decision_cfg = DupDecisionConfig.load(args.decision_config)
-    elif args.decision_threshold != 0.0 or args.decision_bias != 0.0:
-        from training.scope.decision_config import DupDecisionConfig
-
-        decision_cfg = DupDecisionConfig(
-            threshold=args.decision_threshold,
-            decision_bias=args.decision_bias,
-        )
-    if args.dup_operation and not args.collect_states_only:
-        dup_rt = _load_dup_runtime(
-            args.model_path,
-            args.adapter_path,
-            os.environ.get("CUDA_VISIBLE_DEVICES", "0").split(",")[0] or "cuda",
-            vllm_client=client,
-            vllm_model=model_name,
-            decision_config=decision_cfg,
-            checkpoint_label=args.checkpoint_label or args.model_path,
-            seed=args.dup_seed,
-        )
-        if args.round7_trace and dup_rt is not None:
-            from training.scope.live_dup_decision_trace import LiveDupDecisionTraceWriter
-
-            run_id = f"{args.shard}_{args.checkpoint_label or 'base'}_tau{args.decision_threshold}"
-            dup_rt.set_trace_writer(LiveDupDecisionTraceWriter(out_dir, run_id))
-
-    global_telemetry = DupTelemetryAggregator()
     sem = asyncio.Semaphore(args.parallel)
     write_lock = asyncio.Lock()
+    recalls: list[float] = []
 
     async def _one(record: QueryRecord) -> None:
-        local_dup = dup_rt.fork_for_query() if dup_rt is not None else None
-        pre_hook = None
-        if local_dup is not None:
-            pre_hook = local_dup.make_pre_step_hook(query_id=record.query_id)
         try:
             async with sem:
                 env = SlidingWindowSearchEnv(
@@ -308,9 +181,13 @@ async def main_async(args: argparse.Namespace) -> None:
                     text_token_counter=runtime.text_token_counter,
                     max_turns=args.max_turns,
                 )
-                driver = ChatDecisionDriver(env=env, inference=inference, max_turns=args.max_turns)
+                driver = ChatDecisionDriver(
+                    env=env,
+                    inference=inference,
+                    max_turns=args.max_turns,
+                )
                 result = await asyncio.wait_for(
-                    driver.run(pre_step_hook=pre_hook),
+                    driver.run(),
                     timeout=float(args.query_timeout_s),
                 )
         except asyncio.TimeoutError:
@@ -323,18 +200,8 @@ async def main_async(args: argparse.Namespace) -> None:
 
         ep = enrich_episode_metrics("duplicate_evidence", dict(result))
         ep["query_id"] = record.query_id
-        if local_dup is not None:
-            tel = local_dup.telemetry.summarize()
-            ep.update(
-                {
-                    "duplicate_curate_rate": tel["duplicate_curate_rate"],
-                    "false_skip_rate": tel["false_skip_rate"],
-                    "dup_telemetry": tel,
-                }
-            )
-            for ev in local_dup.telemetry.events:
-                global_telemetry.add(ev)
         ep.pop("turn_records", None)
+        recalls.append(float(ep.get("recall", 0.0)))
         states: list[dict[str, Any]] = []
         for tr in result.get("turn_records") or []:
             ds = tr.decision_state.to_dict() if hasattr(tr, "decision_state") else {}
@@ -355,23 +222,20 @@ async def main_async(args: argparse.Namespace) -> None:
             with states_path.open("a", encoding="utf-8") as f:
                 for st in states:
                     f.write(json.dumps(st, ensure_ascii=False) + "\n")
-            if local_dup is not None:
-                with telemetry_path.open("a", encoding="utf-8") as f:
-                    for ev in local_dup.telemetry.events:
-                        f.write(json.dumps(ev.to_dict(), ensure_ascii=False) + "\n")
 
     await asyncio.gather(*[_one(r) for r in pending])
 
     if vllm_handle is not None:
         vllm_handle.stop()
 
+    mean_recall = sum(recalls) / max(1, len(recalls))
     summary = {
+        "label": args.label,
         "n_queries": len(shard_qids),
-        "n_completed": len(pending),
+        "n_completed": len(recalls),
+        "mean_recall": mean_recall,
         "shard": args.shard,
-        "dup_operation": args.dup_operation,
         "output_dir": str(out_dir),
-        "dup_telemetry": global_telemetry.summarize() if dup_rt else None,
     }
     (out_dir / "summary.json").write_text(
         json.dumps(summary, indent=2) + "\n", encoding="utf-8"

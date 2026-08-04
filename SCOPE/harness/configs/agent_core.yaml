@@ -1,0 +1,49 @@
+# Round 8 AgentCore — shared Search-Agent minimal runtime (A1).
+# Aligned with modules_minimal_v2.yaml: irreducible search/read/react loop only.
+retrieval:
+  module_id: retrieval
+  enabled: true
+  required: true
+  lifecycle_managed: false
+  chunk_neighbors: false
+  rerank: false
+
+evidence_state:
+  module_id: evidence_state
+  enabled: false
+  lifecycle_managed: false
+  candidate_pool: false
+  content_dedup: false
+  evidence_graph: false
+  importance_tagging: false
+  subtractive_curation: false
+  auto_seed: false
+  review_memory: false
+  render_structured_state: false
+  preserve_minimal_selection: true
+
+verification:
+  module_id: verification
+  enabled: true
+  lifecycle_managed: false
+  expose_verify_tool: true
+  store_records: true
+  render_records: true
+  verification_aware_curation: false
+  harness_auto_verify_decision: false
+
+context_budget:
+  module_id: context_budget
+  enabled: false
+  lifecycle_managed: false
+  sentence_compression: false
+  structured_context_rendering: false
+  recent_window: false
+  token_budget_marker: false
+  stop_budget_hint: false
+  deterministic_truncation: true
+
+recovery:
+  module_id: recovery
+  enabled: false
+  lifecycle_managed: false
