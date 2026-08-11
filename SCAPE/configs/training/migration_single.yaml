@@ -1,0 +1,16 @@
+stage: S
+method_v0:
+  student_rollout_under: H_z
+  teacher_view: full_same_state
+  losses: [tool_token_kl, anchor_kl]
+  curriculum: component_dropout_annealing
+four_grid:
+  - S0_theta0_Hfull
+  - S1_theta0_Hminus
+  - S2_theta_prime_Hminus
+  - S3_theta_prime_Hfull
+targets:
+  strong: "J(theta', H_-m) > J(theta0, H_full) AND cost lower"
+  acceptable: "non-inferior quality AND materially lower cost"
+rl:
+  enable_only_after_distill_positive_compensation: true

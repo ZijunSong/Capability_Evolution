@@ -1,0 +1,19 @@
+stage: contribution
+benchmark: browsecomp_plus
+split: CAL64
+metrics:
+  - curated_recall
+  - trajectory_recall
+  - final_answer_recall
+  - harness_reward
+  - tool_calls
+  - turns
+  - context_tokens
+  - latency_ms
+  - state_ops
+bootstrap:
+  n_boot: 1000
+  seed: 42
+decode:
+  temperature: 0.0
+  max_tokens: 2048

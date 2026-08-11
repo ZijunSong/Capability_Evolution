@@ -1,0 +1,3 @@
+[submodule "external/harness-1"]
+	path = external/harness-1
+	url = https://github.com/pat-jj/harness-1.git
