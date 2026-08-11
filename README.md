@@ -26,11 +26,25 @@ SCAPE/
 └── outputs/                # run artifacts (gitignored)
 ```
 
+## GitHub
+
+当前独立历史已推送到：
+
+```text
+https://github.com/ZijunSong/Capability_Evolution/tree/scape/main
+```
+
+本地仍配置 `origin -> git@github.com:ZijunSong/SCAPE.git`（独立仓位）。一旦该空仓创建完成，执行：
+
+```bash
+git push -u origin main
+```
+
 ## Quickstart (code only)
 
 ```bash
 cd /data/ppnm/Capability_Evolution/SCAPE
-python3.12 -m venv .venv && source .venv/bin/activate
+# recommended: bishop conda (Python 3.11+)
 pip install -e ".[dev]"
 pytest -q
 ```
