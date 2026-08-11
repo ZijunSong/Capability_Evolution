@@ -1,0 +1,17 @@
+stage: same_state_influence
+state_owner: reduced_harness_student
+null_controls:
+  - same_render
+  - field_order_only
+metrics:
+  - I_name
+  - I_args
+  - tool_name_disagreement
+  - exact_tool_call_disagreement
+  - argument_edit_distance
+  - teacher_entropy
+  - student_entropy
+teacher:
+  strategy: ema
+  ema_decay: 0.99
+  strategy_lock_id: scape_teacher_v0_ema

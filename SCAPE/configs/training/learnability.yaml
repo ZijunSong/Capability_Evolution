@@ -1,0 +1,22 @@
+stage: L
+objective: tool_token_kl_plus_light_anchor
+teacher:
+  strategy: ema
+  ema_decay: 0.99
+  strategy_lock_id: scape_teacher_v0_ema
+sample_sizes: [512, 2000, 8000]
+seeds: [42, 43]
+rule: each_n_trains_from_same_base_checkpoint
+loss:
+  tool_weight: 1.0
+  anchor_weight: 0.1
+baselines:
+  - same_state_action_ce
+  - full_response_opd
+  - offpolicy_harness_trace
+  - oneshot_full_to_slim
+gate_l:
+  require_divergence_drop: true
+  require_two_seed_agree: true
+  forbid_scaling_regression: true
+  forbid_invalid_tool_rate_up: true
