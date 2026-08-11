@@ -1,0 +1,62 @@
+# secrets & local env
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials*.json
+secrets/
+
+# Python / build
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.cache/
+
+# logs / experiment dumps
+logs/
+tmp/
+temp/
+*.log
+*.out
+*.err
+nohup.out
+wandb/
+mlruns/
+outputs/**
+!outputs/.gitkeep
+imports/**
+!imports/**/.gitkeep
+
+# data / indexes / checkpoints
+data/
+datasets/
+**/indexes/
+*.parquet
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+models/
+checkpoints/
+ckpt/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
+
+# large upstream checkout is a submodule; ignore accidental local dumps
+external/harness-1-local/

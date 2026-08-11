@@ -1,0 +1,8 @@
+{
+  "manifest_id": "LOCAL_CAL64",
+  "n": 64,
+  "seed": 20260811,
+  "split_rule": "stable_rank(sha256(seed:qid))",
+  "purpose": "H20 provisional LOO + Influence bootstrap when H100 imports are absent",
+  "provisional": true
+}
