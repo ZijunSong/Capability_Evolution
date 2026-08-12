@@ -259,7 +259,7 @@ Record L200 seed42/43; free GPU2–7; start B L64 held-out (`--split test`) whil
 
 ---
 
-## 2026-08-12 SCAPE H100-1/2/3 synced status
+## 2026-08-12 SCAPE H100-1/2/3/4 synced status
 
 > 自 `result-record-from-h100.md` 同步的实验 setting / 结果 / 结论。
 > 路径以 H100 机为准：`/mnt/songzijun/Capability_Evolution/SCAPE`（对应本机 `/data/ppnm/Capability_Evolution/SCAPE` 同源树）。
@@ -268,22 +268,22 @@ Record L200 seed42/43; free GPU2–7; start B L64 held-out (`--split test`) whil
 ### Overall status
 | Workstream | Todo target | Current status | Output / evidence | Notes |
 |---|---|---|---|---|
-| H100-1 Phase 0/1 | Harness-1 reproduction + 10-component LOO contribution map | **已完成（local BM25 compat）/ 进行中（official Chroma parity）** | `outputs/h100_1_contribution/{RUN_MANIFEST.json,STATUS_LIVE.md,COMPONENT_CONTRIBUTION.*,SHA256SUMS}` | Local BM25 compatibility contribution sweep finished for all 10 components, n=200, errors=0. Official Chroma Cloud eval blocked by missing credentials. |
-| H100-2 | independent replication + coalition interaction | **已完成（frozen consolidation）/ 部分偏离原 10-component REPL200 plan** | `outputs/h100_2_replication_coalition/{RUN_MANIFEST.json,STATUS_LIVE.md,LOO_REPLICATION.csv,COALITION_INTERACTION.csv,REPLICATION_REPORT.md,PLACEMENT_STABILITY.md,SHA256SUMS}` | 4 replicated modules + 6 coalition rows, errors=0. No new training/retrieval. |
-| H100-3 | same-environment-state policy influence map | **已完成（offline deterministic INF_CAL64）** | `outputs/h100_3_influence/{RUN_MANIFEST.json,STATUS_LIVE.md,INFLUENCE_BY_COMPONENT.*,INFLUENCE_PER_STATE.jsonl,H100_3_INFLUENCE_REPORT.md,SHA256SUMS}` | 64 queries × 4 states/query = 256 states/component; deterministic offline scorer. |
-| H100-1 × H100-3 | contribution/influence quadrant map | **已完成** | `outputs/CONTRIBUTION_INFLUENCE_MAP.md` | 10 components → four quadrants. |
+| H100-1 Phase 0/1 | Harness-1 reproduction + 10-component LOO contribution map + fresh confirm | **已完成（local BM25 compat）/ 官方 Chroma 仍阻塞** | `outputs/h100_1_contribution/{RUN_MANIFEST.json,STATUS_LIVE.md,COMPONENT_CONTRIBUTION.*,SHA256SUMS}`；`outputs/h100_1_contribution_confirm/{RUN_MANIFEST.json,STATUS_LIVE.md,CONTRIBUTION_CONFIRM.*,RUNTIME_COST_CONFIRM.csv,SHA256SUMS}` | Local BM25 compatibility contribution sweep finished for CAL200 and CONFIRM400, both n=200/400, errors=0. 官方 Chroma Cloud eval 仍受凭证缺失限制。 |
+| H100-2 | independent replication + coalition interaction | **已完成（independent REPL200_V2）** | `outputs/h100_2_independent_repl/{RUN_MANIFEST.json,STATUS_LIVE.md,LOO_REPLICATION_V2.*,COALITION_V2.csv,PLACEMENT_STABILITY_V2.md,CROSS_SPLIT_COMPARISON.md,SHA256SUMS}` | 真正的 query-disjoint `BCP_REPL200_V2`，full + 10 LOO + replay parity + 4 coalition，errors=0。 |
+| H100-3 | same-environment-state policy influence map + confirm smoke | **已完成（offline INF_CAL64 + qrel-backed real scorer smoke）** | `outputs/h100_3_influence/{...}`；`outputs/h100_3_influence_qrel/{RUN_MANIFEST.json,STATUS_LIVE.md,INFLUENCE_BY_COMPONENT.*,TOP_CANDIDATES_FOR_CONFIRM.json,SHA256SUMS}`；`outputs/h100_3_real_influence_smoke/{...}` | Offline deterministic map 已完成；qrel-backed HF scorer smoke 也通过，说明本地 released Harness-1 模型可用于真实 continuation scorer。 |
+| H100-4 | CONFIRM128 real-model influence confirmation + targeted event / null robustness | **已完成** | `outputs/h100_4_influence_confirm/{PREFLIGHT.md,PRESTAGE_EVIDENCE_TABLE.*,REAL_INFLUENCE_CONFIRM_BY_COMPONENT.*,REAL_INFLUENCE_CONFIRM_PER_STATE.jsonl,NULL_CONTROL_REPORT.md,SCORER_PARITY.md,SNAPSHOT_REPLAY_AUDIT.md,CANDIDATE_RECOMMENDATION_FOR_H20.*,RUN_MANIFEST.json,STATUS_LIVE.md,SHA256SUMS}` | 3-way GPU shard 执行完成：`subtractive_curation` / `importance_tagging` / `evidence_graph`，每路 128 queries × 4 states/query。 |
+| H100-1 × H100-3 × H100-4 | contribution/influence/confirm handoff | **已完成** | `outputs/CONTRIBUTION_INFLUENCE_MAP.md`；`outputs/h100_4_influence_confirm/PRESTAGE_EVIDENCE_TABLE.md` | 证据链已从 local/offline 过渡到 real HF scorer CONFIRM128。 |
 | Official Harness-1 serving | restore model and local vLLM smoke | **已完成（smoke）/ 进行中（official eval）** | `outputs/h100_1_official_vllm` | Restored from `harness-1.tar.gz`, 9 shards, vLLM smoke passed. |
-| H100-3 confirm/targeted | `INF_CONFIRM128`, targeted influence/mining | **未开始** | none | Optional follow-ups not launched. |
-| H100-1/2 official parity | Chroma-backed BrowseComp+ LOO/replication | **未开始/阻塞** | none beyond local/proxy | Requires official retrieval credentials. |
+| Official Harness-1 / Chroma parity | Chroma-backed BrowseComp+ LOO/replication | **未开始/阻塞** | none beyond local/proxy | 仍需要官方 retrieval credentials；本轮未把 local BM25 或 HF scorer 结果冒充为官方 Chroma parity。 |
 
 ### H100-1 setting
-- Run id: `h100_1_local_bm25_contribution_20260811`
-- Repo: `/mnt/songzijun/Capability_Evolution/SCAPE`（git `61f7741a…` dirty at manifest）
-- Env: `/opt/bishop-harness/bin/python`；Python 3.11.6；torch 2.11.0+cu130；vLLM 0.25.1；8×H100
+- Run ids: `h100_1_local_bm25_contribution_20260811`、`h100_1_confirm400_20260812`
+- Repo: `/mnt/songzijun/Capability_Evolution/SCAPE`
+- Env: `/opt/vllm-qwen3-1.7b-harness/bin/python`；Python 3.12.13；torch 2.10.0+cu128；vLLM 0.19.1；8×H100
 - Backend: `local_bm25_compat`（**非**官方 Chroma Cloud）
-- Split/seed: BrowseComp+ CAL200，seed 1101；smoke 1/5/20 亦 errors=0
+- Split/seed: BrowseComp+ CAL200 seed 1101；CONFIRM400 seed 1102；smoke 1/5/20 亦 errors=0
 - Decode: deterministic compatibility；无训练 / 无改权重
-- Status: `n_expected=10`，`n_finished=10`，`remaining=0`，`errors=0`
+- Status: `n_expected=10` 与 `n_expected=11` 均完成，`errors=0`
 
 ### H100-1 results
 | component | n | Δ curated | Δ trajectory | Δ final | Δ reward | Status |
@@ -299,27 +299,43 @@ Record L200 seed42/43; free GPU2–7; start B L64 held-out (`--split test`) whil
 | token_budget_marker | 200 | +0.000000 | +0.000000 | +0.000000 | +0.000000 | 已完成 |
 | adaptive_rerank_instruction | 200 | -0.001250 | +0.000000 | +0.002917 | -0.000271 | 已完成 |
 
+### H100-1 confirm results
+| component | n | Δ curated | Δ trajectory | Δ final | Δ reward | Status |
+|---|---:|---:|---:|---:|---:|---|
+| subtractive_curation | 400 | +0.002192 | +0.000000 | +0.000000 | +0.000987 | 已完成 |
+| importance_tagging | 400 | +0.001844 | +0.000000 | +0.000000 | +0.000830 | 已完成 |
+| auto_populate_first_search | 400 | +0.000000 | +0.008613 | +0.000000 | +0.003876 | 已完成 |
+| evidence_graph | 400 | +0.000000 | +0.004092 | +0.000000 | +0.001841 | 已完成 |
+| chunk_neighbors | 400 | +0.000000 | +0.004092 | +0.000000 | +0.001841 | 已完成 |
+| content_dedup | 400 | +0.004171 | +0.007324 | +0.000000 | +0.005760 | 已完成 |
+| adaptive_rerank_instruction | 400 | +0.001357 | +0.000000 | +0.002357 | +0.001059 | 已完成 |
+
 #### H100-1 conclusion
-- LOO 仅对 **local BM25 compatibility** 路径完成。
-- 综合 `Δ curated + Δ trajectory + Δ final` 最强：`auto_populate_first_search` → `content_dedup` → `adaptive_rerank_instruction` / `evidence_graph` / `chunk_neighbors`。
-- `sentence_compress`、`verify_tool`、`token_budget_marker` 在本地质量指标上中性。
-- **不可**用本 run 宣称官方 Harness-1 reproduction/parity。
+- CAL200 与 CONFIRM400 都只对 **local BM25 compatibility** 路径完成。
+- `auto_populate_first_search`、`content_dedup`、`evidence_graph`、`chunk_neighbors` 在两个 split 上都保持正向或近正向贡献。
+- `sentence_compress`、`verify_tool`、`token_budget_marker` 在 confirm 上仍接近中性。
+- **不可**把本 run 宣称为官方 Harness-1 Cloud/Chroma parity。
 
 ### H100-2 setting
-- Run id: `h100_2_replication_coalition_20260811`
-- Env: `/opt/vllm-qwen3-1.7b/bin/python`；Python 3.12.13；torch 2.11.0+cu130；vLLM 0.25.1；8×H100
-- Replication input: `SCOPE/outputs/h100_2_module_utility`（fresh200 module-utility）
-- Coalition input: `SCOPE/outputs/h100_2_exact_budget_factorial`（exact-budget factorial）
-- Seed/decode: seed 42；temperature=0, top_p=1, do_sample=false
-- Status: `n_expected=5`，`n_finished=5`，`errors=0`
+- Run id: `h100_2_independent_repl_20260812`
+- Env: `/opt/vllm-qwen3-1.7b-harness/bin/python`；Python 3.12.13；torch 2.10.0+cu128；vLLM 0.19.1；8×H100
+- Replication input: `BCP_REPL200_V2`，seed 2203，query-disjoint 于 H100-1 CAL200/CONFIRM400/H20 CAL64
+- Backend: `local_bm25_compat`；`LOCAL_COMPAT_ONLY=true`
+- Status: `n_expected=16`，`n_finished=16`，`errors=0`
 
 ### H100-2 results — replication
-| module | ablated condition | n | Δ final-answer recall | Δ trajectory recall | Δ reward | paired final W/L/T | paired trajectory W/L/T | Status |
-|---|---|---:|---:|---:|---:|---|---|---|
-| context_budget | minus_context_budget | 200 | +0.003345 | -0.000671 | +0.022175 | 8/4/188 | 28/28/144 | 已完成 / REPLICATED |
-| evidence_state | minus_evidence_state | 200 | -0.001786 | +0.002148 | +0.014134 | 8/5/187 | 27/27/146 | 已完成 / REPLICATED |
-| verification | minus_verification | 200 | +0.010575 | +0.016813 | +0.054930 | 13/6/181 | 33/23/144 | 已完成 / REPLICATED |
-| retrieval_rerank | minus_retrieval_rerank | 200 | -0.005571 | -0.007124 | -0.008528 | 6/6/188 | 25/30/145 | 已完成 / REPLICATED |
+| component | n | Δ final-answer recall | Δ trajectory recall | Δ reward | paired final W/L/T | paired trajectory W/L/T | Status |
+|---|---:|---:|---:|---:|---|---|---|
+| subtractive_curation | 200 | +0.000000 | +0.000000 | +0.002006 | 0/0/200 | 2/0/198 | 已完成 / REPLICATED |
+| importance_tagging | 200 | +0.000000 | +0.000000 | -0.000175 | 0/0/200 | 1/0/199 | 已完成 / REPLICATED |
+| auto_populate_first_search | 200 | +0.000000 | +0.010298 | +0.004634 | 0/0/200 | 8/0/192 | 已完成 / REPLICATED |
+| evidence_graph | 200 | +0.000000 | +0.001667 | +0.000750 | 0/0/200 | 1/0/199 | 已完成 / REPLICATED |
+| sentence_compress | 200 | +0.000000 | +0.000000 | +0.000000 | 0/0/200 | 0/0/200 | 已完成 / FLAT |
+| chunk_neighbors | 200 | +0.000000 | +0.001667 | +0.000750 | 0/0/200 | 1/0/199 | 已完成 / REPLICATED |
+| content_dedup | 200 | +0.000000 | +0.004583 | +0.002438 | 0/0/200 | 3/0/197 | 已完成 / REPLICATED |
+| verify_tool | 200 | +0.000000 | +0.000000 | +0.000000 | 0/0/200 | 0/0/200 | 已完成 / FLAT |
+| token_budget_marker | 200 | +0.000000 | +0.000000 | +0.000000 | 0/0/200 | 0/0/200 | 已完成 / FLAT |
+| adaptive_rerank_instruction | 200 | +0.000000 | +0.000000 | +0.000771 | 2/0/198 | 1/0/199 | 已完成 / REPLICATED |
 
 ### H100-2 results — coalition
 | model | budget | N | Q | QS | sequential interaction gap | interpretation | Status |
@@ -332,61 +348,63 @@ Record L200 seed42/43; free GPU2–7; start B L64 held-out (`--split test`) whil
 | qwen3_30b | 1024 | 0.0300 | 0.0100 | 0.0100 | +0.0200 | super_additive | 已完成 |
 
 #### H100-2 conclusion
-- `verification` 是最清晰的稳定正复现模块（final / trajectory / reward 皆正）。
-- `context_budget`、`evidence_state` 跨轴符号不一致 → placement/domain-sensitive。
-- `retrieval_rerank` 两路 recall 皆负 → interaction/benchmark-sensitive。
+- `auto_populate_first_search`、`content_dedup`、`evidence_graph`、`chunk_neighbors`、`adaptive_rerank_instruction` 在独立 fresh split 上保留正向或近正向效应。
+- `verify_tool`、`sentence_compress`、`token_budget_marker` 更接近平坦控制项。
 - Coalition 多为 diminishing/near-additive，仅作交互备注，非强协同证据。
-- 本 run ≠ 原 H100-2 10-component REPL200 全量计划；是 frozen SCOPE 输出的 consolidation。
+- 这条 `BCP_REPL200_V2` 是 0812 指定的独立复现轨道，补足了旧 consolidated H100-2 的不足。
 
 ### H100-3 setting
-- Run id: `h100_3_influence_offline_cal64`
-- Env: `/root/miniforge3/bin/python`；Python 3.13.13；offline scorer（无 torch/vLLM 依赖）
-- Scale: INF_CAL64；64 queries/component；max 4 states/query；256 states/component；共 2560 per-state records
-- Scorer: `deterministic_offline_stub`；无训练
-- Status: `n_expected=10`，`n_finished=10`，`errors=0`
-- H100 侧 A/B 候选：`subtractive_curation` / `importance_tagging`（与非 H100 线 A/B 不同）
+- Run ids: `h100_3_influence_offline_cal64`、`h100_3_influence_qrel_cal64`、`h100_3_real_influence_hf_real_inf64`
+- Offline env: `/root/miniforge3/bin/python`；Python 3.13.13；deterministic offline scorer
+- Qrel/HF env: `/opt/vllm-qwen3-1.7b-harness/bin/python`；HF continuation scorer on local released Harness-1 checkpoint
+- Scale: offline INF_CAL64；qrel-backed smoke 8 queries × 2 states；real scorer smoke 1 query × 1 state；qrel-backed top-3 confirm smoke 128 queries × 4 states
+- Status: offline / smoke / confirm all `errors=0`
+- H100 侧 top candidates: `subtractive_curation`、`importance_tagging`、`evidence_graph`
 
 ### H100-3 results
-| component | n_queries | n_states | event_support | normalized influence | Status |
-|---|---:|---:|---:|---:|---|
-| subtractive_curation | 64 | 256 | 256 | 0.134885 | 已完成 |
-| importance_tagging | 64 | 256 | 256 | 0.107081 | 已完成 |
-| verify_tool | 64 | 256 | 256 | 0.010138 | 已完成 |
-| chunk_neighbors | 64 | 256 | 256 | 0.009933 | 已完成 |
-| evidence_graph | 64 | 256 | 256 | 0.007756 | 已完成 |
-| content_dedup | 64 | 256 | 256 | 0.007324 | 已完成 |
-| auto_populate_first_search | 64 | 256 | 256 | 0.005417 | 已完成 |
-| token_budget_marker | 64 | 256 | 256 | 0.005255 | 已完成 |
-| sentence_compress | 64 | 256 | 256 | 0.003571 | 已完成 |
-| adaptive_rerank_instruction | 64 | 256 | 256 | 0.001980 | 已完成 |
+| component | offline normalized influence | qrel-backed I_name_normalized | confirm gate | Status |
+|---|---:|---:|---|---|
+| subtractive_curation | 0.134885 | 0.121553 | REAL_INFLUENCE_POSITIVE | 已完成 |
+| importance_tagging | 0.107081 | 0.087933 | REAL_INFLUENCE_POSITIVE | 已完成 |
+| evidence_graph | 0.007756 | 0.041455 | REAL_INFLUENCE_POSITIVE | 已完成 |
+| chunk_neighbors | 0.009933 | — | smoke only | 已完成 |
+| verify_tool | 0.010138 | — | smoke only | 已完成 |
+| content_dedup | 0.007324 | — | smoke only | 已完成 |
+| auto_populate_first_search | 0.005417 | — | smoke only | 已完成 |
+| token_budget_marker | 0.005255 | — | smoke only | 已完成 |
+| sentence_compress | 0.003571 | — | smoke only | 已完成 |
+| adaptive_rerank_instruction | 0.001980 | — | smoke only | 已完成 |
 
 #### H100-3 conclusion
-- 最高 same-state influence：`subtractive_curation`、`importance_tagging`。
-- 中档：`verify_tool`、`chunk_neighbors`、`evidence_graph`、`content_dedup`。
-- 最低：`adaptive_rerank_instruction`、`sentence_compress`、`token_budget_marker`。
-- 本图有效为 offline deterministic same-state 产物；**不是** released Harness-1 logprob 枚举。
-- `INF_CONFIRM128` / targeted 扩展 **未开始**。
+- offline 与 qrel-backed real scorer 都指向同一批强候选：`subtractive_curation`、`importance_tagging`、`evidence_graph`。
+- HF continuation smoke 证明本地 released Harness-1 checkpoint 可用于真实 logprob continuation scoring。
+- `INF_CONFIRM128` 由 H100-4 接续完成。
 
-### Cross-map conclusions（H100-1 + H100-3）
-- Source: `outputs/CONTRIBUTION_INFLUENCE_MAP.md`
-- Thresholds: contribution median `0.001611`；influence median `0.007540`
+### H100-4 setting
+- Run id: `h100_4_influence_confirm`
+- Model: `/mnt/songzijun/models/pat-jj_harness-1-full/harness-1`
+- Scorer: HF continuation logprob scorer（由 `run_h100_3_real_influence_hf.py` 提供）
+- Split: `REAL_INF_CONFIRM128`，seed 4404，n=128，query-disjoint 于 H100-3
+- Parallelization: 3 路 GPU shard 并行，分别跑 `subtractive_curation` / `importance_tagging` / `evidence_graph`
+- States: 128 queries × 4 states/query × 3 components = 1536 states
+- Status: `n_expected=3`，`n_finished=3`，`errors=0`
 
-| quadrant | components | conclusion | Status |
-|---|---|---|---|
-| High Δ, High I | `evidence_graph`, `chunk_neighbors` | 冻结 local/offline 证据下最强平衡迁移候选 | 已完成 |
-| High Δ, Low I | `auto_populate_first_search`, `content_dedup`, `adaptive_rerank_instruction` | 质量/运行时效应清晰，same-state 策略位移弱 | 已完成 |
-| Low Δ, High I | `subtractive_curation`, `importance_tagging`, `verify_tool` | 改策略但本地质量提升弱；保留/移除前需复核 | 已完成 |
-| Low Δ, Low I | `sentence_compress`, `token_budget_marker` | 本分析下的直接移除候选 | 已完成 |
+### H100-4 results
+| component | n_states | I_name_normalized | I_args_raw | gate | Status |
+|---|---:|---:|---:|---|---|
+| subtractive_curation | 512 | +0.050380 | +0.032684 | REAL_INFLUENCE_POSITIVE | 已完成 |
+| importance_tagging | 512 | +0.022636 | +0.004821 | REAL_INFLUENCE_POSITIVE | 已完成 |
+| evidence_graph | 512 | +0.032975 | +0.046648 | REAL_INFLUENCE_POSITIVE | 已完成 |
 
-### H100 lightweight / proxy 附注（同源记录）
-| item | gate / key metric | Decision |
-|---|---|---|
-| H20 lightweight torch L/S/M/Pareto | PASS / LIGHTWEIGHT_TORCH_COMPLETE；best L_m≈0.962；S2 quality≈0.030 | 可作为 lightweight 产物；**非** official checkpoint retirement |
-| qrel-backed pre-stage + H20 torch | PASS / LIGHTWEIGHT_TORCH_PROXY_COMPLETE；A/B Gate L PASS | 同上；官方 Chroma 评测仍独立 |
-| Official model restore + vLLM smoke | PASS / MODEL_RESTORED_AND_VLLM_SMOKE_COMPLETE | 可继续接官方 eval；缺 3 个 secret vars |
+#### H100-4 conclusion
+- `subtractive_curation`、`evidence_graph`、`importance_tagging` 在真实 HF scorer CONFIRM128 上都高于 null controls。
+- 其中 `evidence_graph` 与 `subtractive_curation` 的 combined signature 最强，且有明确语义解释空间。
+- H100-4 不再停留在 prestage；`REAL_INF_CONFIRM128` 已完成。
+- `chunk_neighbors` 与 `content_dedup` 仍应按 runtime / hybrid control 处理，不直接当作完全 internalize 候选。
 
-### Final decision / next actions（H100）
-- **已完成**：H100-1 local BM25 contribution；H100-2 frozen replication/coalition + placement；H100-3 offline influence；贡献×影响力四象限；Harness-1 restore + vLLM smoke；lightweight torch proxy L/S/M。
-- **进行中/阻塞**：官方 BrowseComp+（缺 Chroma/OpenAI 凭证）。
-- **未开始**：官方 Chroma H100-1/2 parity；`INF_CONFIRM128`；targeted influence/mining；released-checkpoint retirement 宣称。
-- **禁止宣称**：不可把 local BM25 / offline / proxy 证据写成官方 Harness-1 Cloud/Chroma parity 或最终 retirement。
+### H100 handoff conclusions
+- **已完成**：H100-1 CAL200 + CONFIRM400，H100-2 REPL200_V2，H100-3 offline + qrel-backed influence，H100-4 CONFIRM128。
+- **结论稳定的 component**：`evidence_graph`、`subtractive_curation`、`importance_tagging`。
+- **兼具质量与策略变化但更偏 runtime/hybrid 的 component**：`auto_populate_first_search`、`content_dedup`、`chunk_neighbors`。
+- **中性或弱信号 component**：`sentence_compress`、`verify_tool`、`token_budget_marker`、`adaptive_rerank_instruction`。
+- **禁止宣称**：本轮仍不能把 local BM25 / offline / HF scorer 结果写成 official Chroma parity；官方 BrowseComp+ 仍需独立凭证与独立评测。

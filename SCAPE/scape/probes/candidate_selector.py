@@ -51,7 +51,10 @@ def select_candidates(
     enriched: list[dict[str, Any]] = []
     for r in rows:
         item = dict(r)
-        cid = str(item["component_id"])
+        cid = str(item.get("component_id") or item.get("component") or "")
+        if not cid:
+            raise KeyError("row is missing component_id/component")
+        item["component_id"] = cid
         item.setdefault("semantic_fraction", _semantic_fraction(cid))
         item["score"] = placement_score(item)
         item["runtime_anchor"] = is_forced_runtime_anchor(cid)
