@@ -28,11 +28,19 @@ SCAPE/
 
 ## GitHub
 
-与 `SCOPE/` 并列发布在 umbrella 仓库 `main`：
+发布在 umbrella 仓库 `ZijunSong/Capability_Evolution`（**没有**独立的 `ZijunSong/SCAPE`）：
 
 ```text
 https://github.com/ZijunSong/Capability_Evolution/tree/main/SCAPE
 ```
+
+H20 当前同步分支：
+
+```text
+https://github.com/ZijunSong/Capability_Evolution/tree/sync/h20-20260812
+```
+
+本工作树 `origin` = `git@github.com:ZijunSong/Capability_Evolution.git`。
 
 ## Quickstart (code only)
 

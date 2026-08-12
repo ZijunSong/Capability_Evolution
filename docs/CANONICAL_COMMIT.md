@@ -4,17 +4,20 @@
 
 | Field | Value |
 |---|---|
+| umbrella repo | `ZijunSong/Capability_Evolution` |
+| path on umbrella | `SCAPE/` (this working tree is a publishable SCAPE history) |
 | branch | `sync/h20-20260812` |
-| commit | `f63e4b8c16f780c072678e492c7436c0c2c9e0ee` |
+| commit | `65ce06e4dedca208cec63c1cfeb4e4757f15146c` |
 | date | 2026-08-12 |
 | host | H20 `/data/ppnm/Capability_Evolution/SCAPE` |
-| bundle | `artifacts/git/scape-h20-20260812.bundle` |
+| remote | `origin` → `git@github.com:ZijunSong/Capability_Evolution.git` |
+| URL | https://github.com/ZijunSong/Capability_Evolution/tree/sync/h20-20260812 |
 
 ## Integration status
 
-- GitHub push blocked (`Permission denied (publickey)`). See `GITHUB_SYNC_BLOCKED.md`.
-- `origin/sync/h100-20260812` not available yet → `integration/scape-20260812` deferred.
-- Until integration lands, treat `f63e4b8` as the H20 working canonical for true-SCAPE plumbing.
+- H20 sync branch **pushed** to `Capability_Evolution`.
+- Do **not** use `ZijunSong/SCAPE` (repo does not exist).
+- H100 sync (`sync/h100-20260812`) still pending on the same umbrella → then `integration/scape-20260812`.
 
 ## Assertions for new experiments
 

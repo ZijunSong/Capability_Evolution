@@ -6,8 +6,8 @@
 - branch (at audit): `main`
 - HEAD: `608068d56067419317f2cea120ebdc6fa099479b`
 - remotes:
-  - `origin` → `git@github.com:ZijunSong/SCAPE.git`
-  - `capability-evolution` → `git@github.com:ZijunSong/Capability_Evolution.git`
+  - `origin` → `git@github.com:ZijunSong/Capability_Evolution.git` (**canonical**)
+  - ~~`origin` → `ZijunSong/SCAPE.git`~~ — **does not exist; removed**
 
 ## Dirty tree summary
 
