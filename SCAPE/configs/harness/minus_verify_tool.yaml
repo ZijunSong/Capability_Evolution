@@ -1,0 +1,6 @@
+name: minus_verify_tool
+description: Harness-1 full operating point with only verify_tool disabled.
+base: full.yaml
+overrides:
+  components:
+    verify_tool: false

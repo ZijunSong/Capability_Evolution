@@ -1,0 +1,86 @@
+{
+  "taxonomy_version": "scape_v1",
+  "upstream": "pat-jj/harness-1",
+  "components": {
+    "subtractive_curation": {
+      "upstream_flag": "V8D_SUBTRACTIVE_CURATION",
+      "enabled": true,
+      "semantic_or_runtime": "semantic",
+      "changes_context": true,
+      "changes_state": true,
+      "changes_execution": false
+    },
+    "importance_tagging": {
+      "upstream_flag": "V8D_IMPORTANCE_TAGGING",
+      "enabled": true,
+      "semantic_or_runtime": "semantic",
+      "changes_context": true,
+      "changes_state": true,
+      "changes_execution": false
+    },
+    "auto_populate_first_search": {
+      "upstream_flag": "V8D_AUTO_POPULATE_FIRST_SEARCH",
+      "enabled": true,
+      "semantic_or_runtime": "semantic",
+      "changes_context": true,
+      "changes_state": true,
+      "changes_execution": true
+    },
+    "evidence_graph": {
+      "upstream_flag": "V8D_EVIDENCE_GRAPH",
+      "enabled": true,
+      "semantic_or_runtime": "semantic",
+      "changes_context": true,
+      "changes_state": true,
+      "changes_execution": false
+    },
+    "sentence_compress": {
+      "upstream_flag": "V8D_SENTENCE_COMPRESS",
+      "enabled": true,
+      "semantic_or_runtime": "semantic",
+      "changes_context": true,
+      "changes_state": false,
+      "changes_execution": false
+    },
+    "chunk_neighbors": {
+      "upstream_flag": "V8D_CHUNK_NEIGHBORS",
+      "enabled": false,
+      "semantic_or_runtime": "runtime",
+      "changes_context": true,
+      "changes_state": false,
+      "changes_execution": true
+    },
+    "content_dedup": {
+      "upstream_flag": "V8D_CONTENT_DEDUP",
+      "enabled": true,
+      "semantic_or_runtime": "hybrid",
+      "changes_context": true,
+      "changes_state": true,
+      "changes_execution": true
+    },
+    "verify_tool": {
+      "upstream_flag": "V8D_VERIFY_TOOL",
+      "enabled": true,
+      "semantic_or_runtime": "semantic",
+      "changes_context": true,
+      "changes_state": true,
+      "changes_execution": true
+    },
+    "token_budget_marker": {
+      "upstream_flag": "V8D_TOKEN_BUDGET_MARKER",
+      "enabled": true,
+      "semantic_or_runtime": "runtime",
+      "changes_context": true,
+      "changes_state": false,
+      "changes_execution": false
+    },
+    "adaptive_rerank_instruction": {
+      "upstream_flag": "V8D_ADAPTIVE_RERANK_INSTRUCTION",
+      "enabled": false,
+      "semantic_or_runtime": "semantic",
+      "changes_context": true,
+      "changes_state": false,
+      "changes_execution": false
+    }
+  }
+}

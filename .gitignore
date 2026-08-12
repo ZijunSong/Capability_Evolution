@@ -80,6 +80,7 @@ model_export/adapter/
 **/.git/
 !/.git/
 harness-1-upstream/
+SCAPE/external/harness-1/
 **/node_modules/
 
 # --- OS / editor ---
@@ -109,6 +110,7 @@ Thumbs.db
 !SCOPE/artifacts/baselines/**
 
 # --- Markdown: only README.md, result-record.md, method.md may be committed ---
+# SCAPE docs/plans are tracked (independent method line).
 **/*.md
 !README.md
 !**/README.md
@@ -116,3 +118,4 @@ Thumbs.db
 !**/result-record.md
 !method.md
 !**/method.md
+!SCAPE/**/*.md

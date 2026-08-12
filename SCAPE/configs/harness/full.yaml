@@ -1,0 +1,30 @@
+name: full
+description: Harness-1 full operating point for SCAPE contribution runs.
+components:
+  adaptive_rerank_instruction: true
+  importance_tagging: true
+  subtractive_curation: true
+  auto_populate_first_search: true
+  evidence_graph: true
+  sentence_compress: true
+  content_dedup: true
+  chunk_neighbors: true
+  verify_tool: true
+  token_budget_marker: true
+runtime:
+  search_display_limit: 10
+  search_token_budget: 4096
+  max_obs_chars: 15000
+  doc_snippet_chars: 120
+  curated_doc_chars: 0
+  max_turns_env: 35
+eval:
+  dataset: browsecompplus
+  split: test
+  collection_split: test
+  seed: 1101
+  temperature: 0.0
+  do_sample: false
+  top_p: 1.0
+  max_turns: 40
+  max_tokens: 2048

@@ -1,0 +1,6 @@
+name: minus_importance_tagging
+description: Harness-1 full operating point with only importance_tagging disabled.
+base: full.yaml
+overrides:
+  components:
+    importance_tagging: false

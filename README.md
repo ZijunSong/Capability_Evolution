@@ -1,6 +1,6 @@
 # Capability Evolution
 #
-# Umbrella repo for SCOPE / HATCH / RECAST.
+# Umbrella repo for SCOPE / SCAPE / HATCH / RECAST.
 # Phase-0 SCOPE baselines are frozen at tag `scope-phase0-freeze`.
 # Do not optimize or overwrite Full Harness v2 / Minimal Runtime configs
 # or their Phase-0 metrics after that tag.
@@ -9,7 +9,8 @@
 
 ```text
 Capability_Evolution/
-├── SCOPE/     # selective capability internalization (active)
+├── SCOPE/     # selective capability internalization (legacy / read-mostly)
+├── SCAPE/     # Harness-1 system-level capability migration (active)
 ├── HATCH/     # placeholder
 ├── RECAST/    # placeholder
 └── .gitignore
