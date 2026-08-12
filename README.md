@@ -28,16 +28,10 @@ SCAPE/
 
 ## GitHub
 
-当前独立历史已推送到：
+与 `SCOPE/` 并列发布在 umbrella 仓库 `main`：
 
 ```text
-https://github.com/ZijunSong/Capability_Evolution/tree/scape/main
-```
-
-本地仍配置 `origin -> git@github.com:ZijunSong/SCAPE.git`（独立仓位）。一旦该空仓创建完成，执行：
-
-```bash
-git push -u origin main
+https://github.com/ZijunSong/Capability_Evolution/tree/main/SCAPE
 ```
 
 ## Quickstart (code only)

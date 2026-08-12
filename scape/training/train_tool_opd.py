@@ -29,12 +29,17 @@ def run_micro_distill(
     synthetic_d_post: float | None = None,
     dry_run: bool = True,
     teacher_strategy: str = "ema",
+    same_state_jsonl: Path | None = None,
+    epochs: int = 1,
 ) -> dict[str, Any]:
     """Train (or dry-run) one sample-size cell from a fixed base checkpoint.
 
     Important: 512 / 2k / 8k cells must each start from the same base_checkpoint,
     not continue from the previous cell's weights (unless a separate curriculum
     experiment is explicitly named).
+
+    When dry_run=False, uses scape.training.hf_tool_opd (true tool-token KL).
+    Never calls SCOPE train_opd.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     teacher = FullViewTeacher(
@@ -60,13 +65,61 @@ def run_micro_distill(
             "seed": seed,
             "base_checkpoint": base_checkpoint,
             "dry_run": dry_run,
+            "legacy_scope_path_used": False,
             **teacher.manifest_fields(),
             "dropout": schedule.to_dict(),
         },
     )
     write_run_manifest(output_dir / "RUN_MANIFEST.json", manifest)
 
-    # Placeholder optimization trace for scaffolding; real trainer plugs in here.
+    if not dry_run:
+        from scape.collection.same_state import collect_same_state_dataset, load_same_state_jsonl
+        from scape.training.hf_tool_opd import ScapeHFToolOPD, run_tool_opd_train
+
+        if same_state_jsonl and Path(same_state_jsonl).is_file():
+            rows = load_same_state_jsonl(Path(same_state_jsonl))[:n_samples]
+        else:
+            rows = collect_same_state_dataset(
+                n_states=n_samples, component_id=component_id, seed=seed
+            )
+        eval_rows = rows[: max(1, min(32, len(rows) // 4))]
+        backend = ScapeHFToolOPD(model_path=base_checkpoint)
+        trained = run_tool_opd_train(
+            backend, rows, eval_rows, loss_path="tool_token_kl", epochs=epochs
+        )
+        summary = {
+            "component_id": component_id,
+            "n_samples": n_samples,
+            "seed": seed,
+            "base_checkpoint": base_checkpoint,
+            "d_pre": trained["D_pre"],
+            "d_post": trained["D_post"],
+            "L_m": trained["L_m"],
+            "mean_loss": trained["mean_train_loss"],
+            "dry_run": False,
+            "legacy_scope_path_used": False,
+            "loss_impl": trained["loss_impl"],
+            "teacher": teacher.manifest_fields(),
+            **{k: trained[k] for k in trained if k.startswith(("name_", "arg_"))},
+        }
+        (output_dir / "summary.json").write_text(
+            json.dumps(summary, indent=2) + "\n", encoding="utf-8"
+        )
+        write_status_live(
+            output_dir / "STATUS_LIVE.md",
+            stage="L",
+            run_id=manifest["run_id"],
+            n_expected=1,
+            n_finished=1,
+            extra={"L_m": summary["L_m"]},
+        )
+        write_run_manifest(
+            output_dir / "RUN_MANIFEST.json",
+            finalize_run_manifest(manifest, exit_code=0, completed_shards=["main"]),
+        )
+        return summary
+
+    # Dry-run scaffolding path
     losses = []
     for step in range(0, 8):
         mask = schedule.sample_mask(step)
@@ -85,6 +138,7 @@ def run_micro_distill(
         "L_m": learnability_score(d_pre, d_post),
         "mean_loss": sum(x["loss"] for x in losses) / len(losses),
         "dry_run": dry_run,
+        "legacy_scope_path_used": False,
         "teacher": teacher.manifest_fields(),
     }
     (output_dir / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
@@ -111,8 +165,16 @@ def main(argv: Sequence[str] | None = None) -> None:
     ap.add_argument("--base-checkpoint", required=True)
     ap.add_argument("--d-pre", type=float, default=1.0)
     ap.add_argument("--out", type=Path, required=True)
-    ap.add_argument("--dry-run", action="store_true", default=True)
+    ap.add_argument("--dry-run", action="store_true", default=False)
+    ap.add_argument("--no-dry-run", action="store_true", default=False)
+    ap.add_argument("--same-state-jsonl", type=Path, default=None)
+    ap.add_argument("--epochs", type=int, default=1)
     args = ap.parse_args(argv)
+    dry = True
+    if args.no_dry_run:
+        dry = False
+    elif args.dry_run:
+        dry = True
     summary = run_micro_distill(
         output_dir=args.out,
         component_id=args.component_id,
@@ -120,7 +182,9 @@ def main(argv: Sequence[str] | None = None) -> None:
         seed=args.seed,
         base_checkpoint=args.base_checkpoint,
         d_pre=args.d_pre,
-        dry_run=args.dry_run,
+        dry_run=dry,
+        same_state_jsonl=args.same_state_jsonl,
+        epochs=args.epochs,
     )
     print(json.dumps(summary, indent=2))
 

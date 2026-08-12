@@ -213,14 +213,21 @@ def tool_loss_mask_from_response(
 
 
 def legal_tool_names(extra: Iterable[str] | None = None) -> list[str]:
+    # Harness-1 action interface (canonical) + legacy aliases for older fixtures.
     base = [
-        "search",
-        "grep",
+        "fan_out_search",
+        "search_corpus",
+        "grep_corpus",
         "read_document",
+        "review_docs",
         "curate",
         "verify",
         "end_search",
         "multi_tool_use",
+        "prune_chunks",
+        # legacy / provisional aliases
+        "search",
+        "grep",
     ]
     if extra:
         base.extend(list(extra))
