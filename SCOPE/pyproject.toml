@@ -3,7 +3,7 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["harness*", "datagen*", "training*", "inference*"]
+include = ["harness*", "datagen*", "training*", "inference*", "experiments*"]
 exclude = ["tests*", "harness-1-upstream*"]
 
 [project]

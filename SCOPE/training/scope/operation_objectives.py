@@ -28,6 +28,9 @@ class ObjectiveId(str, Enum):
     O5 = "discriminative_ce_sum"
     O6 = "discriminative_ce_mean"
     O7 = "discriminative_ce_r64"
+    # A6.1 extensions (orthogonal to O0–O7 verbalizer family)
+    CLASSIFICATION_HEAD = "classification_head"
+    SEQUENCE_CE_PLUS_OPERATION = "sequence_ce_plus_operation"
 
 
 class ScoreNorm(str, Enum):
@@ -72,7 +75,9 @@ def _completion_score(
     target_logits = shift_logits[:, start:, :]
     if target_labels.numel() == 0:
         return torch.zeros((), device=device)
-    log_probs = F.log_softmax(target_logits, dim=-1)
+    # Cast to fp32 before log_softmax so bf16 weights do not collapse near-ties
+    # that vLLM (fp32 logprobs) still distinguishes.
+    log_probs = F.log_softmax(target_logits.float(), dim=-1)
     tok_lp = log_probs.gather(2, target_labels.unsqueeze(-1)).squeeze(-1)
     if norm == ScoreNorm.SUM:
         return tok_lp.sum()
@@ -207,6 +212,14 @@ def objective_math_description(objective: str) -> dict[str, Any]:
         ObjectiveId.O6.value: {
             "form": "CE with MEAN logprob",
             "note": "O1 variant — mean over verbalizer tokens",
+        },
+        ObjectiveId.CLASSIFICATION_HEAD.value: {
+            "form": "CE(W · h_last_prompt + b, target) over {KEEP, SKIP}",
+            "note": "Linear head on LM hidden state; bypasses verbalizer scoring",
+        },
+        ObjectiveId.SEQUENCE_CE_PLUS_OPERATION.value: {
+            "form": "λ_seq · sample_normalized_action_CE + λ_op · discriminative_CE([s_KEEP,s_SKIP])",
+            "note": "Hybrid sequence imitation + typed operation discrimination",
         },
     }
     return forms.get(objective, {"form": "unknown", "note": ""})

@@ -21,6 +21,10 @@ class CapabilityId(str, Enum):
     VERIFICATION_DECISION = "verification_decision"
     EXTERNAL_VERIFICATION = "external_verification"
     DETERMINISTIC_TRUNCATION = "deterministic_truncation"
+    # Round14 capability portfolio aliases
+    EVIDENCE_ADMISSION = "evidence_admission"
+    CONTEXT_BUDGET_ROUTING = "context_budget_routing"
+    ROLLBACK_LITE = "rollback_lite"
     # Future / audit-only
     EVIDENCE_PRIORITIZATION = "evidence_prioritization"
     SUBTRACTIVE_CURATION = "subtractive_curation"
@@ -52,6 +56,7 @@ CAPABILITY_DEFAULT_MODULE: dict[CapabilityId, str] = {
     CapabilityId.EVIDENCE_PRIORITIZATION: "evidence_state",
     CapabilityId.SUBTRACTIVE_CURATION: "evidence_state",
     CapabilityId.EVIDENCE_CURATION: "evidence_state",
+    CapabilityId.EVIDENCE_ADMISSION: "evidence_state",
     CapabilityId.MISSING_PRIMARY_SOURCE: "evidence_state",
     CapabilityId.PREMATURE_STOP: "verification",
     CapabilityId.STOP_DECISION: "verification",
@@ -59,6 +64,8 @@ CAPABILITY_DEFAULT_MODULE: dict[CapabilityId, str] = {
     CapabilityId.EXTERNAL_VERIFICATION: "verification",
     CapabilityId.INVALID_CITATION: "verification",
     CapabilityId.DETERMINISTIC_TRUNCATION: "context_budget",
+    CapabilityId.CONTEXT_BUDGET_ROUTING: "context_budget",
+    CapabilityId.ROLLBACK_LITE: "recovery",
     CapabilityId.REPEATED_QUERY: "budget_control",
     CapabilityId.BUDGET_EXHAUSTION: "budget_control",
 }
@@ -76,6 +83,8 @@ E0_PROBE_CAPABILITIES: tuple[CapabilityId, ...] = (
 # Map E0 probe names to shadow/audit capability ids
 E0_CAPABILITY_ALIASES: dict[CapabilityId, CapabilityId] = {
     CapabilityId.STOP_DECISION: CapabilityId.PREMATURE_STOP,
+    CapabilityId.EVIDENCE_ADMISSION: CapabilityId.EVIDENCE_CURATION,
+    CapabilityId.CONTEXT_BUDGET_ROUTING: CapabilityId.DETERMINISTIC_TRUNCATION,
 }
 
 # Map legacy closed-set reason codes → capability

@@ -34,6 +34,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--route-filter", type=str, default=None)
     p.add_argument("--seed", type=int, default=None)
     p.add_argument("--class-balancing", action="store_true", default=None)
+    p.add_argument("--sequence-ce-coef", type=float, default=None)
+    p.add_argument("--operation-ce-coef", type=float, default=None)
+    p.add_argument("--max-steps", type=int, default=None)
+    p.add_argument("--lora-rank", type=int, default=None)
+    p.add_argument("--lora-alpha", type=int, default=None)
     return p.parse_args()
 
 
@@ -62,8 +67,16 @@ def main() -> None:
         batch_size=int(train_cfg.get("batch_size", 4)),
         grad_accum=int(train_cfg.get("grad_accum", 4)),
         max_length=int(train_cfg.get("max_length", 4096)),
-        lora_rank=int(train_cfg.get("lora_rank", 16)),
-        lora_alpha=int(train_cfg.get("lora_alpha", 32)),
+        lora_rank=int(
+            args.lora_rank
+            if args.lora_rank is not None
+            else train_cfg.get("lora_rank", 16)
+        ),
+        lora_alpha=int(
+            args.lora_alpha
+            if args.lora_alpha is not None
+            else train_cfg.get("lora_alpha", 32)
+        ),
         warmup_ratio=float(train_cfg.get("warmup_ratio", 0.03)),
         device=str(train_cfg.get("device", "cuda")),
         loss_mode=args.loss_mode or sdi.get("loss_mode", "sample_normalized_action_ce"),
@@ -83,6 +96,21 @@ def main() -> None:
             args.class_balancing
             if args.class_balancing is not None
             else bool(sdi.get("class_balancing", False))
+        ),
+        sequence_ce_coef=float(
+            args.sequence_ce_coef
+            if args.sequence_ce_coef is not None
+            else sdi.get("sequence_ce_coef", 1.0)
+        ),
+        operation_ce_coef=float(
+            args.operation_ce_coef
+            if args.operation_ce_coef is not None
+            else sdi.get("operation_ce_coef", 1.0)
+        ),
+        max_steps=(
+            args.max_steps
+            if args.max_steps is not None
+            else train_cfg.get("max_steps")
         ),
     )
 

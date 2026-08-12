@@ -1,0 +1,36 @@
+base_model: Qwen2.5-7B-Instruct
+dataset: browsecomp_plus
+train_manifest: artifacts/datasets/round2_audit_100q/query_manifest.json
+valid_manifest: artifacts/datasets/round2_audit_100q/query_manifest.json
+test_manifest: artifacts/datasets/round2_audit_100q/query_manifest.json
+runtime_config: harness/configs/modules_minimal_v2.yaml
+retriever: bm25
+prompt_renderer: default
+decision_state_schema: v2
+shadow_source: same_state_on_policy
+verification_mode: full_gate
+routing_mode: endorse_correct_balanced
+target_format: typed_operation_o7
+objective: discriminative_ce
+lora_rank: 64
+lora_alpha: 128
+learning_rate: 0.0002
+epochs: 1.0
+effective_batch_size: 8
+seed: 42
+max_turns: 35
+max_tokens: 2048
+temperature: 1.0
+threshold: 0.0
+capability: duplicate_evidence
+experiment_id: a8_old_contract_calibrated_tau
+type: ablation
+group: a8_contract_threshold
+method: scope_sdi
+variant: a8_old_contract_calibrated_tau
+changed_factor: contract_threshold
+status: IMPLEMENTED
+output_dir: outputs/iclr_ablations/a8_contract_threshold/a8_old_contract_calibrated_tau/seed_42
+extras:
+  contract: old
+  calibrated: true

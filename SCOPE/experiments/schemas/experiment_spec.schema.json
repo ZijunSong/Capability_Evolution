@@ -1,0 +1,38 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ExperimentSpec",
+  "type": "object",
+  "required": [
+    "experiment_id",
+    "group",
+    "method",
+    "capability",
+    "variant",
+    "changed_factor",
+    "base_model",
+    "dataset",
+    "runtime_config",
+    "seed",
+    "output_dir"
+  ],
+  "properties": {
+    "experiment_id": { "type": "string" },
+    "group": { "type": "string" },
+    "method": { "type": "string" },
+    "capability": { "type": "string" },
+    "variant": { "type": "string" },
+    "changed_factor": { "type": "string" },
+    "base_model": { "type": "string" },
+    "checkpoint": { "type": ["string", "null"] },
+    "dataset": { "type": "string" },
+    "runtime_config": { "type": "string" },
+    "seed": { "type": "integer" },
+    "output_dir": { "type": "string" },
+    "objective": { "type": "string" },
+    "threshold": { "type": "number" },
+    "lora_rank": { "type": "integer" },
+    "max_turns": { "type": "integer" },
+    "max_tokens": { "type": "integer" },
+    "temperature": { "type": "number" }
+  }
+}

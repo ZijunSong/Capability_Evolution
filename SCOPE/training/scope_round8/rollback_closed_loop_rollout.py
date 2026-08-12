@@ -182,6 +182,7 @@ async def main_async(args: argparse.Namespace) -> None:
                 soft_replan_only=args.soft_replan_only,
                 hint=hint,
                 checkpoint_label=args.variant,
+                disable_replan=True,
             ),
             vllm_scorer=scorer,
         )

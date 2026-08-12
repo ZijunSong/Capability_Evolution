@@ -87,7 +87,7 @@ def main() -> None:
     transitions = []
     mode = "vllm_browsecomp"
 
-    if args.mock_rollout or (args.checkpoint is None and not args.queries_json):
+    if args.mock_rollout:
         worker = BrowseCompRolloutWorker(
             rollout_config,
             student_config=student_cfg,
@@ -126,8 +126,8 @@ def main() -> None:
         )
         vllm_rollout = build_vllm_rollout_backend_from_env(
             tokenizer_path=args.model_path,
-            base_url=args.vllm_url if not llm_api_configured() else None,
-            model_name=args.vllm_model_name if not llm_api_configured() else None,
+            base_url=args.vllm_url,
+            model_name=args.vllm_model_name,
         )
         transitions = build_transitions_from_rollout(
             vllm_rollout,
@@ -145,8 +145,8 @@ def main() -> None:
         "mode": mode,
         "architecture": "vllm_rollout + hf_train" if mode == "vllm_browsecomp" else mode,
         "n_transitions": len(transitions),
-        "vllm_url": args.vllm_url if not llm_api_configured() else None,
-        **(llm_manifest_fields() if llm_api_configured() else {}),
+        "vllm_url": args.vllm_url,
+        "vllm_model_name": args.vllm_model_name,
         "model_path": args.model_path,
     }
     (output_dir / "rollout_manifest.json").write_text(

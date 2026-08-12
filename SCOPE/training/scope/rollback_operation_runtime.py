@@ -42,6 +42,9 @@ class RollbackOperationRuntimeConfig:
     soft_replan_only: bool = False
     hint: str = ""
     checkpoint_label: str = ""
+    # Round10 / followup contract: closed-loop must share disable_replan with
+    # offline + frozen-live canonical inference (see CanonicalRollbackOperationScorer).
+    disable_replan: bool = True
 
 
 def pick_rollback_checkpoint(
@@ -174,6 +177,7 @@ class _QueryRollbackContext:
             score_rollback=score_map[RollbackOperation.ROLLBACK_TO.value],
             threshold=self.parent.config.threshold,
             candidate_checkpoint_id=ck_pick,
+            disable_replan=bool(self.parent.config.disable_replan),
         )
         op = decision.predicted_operation
         if self.parent.config.soft_replan_only and op == RollbackOperation.ROLLBACK_TO:

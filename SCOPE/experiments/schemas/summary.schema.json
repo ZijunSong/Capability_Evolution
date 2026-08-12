@@ -1,0 +1,20 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ExperimentSummary",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "experiment_id",
+    "status",
+    "metrics"
+  ],
+  "properties": {
+    "schema_version": { "type": "string" },
+    "experiment_id": { "type": "string" },
+    "status": { "type": "string" },
+    "metrics": { "type": "object" },
+    "n_queries": { "type": "integer" },
+    "errors": { "type": "array" },
+    "notes": { "type": "string" }
+  }
+}

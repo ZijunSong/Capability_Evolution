@@ -66,8 +66,23 @@ class OPDTrainer:
 
     def save_checkpoint(self, name: str = "checkpoint.json") -> Path:
         path = self.output_dir / name
-        path.write_text(
-            json.dumps({"transitions": len(self.buffer), "status": "saved"}),
-            encoding="utf-8",
-        )
+        payload: dict[str, Any] = {
+            "transitions": len(self.buffer),
+            "status": "saved",
+        }
+        # Persist HF weights when using HFTrainBackend so closed-loop eval can serve them.
+        hf_dir = self.output_dir / "hf_model"
+        student = self.student
+        model = getattr(student, "model", None)
+        tokenizer = getattr(student, "tokenizer", None)
+        if model is not None and hasattr(model, "save_pretrained"):
+            hf_dir.mkdir(parents=True, exist_ok=True)
+            model.save_pretrained(hf_dir, safe_serialization=True)
+            if tokenizer is not None and hasattr(tokenizer, "save_pretrained"):
+                tokenizer.save_pretrained(hf_dir)
+            payload["hf_model_dir"] = str(hf_dir)
+            payload["servable"] = True
+        else:
+            payload["servable"] = False
+        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         return path

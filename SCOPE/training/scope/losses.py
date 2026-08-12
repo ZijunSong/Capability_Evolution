@@ -29,6 +29,9 @@ class LossMode(str, Enum):
     SINGLE_TOKEN = "single_token"
     DISCRIMINATIVE_CE_SUM = "discriminative_ce_sum"
     DISCRIMINATIVE_CE_MEAN = "discriminative_ce_mean"
+    # A6 extensions
+    CLASSIFICATION_HEAD = "classification_head"
+    SEQUENCE_CE_PLUS_OPERATION = "sequence_ce_plus_operation"
 
 
 @dataclass
@@ -38,6 +41,9 @@ class SDILossConfig:
     label_smoothing: float = 0.0
     loss_mode: LossMode = LossMode.SAMPLE_NORMALIZED_ACTION_CE
     route_balancing: bool = False
+    # For SEQUENCE_CE_PLUS_OPERATION: L = seq_coef * L_seq + op_coef * L_op
+    sequence_ce_coef: float = 1.0
+    operation_ce_coef: float = 1.0
 
 
 @dataclass

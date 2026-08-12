@@ -26,7 +26,10 @@ def _split_query_ids(split: str) -> set[str] | None:
         raise FileNotFoundError(f"Missing split file: {_SPLITS_PATH}")
     data = json.loads(_SPLITS_PATH.read_text(encoding="utf-8"))
     if split == "train":
-        return set(data["train_query_ids"])
+        if "train_query_ids" in data:
+            return set(data["train_query_ids"])
+        # browsecompplus_splits.json stores train as sft ∪ rl, not train_query_ids
+        return set(data.get("sft_query_ids", [])) | set(data.get("rl_query_ids", []))
     if split == "test":
         return set(data["test_query_ids"])
     if split == "sft":

@@ -12,6 +12,14 @@ from peft import LoraConfig, get_peft_model
 from torch.utils.data import DataLoader, Dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer, get_linear_schedule_with_warmup
 
+from training.scope.classification_head import (
+    DupOperationClassificationHead,
+    ClassificationHeadConfig,
+    classification_head_loss,
+    predict_operation_from_head,
+    resolve_hidden_size,
+    trainable_parameter_count,
+)
 from training.scope.collator import collate_sdi_batch
 from training.scope.losses import LossMode, SDILossConfig, compute_sdi_loss, operation_balance_weights
 from training.scope.compact_target import compact_target_from_sample
@@ -61,6 +69,11 @@ class SDITrainConfig:
     compact_target: bool = False
     route_filter: str | None = None  # "ENDORSE" | "CORRECT" | None
     seed: int = 42
+    # A6 hybrid: L = sequence_ce_coef * L_seq + operation_ce_coef * L_op
+    sequence_ce_coef: float = 1.0
+    operation_ce_coef: float = 1.0
+    classification_head_dropout: float = 0.0
+    max_steps: int | None = None
 
 
 class DupSDITrainer:
@@ -115,6 +128,23 @@ class DupSDITrainer:
         if cfg.loss_mode == LossMode.SINGLE_TOKEN.value:
             self._typed_tokens = resolve_typed_tokens(self.tokenizer)
 
+        self.classification_head: DupOperationClassificationHead | None = None
+        if cfg.loss_mode == LossMode.CLASSIFICATION_HEAD.value:
+            head_dir = Path(cfg.adapter_path) if cfg.adapter_path else None
+            if head_dir is not None and (head_dir / "classification_head.pt").exists():
+                self.classification_head = DupOperationClassificationHead.load(
+                    head_dir, device=self.device
+                )
+            else:
+                hidden = resolve_hidden_size(self.model)
+                self.classification_head = DupOperationClassificationHead(
+                    ClassificationHeadConfig(
+                        hidden_size=hidden,
+                        num_classes=2,
+                        dropout=cfg.classification_head_dropout,
+                    )
+                ).to(self.device)
+
     def _operation_objective_id(self) -> str:
         mode = self.cfg.loss_mode
         mapping = {
@@ -152,6 +182,11 @@ class DupSDITrainer:
         LossMode.SINGLE_TOKEN.value,
         LossMode.DISCRIMINATIVE_CE_SUM.value,
         LossMode.DISCRIMINATIVE_CE_MEAN.value,
+    })
+
+    _A6_SPECIAL_MODES = frozenset({
+        LossMode.CLASSIFICATION_HEAD.value,
+        LossMode.SEQUENCE_CE_PLUS_OPERATION.value,
     })
 
     def _operation_context(self, sample: dict[str, Any]) -> tuple[str | None, list[str]]:
@@ -214,9 +249,54 @@ class DupSDITrainer:
             "n_active": float(len(losses)),
         }
 
-    def _forward_loss(self, batch_examples: list[dict[str, Any]]) -> tuple[torch.Tensor, dict[str, float]]:
-        if self.cfg.loss_mode in self._OPERATION_LOSS_MODES:
-            return self._forward_loss_operation_ce(batch_examples)
+    def _forward_loss_classification_head(
+        self, batch_examples: list[dict[str, Any]]
+    ) -> tuple[torch.Tensor, dict[str, float]]:
+        if self.classification_head is None:
+            raise RuntimeError("classification_head mode requires an initialized head")
+        losses: list[torch.Tensor] = []
+        ops: list[str] = []
+        for ex in batch_examples:
+            tgt = self._sample_target_operation(ex)
+            if tgt is None:
+                continue
+            ops.append(tgt.value)
+            cid, curated = self._operation_context(ex)
+            losses.append(
+                classification_head_loss(
+                    self.model,
+                    self.classification_head,
+                    self.tokenizer,
+                    self._state_text(ex),
+                    tgt,
+                    device=self.device,
+                    candidate_id=cid,
+                    curated_document_ids=curated,
+                    max_length=self.cfg.max_length,
+                )
+            )
+        if not losses:
+            z = torch.zeros((), device=self.device, requires_grad=True)
+            return z, {"loss": 0.0, "sdi_loss": 0.0, "kl_loss": 0.0, "n_active": 0.0}
+        w = operation_balance_weights(
+            ops, enabled=self.cfg.class_balancing or self.cfg.route_balancing
+        ).to(self.device)
+        stacked = torch.stack(losses)
+        loss = (stacked * w).sum() / w.sum().clamp(min=1e-8)
+        return loss, {
+            "loss": float(loss.detach().item()),
+            "sdi_loss": float(loss.detach().item()),
+            "kl_loss": 0.0,
+            "n_active": float(len(losses)),
+            "head_loss": float(loss.detach().item()),
+        }
+
+    def _forward_loss_token_ce(
+        self,
+        batch_examples: list[dict[str, Any]],
+        *,
+        loss_mode: str,
+    ) -> tuple[torch.Tensor, dict[str, float]]:
         batch = collate_sdi_batch(
             batch_examples,
             self.tokenizer,
@@ -229,7 +309,7 @@ class DupSDITrainer:
 
         logits = self.model(input_ids=input_ids, attention_mask=attention_mask).logits
         ref_logits = None
-        if self.ref_model is not None:
+        if self.ref_model is not None and self.cfg.kl_coef > 0:
             with torch.no_grad():
                 ref_logits = self.ref_model(
                     input_ids=input_ids, attention_mask=attention_mask
@@ -242,7 +322,7 @@ class DupSDITrainer:
             ref_logits=ref_logits,
             config=SDILossConfig(
                 kl_coef=self.cfg.kl_coef,
-                loss_mode=LossMode(self.cfg.loss_mode),
+                loss_mode=LossMode(loss_mode),
                 route_balancing=self.cfg.route_balancing,
             ),
         )
@@ -253,6 +333,44 @@ class DupSDITrainer:
             "n_active": float(out.n_active),
         }
         return out.loss, metrics
+
+    def _forward_loss_sequence_plus_operation(
+        self, batch_examples: list[dict[str, Any]]
+    ) -> tuple[torch.Tensor, dict[str, float]]:
+        """Hybrid: sample-normalized action CE + discriminative operation CE."""
+        seq_loss, seq_m = self._forward_loss_token_ce(
+            batch_examples, loss_mode=LossMode.SAMPLE_NORMALIZED_ACTION_CE.value
+        )
+        # Temporarily force discriminative_ce path for operation term.
+        saved = self.cfg.loss_mode
+        self.cfg.loss_mode = LossMode.DISCRIMINATIVE_CE.value
+        try:
+            op_loss, op_m = self._forward_loss_operation_ce(batch_examples)
+        finally:
+            self.cfg.loss_mode = saved
+        coef_s = float(self.cfg.sequence_ce_coef)
+        coef_o = float(self.cfg.operation_ce_coef)
+        loss = coef_s * seq_loss + coef_o * op_loss
+        return loss, {
+            "loss": float(loss.detach().item()),
+            "sdi_loss": float(loss.detach().item()),
+            "kl_loss": float(seq_m.get("kl_loss", 0.0)),
+            "n_active": float(max(seq_m.get("n_active", 0.0), op_m.get("n_active", 0.0))),
+            "sequence_ce_loss": float(seq_m.get("sdi_loss", seq_m.get("loss", 0.0))),
+            "operation_ce_loss": float(op_m.get("sdi_loss", op_m.get("loss", 0.0))),
+            "sequence_ce_coef": coef_s,
+            "operation_ce_coef": coef_o,
+        }
+
+    def _forward_loss(self, batch_examples: list[dict[str, Any]]) -> tuple[torch.Tensor, dict[str, float]]:
+        mode = self.cfg.loss_mode
+        if mode == LossMode.CLASSIFICATION_HEAD.value:
+            return self._forward_loss_classification_head(batch_examples)
+        if mode == LossMode.SEQUENCE_CE_PLUS_OPERATION.value:
+            return self._forward_loss_sequence_plus_operation(batch_examples)
+        if mode in self._OPERATION_LOSS_MODES:
+            return self._forward_loss_operation_ce(batch_examples)
+        return self._forward_loss_token_ce(batch_examples, loss_mode=mode)
 
     def train(self, train_path: Path, valid_path: Path | None = None) -> dict[str, Any]:
         train_ds = SDISampleDataset(train_path)
@@ -273,15 +391,18 @@ class DupSDITrainer:
             drop_last=False,
             collate_fn=lambda xs: xs,
         )
-        optimizer = torch.optim.AdamW(
-            [p for p in self.model.parameters() if p.requires_grad],
-            lr=self.cfg.learning_rate,
-        )
-        total_steps = max(
+        params = [p for p in self.model.parameters() if p.requires_grad]
+        if self.classification_head is not None:
+            params.extend([p for p in self.classification_head.parameters() if p.requires_grad])
+        optimizer = torch.optim.AdamW(params, lr=self.cfg.learning_rate)
+        steps_per_epoch = max(
             1,
-            (len(train_loader) * self.cfg.num_epochs + self.cfg.grad_accum - 1)
-            // self.cfg.grad_accum,
+            (len(train_loader) + self.cfg.grad_accum - 1) // self.cfg.grad_accum,
         )
+        if self.cfg.max_steps is not None:
+            total_steps = max(1, int(self.cfg.max_steps))
+        else:
+            total_steps = max(1, steps_per_epoch * self.cfg.num_epochs)
         scheduler = get_linear_schedule_with_warmup(
             optimizer,
             int(total_steps * self.cfg.warmup_ratio),
@@ -291,9 +412,14 @@ class DupSDITrainer:
         history: list[dict[str, float]] = []
         global_step = 0
         self.model.train()
+        if self.classification_head is not None:
+            self.classification_head.train()
         optimizer.zero_grad(set_to_none=True)
+        stop = False
 
         for epoch in range(self.cfg.num_epochs):
+            if stop:
+                break
             epoch_loss = 0.0
             n_batches = 0
             pending: list[dict[str, Any]] = []
@@ -312,10 +438,16 @@ class DupSDITrainer:
                         f"loss={metrics['loss']:.4f} kl={metrics['kl_loss']:.4f}",
                         flush=True,
                     )
-            if pending:
+                if global_step >= total_steps:
+                    stop = True
+                    break
+            if pending and not stop:
                 metrics = self._train_accum_step(pending, optimizer, scheduler)
+                global_step += 1
                 epoch_loss += metrics["loss"]
                 n_batches += 1
+                if global_step >= total_steps:
+                    stop = True
             history.append(
                 {
                     "epoch": float(epoch + 1),
@@ -325,10 +457,21 @@ class DupSDITrainer:
 
         self.model.save_pretrained(self.cfg.output_dir)
         self.tokenizer.save_pretrained(self.cfg.output_dir)
+        if self.classification_head is not None:
+            self.classification_head.save(self.cfg.output_dir)
+        modules = [self.model]
+        if self.classification_head is not None:
+            modules.append(self.classification_head)
+        param_stats = trainable_parameter_count(modules)
         summary = {
             "history": history,
             "output_dir": str(self.cfg.output_dir),
             "n_train": len(train_ds),
+            "loss_mode": self.cfg.loss_mode,
+            "optimizer_steps": global_step,
+            "max_steps": self.cfg.max_steps,
+            "lora_rank": self.cfg.lora_rank,
+            **param_stats,
         }
         if valid_path and valid_path.exists():
             summary["valid_metrics"] = self.evaluate(valid_path)
@@ -386,6 +529,8 @@ class DupSDITrainer:
     def evaluate(self, valid_path: Path) -> dict[str, float]:
         ds = SDISampleDataset(valid_path)
         self.model.eval()
+        if self.classification_head is not None:
+            self.classification_head.eval()
         total = 0.0
         n = 0
         correct = 0
@@ -394,36 +539,73 @@ class DupSDITrainer:
         parse_ok = 0
         tf_tok_correct = 0
         tf_tok_total = 0
+        keep_tp = keep_fn = skip_tp = skip_fn = 0
+        typed_modes = self._OPERATION_LOSS_MODES | self._A6_SPECIAL_MODES
         for i in range(len(ds)):
             single = ds[i]
             _, m = self._forward_loss([single])
             total += m["loss"]
             n += 1
-            tf_acc, tf_n = self._teacher_forced_token_acc(single)
-            tf_tok_correct += tf_acc * tf_n
-            tf_tok_total += tf_n
+            if self.cfg.loss_mode not in typed_modes:
+                tf_acc, tf_n = self._teacher_forced_token_acc(single)
+                tf_tok_correct += tf_acc * tf_n
+                tf_tok_total += tf_n
             pred = self._greedy_action(single)
             if pred is not None:
                 parse_ok += 1
+            gold_op = self._sample_target_operation(single)
+            pred_op = None
+            if pred and pred.get("operation"):
+                try:
+                    pred_op = DupOperation(str(pred["operation"]).upper())
+                except ValueError:
+                    pred_op = None
             tgt = self._action_dict(single.get("target_action"))
             pred_norm = self._action_dict(pred) if pred else None
-            if pred_norm == tgt:
+            matched = False
+            if self.cfg.loss_mode in typed_modes:
+                matched = gold_op is not None and pred_op == gold_op
+            else:
+                matched = pred_norm == tgt
+            if matched:
                 correct += 1
+            if gold_op is not None and pred_op is not None:
+                if gold_op == DupOperation.KEEP_EVIDENCE:
+                    if pred_op == DupOperation.KEEP_EVIDENCE:
+                        keep_tp += 1
+                    else:
+                        keep_fn += 1
+                elif gold_op == DupOperation.SKIP_DUPLICATE:
+                    if pred_op == DupOperation.SKIP_DUPLICATE:
+                        skip_tp += 1
+                    else:
+                        skip_fn += 1
             route = str(single.get("route", "")).upper()
             if route == "ENDORSE":
                 endorse_n += 1
-                if pred_norm == self._action_dict(single.get("student_action")):
+                if self.cfg.loss_mode in typed_modes:
+                    if matched:
+                        endorse_ok += 1
+                elif pred_norm == self._action_dict(single.get("student_action")):
                     endorse_ok += 1
             elif route == "CORRECT":
                 correct_n += 1
-                if pred_norm == tgt:
+                if matched:
                     correct_ok += 1
+        keep_rec = keep_tp / max(keep_tp + keep_fn, 1)
+        skip_rec = skip_tp / max(skip_tp + skip_fn, 1)
         self.model.train()
+        if self.classification_head is not None:
+            self.classification_head.train()
         return {
             "loss": total / max(n, 1),
             "teacher_forced_token_acc": tf_tok_correct / max(tf_tok_total, 1),
             "greedy_parse_rate": parse_ok / max(n, 1),
             "action_match_rate": correct / max(n, 1),
+            "operation_accuracy": correct / max(n, 1),
+            "balanced_accuracy": (keep_rec + skip_rec) / 2.0,
+            "KEEP_recall": keep_rec,
+            "SKIP_recall": skip_rec,
             "endorse_accuracy": endorse_ok / max(endorse_n, 1),
             "correct_accuracy": correct_ok / max(correct_n, 1),
             "n": float(n),
@@ -450,7 +632,26 @@ class DupSDITrainer:
         from training.scope.prompting import format_compact_prompt, format_sdi_prompt
 
         state_text = self._state_text(sample)
-        if self.cfg.loss_mode in self._OPERATION_LOSS_MODES:
+        if self.cfg.loss_mode == LossMode.CLASSIFICATION_HEAD.value:
+            if self.classification_head is None:
+                return None
+            self.model.eval()
+            self.classification_head.eval()
+            cid, curated = self._operation_context(sample)
+            op = predict_operation_from_head(
+                self.model,
+                self.classification_head,
+                self.tokenizer,
+                state_text,
+                device=self.device,
+                candidate_id=cid,
+                curated_document_ids=curated,
+                max_length=self.cfg.max_length,
+            )
+            return {"operation": op.value}
+        if self.cfg.loss_mode in self._OPERATION_LOSS_MODES or (
+            self.cfg.loss_mode == LossMode.SEQUENCE_CE_PLUS_OPERATION.value
+        ):
             self.model.eval()
             if self.cfg.loss_mode == LossMode.SINGLE_TOKEN.value:
                 from training.scope.prompting import format_operation_prompt

@@ -1,0 +1,30 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "RunManifest",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "experiment_spec",
+    "git",
+    "environment",
+    "command",
+    "started_at",
+    "status"
+  ],
+  "properties": {
+    "schema_version": { "type": "string" },
+    "experiment_spec": { "type": "object" },
+    "git": { "type": "object" },
+    "environment": { "type": "object" },
+    "input_sha256": { "type": "object" },
+    "checkpoint_fingerprint": { "type": ["string", "null"] },
+    "command": {},
+    "started_at": { "type": "string" },
+    "ended_at": { "type": ["string", "null"] },
+    "exit_code": { "type": ["integer", "null"] },
+    "status": { "type": "string" },
+    "completed_shards": { "type": "array" },
+    "error_summary": { "type": ["string", "null"] },
+    "output_files": { "type": "array" }
+  }
+}

@@ -33,6 +33,29 @@ OBJECTIVE_CONFIG = {
     "O5": {"loss_mode": "discriminative_ce_sum"},
     "O6": {"loss_mode": "discriminative_ce_mean"},
     "O7": {"loss_mode": "discriminative_ce", "lora_rank": 64, "lora_alpha": 128},
+    # A6.1 extensions
+    "A6_CLASSIFICATION_HEAD": {
+        "loss_mode": "classification_head",
+        "lora_rank": 64,
+        "lora_alpha": 128,
+    },
+    "A6_SEQUENCE_CE_PLUS_OPERATION": {
+        "loss_mode": "sequence_ce_plus_operation",
+        "compact_target": True,
+        "lora_rank": 64,
+        "lora_alpha": 128,
+    },
+    "A6_COMPACT_TOKEN_CE": {
+        "loss_mode": "sample_normalized_action_ce",
+        "compact_target": True,
+        "lora_rank": 64,
+        "lora_alpha": 128,
+    },
+    "A6_FULL_ACTION_TOKEN_CE": {
+        "loss_mode": "legacy_token_ce",
+        "lora_rank": 64,
+        "lora_alpha": 128,
+    },
 }
 
 SIZES = [2, 8, 32, 128]

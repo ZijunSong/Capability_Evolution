@@ -1,0 +1,5 @@
+# SCOPE external baseline lock
+# Format: name<TAB>commit_sha<TAB>origin_url<TAB>branch<TAB>commit_date
+SEED	2cf2fadca3c5aba28da68e8e1405182ba8d90e6c	https://github.com/jinyangwu/SEED.git	main	2026-07-17T13:09:29+08:00
+OPID	37a15a5f3c0f1ecc651e4be4a0c257b313fa0756	https://github.com/jinyangwu/OPID.git	main	2026-07-01T17:46:48+08:00
+SDAR	6a62b4efa204c7fd17f354e31f328f47aa6544a2	https://github.com/ZJU-REAL/SDAR.git	master	2026-08-03T23:40:49+08:00

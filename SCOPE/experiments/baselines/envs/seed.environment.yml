@@ -1,0 +1,16 @@
+name: scope-baseline-seed
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+      # Resolve against SEED/requirements*.txt after clone; do NOT install into bishop.
+      - torch
+      - transformers
+      - vllm
+      - accelerate
+notes: |
+  Isolated env for SEED. Do not upgrade/downgrade SCOPE bishop torch/vLLM.
+  Install only after reading external/baselines/SEED README and requirements.
