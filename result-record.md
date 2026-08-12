@@ -6,28 +6,29 @@
 
 ---
 
-## 本轮总览（更新于 2026-08-12）
+## 本轮总览（更新于 2026-08-12 15:55）
 
 ### Setting（双线）
 | 线 | 机器 / repo | model | retrieval | Candidate A/B |
 |---|---|---|---|---|
-| **非 H100（H20）** | 8×H20；`/data/ppnm/Capability_Evolution/SCAPE` | `/data/ppnm/models/Qwen2.5-7B-Instruct` | BM25 provisional | A=`auto_populate_first_search`；B=`verify_tool` |
-| **H100** | 8×H100；`/mnt/songzijun/Capability_Evolution/SCAPE` | `pat-jj/harness-1`（已 restore + vLLM smoke） | local BM25 compat / offline stub（**非**官方 Chroma） | A=`subtractive_curation`；B=`importance_tagging` |
+| **Canonical True-SCAPE（H20）** | 8×H20；`sync/h20-20260812` @ `a765290` | `/data/ppnm/models/Qwen2.5-7B-Instruct` | LOCAL_COMPAT plumbing | **待 H100 V2 Gate**（旧 A/B 已归档） |
+| **归档 provisional（H20）** | 同上 | Qwen2.5-7B-Instruct | BM25 provisional | A=`auto_populate_first_search`；B=`verify_tool`（Gate S FAIL） |
+| **H100** | 8×H100；shared tree | `pat-jj/harness-1` | local BM25 / offline stub | 新一轮 confirm/repl/real-influence **进行中（H20 侧未收到 imports）** |
 
-### 进度板 — 非 H100（H20 provisional）
+### 进度板 — Canonical True-SCAPE（H20）
 | 阶段 | 状态 | 结论 / 产物 |
 |---|---|---|
-| Repo bootstrap + pytest | **已完成** | 14 passed；代码在 umbrella `main/SCAPE` |
-| LOCAL_CAL64 LOO 9/9 + 候选选择 | **已完成** | A/B 选出；`outputs/local_cal64_loo/`、`CANDIDATE_SELECTION.json` |
-| A/B H_-m collect train-512 | **已完成** | A uniq=512；B uniq=512（jsonl 含 resume 重复行）；`stage_l_hminus_data/` |
-| B Stage L OPD（L64×3 + L200×3 + heldout×2） | **已完成**（provisional） | `GATE_L_B.json` **pass=true** |
-| B L64 HF 可服务权重 | **已完成** | `.../B_verify_opd_provisional/L64_seed42_hf/hf_model` |
-| A L64 HF OPD + 权重 | **已完成** | `.../A_auto_opd_provisional/L64_seed42_hf/hf_model`；loss≈0.122 |
-| B Stage S closed-loop 四格 | **已完成** | 真实 S2/S3（非 proxy）；**Gate S = FAIL** |
-| A Stage S closed-loop 四格 | **已完成** | 真实 S2/S3；**Gate S = FAIL** |
-| Stage M / Pareto / retirement 宣称 | **未开始（停止）** | 单组件 Gate S 未过 → 不进 multi-component |
-| 真 SCAPE same-state tool-token OPD | **未完成** | LOO 无完整 ξ_t dump；Gate L 仅为 SCOPE-OPD 代理路径 |
-| GPU 实验进程 | **空闲** | 相关 vLLM/rollout/completion loop 已停 |
+| Git sync `sync/h20-20260812` | **已完成（local+bundle）** | push 被 SSH pubkey 阻塞；`artifacts/git/scape-h20-20260812.bundle` |
+| pytest + `preflight_scape.py` | **已完成** | 16 passed；preflight ok；`legacy_scope_path_used=false` |
+| True same-state / tool-mask / HF tool-OPD | **已完成（plumbing）** | `scape/collection/same_state.py` + `scape/training/hf_tool_opd.py` |
+| Part C 8-GPU smoke Group A P0–P3 | **已完成** | `outputs/true_scape_pipeline_smoke/group_a/` |
+| Part C 8-GPU smoke Group B Q0–Q3 | **已完成** | 三 loss path 数值可区分；`LOSS_PATH_AUDIT.md` pass |
+| Candidate V2 / Stage L–S–M | **阻塞：等 H100 imports** | `imports/h100_{1..4}/` 仅 `.gitkeep`；daemon 监控中 |
+
+### 进度板 — 归档 provisional（勿与 canonical 混写）
+| 阶段 | 状态 | 结论 / 产物 |
+|---|---|---|
+| LOCAL_CAL64 LOO + 旧 A/B + Gate L/S | **已完成 / 归档** | Gate S FAIL；**不再扩 seed / Stage M** |
 
 ### 进度板 — H100（自 `result-record-from-h100.md` 同步）
 | 阶段 | 状态 | 结论 / 产物 |
@@ -390,3 +391,48 @@ Record L200 seed42/43; free GPU2–7; start B L64 held-out (`--split test`) whil
 - **进行中/阻塞**：官方 BrowseComp+（缺 Chroma/OpenAI 凭证）。
 - **未开始**：官方 Chroma H100-1/2 parity；`INF_CONFIRM128`；targeted influence/mining；released-checkpoint retirement 宣称。
 - **禁止宣称**：不可把 local BM25 / offline / proxy 证据写成官方 Harness-1 Cloud/Chroma parity 或最终 retirement。
+
+---
+
+## Canonical True-SCAPE Line
+
+### 2026-08-12 H20 Part A/B/C — sync + true tool-token OPD plumbing smoke
+
+#### Setting
+- canonical commit: `a765290` (`sync/h20-20260812`)
+- upstream Harness-1 pin: `8ac4012167858f6478fb2a8fd840e4550e2af161` (submodule)
+- model revision: `/data/ppnm/models/Qwen2.5-7B-Instruct`
+- retrieval backend: LOCAL_COMPAT_ONLY (structured same-state plumbing; not official Chroma)
+- component mask (plumbing only): `evidence_graph` minus vs full
+- snapshot schema version: `scape_snapshot_v1`
+- tool-mask version: `scape_tool_mask_v1`
+- teacher backend: full-view prompt teacher-forced logprobs (HF)
+- loss implementation: `scape.training.hf_tool_opd` (`tool_token_kl` / `action_ce` / `full_response_kl` / `offpolicy_matched`)
+- legacy_scope_path_used: **false**
+- GPUs: Group A=`0-3`, Group B=`4-7` (parallel)
+
+#### Results
+| cell | metric | value |
+|---|---|---:|
+| pytest | passed | 16 |
+| preflight_scape | ok | true |
+| P0 same-state audit | pass | true (16/16) |
+| P1 dual-view mean div | D | 0.1679 |
+| P2 tool-token KL micro-overfit | D_pre → D_post | 0.1679 → -0.0072 |
+| P3 heldout32 | D | -0.0175 |
+| Q0 action_ce mean_loss | | 0.9757 |
+| Q1 full_response_kl mean_loss | | -0.0020 |
+| Q2 offpolicy_matched mean_loss | | 0.1162 |
+| Q3 syntax/serve | serve_rate / mask_pass | 1.0 / true |
+| LOSS_PATH_AUDIT | pass | true |
+
+#### Artifacts
+- `outputs/true_scape_pipeline_smoke/{PIPELINE,TOOL_MASK,SAME_STATE,LOSS_PATH}_AUDIT.md`
+- `artifacts/git/scape-h20-20260812.bundle`
+- `GITHUB_SYNC_BLOCKED.md` (origin push blocked)
+
+#### Gate
+PLUMBING_PASS — not a scientific candidate Gate L/S claim.
+
+#### Decision
+True SCAPE training stack is wired and 8-GPU smoke is green. Stage L/S/M wait for H100 V2 imports under `imports/h100_{1..4}/` (watcher `scape_wait_h100` running). Old provisional auto_populate/verify line remains archived.
