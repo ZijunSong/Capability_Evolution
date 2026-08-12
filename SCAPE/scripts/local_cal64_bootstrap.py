@@ -9,7 +9,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
+
+REPO = Path(__file__).resolve().parents[1]
+if str(REPO) not in sys.path:
+    sys.path.insert(0, str(REPO))
 
 from scape.adapters.components import all_component_ids, component_specs
 from scape.common.manifest import build_run_manifest, finalize_run_manifest, write_run_manifest
@@ -107,7 +112,8 @@ def main() -> None:
                     report["metrics"].get("curated_recall", {}).get("mean_delta", 0.0)
                 ),
                 "influence_above_null": float(infl["I_name_mean"] - infl["null_field_order_mean"]),
-                "runtime_cost": float(full[qids[0]]["context_tokens"] - minus[qids[0]]["context_tokens"] + 1.0),
+                # Positive cost means the component costs extra runtime/context to keep.
+                "runtime_cost": float(minus[qids[0]]["context_tokens"] - full[qids[0]]["context_tokens"] + 1.0),
                 "quality_positive": bool(report["quality_positive"]),
                 "provisional": True,
             }

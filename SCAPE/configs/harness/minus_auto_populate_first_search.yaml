@@ -1,0 +1,6 @@
+name: minus_auto_populate_first_search
+description: Harness-1 full operating point with only auto_populate_first_search disabled.
+base: full.yaml
+overrides:
+  components:
+    auto_populate_first_search: false

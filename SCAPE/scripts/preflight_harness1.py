@@ -56,6 +56,13 @@ def main() -> int:
             if pkg != "vllm":
                 report["blocked"].append(f"{pkg} missing")
 
+    try:
+        import yaml  # type: ignore
+        report["checks"]["yaml"] = {"ok": True, "version": getattr(yaml, "__version__", "?")}
+    except Exception as exc:  # noqa: BLE001
+        report["checks"]["yaml"] = {"ok": False, "error": str(exc)}
+        report["blocked"].append("yaml missing")
+
     harness = REPO / "external" / "harness-1"
     report["checks"]["harness1_checkout"] = {
         "ok": harness.exists(),
@@ -68,13 +75,20 @@ def main() -> int:
         report["ok"] = False
         report["blocked"].append("external/harness-1 missing")
 
-    # Retrieval backend: do not silently fall back to SCOPE BM25
+    # Retrieval backend: do not silently fall back to SCOPE BM25.
+    # SCAPE_RETRIEVAL_CORPUS is a SCAPE-local qrel-aligned JSONL corpus exported
+    # from stored BrowseComp+ raw document text; upstream Harness-1 CloudClient
+    # still requires CHROMA_* credentials for official evaluation.
     chroma = os.environ.get("SCAPE_CHROMA_PATH") or os.environ.get("HARNESS1_CHROMA_PATH")
+    corpus = os.environ.get("SCAPE_RETRIEVAL_CORPUS") or str(REPO / "outputs" / "retrieval" / "browsecomp_local_corpus_v2" / "corpus.jsonl")
+    retrieval_ok = bool((chroma and Path(chroma).exists()) or (corpus and Path(corpus).is_file()))
     report["checks"]["retrieval_backend"] = {
-        "ok": bool(chroma and Path(chroma).exists()),
+        "ok": retrieval_ok,
         "path": chroma,
+        "corpus": corpus,
+        "kind": "chroma" if chroma else ("scape_jsonl_corpus" if corpus else None),
     }
-    if not (chroma and Path(chroma).exists()):
+    if not retrieval_ok:
         report["blocked"].append("retrieval backend missing")
         blocked_doc = REPO / "docs" / "BLOCKED_RETRIEVAL_BACKEND.md"
         blocked_doc.parent.mkdir(parents=True, exist_ok=True)

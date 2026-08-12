@@ -1,0 +1,6 @@
+name: minus_content_dedup
+description: Harness-1 full operating point with only content_dedup disabled.
+base: full.yaml
+overrides:
+  components:
+    content_dedup: false

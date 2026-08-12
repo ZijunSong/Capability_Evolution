@@ -1,0 +1,6 @@
+name: minus_adaptive_rerank_instruction
+description: Harness-1 full operating point with only adaptive_rerank_instruction disabled.
+base: full.yaml
+overrides:
+  components:
+    adaptive_rerank_instruction: false

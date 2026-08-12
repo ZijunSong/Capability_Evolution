@@ -1,0 +1,6 @@
+name: minus_evidence_graph
+description: Harness-1 full operating point with only evidence_graph disabled.
+base: full.yaml
+overrides:
+  components:
+    evidence_graph: false

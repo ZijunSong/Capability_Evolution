@@ -28,7 +28,10 @@ def placement_score(row: Mapping[str, Any]) -> float:
     contrib = float(row.get("contribution", 0.0))
     influence = float(row.get("influence_above_null", 0.0))
     sem = float(row.get("semantic_fraction", _semantic_fraction(str(row["component_id"]))))
-    cost = max(1e-6, float(row.get("runtime_cost", 1.0)))
+    raw_cost = float(row.get("runtime_cost", 1.0))
+    # Non-positive cost means removing the component does not save runtime in the
+    # current estimate; do not let that become an artificially huge priority.
+    cost = raw_cost if raw_cost > 0 else float("inf")
     return (max(0.0, contrib) * max(0.0, influence) * sem) / cost
 
 

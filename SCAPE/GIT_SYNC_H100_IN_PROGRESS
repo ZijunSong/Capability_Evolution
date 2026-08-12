@@ -1,0 +1,1 @@
+H100 sync started 2026-08-12 by coordinator task. Do not checkout/reset/merge/add/commit shared root until GIT_SYNC_H100_READY exists.

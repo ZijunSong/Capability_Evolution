@@ -1,0 +1,6 @@
+name: minus_chunk_neighbors
+description: Harness-1 full operating point with only chunk_neighbors disabled.
+base: full.yaml
+overrides:
+  components:
+    chunk_neighbors: false

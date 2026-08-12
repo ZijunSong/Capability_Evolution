@@ -1,0 +1,6 @@
+name: minus_sentence_compress
+description: Harness-1 full operating point with only sentence_compress disabled.
+base: full.yaml
+overrides:
+  components:
+    sentence_compress: false

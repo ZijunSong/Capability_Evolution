@@ -1,0 +1,6 @@
+name: minus_token_budget_marker
+description: Harness-1 full operating point with only token_budget_marker disabled.
+base: full.yaml
+overrides:
+  components:
+    token_budget_marker: false
