@@ -23,6 +23,12 @@ from scape.training.tool_mask import (
     build_tool_token_mask,
     tool_loss_mask_from_response,
 )
+from scape.training.canonical_metrics import (
+    aggregate_token_metrics,
+    js_from_logits,
+    kl_from_logits,
+    signed_logprob_gap,
+)
 from scape.training.tool_opd import learnability_score, tool_opd_loss
 
 LossPath = Literal[
@@ -229,6 +235,29 @@ class ScapeHFToolOPD:
             "tool_mask_version": "scape_tool_mask_v1",
         }
 
+    def _response_position_logits(
+        self,
+        prompt_ids: list[int],
+        response_ids: list[int],
+        *,
+        require_grad: bool,
+    ) -> torch.Tensor:
+        """Logits at each response-token position [n_resp, vocab]."""
+        if not response_ids:
+            return torch.zeros(0, 0, device=self._device)
+        full = prompt_ids + response_ids
+        inp = torch.tensor([full], device=self._device)
+        if require_grad:
+            self.model.train()
+            logits = self.model(inp).logits[0]
+        else:
+            self.model.eval()
+            with torch.no_grad():
+                logits = self.model(inp).logits[0]
+        start = len(prompt_ids) - 1
+        rows = [logits[start + i] for i in range(len(response_ids))]
+        return torch.stack(rows)
+
     def _teacher_forced_logprobs(
         self,
         prompt_ids: list[int],
@@ -239,22 +268,107 @@ class ScapeHFToolOPD:
         """Return per-response-token logprob tensor (length = len(response_ids))."""
         if not response_ids:
             return torch.zeros(0, device=self._device)
-        full = prompt_ids + response_ids
-        inp = torch.tensor([full], device=self._device)
-        if require_grad:
-            self.model.train()
-            logits = self.model(inp).logits[0]
-        else:
-            self.model.eval()
-            with torch.no_grad():
-                logits = self.model(inp).logits[0]
-        # position predicting response token i is len(prompt)-1+i
-        start = len(prompt_ids) - 1
-        logps = []
-        for i, tid in enumerate(response_ids):
-            pos = start + i
-            logps.append(F.log_softmax(logits[pos], dim=-1)[tid])
-        return torch.stack(logps)
+        pos_logits = self._response_position_logits(
+            prompt_ids, response_ids, require_grad=require_grad
+        )
+        ids = torch.tensor(response_ids, device=self._device, dtype=torch.long)
+        logp = F.log_softmax(pos_logits, dim=-1)
+        logps = logp.gather(1, ids.unsqueeze(1)).squeeze(1)
+        return logps
+
+    def span_token_masks(
+        self,
+        response_text: str,
+        resp_len: int,
+    ) -> dict[str, list[bool]]:
+        """Per-span boolean masks aligned to response token ids."""
+        offsets = _offset_mapping(self.tokenizer, response_text)
+        name_audit = tool_loss_mask_from_response(
+            response_text,
+            token_offsets=offsets,
+            include_name=True,
+            include_arg_keys=False,
+            include_arg_values=False,
+            include_end_search=False,
+        )
+        key_audit = tool_loss_mask_from_response(
+            response_text,
+            token_offsets=offsets,
+            include_name=False,
+            include_arg_keys=True,
+            include_arg_values=False,
+            include_end_search=False,
+        )
+        val_audit = tool_loss_mask_from_response(
+            response_text,
+            token_offsets=offsets,
+            include_name=False,
+            include_arg_keys=False,
+            include_arg_values=True,
+            include_end_search=False,
+        )
+        full_audit = tool_loss_mask_from_response(
+            response_text, token_offsets=offsets
+        )
+        def _align(mask: list[bool] | None) -> list[bool]:
+            if mask is None or len(mask) != resp_len:
+                return [True] * resp_len
+            return list(mask)
+
+        return {
+            "tool": _align(full_audit["token_mask"]),
+            "name": _align(name_audit["token_mask"]),
+            "key": _align(key_audit["token_mask"]),
+            "value": _align(val_audit["token_mask"]),
+        }
+
+    def score_canonical_metrics(
+        self,
+        *,
+        prompt_reduced: str,
+        prompt_full: str,
+        response_text: str,
+        loss_path: LossPath = "tool_token_kl",
+    ) -> dict[str, float]:
+        """Canonical M1–M4 metrics; legacy `div` = signed_gap (not KL)."""
+        resp_ids = self.encode(response_text)
+        if not resp_ids:
+            z = {
+                "forward_KL": 0.0,
+                "reverse_KL": 0.0,
+                "JS": 0.0,
+                "signed_gap": 0.0,
+                "tool_name_KL": 0.0,
+                "arg_key_KL": 0.0,
+                "arg_value_KL": 0.0,
+                "div": 0.0,
+            }
+            return z
+        red_ids = self.encode(prompt_reduced)
+        full_ids = self.encode(prompt_full)
+        with torch.no_grad():
+            s_logits = self._response_position_logits(red_ids, resp_ids, require_grad=False)
+            t_logits = self._response_position_logits(full_ids, resp_ids, require_grad=False)
+        fwd = kl_from_logits(t_logits, s_logits, forward=True)
+        rev = kl_from_logits(t_logits, s_logits, forward=False)
+        js = js_from_logits(t_logits, s_logits)
+        gap = signed_logprob_gap(t_logits, s_logits, resp_ids)
+
+        spans = self.span_token_masks(response_text, len(resp_ids))
+        token_mask = self.response_token_mask(response_text, loss_path=loss_path)
+        if len(token_mask) != len(resp_ids):
+            token_mask = spans["tool"]
+        m_tool = torch.tensor(token_mask, device=fwd.device, dtype=fwd.dtype)
+        m_name = torch.tensor(spans["name"], device=fwd.device, dtype=fwd.dtype)
+        m_key = torch.tensor(spans["key"], device=fwd.device, dtype=fwd.dtype)
+        m_val = torch.tensor(spans["value"], device=fwd.device, dtype=fwd.dtype)
+
+        metrics = aggregate_token_metrics(
+            fwd, rev, js, gap, m_tool,
+            name_mask=m_name, key_mask=m_key, value_mask=m_val,
+        )
+        metrics["div"] = metrics["signed_gap"]
+        return metrics
 
     def score_divergence(
         self,
@@ -424,6 +538,30 @@ class ScapeHFToolOPD:
             self.tokenizer.save_pretrained(out_dir)
         else:
             self.save_pretrained(out_dir)
+
+
+def mean_canonical_metrics(
+    backend: ScapeHFToolOPD,
+    rows: Sequence[dict[str, Any]],
+    *,
+    loss_path: LossPath = "tool_token_kl",
+) -> dict[str, float]:
+    keys = [
+        "forward_KL", "reverse_KL", "JS", "signed_gap",
+        "tool_name_KL", "arg_key_KL", "arg_value_KL", "div",
+    ]
+    acc = {k: 0.0 for k in keys}
+    for row in rows:
+        m = backend.score_canonical_metrics(
+            prompt_reduced=row["prompt_reduced"],
+            prompt_full=row["prompt_full"],
+            response_text=row["response_text"],
+            loss_path=loss_path,
+        )
+        for k in keys:
+            acc[k] += m[k]
+    n = max(1, len(rows))
+    return {k: v / n for k, v in acc.items()}
 
 
 def mean_divergence(
