@@ -11,23 +11,29 @@
 ### Setting（双线）
 | 线 | 机器 / repo | model | retrieval | Candidate A/B |
 |---|---|---|---|---|
-| **非 H100（H20）** | 8×H20；`/data/ppnm/Capability_Evolution/SCAPE` | `/data/ppnm/models/Qwen2.5-7B-Instruct` | BM25 provisional | A=`auto_populate_first_search`；B=`verify_tool` |
+| **H20 true-SCAPE（主线）** | 8×H20；`/data/ppnm/Capability_Evolution/SCAPE` | `pat-jj/harness-1`（local `/data/ppnm/models/harness-1`） | local_bm25_compat | A=`evidence_graph`；B=待定（等 H100-2/H100-4） |
+| **H20 provisional（已归档）** | 同上 | Qwen2.5-7B-Instruct | BM25 provisional | A=`auto_populate_first_search`；B=`verify_tool` |
 | **H100** | 8×H100；`/mnt/songzijun/Capability_Evolution/SCAPE` + worktrees `SCAPE-wt-h100-*` | `pat-jj/harness-1`（HF continuation-logprob scorer；vLLM smoke 已通过） | local BM25 compat / HF same-state scorer（官方 Chroma 阻塞） | A=`evidence_graph`；B=`importance_tagging` |
 
-### 进度板 — 非 H100（H20 provisional）
+### 进度板 — H20 true-SCAPE evidence_graph（0813 主线）
 | 阶段 | 状态 | 结论 / 产物 |
 |---|---|---|
-| Repo bootstrap + pytest | **已完成** | 14 passed；代码在 umbrella `main/SCAPE` |
-| LOCAL_CAL64 LOO 9/9 + 候选选择 | **已完成** | A/B 选出；`outputs/local_cal64_loo/`、`CANDIDATE_SELECTION.json` |
-| A/B H_-m collect train-512 | **已完成** | A uniq=512；B uniq=512（jsonl 含 resume 重复行）；`stage_l_hminus_data/` |
-| B Stage L OPD（L64×3 + L200×3 + heldout×2） | **已完成**（provisional） | `GATE_L_B.json` **pass=true** |
-| B L64 HF 可服务权重 | **已完成** | `.../B_verify_opd_provisional/L64_seed42_hf/hf_model` |
-| A L64 HF OPD + 权重 | **已完成** | `.../A_auto_opd_provisional/L64_seed42_hf/hf_model`；loss≈0.122 |
-| B Stage S closed-loop 四格 | **已完成** | 真实 S2/S3（非 proxy）；**Gate S = FAIL** |
-| A Stage S closed-loop 四格 | **已完成** | 真实 S2/S3；**Gate S = FAIL** |
-| Stage M / Pareto / retirement 宣称 | **未开始（停止）** | 单组件 Gate S 未过 → 不进 multi-component |
-| 真 SCAPE same-state tool-token OPD | **未完成** | LOO 无完整 ξ_t dump；Gate L 仅为 SCOPE-OPD 代理路径 |
-| GPU 实验进程 | **空闲** | 相关 vLLM/rollout/completion loop 已停 |
+| Canonical pipeline + pytest | **已完成** | 16 passed；`legacy_scope_path_used=false` |
+| Same-state 数据 EG_TRAIN_8K / VALID_1K / TEST_1K | **已完成** | query-disjoint；`outputs/true_scape_evidence_graph/data/` |
+| Stage L V0 uniform tool-token KL（8 卡 × 18 cells） | **已完成** | Gate L **FAIL**（`divergence_not_down`） |
+| Stage L retry weighted KL（8 卡 × 13 cells） | **已完成** | Gate L **FAIL**（`scaling_regression`）→ **`CURRENTLY_NOT_LEARNABLE`** |
+| Stage L baselines（action_ce / full_response / offpolicy / name_only / args_only） | **已完成** | name_only L8K L_m≈11.7 离线最优，但未挽救主路径 Gate L |
+| Stage S closed-loop 四格 | **未运行** | Gate L 未过；S0/S1 仅有 LOO proxy，**不可**宣称 retirement |
+| Stage M / Candidate B Stage L | **未开始** | 等 Gate L PASS + H100-2/H100-4 handoff |
+| Runtime recomposition | **未开始** | 等 H100-1 decomposition |
+| GPU 实验进程 | **空闲** | `RETRY_ALL_DONE`；31 cells 聚合完毕 |
+
+### 进度板 — H20 provisional（已归档，不再扩展）
+| 阶段 | 状态 | 结论 / 产物 |
+|---|---|---|
+| LOCAL_CAL64 LOO 9/9 + 候选选择 | **已完成** | A/B 选出；Gate S **FAIL** → 归档 |
+| A/B Stage L/S（Qwen+BM25） | **已完成 · FAIL** | 不可 retirement；见 `## 2026-08-12 SCAPE non-H100 round final` |
+| 真 SCAPE same-state tool-token OPD | **已被 true-SCAPE 线取代** | 旧线不再救 |
 
 ### 进度板 — H100（0812 fresh confirm / 0813 attribution + sync）
 | 阶段 | 状态 | 结论 / 产物 |
@@ -44,10 +50,116 @@
 | 官方 BrowseComp+ Chroma eval / parity | **阻塞** | 缺 `OPENAI_API_KEY` / `CHROMA_API_KEY` / `CHROMA_DATABASE`；不可用 local/HF evidence 冒充 official Chroma |
 
 ### 结论（一句话）
-- **非 H100**：LOCAL_CAL64 + BM25+Qwen 下 A/B **不可 retirement**（Gate S FAIL）；Stage M 已停。
-- **H100**：fresh contribution confirm + independent replication + HF same-state real influence + H100-4 confirm 已齐；当前 H20 handoff 推荐 `evidence_graph` / `importance_tagging`，`verify_tool` 是 H100-3 real-influence rank2 但未被 H100-4 CONFIRM128 覆盖，列为高优先级 follow-up confirm。官方 Chroma 仍阻塞，所有 local/retrieval 贡献结果必须标注 `LOCAL_COMPAT_ONLY`。
+- **H20 true-SCAPE**：`evidence_graph` 在 harness-1 + same-state tool-token KL 下 **Gate L 双次 FAIL**（uniform → weighted retry）→ **`CURRENTLY_NOT_LEARNABLE`**；停止 Evidence Graph full migration；Contribution–Influence **未能预测** learnability。
+- **H20 provisional**：LOCAL_CAL64 + BM25+Qwen 下 A/B **不可 retirement**（Gate S FAIL）；已归档。
+- **H100**：fresh contribution confirm + independent replication + HF same-state real influence + H100-4 confirm 已齐；handoff 推荐 A=`evidence_graph`，B 待定。官方 Chroma 仍阻塞。
 
-详细数字：0813 状态见 `## 2026-08-13 SCAPE 0813 execution status`；非 H100 见 `## 2026-08-12 SCAPE non-H100 round final`；H100 历史同步见 `## 2026-08-12 SCAPE H100-1/2/3 synced status`；0812 新 H100 结果见 `## 2026-08-12 SCAPE H100 fresh confirm + real influence final`。
+详细数字：H20 true-SCAPE 见 `## 2026-08-13 SCAPE H20 true-SCAPE evidence_graph Stage L final`；0813 H100 状态见 `## 2026-08-13 SCAPE 0813 execution status`；H20 provisional 见 `## 2026-08-12 SCAPE non-H100 round final`；H100 见 `## 2026-08-12 SCAPE H100 fresh confirm + real influence final`。
+
+---
+
+## 2026-08-13 SCAPE H20 true-SCAPE evidence_graph Stage L final
+
+> 覆盖 `SCAPE-0813-五机协调.md` + `SCAPE-0813-H20.md` 中 H20 主线实验。
+> 状态：**Stage L 已完成（V0 + 一次 weighted retry）**；**Gate L FAIL** → **`CURRENTLY_NOT_LEARNABLE`**；Stage S closed-loop **未运行**。
+
+### Setting
+- repo: `/data/ppnm/Capability_Evolution/SCAPE`
+- machine: 8×H20-3e（单卡 LoRA 训练，每卡独立队列）
+- model: released Harness-1 `pat-jj/harness-1`（local `/data/ppnm/models/harness-1`）
+- component: `evidence_graph`（Candidate A）
+- harness: Harness-1；student=`H_-evidence_graph` rollout；teacher=full view score-only
+- retrieval: `local_bm25_compat`（官方 Chroma 阻塞）
+- trainer: LoRA tool-token OPD（`scape.training.hf_tool_opd`）；`legacy_scope_path_used=false`
+- data splits（query-disjoint）:
+  - `EG_TRAIN_8K`（train pool，截取 512 / 2K / 8K）
+  - `EG_VALID_1K`（训练期 held-out divergence）
+  - `EG_TEST_1K`（post-train eval）
+- loss V0: uniform tool-token KL + light anchor KL；mask = tool name + arg keys + arg values + end_search
+- loss retry（Part H 唯一允许的一次）: `weighted_tool_token_kl`；span weights name=3.0, arg_key=0.5, arg_value=0.5, end_search=1.0（来自 Stage L baseline ablation：name_only >> args_only >> uniform）
+- training: epochs=1, batch_size=1, lr=1e-5, LoRA r=8/alpha=16；每个 cell 从 base checkpoint 独立初始化
+- output root: `outputs/true_scape_evidence_graph/`
+- schedule（8 卡 Part F）:
+  - GPU0: main seed42 L512→L2K→L8K（V0 uniform）
+  - GPU1: main seed43 L512→L2K→L8K
+  - GPU2: main seed44 L2K→L8K
+  - GPU3–7: baselines（action_ce, full_response_kl, offpolicy_matched, name_only, args_only）@ 2K/8K
+  - retry: GPU0–2 同主 seeds weighted；GPU3–7 额外 weighted L8K seeds 45–49
+
+### Results — status summary
+| phase | cells | loss | Gate L | note |
+|---|---:|---|---|---|
+| V0 uniform | 18 | `tool_token_kl` | **FAIL** (`divergence_not_down`) | 两 seed 8K held-out divergence 未稳定下降 |
+| Retry weighted | 13 | `weighted_tool_token_kl` | **FAIL** (`scaling_regression`) | seed 方向一致，但 2K/8K 相对 512 系统性退化 |
+| **Overall** | **31** | — | **`CURRENTLY_NOT_LEARNABLE`** | 停止 Evidence Graph full migration |
+
+### Results — Gate L V0 uniform（seeds 42/43，摘录 8K）
+| seed | d_pre | d_post@8K | L_m@8K | invalid_tool_rate |
+|---:|---:|---:|---:|---|
+| 42 | -0.0107 | -0.0485 | -3.54 | 0.0 |
+| 43 | -0.0107 | -0.0101 | +0.050 | 0.0 |
+
+Gate L reason: `divergence_not_down`（seed43@8K 未改善；seed42 scaling 退化）。
+
+### Results — Gate L retry weighted（seeds 42/43，摘录）
+| seed | d_pre | d_post@512 | d_post@2K | d_post@8K | L_m@8K |
+|---:|---:|---:|---:|---:|---:|
+| 42 | -0.0228 | -0.0217 | -0.0292 | -0.0803 | -2.52 |
+| 43 | -0.0228 | -0.0791 | -0.0402 | -0.0884 | -2.88 |
+
+Gate L reason: `scaling_regression`（`seed_agree=true`，`invalid_ok=true`，但 2K/8K 不比 512 系统性更好）。
+
+### Results — baselines（L8K seed42，离线 L_m 摘录）
+| loss_path | L_m@8K | note |
+|---|---:|---|
+| `tool_name_only_kl` | +11.72 | 离线 divergence 下降最强，但未进入主 Gate L 判定 |
+| `args_only_kl` | +2.21 | 次优 |
+| `action_ce` | -1.55 | — |
+| `full_response_kl` | -0.42 | — |
+| `offpolicy_matched` | -0.32 | — |
+| uniform main s42 | -3.54 | Gate L FAIL |
+
+### Results — tool mask / data audit
+| check | result |
+|---|---|
+| TOOL_MASK_AUDIT parsable_rate | 200/200 = 1.0 |
+| DATA_AUDIT query_disjoint | pass（train/valid/test prefix 分离） |
+| pytest | 16 passed |
+| smoke16 / invalid tool rate | 0.0（全 cells） |
+
+### Results — Stage S（未运行）
+- Gate L 未 PASS → **不启动** closed-loop 四格（S2/S3 真实 rollout）。
+- `FOUR_GRID_STAGE_S.md` 中 S2/S3 为 **LOO proxy**（`source: loo_proxy`），**不可**用于 retirement 宣称。
+- 此前 Stage S vLLM 尝试因 GPU 显存被 Stage L 占用失败；按协议已在 Gate L FAIL 后跳过。
+
+### Paired / probe check
+| axis | pre-stage (H100) | post-stage (H20 true-SCAPE) |
+|---|---|---|
+| Contribution | ✅ positive（fresh + replicated） | — |
+| Influence | ✅ positive（rank #1, H100-4 confirm） | — |
+| Learnability | — | ❌ Gate L FAIL（两次） |
+| Retirement | — | ❌ Stage S 未运行（仅 proxy） |
+
+**PROBE 结论**：Contribution–Influence **未能预测** learnability。`evidence_graph` 仍是最完整的 probe-validation 目标，但 same-state tool-token KL 尚不能将 graph-aware policy 迁入 weights。
+
+### Gate / Decision
+- Gate L (V0 uniform): **FAIL** → 允许一次 weighted retry
+- Gate L (weighted retry): **FAIL** → **`CURRENTLY_NOT_LEARNABLE`**
+- Gate S: **未评测**（proxy 不可宣称）
+- Stage M: **不进入**
+- Candidate B: **冻结**（等 H100-2 `CANDIDATE_B_RECOMMENDATION.json` + H100-4 `H1004_VERIFY_HANDOFF.json`）
+- Next: **不继续** Evidence Graph full migration；可选 follow-up 限于 H100-1 graph placement decomposition / H100-3 attribution-guided loss（需新证据），或换下一 internalization 目标
+
+### Artifacts
+- `outputs/true_scape_evidence_graph/STAGE_L_REPORT.md`
+- `outputs/true_scape_evidence_graph/STAGE_L_CURVE.csv`（31 rows）
+- `outputs/true_scape_evidence_graph/BASELINE_COMPARISON.md`
+- `outputs/true_scape_evidence_graph/PROBE_PREDICTION_CHECK.md`
+- `outputs/true_scape_evidence_graph/TOOL_MASK_AUDIT.md`
+- `outputs/true_scape_evidence_graph/DATA_AUDIT.md`
+- `outputs/true_scape_evidence_graph/CCR_EVIDENCE_GRAPH.json`
+- `outputs/true_scape_evidence_graph/AGGREGATE.json`
+- checkpoints: `stage_l/gpu*/main_L8K_s42/hf_merged`；`stage_l_retry/gpu0/weighted_L8K_s42/hf_merged`
 
 ---
 
@@ -78,6 +190,7 @@
 | H100-1/H100-2/H100-4 prior 0812 streams | confirmed still complete | `outputs/h100_1_contribution_confirm/STATUS_LIVE.md`; `outputs/h100_2_independent_repl/STATUS_LIVE.md`; `outputs/h100_4_influence_confirm/STATUS_LIVE.md` | no rerun needed under 0813 instructions |
 | H20 lightweight torch record | complete artifact exists | `outputs/H20_LIGHTWEIGHT_TORCH_COMPLETE.json` | lightweight/proxy result exists but is not official Chroma parity |
 | 0813 artifact summarizer | script committed and pushed | `SCAPE/scripts/generate_0813_required_artifacts.py`; `.gitignore` now ignores `SCAPE-wt-h100-*/` | summarizer only consolidates existing artifacts into `outputs/scape_prestage_v2/0813_STATUS_SUMMARY.{json,md}`; it does not synthesize per-state measurements or turn failed `verify_tool` confirm into success |
+| H20 true-SCAPE Stage L evidence_graph | **已完成**（8×H20，31 cells） | `outputs/true_scape_evidence_graph/`；见 `## 2026-08-13 SCAPE H20 true-SCAPE evidence_graph Stage L final` | Gate L 双次 FAIL → **`CURRENTLY_NOT_LEARNABLE`**；Contribution–Influence 未能预测 learnability |
 
 ### Repo / worktree hygiene
 - `SCAPE-wt-h100-1/` and `SCAPE-wt-h100-2/` are git worktree checkout directories, not experiment artifacts. Parent repo must not commit them as ordinary nested directories.
@@ -95,15 +208,14 @@
 | workstream | status | reason |
 |---|---|---|
 | Official BrowseComp+ Chroma parity | **阻塞** | missing `OPENAI_API_KEY`, `CHROMA_API_KEY`, `CHROMA_DATABASE`; do not poll repeatedly and do not label local/HF evidence as official parity |
-| H20 true-SCAPE Stage L for evidence_graph | **未开始 on this host** | 0813 coordination assigns this to H20; current local evidence only records lightweight/proxy completion, not true same-state tool-token OPD migration |
 | H100-1 evidence graph placement decomposition | **未开始 / not present in this repo snapshot** | only existing H100-1 fresh contribution confirm artifacts are complete; no 0813 placement-decomposition result artifact found |
 | H100-2 Candidate-B utility resolution beyond existing replication | **未开始 / not present in this repo snapshot** | existing H100-2 `BCP_REPL200_V2` artifacts complete; no new 0813 importance_tagging-vs-verify_tool utility resolution artifact found |
 | Targeted verify-event confirmation | **未开始** | natural verify_tool CONFIRM128 has not recovered yet; targeted stream should remain separate and follow natural confirm |
 
 ### 结论
-- Current completed evidence still supports Candidate A=`evidence_graph`.
+- Current completed evidence still supports Candidate A=`evidence_graph` as the best probe-validation target, but H20 true-SCAPE learnability is **negative** → stop full migration.
 - Candidate B remains `importance_tagging` from completed H100-4 confirm until `verify_tool` independent confirm recovers and completes.
-- H100-3 attribution says `evidence_graph` and `verify_tool` are args-heavy enough that name-only training would be insufficient; H20 V0 still starts with uniform name+args KL per coordination doc.
+- H100-3 attribution says `evidence_graph` and `verify_tool` are args-heavy enough that name-only training would be insufficient; H20 V0 uniform + weighted retry both failed Gate L.
 - Runtime controls remain `chunk_neighbors` and `content_dedup`; do not promote them to first-round internalization targets.
 - The only active local recovery item is H100-4 `verify_tool` CONFIRM128 environment repair; official Chroma remains credential-blocked.
 

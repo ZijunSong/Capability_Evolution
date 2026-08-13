@@ -149,7 +149,8 @@ trap cleanup EXIT
     --host 127.0.0.1 \
     --port "${PORT}" \
     --tensor-parallel-size 1 \
-    --max-model-len 32768 \
+    --max-model-len "${MAX_MODEL_LEN_VLLM:-32768}" \
+    --gpu-memory-utilization "${VLLM_GPU_MEMORY_UTILIZATION:-0.92}" \
     --dtype bfloat16 \
     --disable-custom-all-reduce \
     --enforce-eager \

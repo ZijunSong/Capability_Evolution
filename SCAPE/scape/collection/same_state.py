@@ -143,11 +143,12 @@ def collect_same_state_dataset(
     component_id: str = "evidence_graph",
     seed: int = 42,
     out_path: Path | None = None,
+    query_prefix: str = "smoke_q",
 ) -> list[dict[str, Any]]:
     rng = random.Random(seed)
     rows: list[dict[str, Any]] = []
     for i in range(n_states):
-        qid = f"smoke_q{i:04d}"
+        qid = f"{query_prefix}{i:04d}"
         step = 1 + (i % 3)
         row = build_paired_state(
             query_id=qid, step=step, component_id=component_id, rng=rng
@@ -160,6 +161,50 @@ def collect_same_state_dataset(
             for row in rows:
                 f.write(json.dumps(row, ensure_ascii=False) + "\n")
     return rows
+
+
+def build_query_disjoint_splits(
+    *,
+    component_id: str = "evidence_graph",
+    out_dir: Path,
+    train_n: int = 8000,
+    valid_n: int = 1000,
+    test_n: int = 1000,
+    seed: int = 42,
+) -> dict[str, Any]:
+    """Build EG_TRAIN / EG_VALID / EG_TEST with query-disjoint pools."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    splits = {
+        "EG_TRAIN_8K": ("train_q", train_n, seed),
+        "EG_VALID_1K": ("valid_q", valid_n, seed + 1),
+        "EG_TEST_1K": ("test_q", test_n, seed + 2),
+    }
+    meta: dict[str, Any] = {
+        "component_id": component_id,
+        "query_disjoint": True,
+        "splits": {},
+    }
+    for name, (prefix, n, split_seed) in splits.items():
+        path = out_dir / f"{name}.jsonl"
+        rows = collect_same_state_dataset(
+            n_states=n,
+            component_id=component_id,
+            seed=split_seed,
+            out_path=path,
+            query_prefix=prefix,
+        )
+        audit = audit_same_state(rows)
+        meta["splits"][name] = {
+            "path": str(path),
+            "n_states": len(rows),
+            "query_prefix": prefix,
+            "seed": split_seed,
+            "audit": audit,
+        }
+    (out_dir / "DATA_AUDIT.json").write_text(
+        json.dumps(meta, indent=2) + "\n", encoding="utf-8"
+    )
+    return meta
 
 
 def load_same_state_jsonl(path: Path) -> list[dict[str, Any]]:

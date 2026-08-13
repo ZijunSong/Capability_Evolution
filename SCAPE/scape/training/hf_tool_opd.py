@@ -19,10 +19,56 @@ import torch
 import torch.nn.functional as F
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from scape.training.tool_mask import tool_loss_mask_from_response
+from scape.training.tool_mask import (
+    build_tool_token_mask,
+    tool_loss_mask_from_response,
+)
 from scape.training.tool_opd import learnability_score, tool_opd_loss
 
-LossPath = Literal["tool_token_kl", "action_ce", "full_response_kl", "offpolicy_matched"]
+LossPath = Literal[
+    "tool_token_kl",
+    "weighted_tool_token_kl",
+    "tool_name_only_kl",
+    "args_only_kl",
+    "action_ce",
+    "full_response_kl",
+    "offpolicy_matched",
+]
+
+# Derived from Stage L baseline ablation (name_only >> args_only >> uniform).
+WEIGHTED_SPAN_WEIGHTS: dict[str, float] = {
+    "tool_name": 3.0,
+    "argument_key": 0.5,
+    "argument_value": 0.5,
+    "end_search": 1.0,
+}
+
+MASK_MODE_BY_LOSS: dict[str, dict[str, bool]] = {
+    "tool_token_kl": {
+        "include_name": True,
+        "include_arg_keys": True,
+        "include_arg_values": True,
+        "include_end_search": True,
+    },
+    "weighted_tool_token_kl": {
+        "include_name": True,
+        "include_arg_keys": True,
+        "include_arg_values": True,
+        "include_end_search": True,
+    },
+    "tool_name_only_kl": {
+        "include_name": True,
+        "include_arg_keys": False,
+        "include_arg_values": False,
+        "include_end_search": False,
+    },
+    "args_only_kl": {
+        "include_name": False,
+        "include_arg_keys": True,
+        "include_arg_values": True,
+        "include_end_search": False,
+    },
+}
 
 
 def _offset_mapping(tokenizer, text: str) -> list[tuple[int, int]]:
@@ -64,6 +110,9 @@ class ScapeHFToolOPD:
     torch_dtype: torch.dtype = torch.bfloat16
     learning_rate: float = 1e-5
     anchor_weight: float = 0.1
+    use_lora: bool = True
+    lora_r: int = 8
+    lora_alpha: int = 16
 
     def __post_init__(self) -> None:
         self.tokenizer = AutoTokenizer.from_pretrained(
@@ -77,6 +126,18 @@ class ScapeHFToolOPD:
             torch_dtype=self.torch_dtype,
             trust_remote_code=True,
         )
+        if self.use_lora:
+            from peft import LoraConfig, get_peft_model
+
+            lora_cfg = LoraConfig(
+                r=self.lora_r,
+                lora_alpha=self.lora_alpha,
+                target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+                lora_dropout=0.05,
+                bias="none",
+                task_type="CAUSAL_LM",
+            )
+            self.model = get_peft_model(self.model, lora_cfg)
         self.optimizer = torch.optim.AdamW(
             [p for p in self.model.parameters() if p.requires_grad],
             lr=self.learning_rate,
@@ -86,12 +147,47 @@ class ScapeHFToolOPD:
     def encode(self, text: str) -> list[int]:
         return self.tokenizer.encode(text, add_special_tokens=False)
 
-    def response_token_mask(self, response_text: str) -> list[bool]:
+    def response_token_mask(
+        self,
+        response_text: str,
+        *,
+        loss_path: LossPath = "tool_token_kl",
+    ) -> list[bool]:
         offsets = _offset_mapping(self.tokenizer, response_text)
-        audit = tool_loss_mask_from_response(response_text, token_offsets=offsets)
+        span_kwargs = MASK_MODE_BY_LOSS.get(loss_path, MASK_MODE_BY_LOSS["tool_token_kl"])
+        audit = tool_loss_mask_from_response(
+            response_text, token_offsets=offsets, **span_kwargs
+        )
         mask = audit["token_mask"]
         assert mask is not None
         return list(mask)
+
+    def response_token_weights(
+        self,
+        response_text: str,
+        *,
+        loss_path: LossPath = "weighted_tool_token_kl",
+        span_weights: dict[str, float] | None = None,
+    ) -> list[float]:
+        """Per-token loss weights for weighted tool-token KL."""
+        weights = span_weights or WEIGHTED_SPAN_WEIGHTS
+        offsets = _offset_mapping(self.tokenizer, response_text)
+        span_kwargs = MASK_MODE_BY_LOSS.get(loss_path, MASK_MODE_BY_LOSS["weighted_tool_token_kl"])
+        spans = build_tool_token_mask(response_text, **span_kwargs)
+        char_w = [0.0] * len(response_text)
+        for sp in spans:
+            w = float(weights.get(sp.kind, 0.0))
+            for i in range(max(0, sp.start), min(len(response_text), sp.end)):
+                char_w[i] = max(char_w[i], w)
+        token_w: list[float] = []
+        for start, end in offsets:
+            if start >= end or start >= len(char_w):
+                token_w.append(0.0)
+                continue
+            end = min(end, len(char_w))
+            chunk = char_w[start:end]
+            token_w.append(max(chunk) if chunk else 0.0)
+        return token_w
 
     def audit_tool_spans(self, response_texts: Sequence[str]) -> dict[str, Any]:
         n = len(response_texts)
@@ -178,7 +274,7 @@ class ScapeHFToolOPD:
         if student_lp.numel() == 0:
             return {"div": 0.0, "name_kl": 0.0, "arg_key_kl": 0.0, "arg_value_kl": 0.0}
 
-        token_mask = self.response_token_mask(response_text)
+        token_mask = self.response_token_mask(response_text, loss_path=loss_path)
         if len(token_mask) != len(resp_ids):
             # tokenizer offset quirks — fall back to all-true on response
             token_mask = [True] * len(resp_ids)
@@ -186,7 +282,23 @@ class ScapeHFToolOPD:
         kl_tok = (teacher_lp - student_lp)  # KL(teacher||student) proxy per token
         if loss_path == "full_response_kl":
             div = float(kl_tok.mean().item())
-        elif loss_path in ("tool_token_kl", "offpolicy_matched", "action_ce"):
+        elif loss_path == "weighted_tool_token_kl":
+            w = torch.tensor(
+                self.response_token_weights(response_text, loss_path=loss_path),
+                device=kl_tok.device,
+                dtype=kl_tok.dtype,
+            )
+            if float(w.sum().item()) <= 0:
+                div = float(kl_tok.mean().item())
+            else:
+                div = float((kl_tok * w).sum().item() / w.sum().item())
+        elif loss_path in (
+            "tool_token_kl",
+            "tool_name_only_kl",
+            "args_only_kl",
+            "offpolicy_matched",
+            "action_ce",
+        ):
             m = torch.tensor(token_mask, device=kl_tok.device, dtype=kl_tok.dtype)
             if float(m.sum().item()) <= 0:
                 div = float(kl_tok.mean().item())
@@ -238,7 +350,7 @@ class ScapeHFToolOPD:
                     self.encode(teacher_prompt), resp_ids, require_grad=False
                 )
 
-            token_mask = self.response_token_mask(response)
+            token_mask = self.response_token_mask(response, loss_path=loss_path)
             if len(token_mask) != len(resp_ids):
                 token_mask = [True] * len(resp_ids)
             m = torch.tensor(token_mask, device=student_lp.device, dtype=student_lp.dtype)
@@ -258,8 +370,24 @@ class ScapeHFToolOPD:
                     anchor_kl=0.0,
                     anchor_weight=0.0,
                 )
-            elif loss_path in ("tool_token_kl", "offpolicy_matched"):
-                if float(m.sum().item()) <= 0:
+            elif loss_path in (
+                "tool_token_kl",
+                "weighted_tool_token_kl",
+                "tool_name_only_kl",
+                "args_only_kl",
+                "offpolicy_matched",
+            ):
+                if loss_path == "weighted_tool_token_kl":
+                    w = torch.tensor(
+                        self.response_token_weights(response, loss_path=loss_path),
+                        device=student_lp.device,
+                        dtype=student_lp.dtype,
+                    )
+                    if float(w.sum().item()) <= 0:
+                        tool_kl = (teacher_lp - student_lp).mean()
+                    else:
+                        tool_kl = ((teacher_lp - student_lp) * w).sum() / w.sum()
+                elif float(m.sum().item()) <= 0:
                     tool_kl = (teacher_lp - student_lp).mean()
                 else:
                     tool_kl = ((teacher_lp - student_lp) * m).sum() / m.sum()
@@ -287,6 +415,15 @@ class ScapeHFToolOPD:
     def save_pretrained(self, out_dir: str) -> None:
         self.model.save_pretrained(out_dir)
         self.tokenizer.save_pretrained(out_dir)
+
+    def merge_and_save(self, out_dir: str) -> None:
+        """Merge LoRA weights into base for serving when applicable."""
+        if self.use_lora:
+            merged = self.model.merge_and_unload()
+            merged.save_pretrained(out_dir)
+            self.tokenizer.save_pretrained(out_dir)
+        else:
+            self.save_pretrained(out_dir)
 
 
 def mean_divergence(
@@ -348,7 +485,15 @@ def assert_loss_paths_distinct() -> dict[str, Any]:
     import inspect
 
     src = inspect.getsource(ScapeHFToolOPD.train_step)
-    required = ["action_ce", "full_response_kl", "tool_token_kl", "offpolicy_matched"]
+    required = [
+        "action_ce",
+        "full_response_kl",
+        "tool_token_kl",
+        "weighted_tool_token_kl",
+        "tool_name_only_kl",
+        "args_only_kl",
+        "offpolicy_matched",
+    ]
     present = {k: (k in src) for k in required}
     # also ensure offpolicy uses prompt_full for student forward
     offpolicy_uses_full = "offpolicy_matched" in src and "prompt_full" in src
