@@ -81,6 +81,7 @@ model_export/adapter/
 !/.git/
 harness-1-upstream/
 SCAPE/external/harness-1/
+SCAPE-wt-h100-*/
 **/node_modules/
 
 # --- OS / editor ---
