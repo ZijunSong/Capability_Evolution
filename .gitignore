@@ -91,6 +91,8 @@ Thumbs.db
 .vscode/
 *.swp
 *~
+CLAUDE.md
+**/CLAUDE.md
 
 # --- LaTeX / notebooks scratch ---
 *.aux

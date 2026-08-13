@@ -100,6 +100,8 @@ def completed_statuses() -> dict[str, dict[str, Any]]:
         "h100_3_real_influence": status_from_markdown(OUT / "h100_3_real_influence" / "STATUS_LIVE.md"),
         "h100_3_influence_attribution": read_json(OUT / "h100_3_influence_attribution" / "RUN_MANIFEST.json") or {"exists": False},
         "h100_4_influence_confirm": status_from_markdown(OUT / "h100_4_influence_confirm" / "STATUS_LIVE.md"),
+        "h100_4_verify_confirm": read_json(OUT / "h100_4_verify_confirm" / "RUN_MANIFEST.json") or {"exists": False},
+        "h100_4_auto_populate_argument_diagnostic": read_json(OUT / "h100_4_verify_confirm" / "auto_populate_argument_diagnostic" / "RUN_MANIFEST.json") or {"exists": False},
         "h20_lightweight_torch": read_json(OUT / "H20_LIGHTWEIGHT_TORCH_COMPLETE.json") or {"exists": False},
     }
 
@@ -107,11 +109,16 @@ def completed_statuses() -> dict[str, dict[str, Any]]:
 def verify_followup_status() -> dict[str, Any]:
     status = status_from_markdown(OUT / "h100_4_verify_confirm" / "STATUS_LIVE.md")
     preflight = read_json(OUT / "h100_4_verify_confirm" / "PREFLIGHT.json") or {}
+    handoff = read_json(OUT / "scape_prestage_v2" / "H1004_VERIFY_HANDOFF.json") or {}
+    manifest = read_json(OUT / "h100_4_verify_confirm" / "RUN_MANIFEST.json") or {}
+    completed = manifest.get("status") == "completed" and int(status.get("errors", 1)) == 0 and handoff.get("confirmed") is True
     return {
         "status": status,
         "preflight": preflight,
-        "classification": "in_progress_failed_once" if status.get("errors", 0) else "not_started_or_completed",
-        "recovery": "rerun SCAPE/scripts/run_h100_4_verify_confirm_hf.py with --python pointing to a valid HF scorer environment",
+        "handoff": handoff,
+        "manifest": manifest,
+        "classification": "completed_confirmed" if completed else "requires_recovery",
+        "recovery": None if completed else "rerun SCAPE/scripts/run_h100_4_verify_confirm_hf.py with --python pointing to a valid /opt HF scorer environment",
     }
 
 
@@ -149,7 +156,7 @@ def candidate_status() -> dict[str, Any]:
         },
         "candidate_b_challenger": {
             "component": "verify_tool",
-            "status": "requires_recovered_h100_4_confirm",
+            "status": "completed_confirmed" if verify.get("classification") == "completed_confirmed" else "requires_recovered_h100_4_confirm",
             "h100_3_attribution": h3_attr.get("verify_tool", {}),
             "h100_4_followup": verify,
         },
@@ -188,7 +195,7 @@ def write_markdown(summary: dict[str, Any]) -> None:
     conclusions = {
         "evidence_graph": "args-heavy; name-only is insufficient",
         "importance_tagging": "positive; current Candidate B",
-        "verify_tool": "positive challenger; needs recovered H100-4 confirm",
+        "verify_tool": "positive challenger; H100-4 verify confirm completed",
     }
     for comp, row in attr.items():
         lines.append(f"| `{comp}` | {row.get('I_name_mean')} | {row.get('I_args_mean')} | {conclusions[comp]} |")
@@ -203,8 +210,7 @@ def write_markdown(summary: dict[str, Any]) -> None:
         "## Blocked / Not Started",
         "",
         "- official BrowseComp+ Chroma parity: blocked by missing `OPENAI_API_KEY`, `CHROMA_API_KEY`, `CHROMA_DATABASE`.",
-        "- H20 true-SCAPE Stage L for `evidence_graph`: not completed in this local H100 repo snapshot.",
-        "- targeted verify-event confirmation: not started; wait for natural verify confirm recovery first.",
+        "- H20 true-SCAPE Stage S/M: not started because Evidence Graph Stage L smoke is gate-blocked (`STAGE_L_SMOKE_NOT_PASSED`).",
     ]
     write_text(SUMMARY_DIR / "0813_STATUS_SUMMARY.md", "\n".join(lines))
 
@@ -221,8 +227,7 @@ def main() -> int:
         "candidate_status": candidate_status(),
         "blocked_or_not_started": [
             "official BrowseComp+ Chroma parity",
-            "H20 true-SCAPE Stage L for evidence_graph in this local H100 repo snapshot",
-            "targeted verify-event confirmation",
+            "H20 true-SCAPE Stage S/M after Evidence Graph Gate L block",
         ],
     }
     write_json(SUMMARY_DIR / "0813_STATUS_SUMMARY.json", summary)

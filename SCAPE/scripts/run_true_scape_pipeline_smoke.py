@@ -97,7 +97,7 @@ def run_group_a(args: argparse.Namespace) -> dict[str, Any]:
     )
 
     _status(out, "P1", f"load model {args.model_path}")
-    backend = ScapeHFToolOPD(model_path=args.model_path, learning_rate=args.lr)
+    backend = ScapeHFToolOPD(model_path=args.model_path, learning_rate=args.lr, trainable_scope="head", span_mode=args.span_mode)
 
     # P1 — full/reduced dual-view score
     _status(out, "P1", "score dual-view divergence on 16 states")
@@ -204,7 +204,7 @@ def run_group_b(args: argparse.Namespace) -> dict[str, Any]:
     ]
     for tag, loss_path in path_map:
         _status(out, tag, f"load model + train loss_path={loss_path}")
-        backend = ScapeHFToolOPD(model_path=args.model_path, learning_rate=args.lr)
+        backend = ScapeHFToolOPD(model_path=args.model_path, learning_rate=args.lr, trainable_scope="head", span_mode=args.span_mode)
         summary = run_tool_opd_train(
             backend,
             train_rows,
@@ -231,7 +231,7 @@ def run_group_b(args: argparse.Namespace) -> dict[str, Any]:
 
     # Q3 — closed-loop 16q syntax/serve smoke (no full browsecomp; syntax + serveability)
     _status(out, "Q3", "closed-loop 16q syntax/serve smoke")
-    backend = ScapeHFToolOPD(model_path=args.model_path, learning_rate=args.lr)
+    backend = ScapeHFToolOPD(model_path=args.model_path, learning_rate=args.lr, trainable_scope="head", span_mode=args.span_mode)
     rows16 = collect_same_state_dataset(
         n_states=16, component_id=args.component_id, seed=args.seed + 7
     )
@@ -393,7 +393,8 @@ def main() -> int:
         "--model-path",
         default=os.environ.get("MODEL_PATH", "/data/ppnm/models/Qwen2.5-7B-Instruct"),
     )
-    ap.add_argument("--component-id", default="evidence_graph")
+    ap.add_argument("--component-id", default=os.environ.get("COMPONENT_ID", "evidence_graph"))
+    ap.add_argument("--span-mode", default=os.environ.get("SPAN_MODE", "tool_token"), choices=["tool_token", "name", "args", "name_args", "full"])
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--epochs", type=int, default=1)
     ap.add_argument("--lr", type=float, default=1e-5)

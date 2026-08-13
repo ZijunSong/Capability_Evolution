@@ -11,9 +11,9 @@
 ### Setting（双线）
 | 线 | 机器 / repo | model | retrieval | Candidate A/B |
 |---|---|---|---|---|
-| **H20 true-SCAPE（主线）** | 8×H20；`/data/ppnm/Capability_Evolution/SCAPE` | `pat-jj/harness-1`（local `/data/ppnm/models/harness-1`） | local_bm25_compat | A=`evidence_graph`；B=待定（等 H100-2/H100-4） |
+| **H20 true-SCAPE（主线）** | 8×H20；`/data/ppnm/Capability_Evolution/SCAPE` | `pat-jj/harness-1`（local `/data/ppnm/models/harness-1`） | local_bm25_compat | A=`evidence_graph`；B=待定（等 H100-2/H100-4 handoff） |
 | **H20 provisional（已归档）** | 同上 | Qwen2.5-7B-Instruct | BM25 provisional | A=`auto_populate_first_search`；B=`verify_tool` |
-| **H100** | 8×H100；`/mnt/songzijun/Capability_Evolution/SCAPE` + worktrees `SCAPE-wt-h100-*` | `pat-jj/harness-1`（HF continuation-logprob scorer；vLLM smoke 已通过） | local BM25 compat / HF same-state scorer（官方 Chroma 阻塞） | A=`evidence_graph`；B=`importance_tagging` |
+| **H100** | 8×H100；`/mnt/songzijun/Capability_Evolution/SCAPE` + worktrees `SCAPE-wt-h100-*` | `pat-jj/harness-1`（HF continuation-logprob scorer；vLLM smoke 已通过） | local BM25 compat / HF same-state scorer（官方 Chroma 阻塞） | A=`evidence_graph`；B 未冻结；`verify_tool` 已 H100-4 CONFIRMED 但 utility 弱于 `subtractive_curation` |
 
 ### 进度板 — H20 true-SCAPE evidence_graph（0813 主线）
 | 阶段 | 状态 | 结论 / 产物 |
@@ -38,21 +38,23 @@
 ### 进度板 — H100（0812 fresh confirm / 0813 attribution + sync）
 | 阶段 | 状态 | 结论 / 产物 |
 |---|---|---|
-| Git/code canonicalization + GitHub sync | **已完成** | snapshot commit `0f0934bd9f7a985af747e18dda9c2c666a9c24ba`；sync branch `sync/h100-20260812` pushed to GitHub at `66047fc5d4f7ee20c3111d90c0fea13f0c44c88e` |
+| Git/code canonicalization + GitHub sync | **已完成** | snapshot commit `0f0934bd9f7a985af747e18dda9c2c666a9c24ba`；sync branch `sync/h100-20260812` pushed to GitHub at `66047fc5d4f7ee20c3111d90c0fea13f0c44c88e`，后续 0813 sync head `31a05e9e63339d62f5ac78e743ed28ef6effe093` |
 | H100-1 CAL200 historical contribution | **已完成（local BM25 compat）** | 10 组件 n=200 errors=0；保留为历史基线 |
 | H100-1 fresh contribution confirm | **已完成（local BM25 compat / LOCAL_COMPAT_ONLY）** | `outputs/h100_1_contribution_confirm/`；BCP_CONFIRM400 seed1102 n=400；10/10 errors=0；SHA OK |
+| H100-1 graph placement decomposition | **已完成（LOCAL_COMPAT_ONLY）** | `outputs/h100_1_graph_decomp/`；G0/G1/G2/G3/G4 对比显示 `G3` 接近 `G4`，`G2` 保留少数测得 utility，结论为 `Semantic-migratable` |
 | H100-2 independent replication | **已完成（local BM25 compat / LOCAL_COMPAT_ONLY）** | `outputs/h100_2_independent_repl/`；BCP_REPL200_V2 seed2203 n=200；full + 10 LOO + 4 coalition；16/16 errors=0；SHA OK |
+| H100-2 candidate-B utility resolution | **已完成（LOCAL_COMPAT_ONLY）** | `outputs/h100_2_candidate_b_utility/`；UTILITY_STATE256 对 3 component × K={2,4}；Candidate B 推荐为 `subtractive_curation`，但总体决策为 `Behavior-only` |
 | H100-3 real-model same-state influence | **已完成（HF continuation-logprob）** | `outputs/h100_3_real_influence/`；7 components × 64q × 16 states = 7168 states；7/7 errors=0；SHA OK |
 | H100-3 influence attribution | **已完成（CPU 聚合；GPU rescore skipped）** | `outputs/h100_3_influence_attribution/`；evidence_graph/importance_tagging/verify_tool 各 1024 states；已生成 tool/turn/argument 分层和 H20 loss recommendation |
 | H100-4 real influence confirmation | **已完成（HF continuation-logprob）** | `outputs/h100_4_influence_confirm/`；REAL_INF_CONFIRM128 n=128；3 components × 512 states；3/3 positive；SHA OK |
-| H100-4 verify_tool follow-up confirm | **进行中 / 异常待恢复** | `outputs/h100_4_verify_confirm/`；VERIFY_INF_CONFIRM128 seed4414 n=128 setting 已冻结；首次运行因 `/opt/scape-h1003-hf-scorer/bin/python` 不存在失败，`n_finished=0/errors=1`；wrapper `scripts/run_h100_4_verify_confirm_hf.py` 已加入 |
+| H100-4 verify_tool follow-up confirm | **已完成（HF continuation-logprob / `/opt` env）** | `outputs/h100_4_verify_confirm/`；VERIFY_INF_CONFIRM128 seed4414 n=128；natural 2048 states + targeted 512 states；errors=0；decision=`CONFIRMED`；`H1004_VERIFY_HANDOFF.json` 已更新 |
 | Harness-1 restore + vLLM smoke | **已完成（smoke）** | 9 shards；`/v1/models` 200 |
 | 官方 BrowseComp+ Chroma eval / parity | **阻塞** | 缺 `OPENAI_API_KEY` / `CHROMA_API_KEY` / `CHROMA_DATABASE`；不可用 local/HF evidence 冒充 official Chroma |
 
 ### 结论（一句话）
 - **H20 true-SCAPE**：`evidence_graph` 在 harness-1 + same-state tool-token KL 下 **Gate L 双次 FAIL**（uniform → weighted retry）→ **`CURRENTLY_NOT_LEARNABLE`**；停止 Evidence Graph full migration；Contribution–Influence **未能预测** learnability。
 - **H20 provisional**：LOCAL_CAL64 + BM25+Qwen 下 A/B **不可 retirement**（Gate S FAIL）；已归档。
-- **H100**：fresh contribution confirm + independent replication + HF same-state real influence + H100-4 confirm 已齐；handoff 推荐 A=`evidence_graph`，B 待定。官方 Chroma 仍阻塞。
+- **H100**：fresh contribution + replication + real influence + H100-4 confirm + `verify_tool` follow-up confirm 已齐；Candidate A=`evidence_graph`。B-side 需联合解读：`verify_tool` 已 CONFIRMED 但 H100-2 utility 仍给 `subtractive_curation` 更强局部 utility。官方 Chroma 仍阻塞，所有 local/HF 结果标注 `LOCAL_COMPAT_ONLY`。
 
 详细数字：H20 true-SCAPE 见 `## 2026-08-13 SCAPE H20 true-SCAPE evidence_graph Stage L final`；0813 H100 状态见 `## 2026-08-13 SCAPE 0813 execution status`；H20 provisional 见 `## 2026-08-12 SCAPE non-H100 round final`；H100 见 `## 2026-08-12 SCAPE H100 fresh confirm + real influence final`。
 
@@ -165,59 +167,70 @@ Gate L reason: `scaling_regression`（`seed_agree=true`，`invalid_ok=true`，�
 
 ## 2026-08-13 SCAPE 0813 execution status
 
-> 根据 `SCAPE/0813/SCAPE-0813-五机协调.md` 和 `SCAPE/0813/SCAPE-0813-H100-3.md` 更新。本节只记录 0813 调度下的 setting / 结果 / 结论，并明确区分 **已完成**、**进行中**、**未开始/阻塞**。
+> 根据 `SCAPE/0813/SCAPE-0813-五机协调.md` 与 `SCAPE/0813/SCAPE-0813-H100-{1,2,3,4}.md`、`SCAPE/0813/SCAPE-0813-H20.md` 更新。本节记录 0813 调度下所有已执行/已 gate-block 的 setting、结果、结论及跨服务器 handoff 信息。官方 Chroma 仍因 credential 缺失阻塞；不会把 local/HF evidence 冒充 official Chroma parity。
 
 ### Setting
 - repo: `/mnt/songzijun/Capability_Evolution/SCAPE` on branch `sync/h100-20260812`
 - GitHub remote: `https://github.com/ZijunSong/Capability_Evolution.git`
-- pushed sync head: `31a05e9e63339d62f5ac78e743ed28ef6effe093` (`origin/sync/h100-20260812` after 0813 artifact summarizer commit); previous H100-3 sync head was `66047fc5d4f7ee20c3111d90c0fea13f0c44c88e`
 - required H100 snapshot ancestor: `0f0934bd9f7a985af747e18dda9c2c666a9c24ba`
+- GPU/env rule learned on 2026-08-13: **do not run torch/vLLM from `/mnt` JuiceFS environments**. GPU-heavy Python envs must live under `/opt`; current HF scorer env is `/opt/scape-hf-scorer/bin/python`.
+- visible GPUs for final verify run: 4 GPUs exposed by current node; `device_map=auto` was added to the HF scorer and used to shard the Harness-1 checkpoint across visible GPUs. No leftover scorer/vLLM processes after completion.
+- model for HF influence/confirm: `/mnt/songzijun/models/pat-jj_harness-1-full/harness-1` (`pat-jj/harness-1` released checkpoint)
 - official Chroma credentials: unavailable (`OPENAI_API_KEY`, `CHROMA_API_KEY`, `CHROMA_DATABASE` missing) -> `OFFICIAL_CHROMA_BLOCKED=true`; continue local/HF mechanism experiments only
-- H100-3 input: `outputs/h100_3_real_influence/REAL_INFLUENCE_PER_STATE.jsonl`
-- H100-3 target components: `evidence_graph`, `importance_tagging`, `verify_tool`
-- H100-3 GPU policy: skipped GPU0-7 rescore because per-state JSONL already contains `P_tool_name_full`, `P_tool_name_reduced`, `I_name`, `I_args`, and null statistics
-- H100-4 verify follow-up setting: `VERIFY_INF_CONFIRM128`, component=`verify_tool`, seed=4414, n_queries=128, max_states_per_query=16, scorer=`hf_continuation_logprob`
+- H100-3 attribution input: `outputs/h100_3_real_influence/REAL_INFLUENCE_PER_STATE.jsonl`
+- H100-4 verify follow-up setting: `VERIFY_INF_CONFIRM128`, component=`verify_tool`, seed=4414, n_queries=128, max_states_per_query=16, scorer=`hf_continuation_logprob`, output=`outputs/h100_4_verify_confirm/`
 
-### 已完成
-| workstream | result | artifacts / evidence | conclusion |
+### Completed 0813 workstreams
+| workstream | setting / scale | artifacts | result / conclusion |
 |---|---|---|---|
-| H100-3 Git audit / sync | branch `sync/h100-20260812` already pushed; remote head matches local `66047fc5d4f7ee20c3111d90c0fea13f0c44c88e` | `SCAPE/docs/H100_GITHUB_HANDOFF.md`; `git ls-remote --heads origin sync/h100-20260812` | H100 common scorer/attribution code is available on GitHub; `gh` CLI absent but HTTPS token push succeeded via temporary `GIT_ASKPASS` |
-| H100-3 attribution aggregation | 3072 rows aggregated: 3 components x 1024 states | `outputs/h100_3_influence_attribution/RUN_MANIFEST.json`; `INFLUENCE_TOTALS.csv`; `INFLUENCE_BY_TOOL.csv`; `INFLUENCE_BY_ARGUMENT_CLASS.csv`; `INFLUENCE_BY_TURN.csv` | enough per-state statistics existed; no GPU rescore needed |
-| evidence_graph attribution | `I_name_mean=0.038704`, `I_args_mean=0.117327`, late-turn args strongest | `outputs/h100_3_influence_attribution/EVIDENCE_GRAPH_ATTRIBUTION.md` | influence is not name-only; later ablations should retain name loss but emphasize argument tokens, especially read/end and doc-id / termination events |
-| importance_tagging attribution | `I_name_mean=0.028771`, `I_args_mean=0.016560` | `outputs/h100_3_influence_attribution/IMPORTANCE_TAGGING_ATTRIBUTION.md` | positive influence is more tool-name than args-heavy in this aggregation; keep medium args loss for later ablation |
-| verify_tool attribution | `I_name_mean=0.019043`, `I_args_mean=0.050669` | `outputs/h100_3_influence_attribution/VERIFY_TOOL_ATTRIBUTION.md` | H100-3 signal remains positive and args-heavy; still requires independent H100-4 verify confirmation before promoting over Candidate B |
-| H20 loss recommendation | H20 V0 remains uniform name+args tool-token KL | `outputs/h100_3_influence_attribution/H20_LOSS_RECOMMENDATION.md` | attribution only informs later ablation/stratification; do not complicate first H20 V0 loss |
-| H100-1/H100-2/H100-4 prior 0812 streams | confirmed still complete | `outputs/h100_1_contribution_confirm/STATUS_LIVE.md`; `outputs/h100_2_independent_repl/STATUS_LIVE.md`; `outputs/h100_4_influence_confirm/STATUS_LIVE.md` | no rerun needed under 0813 instructions |
-| H20 lightweight torch record | complete artifact exists | `outputs/H20_LIGHTWEIGHT_TORCH_COMPLETE.json` | lightweight/proxy result exists but is not official Chroma parity |
-| 0813 artifact summarizer | script committed and pushed | `SCAPE/scripts/generate_0813_required_artifacts.py`; `.gitignore` now ignores `SCAPE-wt-h100-*/` | summarizer only consolidates existing artifacts into `outputs/scape_prestage_v2/0813_STATUS_SUMMARY.{json,md}`; it does not synthesize per-state measurements or turn failed `verify_tool` confirm into success |
-| H20 true-SCAPE Stage L evidence_graph | **已完成**（8×H20，31 cells） | `outputs/true_scape_evidence_graph/`；见 `## 2026-08-13 SCAPE H20 true-SCAPE evidence_graph Stage L final` | Gate L 双次 FAIL → **`CURRENTLY_NOT_LEARNABLE`**；Contribution–Influence 未能预测 learnability |
+| H100-1 Evidence Graph Placement Decomposition | `BCP_GRAPH_DECOMP200`, variants G0–G4; `LOCAL_COMPAT_ONLY=true` | `outputs/h100_1_graph_decomp/` | `G3` close to `G4`, `G2` retains minority utility → `Semantic-migratable` |
+| H100-2 Candidate-B Utility Resolution | `importance_tagging`, `verify_tool`, `subtractive_curation`; `UTILITY_STATE256` | `outputs/h100_2_candidate_b_utility/` | Decision=`Behavior-only`; utility: `subtractive_curation` > `importance_tagging` > `verify_tool` |
+| H100-3 Influence Attribution | 3 components × 1024 states = 3072 rows | `outputs/h100_3_influence_attribution/` | evidence_graph/importance_tagging/verify_tool attribution complete; H20 loss recommendation generated |
+| H100-4 prior real influence confirm | REAL_INF_CONFIRM128, 3 components | `outputs/h100_4_influence_confirm/` | 3/3 positive, errors=0 |
+| H100-4 `verify_tool` independent confirm | `VERIFY_INF_CONFIRM128`, seed=4414; `/opt/scape-hf-scorer/bin/python` | `outputs/h100_4_verify_confirm/`; `H1004_VERIFY_HANDOFF.json` | natural 2048 + targeted 512 states; errors=0; Decision=`CONFIRMED` |
+| H100-4 `auto_populate` argument diagnostic | 128 states from HF per-state rows | `outputs/h100_4_verify_confirm/auto_populate_argument_diagnostic/` | I_args_raw_mean=-0.280; 98/128 negative args signal |
+| H20 true-SCAPE Stage L evidence_graph | 8×H20, 31 cells (V0 18 + weighted retry 13) | `outputs/true_scape_evidence_graph/` | Gate L 双次 FAIL → **`CURRENTLY_NOT_LEARNABLE`**；见 `## 2026-08-13 SCAPE H20 true-SCAPE evidence_graph Stage L final` |
+| 0813 status consolidation | reads completed artifacts only | `outputs/scape_prestage_v2/0813_STATUS_SUMMARY.{json,md}` | `missing={}` in required-artifact presence check |
 
-### Repo / worktree hygiene
-- `SCAPE-wt-h100-1/` and `SCAPE-wt-h100-2/` are git worktree checkout directories, not experiment artifacts. Parent repo must not commit them as ordinary nested directories.
-- Both worktrees were checked and are clean: `SCAPE-wt-h100-1` on `exp/h1001-evidence-graph-placement`; `SCAPE-wt-h100-2` on `exp/h1002-candidate-b-utility`.
-- `.gitignore` includes `SCAPE-wt-h100-*/` so other agents and servers do not treat these checkout directories as missing commits.
-- `SCAPE/scripts/generate_0813_required_artifacts.py` was initially untracked, then revised to preserve real status boundaries before commit. In particular, `h100_4_verify_confirm` remains **进行中 / 异常待恢复** until the HF scorer environment is fixed and rerun.
-- Latest pushed branch state after this hygiene update chain: `origin/sync/h100-20260812` at `31a05e9e63339d62f5ac78e743ed28ef6effe093` before this record-only follow-up commit.
+### Key metrics / decisions
+| item | value |
+|---|---:|
+| H100-4 verify natural states | 2048 |
+| H100-4 verify targeted states | 512 |
+| H100-4 verify natural I_name_normalized | 0.018325 |
+| H100-4 verify natural I_args_raw | 0.039954 |
+| H100-4 verify targeted I_name_normalized | 0.018523 |
+| H100-4 verify gate | CONFIRMED |
+| auto_populate diagnostic I_args_raw_mean | -0.280096 |
+| auto_populate negative args states | 98/128 |
+| required 0813 artifact presence check | missing = `{}` |
+| final targeted tests | 3 passed |
+| final GPU/process status | GPUs idle; no verify/vLLM/torchrun process remains |
 
-### 正在进行 / 异常待恢复
-| workstream | current state | blocker / recovery |
-|---|---|---|
-| H100-4 verify_tool independent CONFIRM128 | `outputs/h100_4_verify_confirm/STATUS_LIVE.md` shows `n_expected=1`, `n_finished=0`, `errors=1` | scorer invocation failed because `/opt/scape-h1003-hf-scorer/bin/python` is missing. Setting and split audit are frozen in `outputs/h100_4_verify_confirm/PREFLIGHT.json`; recover by pointing `scripts/run_h100_4_verify_confirm_hf.py --python` to a valid HF scorer env or rebuilding `/opt/scape-h1003-hf-scorer`, then rerun verify_tool only. |
+### Candidate / placement conclusion
+- Candidate A remains `evidence_graph`.
+- `evidence_graph` placement decomposition supports a hybrid SCAPE target: external graph state should remain available, while graph-aware semantic decisions are migratable into weights and renderer/controller can be slimmed later.
+- Candidate B is **not frozen solely from one axis**:
+  - `importance_tagging`: positive real influence and semantic candidate, but H100-2 utility is weaker than `subtractive_curation`.
+  - `verify_tool`: now independently H100-4-confirmed positive and should remain a high-priority challenger/conditional runtime candidate; however H100-2 short-horizon utility ranks it weakest and local reward delta is 0.
+  - `subtractive_curation`: strongest H100-2 short-horizon utility, positive but weaker real influence; recommended by H100-2 utility as B under `Behavior-only` decision.
+- Runtime controls remain `chunk_neighbors` and `content_dedup`; do not promote them to first-round full internalization targets.
+- H20 V0 should continue to use uniform name+args tool-token KL; H100-3 attribution only informs later ablations.
 
-### 未开始 / 阻塞
+### Blocked / intentionally not continued
 | workstream | status | reason |
 |---|---|---|
-| Official BrowseComp+ Chroma parity | **阻塞** | missing `OPENAI_API_KEY`, `CHROMA_API_KEY`, `CHROMA_DATABASE`; do not poll repeatedly and do not label local/HF evidence as official parity |
-| H100-1 evidence graph placement decomposition | **未开始 / not present in this repo snapshot** | only existing H100-1 fresh contribution confirm artifacts are complete; no 0813 placement-decomposition result artifact found |
-| H100-2 Candidate-B utility resolution beyond existing replication | **未开始 / not present in this repo snapshot** | existing H100-2 `BCP_REPL200_V2` artifacts complete; no new 0813 importance_tagging-vs-verify_tool utility resolution artifact found |
-| Targeted verify-event confirmation | **未开始** | natural verify_tool CONFIRM128 has not recovered yet; targeted stream should remain separate and follow natural confirm |
+| Official BrowseComp+ Chroma parity | **blocked** | missing `OPENAI_API_KEY`, `CHROMA_API_KEY`, `CHROMA_DATABASE`; checked once and not polled repeatedly. |
+| H20 Evidence Graph Stage S/M | **not started** | Gate L FAIL (`CURRENTLY_NOT_LEARNABLE`); per auto-stop rule, no Stage S/M or retirement claim. |
+| Old SCOPE rollback / KEEP-SKIP / P_m / old Stage M | **not continued** | explicitly forbidden by 0813 coordination. |
 
-### 结论
-- Current completed evidence still supports Candidate A=`evidence_graph` as the best probe-validation target, but H20 true-SCAPE learnability is **negative** → stop full migration.
-- Candidate B remains `importance_tagging` from completed H100-4 confirm until `verify_tool` independent confirm recovers and completes.
-- H100-3 attribution says `evidence_graph` and `verify_tool` are args-heavy enough that name-only training would be insufficient; H20 V0 uniform + weighted retry both failed Gate L.
-- Runtime controls remain `chunk_neighbors` and `content_dedup`; do not promote them to first-round internalization targets.
-- The only active local recovery item is H100-4 `verify_tool` CONFIRM128 environment repair; official Chroma remains credential-blocked.
+### Repo / worktree hygiene and handoff notes
+- GPU workloads must use `/opt` Python envs, not `/mnt` JuiceFS conda/venv (torch/vLLM hang risk on JuiceFS).
+- `scripts/run_h100_3_real_influence_hf.py` supports `--device auto` and `device_map=auto` for multi-GPU checkpoint loading.
+- `scripts/run_h100_4_verify_confirm_hf.py` is the independent `verify_tool` confirm runner; `scripts/finalize_h100_4_verify_confirm.py` finalizes reports.
+- `scripts/finalize_h100_4_auto_populate_diagnostic.py` produces auto_populate argument diagnostic from existing per-state rows.
+- Worktree checkout directories (`SCAPE-wt-h100-*`) must remain uncommitted; `CLAUDE.md` is gitignored and must not be committed.
+- Outputs/checkpoints/models/indexes/secrets remain uncommitted; this record points other agents to artifact paths under `outputs/`.
 
 ---
 
@@ -568,6 +581,29 @@ H100-4 completed its originally selected confirm set. `verify_tool` became H100-
 - `sentence_compress`、`verify_tool`、`token_budget_marker` 在本地质量指标上中性。
 - **不可**用本 run 宣称官方 Harness-1 reproduction/parity。
 
+### H100-1 graph placement decomposition（2026-08-13）
+
+**Setting**
+- 输入：`outputs/h100_1_contribution_confirm/` + SCAPE renderer audit
+- 输出：`outputs/h100_1_graph_decomp/`
+- 结论标签：`LOCAL_COMPAT_ONLY=true`，`official_chroma_parity=false`
+- 目的：判断 `evidence_graph` 的收益来自 external state、renderer，还是 graph-aware decision surface
+
+**Results**
+| variant | quality delta | trajectory delta | state ops delta | latency delta ms | render tokens delta |
+|---|---:|---:|---:|---:|---:|
+| G0_FULL | 0.002376 | 0.005280 | 3.000 | 6.846 | 180 |
+| G1_GRAPH_OFF | 0.000000 | 0.000000 | 0.000 | 0.000 | 0 |
+| G2_GRAPH_STATE_ONLY | 0.000832 | 0.001848 | 3.000 | 4.450 | 0 |
+| G3_GRAPH_STATE_PLUS_MINIMAL_RENDER | 0.001948 | 0.004329 | 3.000 | 5.613 | 72 |
+| G4_GRAPH_FULL_RENDER | 0.002376 | 0.005280 | 3.000 | 6.846 | 180 |
+
+**Conclusion**
+- `G3` 接近 `G4`，`G2` 只保留少数测得 utility。
+- 当前证据支持 `Semantic-migratable`：保留 external graph state，将训练重点放在 graph-aware tool decision，后续再收缩 renderer/controller，而不是直接删掉 graph state。
+- `GRAPH_RUNTIME_COST.md` 显示 graph 有非零 state/latency 成本，因此 retirement 若发生，也应优先收缩 renderer/controller。
+- `GRAPH_RENDERER_ROBUSTNESS.md` 未检测到明显 field-order 语义依赖。
+
 ### H100-2 setting
 - Run id: `h100_2_replication_coalition_20260811`
 - Env: `/opt/vllm-qwen3-1.7b/bin/python`；Python 3.12.13；torch 2.11.0+cu130；vLLM 0.25.1；8×H100
@@ -600,6 +636,39 @@ H100-4 completed its originally selected confirm set. `verify_tool` became H100-
 - `retrieval_rerank` 两路 recall 皆负 → interaction/benchmark-sensitive。
 - Coalition 多为 diminishing/near-additive，仅作交互备注，非强协同证据。
 - 本 run ≠ 原 H100-2 10-component REPL200 全量计划；是 frozen SCOPE 输出的 consolidation。
+
+### H100-2 candidate-B utility resolution（2026-08-13）
+
+**Setting**
+- 指令：`SCAPE/0813/SCAPE-0813-H100-2.md`
+- 输出：`outputs/h100_2_candidate_b_utility/`
+- 目标组件：`importance_tagging` / `verify_tool` / `subtractive_curation`
+- Probe：same-state short-horizon utility，`UTILITY_STATE256`，每组件 K=2/K=4，natural states=256，targeted states=0
+- 产物：`SHORT_HORIZON_UTILITY_PER_STATE.jsonl`、`SHORT_HORIZON_UTILITY_SUMMARY.csv`、`*_UTILITY.md`、`CANDIDATE_B_RECOMMENDATION.{md,json}`、`SHA256SUMS`；无 `RUN_MANIFEST.json`
+- 标记：`LOCAL_COMPAT_ONLY=true`，`official_chroma_parity=false`
+
+**Results**
+| component | K | n_states | mean T-S | mean T | mean S |
+|---|---:|---:|---:|---:|---:|
+| importance_tagging | 2 | 256 | 0.001600 | 0.002095 | 0.000495 |
+| importance_tagging | 4 | 256 | 0.001917 | 0.002412 | 0.000495 |
+| verify_tool | 2 | 256 | 0.001046 | 0.001046 | 0.000000 |
+| verify_tool | 4 | 256 | 0.001534 | 0.001534 | 0.000000 |
+| subtractive_curation | 2 | 256 | 0.002014 | 0.002839 | 0.000825 |
+| subtractive_curation | 4 | 256 | 0.002239 | 0.003064 | 0.000825 |
+
+**Candidate-B ranking**
+| rank | component | mean short-horizon T-S | real influence + args | local reward delta |
+|---:|---|---:|---:|---:|
+| 1 | subtractive_curation | 0.002126 | 0.032106 | 0.001929 |
+| 2 | importance_tagging | 0.001758 | 0.045332 | 0.001069 |
+| 3 | verify_tool | 0.001290 | 0.069712 | 0.000000 |
+
+**Decision**
+- `CANDIDATE_B_RECOMMENDATION.json` 的总体 decision 为 `Behavior-only`，推荐 Candidate B 为 `subtractive_curation`。
+- `verify_tool` real influence 最高但 local reward delta 为 0，且短 horizon utility 最弱；不应因 influence rank #2 直接升级为主 B。
+- `importance_tagging` 保持语义候选，但 utility 排名低于 `subtractive_curation`。
+- `NULL_REPLAY_NOISE.md` 中 replay noise 暂按 deterministic local artifacts 记为 0；若未来有 live Harness-1 replay runner，需要替换为实测 noise。
 
 ### H100-3 setting
 - Run id: `h100_3_influence_offline_cal64`
@@ -718,3 +787,27 @@ H100-4 completed its originally selected confirm set. `verify_tool` became H100-
 - `chunk_neighbors` is not above null in this real influence run and remains a runtime/hybrid control rather than a first-round internalization target.
 - `content_dedup` and `auto_populate_first_search` show positive tool-name movement but have runtime/control placement concerns and/or negative argument-side score; they should not be selected by influence alone.
 - These results are **not** official Chroma Cloud parity and must be labeled local/HF same-state evidence, not final Harness-1 Cloud/Chroma reproduction.
+
+### H100-3 attribution details
+
+**Tool-level / turn-level**
+- `INFLUENCE_BY_TOOL.csv` keeps `evidence_graph`, `verify_tool`, `importance_tagging` as the top three by combined influence.
+- `INFLUENCE_BY_TURN.csv` and `HIGH_INFLUENCE_ARCHETYPES.jsonl` show the strongest signal concentrated in later turns, especially around `read`, `curate`, `verify`, and `end` actions.
+
+**Argument-class details**
+| component | argument class | disagreement | n_states | I_name_mean | I_args_mean |
+|---|---|---|---:|---:|---:|
+| evidence_graph | doc ids | name change | 169 | 0.123880 | 0.235895 |
+| evidence_graph | termination reason | no meaningful change | 769 | 0.021832 | 0.102246 |
+| evidence_graph | doc ids | no meaningful change | 86 | 0.022191 | 0.019173 |
+| importance_tagging | doc ids | name change | 131 | 0.104890 | 0.167589 |
+| importance_tagging | doc ids | no meaningful change | 85 | 0.023446 | 0.035963 |
+| importance_tagging | termination reason | no meaningful change | 808 | 0.016990 | -0.009967 |
+| verify_tool | doc ids | name change | 127 | 0.069249 | 0.147595 |
+| verify_tool | termination reason | no meaningful change | 764 | 0.011876 | 0.045385 |
+| verify_tool | doc ids | no meaningful change | 133 | 0.012272 | -0.011529 |
+
+**H20 handoff**
+- `H20_LOSS_RECOMMENDATION.md` keeps first-run H20 V0 as **uniform name+args tool-token KL**.
+- Follow-up weighting suggestions: `evidence_graph` name medium / args high; `importance_tagging` name high / args medium; `verify_tool` name medium / args high.
+- This is for later ablations only; it does not override the initial uniform loss.
