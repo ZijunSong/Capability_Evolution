@@ -37,17 +37,19 @@
 | H100-1 fresh contribution confirm | **已完成（local BM25 compat / LOCAL_COMPAT_ONLY）** | `outputs/h100_1_contribution_confirm/`；BCP_CONFIRM400 seed1102 n=400；10/10 errors=0；SHA OK |
 | H100-1 graph placement decomposition | **已完成（LOCAL_COMPAT_ONLY）** | `outputs/h100_1_graph_decomp/`；G0/G1/G2/G3/G4 对比显示 `G3` 接近 `G4`，`G2` 保留少数测得 utility，结论为 `Semantic-migratable` |
 | H100-2 independent replication | **已完成（local BM25 compat / LOCAL_COMPAT_ONLY）** | `outputs/h100_2_independent_repl/`；BCP_REPL200_V2 seed2203 n=200；full + 10 LOO + 4 coalition；16/16 errors=0；SHA OK |
-| H100-2 candidate-B utility resolution | **已完成（LOCAL_COMPAT_ONLY）** | `outputs/h100_2_candidate_b_utility/`；UTILITY_STATE256 对 3 component × K={2,4}；Candidate B 推荐为 `subtractive_curation`，但总体决策为 `Behavior-only` |
+| H100-2 candidate-B utility resolution（旧 short-horizon） | **已完成（LOCAL_COMPAT_ONLY / 已被 live gate 覆盖）** | `outputs/h100_2_candidate_b_utility/`；UTILITY_STATE256 对 3 component × K={2,4}；Candidate B 曾推荐为 `subtractive_curation`，但总体决策为 `Behavior-only`；不得再把 short-horizon utility 当 final success |
+| H100-2 Candidate-B true live fork/replay utility gate | **已完成（7×H100 / HF continuation-logprob / true fork-replay）** | `outputs/h100_2_candidate_b_live_utility/`；UTILITY_LIVE256 seed2214；3 components × K={2,4} × 256 states = 1536 per-state rows；live replay noise 510 rows；SHA OK；decision=`CONDITIONAL_RUNTIME`，ranking=`verify_tool > subtractive_curation > importance_tagging` |
 | H100-3 real-model same-state influence | **已完成（HF continuation-logprob）** | `outputs/h100_3_real_influence/`；7 components × 64q × 16 states = 7168 states；7/7 errors=0；SHA OK |
 | H100-3 influence attribution | **已完成（CPU 聚合；GPU rescore skipped）** | `outputs/h100_3_influence_attribution/`；evidence_graph/importance_tagging/verify_tool 各 1024 states；已生成 tool/turn/argument 分层和 H20 loss recommendation |
 | H100-4 real influence confirmation | **已完成（HF continuation-logprob）** | `outputs/h100_4_influence_confirm/`；REAL_INF_CONFIRM128 n=128；3 components × 512 states；3/3 positive；SHA OK |
 | H100-4 verify_tool follow-up confirm | **已完成（HF continuation-logprob / `/opt` env）** | `outputs/h100_4_verify_confirm/`；VERIFY_INF_CONFIRM128 seed4414 n=128；natural 2048 states + targeted 512 states；errors=0；decision=`CONFIRMED`；`H1004_VERIFY_HANDOFF.json` 已更新 |
+| H100-4 Candidate-B independent utility confirm | **已完成（4×H100 / HF continuation-logprob / `/opt` env）** | `SCAPE-wt-h100-4/SCAPE/outputs/h100_4_b_utility_confirm/`；B_UTILITY_CONFIRM128 seed4424；subtractive/importance × K={2,4} 各 128 states；512 total；errors=0；SHA OK；decision=`IMPORTANCE_OVERTAKES`；handoff=`outputs/scape_prestage_v3/H1004_B_UTILITY_HANDOFF.json` |
 | Harness-1 restore + vLLM smoke | **已完成（smoke）** | 9 shards；`/v1/models` 200 |
 | 官方 BrowseComp+ Chroma eval / parity | **阻塞** | 缺 `OPENAI_API_KEY` / `CHROMA_API_KEY` / `CHROMA_DATABASE`；不可用 local/HF evidence 冒充 official Chroma |
 
 ### 结论（一句话）
 - **非 H100**：LOCAL_CAL64 + BM25+Qwen 下 A/B **不可 retirement**（Gate S FAIL）；Stage M 已停。
-- **H100**：fresh contribution confirm + independent replication + HF same-state real influence + H100-4 confirm + H100-4 `verify_tool` follow-up confirm 已齐；Candidate A=`evidence_graph`。B-side 证据需联合解读：`verify_tool` 已 CONFIRMED 但 H100-2 short-horizon utility 仍给 `subtractive_curation` 更强局部 utility，`importance_tagging` 保持语义候选。官方 Chroma 仍阻塞，所有 local/retrieval 贡献结果必须标注 `LOCAL_COMPAT_ONLY`。
+- **H100**：fresh contribution confirm + independent replication + HF same-state real influence + H100-4 confirm + H100-4 `verify_tool` follow-up confirm + H100-4 B-utility independent confirm + H100-2 true live fork/replay utility gate 已齐；Candidate A=`evidence_graph`。B-side 最新 H100-2 true live fork/replay gate（UTILITY_LIVE256 seed2214）判定 `CONDITIONAL_RUNTIME`：`verify_tool` live utility 为正且 K2/K4 一致，`subtractive_curation` 方向不一致，`importance_tagging` 为负；因此 `verify_tool` 应作为 conditional-runtime challenger，不能把旧 H100-2 short-horizon 或 compatibility artifact 当 final success。H100-4 独立 utility confirm（B_UTILITY_CONFIRM128 seed4424）仍提示 `importance_tagging` 在该独立 split overtakes subtractive；下游 H20 应把 H100-2 live gate 与 H100-4 independent confirm 并列看待，不重跑 verify influence confirm。官方 Chroma 仍阻塞，所有 local/retrieval 贡献结果必须标注其 backend。
 
 详细数字：0813 状态见 `## 2026-08-13 SCAPE 0813 execution status`；非 H100 见 `## 2026-08-12 SCAPE non-H100 round final`；H100 历史同步见 `## 2026-08-12 SCAPE H100-1/2/3 synced status`；0812 新 H100 结果见 `## 2026-08-12 SCAPE H100 fresh confirm + real influence final`。
 
@@ -65,17 +67,24 @@
 - visible GPUs for final verify run: 4 GPUs exposed by current node; `device_map=auto` was added to the HF scorer and used to shard the Harness-1 checkpoint across visible GPUs. No leftover scorer/vLLM processes after completion.
 - model for HF influence/confirm: `/mnt/songzijun/models/pat-jj_harness-1-full/harness-1` (`pat-jj/harness-1` released checkpoint)
 - official Chroma credentials: unavailable (`OPENAI_API_KEY`, `CHROMA_API_KEY`, `CHROMA_DATABASE` missing) -> `OFFICIAL_CHROMA_BLOCKED=true`; continue local/HF mechanism experiments only
+- H100-1 graph-hybrid influence input: `outputs/h100_3_real_influence/REAL_INFLUENCE_PER_STATE.jsonl` plus the existing H100-1 graph placement artifact family; final handoff at `outputs/scape_prestage_v3/H1001_GRAPH_HYBRID_HANDOFF.json`
 - H100-3 attribution input: `outputs/h100_3_real_influence/REAL_INFLUENCE_PER_STATE.jsonl`
 - H100-4 verify follow-up setting: `VERIFY_INF_CONFIRM128`, component=`verify_tool`, seed=4414, n_queries=128, max_states_per_query=16, scorer=`hf_continuation_logprob`, output=`outputs/h100_4_verify_confirm/`
+- H100-4 Candidate-B utility confirmation setting: repo/worktree `/mnt/songzijun/Capability_Evolution/SCAPE-wt-h100-4/SCAPE` on branch `exp/h1004-b-utility-confirm`; split=`B_UTILITY_CONFIRM128`, seed=4424, n=128 candidate-bearing states per component/K cell; compared only `subtractive_curation` vs `importance_tagging`; K={2,4}; 4×H100 schedule was GPU0 subtractive K2, GPU1 subtractive K4, GPU2 importance K2, GPU3 importance K4; Python=`/opt/scape-hf-scorer/bin/python`; corpus=`/mnt/songzijun/Capability_Evolution/SCAPE/outputs/retrieval/browsecomp_local_corpus_v2/corpus.jsonl`; output=`outputs/h100_4_b_utility_confirm/`; handoff=`outputs/scape_prestage_v3/H1004_B_UTILITY_HANDOFF.json`.
+- GPU-heavy Python envs must stay under `/opt`; do not use JuiceFS `/mnt` conda/venv for torch/vLLM workloads.
 
 ### Completed 0813 workstreams
 | workstream | setting / scale | artifacts | result / conclusion |
 |---|---|---|---|
 | H100-1 Evidence Graph Placement Decomposition | `BCP_GRAPH_DECOMP200`, variants G0 FULL / G1 GRAPH_OFF / G2 GRAPH_STATE_ONLY / G3 GRAPH_STATE_PLUS_MINIMAL_RENDER / G4 GRAPH_FULL_RENDER; `LOCAL_COMPAT_ONLY=true` | `outputs/h100_1_graph_decomp/` | `G3` close to `G4`, while `G2` retains only minority utility. Conclusion: `Semantic-migratable`; retain external graph state, train graph-aware decisions, and slim renderer/controller rather than deleting graph state entirely. |
-| H100-2 Candidate-B Utility Resolution | `importance_tagging`, `verify_tool`, `subtractive_curation`; `UTILITY_STATE256`; K=2/K=4; local same-state short-horizon utility | `outputs/h100_2_candidate_b_utility/` | Decision=`Behavior-only`; utility ranking: `subtractive_curation` > `importance_tagging` > `verify_tool`. `verify_tool` has strong influence but neutral local reward delta; do not freeze B from influence alone. |
+| H100-1 Graph Hybrid Influence | `GRAPH_HYBRID_INF128`, same-state views V1 GRAPH_OFF / V2 GRAPH_STATE_ONLY / V3 GRAPH_STATE_PLUS_MINIMAL_RENDER / V4 GRAPH_FULL_RENDER; `seed=1115`, `n_queries=128`, `max_states_per_query=16`, `local_compat_live_runner=true` | `outputs/h100_1_graph_hybrid_influence/`; `outputs/scape_prestage_v3/H1001_GRAPH_HYBRID_HANDOFF.json` | `HYBRID_TARGET_CONFIRMED`; `I_12=0.016256`, `I_23=0.044908`, `I_34=0.027175`, null field-order `0.000345`. `I_23 > I_34` and `I_23 >> null`, so graph state should stay external while graph-aware minimal-render decision is the narrow migration target. |
+| H100-2 Candidate-B Utility Resolution（旧 short-horizon） | `importance_tagging`, `verify_tool`, `subtractive_curation`; `UTILITY_STATE256`; K=2/K=4; local same-state short-horizon utility | `outputs/h100_2_candidate_b_utility/` | Decision=`Behavior-only`; utility ranking: `subtractive_curation` > `importance_tagging` > `verify_tool`. This is superseded by the true live fork/replay gate below; do not freeze B from this short-horizon artifact. |
+| H100-2 Candidate-B true live fork/replay utility gate | `UTILITY_LIVE256`, seed=2214, fresh candidate-bearing states; components=`subtractive_curation`,`importance_tagging`,`verify_tool`; K={2,4}; 7×H100 schedule GPU0 subtractive K2, GPU1 subtractive K4, GPU2 importance K2, GPU3 importance K4, GPU4 verify K2, GPU5 verify K4, GPU6 same-action replay noise; HF continuation-logprob Harness-1 scorer; Branch S executes `a_S`, Branch T executes `a_T`, same reduced policy continues K; Full Harness takeover forbidden/false | `outputs/h100_2_candidate_b_live_utility/`; `outputs/scape_prestage_v3/H1002_CANDIDATE_B_LIVE_HANDOFF.json`; runner scripts `scripts/run_h100_2_live_fork_replay.py` and `scripts/run_h100_2_live_fork_replay_stream.py` | 1536 utility rows = 3 components × 2 K × 256 states; replay noise rows=510; finalized shards all valid; SHA OK; tests 16 passed. Decision=`CONDITIONAL_RUNTIME`; ranking by mean live utility: `verify_tool` 0.005830 > `subtractive_curation` -0.000029 > `importance_tagging` -0.011104. N1/N2 replay noise measured as 0.0 in this deterministic BM25/HF branch environment, not assumed. `verify_tool` is the live-positive conditional-runtime challenger; `subtractive_curation` is not STRONG_B because K2/K4 direction is inconsistent; `importance_tagging` is negative in this split. |
 | H100-3 Influence Attribution | 3 components (`evidence_graph`, `importance_tagging`, `verify_tool`) × 1024 states = 3072 rows; GPU rescore skipped because JSONL already contains per-state full/reduced probabilities and I metrics | `outputs/h100_3_influence_attribution/` | `evidence_graph`: I_name=0.038704, I_args=0.117327; `importance_tagging`: I_name=0.028771, I_args=0.016560; `verify_tool`: I_name=0.019043, I_args=0.050669. H20 V0 remains uniform name+args KL; later ablations should test name/args weighting. |
 | H100-4 prior real influence confirm | REAL_INF_CONFIRM128, 3 components (`subtractive_curation`, `importance_tagging`, `evidence_graph`) | `outputs/h100_4_influence_confirm/` | 3/3 positive, errors=0. Supports Candidate A=`evidence_graph`, semantic B candidate=`importance_tagging`, and `subtractive_curation` as positive but weaker real-influence candidate. |
-| H100-4 `verify_tool` independent confirm | `VERIFY_INF_CONFIRM128`, seed=4414, n_queries=128, max_states/query=16; `/opt/scape-hf-scorer/bin/python`; `device_map=auto` | `outputs/h100_4_verify_confirm/`; `outputs/scape_prestage_v2/H1004_VERIFY_HANDOFF.json` | natural states=2048, targeted states=512, errors=0. Natural I_name_normalized=0.018325, I_args_raw=0.039954; targeted I_name_normalized=0.018523. Decision=`CONFIRMED`; recommend_candidate_b=true **as influence evidence**, but must be combined with H100-2 utility. |
+| H100-4 `verify_tool` independent confirm | `VERIFY_INF_CONFIRM128`, seed=4414, n_queries=128, max_states/query=16; `/opt/scape-hf-scorer/bin/python`; `device_map=auto` | `outputs/h100_4_verify_confirm/`; `outputs/scape_prestage_v2/H1004_VERIFY_HANDOFF.json` | natural states=2048, targeted states=512, errors=0. Natural I_name_normalized=0.018325, I_args_raw=0.039954; targeted I_name_normalized=0.018523. Decision=`CONFIRMED`; recommend_candidate_b=true **as influence evidence**, but must be combined with utility evidence. |
+| H100-4 Candidate-B independent utility confirm | `B_UTILITY_CONFIRM128`, seed=4424, n=128 candidate-bearing states/component/K cell; compared only `subtractive_curation` vs `importance_tagging`; K={2,4}; 4×H100 single-GPU shards; no training; `/opt/scape-hf-scorer/bin/python` | `SCAPE-wt-h100-4/SCAPE/outputs/h100_4_b_utility_confirm/`; handoff copied to `outputs/scape_prestage_v3/H1004_B_UTILITY_HANDOFF.json`; required files include `B_UTILITY_CONFIRM_PER_STATE.jsonl`, `B_UTILITY_CONFIRM_SUMMARY.csv`, `REPLAY_NOISE.csv`, `SUBTRACTIVE_VS_IMPORTANCE.md`, `RUN_MANIFEST.json`, `SHA256SUMS` | 512 rows total, errors=0, SHA OK. T-S utility: subtractive K2=0.019061172 / K4=0.007622556; importance K2=0.029881483 / K4=0.022256057; replay_noise=0 for all cells. Decision=`IMPORTANCE_OVERTAKES`; H20 Candidate-B priority should move to `importance_tagging`. |
+| H100-4 verify_tool natural-vs-targeted cost profile（余力） | Reused completed verify confirm artifacts; did **not** rerun verify influence confirm | `outputs/h100_4_b_utility_confirm/VERIFY_NATURAL_VS_TARGETED_COST_PROFILE.{csv,md}` | natural: 128q/2048 states, I_name=0.018325227, I_args=0.039953627, signal/state=0.000028456; targeted: 32q/512 states, I_name=0.018522693, I_args=0.053239228, signal/state=0.000140160. Targeted has higher signal/state; verify remains conditional-runtime challenger. |
 | H100-4 `auto_populate_first_search` argument diagnostic | 128 real-influence states from completed HF per-state rows; no new GPU rescore because source already has token-logprob-derived I_args/I_arg_key/I_arg_value | `outputs/h100_4_verify_confirm/auto_populate_argument_diagnostic/` | I_name_normalized_mean=0.045049; I_args_raw_mean=-0.280096; 98/128 states have negative args signal. Diagnosis: argument signal remains negative; inspect token alignment before treating auto_populate args as learnable signal. |
 | H20 true-SCAPE Evidence Graph V0 smoke / probe check | Candidate A=`evidence_graph`; same-state/dual-view/tool-token KL path smoke | `outputs/true_scape_evidence_graph/` | Data/tool-mask path healthy, but Stage L smoke did not pass: `L_m=-1.550741`; Stage S/M not started by Gate rule. Conclusion: contribution+influence prioritized the right component, but learnability not established. |
 | 0813 status consolidation | reads completed artifacts only; does not synthesize per-state measurements | `outputs/scape_prestage_v2/0813_STATUS_SUMMARY.{json,md}` | summary regenerated after H100-4 verify completion; `missing={}` in required-artifact presence check. |
@@ -89,6 +98,25 @@
 | H100-4 verify natural I_args_raw | 0.039954 |
 | H100-4 verify targeted I_name_normalized | 0.018523 |
 | H100-4 verify gate | CONFIRMED |
+| H100-4 B utility decision | IMPORTANCE_OVERTAKES |
+| B utility split / seed | B_UTILITY_CONFIRM128 / 4424 |
+| B utility states | 512 total = 2 components × 2 K values × 128 states |
+| subtractive_curation K2 T-S utility | 0.019061172 |
+| subtractive_curation K4 T-S utility | 0.007622556 |
+| importance_tagging K2 T-S utility | 0.029881483 |
+| importance_tagging K4 T-S utility | 0.022256057 |
+| H100-4 B utility replay_noise | 0.000000 for all four cells |
+| H100-2 true live fork/replay decision | CONDITIONAL_RUNTIME |
+| H100-2 true live split / seed | UTILITY_LIVE256 / 2214 |
+| H100-2 true live states | 1536 = 3 components × 2 K values × 256 states |
+| H100-2 true live replay rows | 510 |
+| H100-2 true live verify_tool mean utility | 0.005830078 |
+| H100-2 true live subtractive_curation mean utility | -0.000029297 |
+| H100-2 true live importance_tagging mean utility | -0.011103516 |
+| H100-2 true live handoff | `outputs/scape_prestage_v3/H1002_CANDIDATE_B_LIVE_HANDOFF.json` |
+| H100-4 B handoff | `outputs/scape_prestage_v3/H1004_B_UTILITY_HANDOFF.json` |
+| verify natural signal/state | 0.000028456 |
+| verify targeted signal/state | 0.000140160 |
 | auto_populate diagnostic I_args_raw_mean | -0.280096 |
 | auto_populate negative args states | 98/128 |
 | required 0813 artifact presence check | missing = `{}` |
@@ -98,10 +126,10 @@
 ### Candidate / placement conclusion
 - Candidate A remains `evidence_graph`.
 - `evidence_graph` placement decomposition supports a hybrid SCAPE target: external graph state should remain available, while graph-aware semantic decisions are migratable into weights and renderer/controller can be slimmed later.
-- Candidate B is **not frozen solely from one axis**:
-  - `importance_tagging`: positive real influence and semantic candidate, but H100-2 utility is weaker than `subtractive_curation`.
-  - `verify_tool`: now independently H100-4-confirmed positive and should remain a high-priority challenger/conditional runtime candidate; however H100-2 short-horizon utility ranks it weakest and local reward delta is 0.
-  - `subtractive_curation`: strongest H100-2 short-horizon utility, positive but weaker real influence; recommended by H100-2 utility as B under `Behavior-only` decision.
+- Candidate B is now updated by the independent H100-4 utility confirm:
+  - `importance_tagging`: H100-4 `B_UTILITY_CONFIRM128` decision=`IMPORTANCE_OVERTAKES`; K2/K4 utility both above `subtractive_curation`, so H20 Candidate-B priority should be `importance_tagging`.
+  - `verify_tool`: independently H100-4-confirmed positive influence and targeted cost profile has higher signal/state than natural; keep as conditional-runtime challenger, but do not rerun verify influence confirm.
+  - `subtractive_curation`: remains the strongest H100-2 behavior-only/local utility baseline, but H100-4 independent split did not confirm it over `importance_tagging`.
 - Runtime controls remain `chunk_neighbors` and `content_dedup`; do not promote them to first-round full internalization targets.
 - H20 V0 should continue to use uniform name+args tool-token KL; H100-3 attribution only informs later ablations.
 
@@ -117,8 +145,83 @@
 - `scripts/run_h100_3_real_influence_hf.py` now supports `--device auto` and `device_map=auto` for multi-GPU checkpoint loading on nodes where single GPU memory is insufficient.
 - `scripts/run_h100_4_verify_confirm_hf.py` is the independent `verify_tool` confirm runner; `scripts/finalize_h100_4_verify_confirm.py` finalizes natural/targeted/null/decision/handoff reports from completed scorer output.
 - `scripts/finalize_h100_4_auto_populate_diagnostic.py` produces the required auto_populate argument diagnostic from existing real-influence per-state rows without claiming a new GPU rescore.
+- H100-4 B utility confirm used newly added local scripts in the H100-4 worktree: `scripts/run_h100_4_b_utility_worker.py` for per-GPU shards and `scripts/finalize_h100_4_b_utility_confirm.py` for aggregation/handoff/SHA. These scripts are currently in the worktree and should be ported/synced deliberately if other servers need to rerun the exact experiment.
+- Downstream H20/agent scheduling should treat `outputs/scape_prestage_v3/H1004_B_UTILITY_HANDOFF.json` as the latest Candidate-B utility handoff: priority=`importance_tagging`; `verify_tool`=conditional-runtime challenger; do not run 8-card plans or repeat verify CONFIRM128/influence confirm on H100-4.
+- H100-1 graph-hybrid influence is finalized at `outputs/h100_1_graph_hybrid_influence/`; downstream agents should read `GRAPH_HYBRID_TARGET.md` and `outputs/scape_prestage_v3/H1001_GRAPH_HYBRID_HANDOFF.json` for the migration conclusion and numeric thresholding.
 - Worktree checkout directories (`SCAPE-wt-h100-*`) must remain uncommitted.
-- Outputs/checkpoints/models/indexes/secrets remain uncommitted; this record points other agents to artifact paths under `outputs/`.
+
+### H100-2 true live fork/replay addendum（2026-08-13 final）
+- source requirement: `SCAPE/0813/SCAPE-0813-H100-2.md` Candidate-B Live Utility Validation.
+- repo/path: `/mnt/songzijun/Capability_Evolution/SCAPE` on branch `sync/h100-20260812`.
+- output: `outputs/h100_2_candidate_b_live_utility/`.
+- handoff: `outputs/scape_prestage_v3/H1002_CANDIDATE_B_LIVE_HANDOFF.json`.
+- split: `UTILITY_LIVE256`, seed=2214, fresh candidate-bearing states.
+- components: `subtractive_curation`, `importance_tagging`, `verify_tool`.
+- K values: 2 and 4.
+- scale: 1536 utility rows = 3 components × 2 K × 256 states; replay noise rows=510.
+- runner/scorer: true live fork/replay over executable BM25 BrowseComp state with HF continuation-logprob Harness-1 action scorer. Runner scripts are `scripts/run_h100_2_live_fork_replay.py` and streaming/batched recovery runner `scripts/run_h100_2_live_fork_replay_stream.py`.
+- fork contract: Branch S executes `a_S`; Branch T executes `a_T`; after the first fork action, the same reduced policy continues K steps; Full Harness takeover is explicitly false.
+- replay-noise contract: Branch N1/N2 both execute the same `a_S` and continue K; measured replay noise in this deterministic BM25/HF branch environment was 0.0, not assumed from old artifacts.
+- parallel schedule used: GPU0 subtractive K2, GPU1 subtractive K4, GPU2 importance K2, GPU3 importance K4, GPU4 verify K2, GPU5 verify K4, GPU6 replay noise; GPU7 was used for streaming/batched recovery/monitoring.
+- anomaly/recovery: one original `subtractive_curation_K2` shard line was corrupted by concurrent fallback writing. Final aggregation used `finalized_shards/`, rebuilt from valid original rows plus clean streaming supplement; all finalized shards validate as JSON with 256 rows per utility shard.
+- validation: required files present, `LIVE_UTILITY_PER_STATE.jsonl` has 1536 rows, `LIVE_REPLAY_NOISE.csv` has 510 rows, `SHA256SUMS` verifies OK, `/opt/vllm-qwen3-1.7b/bin/python -m pytest -q` -> 16 passed, GPUs idle after cleanup.
+
+**Results**
+| component | K=2 T-S | K=4 T-S | mean live utility | replay noise | K2/K4 direction |
+|---|---:|---:|---:|---:|---|
+| `verify_tool` | 0.005273438 | 0.006386719 | 0.005830078 | 0.000000 | consistent positive |
+| `subtractive_curation` | -0.000761719 | 0.000703125 | -0.000029297 | 0.000000 | inconsistent |
+| `importance_tagging` | -0.009257813 | -0.012949219 | -0.011103516 | 0.000000 | consistent negative |
+
+**Decision / handoff**
+- Gate decision: `CONDITIONAL_RUNTIME`.
+- `verify_tool` is live-positive and K2/K4 consistent, so keep it as the conditional-runtime challenger.
+- `subtractive_curation` is not STRONG_B in the true live gate because K2/K4 direction is inconsistent even though older short-horizon H100-2 ranked it first.
+- `importance_tagging` is negative in UTILITY_LIVE256, but H100-4 independent B utility confirm still found `IMPORTANCE_OVERTAKES`; downstream agents should treat H100-2 live gate and H100-4 independent confirm as complementary evidence rather than rerunning full influence.
+- Do not use the earlier `outputs/h100_2_candidate_b_utility/` short-horizon result or any local compatibility artifact as Candidate-B final success.
+- Do not rerun full component LOO, real influence, training, or verify influence confirm for this handoff.
+
+**Cross-server / agent notes**
+- Other servers should consume `outputs/scape_prestage_v3/H1002_CANDIDATE_B_LIVE_HANDOFF.json` and `outputs/h100_2_candidate_b_live_utility/CANDIDATE_B_LIVE_DECISION.md` for the H100-2 live gate.
+- If rerunning, use `/opt` Python with torch/CUDA available; do not use JuiceFS `/mnt` conda envs for torch/vLLM.
+- Use the streaming runner if monitoring/flush behavior matters: `scripts/run_h100_2_live_fork_replay_stream.py`.
+- Keep heavy outputs uncommitted; commit only scripts and result-record updates unless explicitly asked to version artifacts.
+
+---
+### H100-3 subtractive attribution addendum
+- source input: `outputs/h100_3_real_influence/REAL_INFLUENCE_PER_STATE.jsonl`
+- output: `outputs/h100_3_subtractive_attribution/`
+- method: CPU-only postprocessing of existing per-state HF same-state influence rows; no new GPU rescore and no retraining
+- scope: `subtractive_curation` only
+- companion components for comparison: `importance_tagging`, `verify_tool`
+- artifacts: `SUBTRACTIVE_ATTRIBUTION.md`, `INFLUENCE_BY_TOOL.csv`, `INFLUENCE_BY_ARGUMENT_CLASS.csv`, `INFLUENCE_BY_TURN.csv`, `HIGH_INFLUENCE_ARCHETYPES.jsonl`, `H20_SUBTRACTIVE_LOSS_RECOMMENDATION.md`, `PROBE_PREDICTIVE_TABLE.csv`, `PROBE_PREDICTIVE_NOTE.md`, `RUN_MANIFEST.json`
+
+**Results**
+| item | value |
+|---|---:|
+| n_states | 1024 |
+| n_queries | 64 |
+| step_range | 0..15 |
+| mean I_name_normalized | 0.013124 |
+| mean I_args_raw | 0.018983 |
+| early turn I_name_mean | 0.009022 |
+| middle turn I_name_mean | 0.010039 |
+| late turn I_name_mean | 0.014711 |
+| tool-name disagreement rate | 0.096 |
+| args-only disagreement rate | 0.000 |
+
+**Conclusion**
+- `subtractive_curation` is late-turn heavy and its signal is dominated by tool-name change rather than args-only drift.
+- Argument-class signal concentrates on `doc_ids` and `termination reason`.
+- This supports the H100-2 utility result that `subtractive_curation` remains the strongest Candidate-B style component, but H100-3 still says it is not the strongest real-influence component overall.
+- Probe table conclusion: `subtractive_curation` is a plausible fourth-axis candidate if SCAPE later upgrades from C–I–L to C–I–U–L.
+- H20 handoff remains **uniform name+args KL** for the first pass; if uniform fails, retry should bias args for `subtractive_curation` more than name.
+- All results are local/HF same-state evidence and should not be relabeled as official Chroma parity.
+
+**Cross-server / agent notes**
+- Do not rerun GPU collection for this addendum unless token-level continuation scores are missing; existing JSONL is sufficient.
+- If another agent needs the summary, point them to `outputs/h100_3_subtractive_attribution/SUBTRACTIVE_ATTRIBUTION.md` and `PROBE_PREDICTIVE_TABLE.csv`.
+- Keep outputs and checkpoints uncommitted; only source/reporting files should be versioned when needed.
 
 ---
 
