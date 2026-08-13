@@ -55,11 +55,13 @@
 | H100-1 fresh contribution confirm | **已完成（local BM25 compat / LOCAL_COMPAT_ONLY）** | `outputs/h100_1_contribution_confirm/`；BCP_CONFIRM400 seed1102 n=400；10/10 errors=0；SHA OK |
 | H100-1 graph placement decomposition | **已完成（LOCAL_COMPAT_ONLY）** | `outputs/h100_1_graph_decomp/`；G0/G1/G2/G3/G4 对比显示 `G3` 接近 `G4`，`G2` 保留少数测得 utility，结论为 `Semantic-migratable` |
 | H100-2 independent replication | **已完成（local BM25 compat / LOCAL_COMPAT_ONLY）** | `outputs/h100_2_independent_repl/`；BCP_REPL200_V2 seed2203 n=200；full + 10 LOO + 4 coalition；16/16 errors=0；SHA OK |
-| H100-2 candidate-B utility resolution | **已完成（LOCAL_COMPAT_ONLY）** | `outputs/h100_2_candidate_b_utility/`；UTILITY_STATE256 对 3 component × K={2,4}；Candidate B 推荐为 `subtractive_curation`，但总体决策为 `Behavior-only` |
+| H100-2 candidate-B utility resolution（旧 short-horizon） | **已完成（LOCAL_COMPAT_ONLY / 已被 live gate 覆盖）** | `outputs/h100_2_candidate_b_utility/`；UTILITY_STATE256 对 3 component × K={2,4}；Candidate B 曾推荐为 `subtractive_curation`，但总体决策为 `Behavior-only`；不得再把 short-horizon utility 当 final success |
+| H100-2 Candidate-B true live fork/replay utility gate | **已完成（7×H100 / HF continuation-logprob / true fork-replay）** | `outputs/h100_2_candidate_b_live_utility/`；UTILITY_LIVE256 seed2214；3 components × K={2,4} × 256 states = 1536 per-state rows；live replay noise 510 rows；SHA OK；decision=`CONDITIONAL_RUNTIME`，ranking=`verify_tool > subtractive_curation > importance_tagging` |
 | H100-3 real-model same-state influence | **已完成（HF continuation-logprob）** | `outputs/h100_3_real_influence/`；7 components × 64q × 16 states = 7168 states；7/7 errors=0；SHA OK |
 | H100-3 influence attribution | **已完成（CPU 聚合；GPU rescore skipped）** | `outputs/h100_3_influence_attribution/`；evidence_graph/importance_tagging/verify_tool 各 1024 states；已生成 tool/turn/argument 分层和 H20 loss recommendation |
 | H100-4 real influence confirmation | **已完成（HF continuation-logprob）** | `outputs/h100_4_influence_confirm/`；REAL_INF_CONFIRM128 n=128；3 components × 512 states；3/3 positive；SHA OK |
 | H100-4 verify_tool follow-up confirm | **已完成（HF continuation-logprob / `/opt` env）** | `outputs/h100_4_verify_confirm/`；VERIFY_INF_CONFIRM128 seed4414 n=128；natural 2048 states + targeted 512 states；errors=0；decision=`CONFIRMED`；`H1004_VERIFY_HANDOFF.json` 已更新 |
+| H100-4 Candidate-B independent utility confirm | **已完成（4×H100 / HF continuation-logprob / `/opt` env）** | `SCAPE-wt-h100-4/SCAPE/outputs/h100_4_b_utility_confirm/`；B_UTILITY_CONFIRM128 seed4424；subtractive/importance × K={2,4} 各 128 states；512 total；errors=0；SHA OK；decision=`IMPORTANCE_OVERTAKES`；handoff=`outputs/scape_prestage_v3/H1004_B_UTILITY_HANDOFF.json` |
 | Harness-1 restore + vLLM smoke | **已完成（smoke）** | 9 shards；`/v1/models` 200 |
 | 官方 BrowseComp+ Chroma eval / parity | **阻塞** | 缺 `OPENAI_API_KEY` / `CHROMA_API_KEY` / `CHROMA_DATABASE`；不可用 local/HF evidence 冒充 official Chroma |
 
@@ -67,7 +69,7 @@
 - **H20 true-SCAPE A-side**：`evidence_graph` 在 harness-1 + same-state tool-token KL 下 **Gate L 双次 FAIL**（uniform → weighted retry）→ **`CURRENTLY_NOT_LEARNABLE`**；停止 Evidence Graph full migration。
 - **H20 true-SCAPE B-side**：`subtractive_curation` / `importance_tagging` / `verify_tool` 统一 micro tournament **三候选全 MICRO_FAIL** → **Candidate B 未冻结**；Contribution–Influence–Utility **仍未能预测** same-state tool-token OPD learnability。
 - **H20 provisional**：LOCAL_CAL64 + BM25+Qwen 下 A/B **不可 retirement**（Gate S FAIL）；已归档。
-- **H100**：fresh contribution + replication + real influence + H100-4 confirm 已齐；utility 排序 `subtractive_curation` > `importance_tagging` > `verify_tool`，但 **不能覆盖** H20 learnability gate。官方 Chroma 仍阻塞，所有 local/HF 结果标注 `LOCAL_COMPAT_ONLY`。
+- **H100**：fresh contribution + replication + real influence + H100-4 confirm + H100-4 B-utility independent confirm + H100-2 true live fork/replay utility gate 已齐；Candidate A=`evidence_graph`。B-side H100-2 live gate（UTILITY_LIVE256）判定 `CONDITIONAL_RUNTIME`：`verify_tool` live utility 为正且 K2/K4 一致；H100-4 `B_UTILITY_CONFIRM128` 判定 `IMPORTANCE_OVERTAKES`。**以上 H100 utility/influence 均不能覆盖** H20 learnability micro gate（三候选 MICRO_FAIL）。官方 Chroma 仍阻塞，所有 local/HF 结果标注 `LOCAL_COMPAT_ONLY`。
 
 详细数字：evidence_graph Stage L 见 `## 2026-08-13 SCAPE H20 true-SCAPE evidence_graph Stage L final`；Candidate-B tournament 见 `## 2026-08-13 SCAPE H20 Candidate-B micro-learnability tournament final`；0813 H100 状态见 `## 2026-08-13 SCAPE 0813 execution status`；H20 provisional 见 `## 2026-08-12 SCAPE non-H100 round final`；H100 见 `## 2026-08-12 SCAPE H100 fresh confirm + real influence final`。
 
@@ -293,17 +295,23 @@ MICRO_WEAK / attribution-guided 2K retry：**未触发**（无候选处于一 se
 - visible GPUs for final verify run: 4 GPUs exposed by current node; `device_map=auto` was added to the HF scorer and used to shard the Harness-1 checkpoint across visible GPUs. No leftover scorer/vLLM processes after completion.
 - model for HF influence/confirm: `/mnt/songzijun/models/pat-jj_harness-1-full/harness-1` (`pat-jj/harness-1` released checkpoint)
 - official Chroma credentials: unavailable (`OPENAI_API_KEY`, `CHROMA_API_KEY`, `CHROMA_DATABASE` missing) -> `OFFICIAL_CHROMA_BLOCKED=true`; continue local/HF mechanism experiments only
+- H100-1 graph-hybrid influence input: `outputs/h100_3_real_influence/REAL_INFLUENCE_PER_STATE.jsonl` plus the existing H100-1 graph placement artifact family; final handoff at `outputs/scape_prestage_v3/H1001_GRAPH_HYBRID_HANDOFF.json`
 - H100-3 attribution input: `outputs/h100_3_real_influence/REAL_INFLUENCE_PER_STATE.jsonl`
 - H100-4 verify follow-up setting: `VERIFY_INF_CONFIRM128`, component=`verify_tool`, seed=4414, n_queries=128, max_states_per_query=16, scorer=`hf_continuation_logprob`, output=`outputs/h100_4_verify_confirm/`
+- H100-4 Candidate-B utility confirmation setting: repo/worktree `/mnt/songzijun/Capability_Evolution/SCAPE-wt-h100-4/SCAPE` on branch `exp/h1004-b-utility-confirm`; split=`B_UTILITY_CONFIRM128`, seed=4424, n=128 candidate-bearing states per component/K cell; compared only `subtractive_curation` vs `importance_tagging`; K={2,4}; 4×H100 schedule was GPU0 subtractive K2, GPU1 subtractive K4, GPU2 importance K2, GPU3 importance K4; Python=`/opt/scape-hf-scorer/bin/python`; corpus=`/mnt/songzijun/Capability_Evolution/SCAPE/outputs/retrieval/browsecomp_local_corpus_v2/corpus.jsonl`; output=`outputs/h100_4_b_utility_confirm/`; handoff=`outputs/scape_prestage_v3/H1004_B_UTILITY_HANDOFF.json`.
+- GPU-heavy Python envs must stay under `/opt`; do not use JuiceFS `/mnt` conda/venv for torch/vLLM workloads.
 
 ### Completed 0813 workstreams
 | workstream | setting / scale | artifacts | result / conclusion |
 |---|---|---|---|
-| H100-1 Evidence Graph Placement Decomposition | `BCP_GRAPH_DECOMP200`, variants G0–G4; `LOCAL_COMPAT_ONLY=true` | `outputs/h100_1_graph_decomp/` | `G3` close to `G4`, `G2` retains minority utility → `Semantic-migratable` |
-| H100-2 Candidate-B Utility Resolution | `importance_tagging`, `verify_tool`, `subtractive_curation`; `UTILITY_STATE256` | `outputs/h100_2_candidate_b_utility/` | Decision=`Behavior-only`; utility: `subtractive_curation` > `importance_tagging` > `verify_tool` |
-| H100-3 Influence Attribution | 3 components × 1024 states = 3072 rows | `outputs/h100_3_influence_attribution/` | evidence_graph/importance_tagging/verify_tool attribution complete; H20 loss recommendation generated |
+| H100-1 Evidence Graph Placement Decomposition | `BCP_GRAPH_DECOMP200`, variants G0 FULL / G1 GRAPH_OFF / G2 GRAPH_STATE_ONLY / G3 GRAPH_STATE_PLUS_MINIMAL_RENDER / G4 GRAPH_FULL_RENDER; `LOCAL_COMPAT_ONLY=true` | `outputs/h100_1_graph_decomp/` | `G3` close to `G4`, while `G2` retains only minority utility. Conclusion: `Semantic-migratable`; retain external graph state, train graph-aware decisions, and slim renderer/controller rather than deleting graph state entirely. |
+| H100-1 Graph Hybrid Influence | `GRAPH_HYBRID_INF128`, same-state views V1 GRAPH_OFF / V2 GRAPH_STATE_ONLY / V3 GRAPH_STATE_PLUS_MINIMAL_RENDER / V4 GRAPH_FULL_RENDER; `seed=1115`, `n_queries=128`, `max_states_per_query=16`, `local_compat_live_runner=true` | `outputs/h100_1_graph_hybrid_influence/`; `outputs/scape_prestage_v3/H1001_GRAPH_HYBRID_HANDOFF.json` | `HYBRID_TARGET_CONFIRMED`; `I_12=0.016256`, `I_23=0.044908`, `I_34=0.027175`, null field-order `0.000345`. `I_23 > I_34` and `I_23 >> null`, so graph state should stay external while graph-aware minimal-render decision is the narrow migration target. |
+| H100-2 Candidate-B Utility Resolution（旧 short-horizon） | `importance_tagging`, `verify_tool`, `subtractive_curation`; `UTILITY_STATE256`; K=2/K=4; local same-state short-horizon utility | `outputs/h100_2_candidate_b_utility/` | Decision=`Behavior-only`; utility ranking: `subtractive_curation` > `importance_tagging` > `verify_tool`. Superseded by true live fork/replay gate below; do not freeze B from this artifact. |
+| H100-2 Candidate-B true live fork/replay utility gate | `UTILITY_LIVE256`, seed=2214; components=`subtractive_curation`,`importance_tagging`,`verify_tool`; K={2,4}; 7×H100; HF continuation-logprob Harness-1 scorer | `outputs/h100_2_candidate_b_live_utility/`; `outputs/scape_prestage_v3/H1002_CANDIDATE_B_LIVE_HANDOFF.json`; runners `scripts/run_h100_2_live_fork_replay.py`, `scripts/run_h100_2_live_fork_replay_stream.py` | 1536 utility rows; Decision=`CONDITIONAL_RUNTIME`; ranking: `verify_tool` 0.005830 > `subtractive_curation` -0.000029 > `importance_tagging` -0.011104. `verify_tool` is live-positive conditional-runtime challenger. |
+| H100-3 Influence Attribution | 3 components × 1024 states = 3072 rows | `outputs/h100_3_influence_attribution/` | attribution complete; H20 V0 remains uniform name+args KL. |
 | H100-4 prior real influence confirm | REAL_INF_CONFIRM128, 3 components | `outputs/h100_4_influence_confirm/` | 3/3 positive, errors=0 |
 | H100-4 `verify_tool` independent confirm | `VERIFY_INF_CONFIRM128`, seed=4414; `/opt/scape-hf-scorer/bin/python` | `outputs/h100_4_verify_confirm/`; `H1004_VERIFY_HANDOFF.json` | natural 2048 + targeted 512 states; errors=0; Decision=`CONFIRMED` |
+| H100-4 Candidate-B independent utility confirm | `B_UTILITY_CONFIRM128`, seed=4424; subtractive vs importance; K={2,4}; 4×H100 | `outputs/h100_4_b_utility_confirm/`; `outputs/scape_prestage_v3/H1004_B_UTILITY_HANDOFF.json` | 512 rows, errors=0; Decision=`IMPORTANCE_OVERTAKES` |
 | H100-4 `auto_populate` argument diagnostic | 128 states from HF per-state rows | `outputs/h100_4_verify_confirm/auto_populate_argument_diagnostic/` | I_args_raw_mean=-0.280; 98/128 negative args signal |
 | H20 true-SCAPE Stage L evidence_graph | 8×H20, 31 cells (V0 18 + weighted retry 13) | `outputs/true_scape_evidence_graph/` | Gate L 双次 FAIL → **`CURRENTLY_NOT_LEARNABLE`**；见 `## 2026-08-13 SCAPE H20 true-SCAPE evidence_graph Stage L final` |
 | H20 Candidate-B micro tournament | 8×H20, 14 micro cells (SC/IT/VT L512/L2K + SC baselines) | `outputs/true_scape_candidate_b_tournament/` | 三候选 **全 MICRO_FAIL**；Candidate B **未冻结**；见 `## 2026-08-13 SCAPE H20 Candidate-B micro-learnability tournament final` |
@@ -318,6 +326,25 @@ MICRO_WEAK / attribution-guided 2K retry：**未触发**（无候选处于一 se
 | H100-4 verify natural I_args_raw | 0.039954 |
 | H100-4 verify targeted I_name_normalized | 0.018523 |
 | H100-4 verify gate | CONFIRMED |
+| H100-4 B utility decision | IMPORTANCE_OVERTAKES |
+| B utility split / seed | B_UTILITY_CONFIRM128 / 4424 |
+| B utility states | 512 total = 2 components × 2 K values × 128 states |
+| subtractive_curation K2 T-S utility | 0.019061172 |
+| subtractive_curation K4 T-S utility | 0.007622556 |
+| importance_tagging K2 T-S utility | 0.029881483 |
+| importance_tagging K4 T-S utility | 0.022256057 |
+| H100-4 B utility replay_noise | 0.000000 for all four cells |
+| H100-2 true live fork/replay decision | CONDITIONAL_RUNTIME |
+| H100-2 true live split / seed | UTILITY_LIVE256 / 2214 |
+| H100-2 true live states | 1536 = 3 components × 2 K values × 256 states |
+| H100-2 true live replay rows | 510 |
+| H100-2 true live verify_tool mean utility | 0.005830078 |
+| H100-2 true live subtractive_curation mean utility | -0.000029297 |
+| H100-2 true live importance_tagging mean utility | -0.011103516 |
+| H100-2 true live handoff | `outputs/scape_prestage_v3/H1002_CANDIDATE_B_LIVE_HANDOFF.json` |
+| H100-4 B handoff | `outputs/scape_prestage_v3/H1004_B_UTILITY_HANDOFF.json` |
+| verify natural signal/state | 0.000028456 |
+| verify targeted signal/state | 0.000140160 |
 | auto_populate diagnostic I_args_raw_mean | -0.280096 |
 | auto_populate negative args states | 98/128 |
 | required 0813 artifact presence check | missing = `{}` |
@@ -327,10 +354,10 @@ MICRO_WEAK / attribution-guided 2K retry：**未触发**（无候选处于一 se
 ### Candidate / placement conclusion
 - Candidate A remains `evidence_graph`（但 H20 Gate L **FAIL** → 不做 full internalization migration）。
 - `evidence_graph` placement decomposition supports a hybrid SCAPE target: external graph state should remain available, while graph-aware semantic decisions are migratable into weights and renderer/controller can be slimmed later.
-- Candidate B is **not frozen** after H20 micro tournament:
-  - `subtractive_curation`: H100-2 utility 最强，但 micro Gate **MICRO_FAIL**（`divergence_not_down`）。
-  - `importance_tagging`: H100 influence 正、utility mid，但 micro **MICRO_FAIL**（`divergence_not_down` + `scaling_regression`）。
-  - `verify_tool`: H100-4 **CONFIRMED**、influence strong，但 utility 最弱且 micro **MICRO_FAIL**（`divergence_not_down` + `scaling_regression`）。
+- Candidate B is **not frozen**（H20 micro tournament 三候选全 MICRO_FAIL；`winner=null`）:
+  - H100-2 true live fork/replay gate：`verify_tool` live-positive conditional-runtime challenger；`subtractive_curation` K2/K4 方向不一致；`importance_tagging` live utility 为负。
+  - H100-4 `B_UTILITY_CONFIRM128`：`importance_tagging` overtakes `subtractive_curation` on independent split（`IMPORTANCE_OVERTAKES`）。
+  - H20 micro tournament：三候选均为 **MICRO_FAIL**（`divergence_not_down`）；IT/VT 另有 `scaling_regression`。
   - **不得**仅凭 H100 utility/influence 覆盖 H20 learnability gate 冻结 B。
 - Pre-stage 探针：Contribution–Influence–Utility **未能预测** harness-1 same-state tool-token OPD learnability（见 `PROBE_VALIDATION_V2.md`）。
 - Runtime controls remain `chunk_neighbors` and `content_dedup`; do not promote them to first-round full internalization targets.
@@ -349,9 +376,22 @@ MICRO_WEAK / attribution-guided 2K retry：**未触发**（无候选处于一 se
 - `scripts/run_h100_3_real_influence_hf.py` supports `--device auto` and `device_map=auto` for multi-GPU checkpoint loading.
 - `scripts/run_h100_4_verify_confirm_hf.py` is the independent `verify_tool` confirm runner; `scripts/finalize_h100_4_verify_confirm.py` finalizes reports.
 - `scripts/finalize_h100_4_auto_populate_diagnostic.py` produces auto_populate argument diagnostic from existing per-state rows.
+- H100-2 live fork/replay runners: `scripts/run_h100_2_live_fork_replay.py`, `scripts/run_h100_2_live_fork_replay_stream.py`；handoff `outputs/scape_prestage_v3/H1002_CANDIDATE_B_LIVE_HANDOFF.json`。
 - H20 Candidate-B tournament runners: `scripts/build_candidate_b_tournament_splits.py`, `launch_candidate_b_tournament_micro_8gpu.sh`, `launch_candidate_b_winner_8k_8gpu.sh`, `aggregate_candidate_b_tournament.py`, `monitor_candidate_b_tournament.sh`；产物根目录 `outputs/true_scape_candidate_b_tournament/`。
+- H100-1 graph-hybrid handoff: `outputs/scape_prestage_v3/H1001_GRAPH_HYBRID_HANDOFF.json`。
+- H100-4 B utility handoff: `outputs/scape_prestage_v3/H1004_B_UTILITY_HANDOFF.json`。
 - Worktree checkout directories (`SCAPE-wt-h100-*`) must remain uncommitted; `CLAUDE.md` is gitignored and must not be committed.
 - Outputs/checkpoints/models/indexes/secrets remain uncommitted; this record points other agents to artifact paths under `outputs/`.
+
+### H100-2 true live fork/replay addendum（2026-08-13 final）
+- output: `outputs/h100_2_candidate_b_live_utility/`；handoff: `outputs/scape_prestage_v3/H1002_CANDIDATE_B_LIVE_HANDOFF.json`
+- split: `UTILITY_LIVE256`, seed=2214；1536 utility rows；Decision=`CONDITIONAL_RUNTIME`
+- ranking: `verify_tool` 0.005830 > `subtractive_curation` -0.000029 > `importance_tagging` -0.011104
+- Do not use old `outputs/h100_2_candidate_b_utility/` short-horizon result as final success.
+
+### H100-3 subtractive attribution addendum
+- output: `outputs/h100_3_subtractive_attribution/`；CPU-only postprocessing；handoff `H1003_SUBTRACTIVE_HANDOFF.json`
+- Conclusion: late-turn heavy, tool-name dominated；H20 handoff remains uniform name+args KL for first pass.
 
 ---
 
