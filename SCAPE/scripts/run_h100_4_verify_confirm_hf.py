@@ -52,6 +52,11 @@ def _used_qids_from_jsonl(path: Path) -> set[str]:
 
 
 def _freeze_split(*, queries_path: Path, out_dir: Path, seed: int, n: int) -> list[str]:
+    existing = out_dir / "manifests" / "VERIFY_INF_CONFIRM128.json"
+    if existing.exists():
+        obj = json.loads(existing.read_text(encoding="utf-8"))
+        if obj.get("seed") == seed and int(obj.get("n", 0)) == n:
+            return [str(qid) for qid in obj.get("query_ids", [])]
     all_qids = _load_queries(queries_path)
     used = set()
     for path in [

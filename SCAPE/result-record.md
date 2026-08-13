@@ -58,7 +58,7 @@
 ### Setting
 - repo: `/mnt/songzijun/Capability_Evolution/SCAPE` on branch `sync/h100-20260812`
 - GitHub remote: `https://github.com/ZijunSong/Capability_Evolution.git`
-- pushed sync head: `66047fc5d4f7ee20c3111d90c0fea13f0c44c88e` (`origin/sync/h100-20260812`)
+- pushed sync head: `31a05e9e63339d62f5ac78e743ed28ef6effe093` (`origin/sync/h100-20260812` after 0813 artifact summarizer commit); previous H100-3 sync head was `66047fc5d4f7ee20c3111d90c0fea13f0c44c88e`
 - required H100 snapshot ancestor: `0f0934bd9f7a985af747e18dda9c2c666a9c24ba`
 - official Chroma credentials: unavailable (`OPENAI_API_KEY`, `CHROMA_API_KEY`, `CHROMA_DATABASE` missing) -> `OFFICIAL_CHROMA_BLOCKED=true`; continue local/HF mechanism experiments only
 - H100-3 input: `outputs/h100_3_real_influence/REAL_INFLUENCE_PER_STATE.jsonl`
@@ -77,6 +77,14 @@
 | H20 loss recommendation | H20 V0 remains uniform name+args tool-token KL | `outputs/h100_3_influence_attribution/H20_LOSS_RECOMMENDATION.md` | attribution only informs later ablation/stratification; do not complicate first H20 V0 loss |
 | H100-1/H100-2/H100-4 prior 0812 streams | confirmed still complete | `outputs/h100_1_contribution_confirm/STATUS_LIVE.md`; `outputs/h100_2_independent_repl/STATUS_LIVE.md`; `outputs/h100_4_influence_confirm/STATUS_LIVE.md` | no rerun needed under 0813 instructions |
 | H20 lightweight torch record | complete artifact exists | `outputs/H20_LIGHTWEIGHT_TORCH_COMPLETE.json` | lightweight/proxy result exists but is not official Chroma parity |
+| 0813 artifact summarizer | script committed and pushed | `SCAPE/scripts/generate_0813_required_artifacts.py`; `.gitignore` now ignores `SCAPE-wt-h100-*/` | summarizer only consolidates existing artifacts into `outputs/scape_prestage_v2/0813_STATUS_SUMMARY.{json,md}`; it does not synthesize per-state measurements or turn failed `verify_tool` confirm into success |
+
+### Repo / worktree hygiene
+- `SCAPE-wt-h100-1/` and `SCAPE-wt-h100-2/` are git worktree checkout directories, not experiment artifacts. Parent repo must not commit them as ordinary nested directories.
+- Both worktrees were checked and are clean: `SCAPE-wt-h100-1` on `exp/h1001-evidence-graph-placement`; `SCAPE-wt-h100-2` on `exp/h1002-candidate-b-utility`.
+- `.gitignore` includes `SCAPE-wt-h100-*/` so other agents and servers do not treat these checkout directories as missing commits.
+- `SCAPE/scripts/generate_0813_required_artifacts.py` was initially untracked, then revised to preserve real status boundaries before commit. In particular, `h100_4_verify_confirm` remains **进行中 / 异常待恢复** until the HF scorer environment is fixed and rerun.
+- Latest pushed branch state after this hygiene update chain: `origin/sync/h100-20260812` at `31a05e9e63339d62f5ac78e743ed28ef6effe093` before this record-only follow-up commit.
 
 ### 正在进行 / 异常待恢复
 | workstream | current state | blocker / recovery |
