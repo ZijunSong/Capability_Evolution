@@ -6,14 +6,14 @@
 
 ---
 
-## 本轮总览（更新于 2026-08-13）
+## 本轮总览（更新于 2026-08-13 晚）
 
 ### Setting（双线）
 | 线 | 机器 / repo | model | retrieval | Candidate A/B |
 |---|---|---|---|---|
-| **H20 true-SCAPE（主线）** | 8×H20；`/data/ppnm/Capability_Evolution/SCAPE` | `pat-jj/harness-1`（local `/data/ppnm/models/harness-1`） | local_bm25_compat | A=`evidence_graph`；B=待定（等 H100-2/H100-4 handoff） |
+| **H20 true-SCAPE（主线）** | 8×H20；`/data/ppnm/Capability_Evolution/SCAPE` | `pat-jj/harness-1`（local `/data/ppnm/models/harness-1`） | local_bm25_compat | A=`evidence_graph`（L **FAIL**）；B=**未冻结**（三候选 micro tournament 全 **MICRO_FAIL**） |
 | **H20 provisional（已归档）** | 同上 | Qwen2.5-7B-Instruct | BM25 provisional | A=`auto_populate_first_search`；B=`verify_tool` |
-| **H100** | 8×H100；`/mnt/songzijun/Capability_Evolution/SCAPE` + worktrees `SCAPE-wt-h100-*` | `pat-jj/harness-1`（HF continuation-logprob scorer；vLLM smoke 已通过） | local BM25 compat / HF same-state scorer（官方 Chroma 阻塞） | A=`evidence_graph`；B 未冻结；`verify_tool` 已 H100-4 CONFIRMED 但 utility 弱于 `subtractive_curation` |
+| **H100** | 8×H100；`/mnt/songzijun/Capability_Evolution/SCAPE` + worktrees `SCAPE-wt-h100-*` | `pat-jj/harness-1`（HF continuation-logprob scorer；vLLM smoke 已通过） | local BM25 compat / HF same-state scorer（官方 Chroma 阻塞） | A=`evidence_graph`；B 未冻结；H100-2 utility 推荐 `subtractive_curation` 但 H20 learnability 未过 |
 
 ### 进度板 — H20 true-SCAPE evidence_graph（0813 主线）
 | 阶段 | 状态 | 结论 / 产物 |
@@ -24,9 +24,21 @@
 | Stage L retry weighted KL（8 卡 × 13 cells） | **已完成** | Gate L **FAIL**（`scaling_regression`）→ **`CURRENTLY_NOT_LEARNABLE`** |
 | Stage L baselines（action_ce / full_response / offpolicy / name_only / args_only） | **已完成** | name_only L8K L_m≈11.7 离线最优，但未挽救主路径 Gate L |
 | Stage S closed-loop 四格 | **未运行** | Gate L 未过；S0/S1 仅有 LOO proxy，**不可**宣称 retirement |
-| Stage M / Candidate B Stage L | **未开始** | 等 Gate L PASS + H100-2/H100-4 handoff |
+| Stage M / Candidate B micro tournament | **已完成 · 全 FAIL** | 见 `## 2026-08-13 SCAPE H20 Candidate-B micro-learnability tournament final` |
 | Runtime recomposition | **未开始** | 等 H100-1 decomposition |
-| GPU 实验进程 | **空闲** | `RETRY_ALL_DONE`；31 cells 聚合完毕 |
+| GPU 实验进程 | **空闲** | `TOURNAMENT_ALL_DONE`；evidence_graph retry + Candidate-B micro 均完毕 |
+
+### 进度板 — H20 true-SCAPE Candidate-B micro tournament（0813 H20 §1–§5）
+| 阶段 | 状态 | 结论 / 产物 |
+|---|---|---|
+| 三候选 same-state 数据（SC/IT/VT） | **已完成** | TRAIN_8K + VALID_512 + TEST_512；query-disjoint；`outputs/true_scape_candidate_b_tournament/data/` |
+| Micro Stage L L512/L2K（8 卡 × 14 cells） | **已完成** | uniform `tool_token_kl`；seeds 42/43；SC 基线 action_ce + name_only @2K |
+| Micro Gate（三候选） | **全 MICRO_FAIL** | reason=`divergence_not_down`（IT/VT 另有 `scaling_regression`） |
+| Candidate B 冻结 | **未冻结** | `winner=null`；`CANDIDATE_B_FINAL.json` |
+| Winner 8K 扩展 | **跳过** | 无 MICRO_PASS；符合 §6 禁止三候选齐跑 8K |
+| Stage S 四格 | **跳过** | 无 winner + Gate L 未过 |
+| Attribution-guided retry | **未触发** | 无 MICRO_WEAK（仅 FAIL） |
+| PROBE_VALIDATION_V2 | **已完成** | C+I 仍不能预测 L；四组件 learnability 均负 |
 
 ### 进度板 — H20 provisional（已归档，不再扩展）
 | 阶段 | 状态 | 结论 / 产物 |
@@ -52,11 +64,12 @@
 | 官方 BrowseComp+ Chroma eval / parity | **阻塞** | 缺 `OPENAI_API_KEY` / `CHROMA_API_KEY` / `CHROMA_DATABASE`；不可用 local/HF evidence 冒充 official Chroma |
 
 ### 结论（一句话）
-- **H20 true-SCAPE**：`evidence_graph` 在 harness-1 + same-state tool-token KL 下 **Gate L 双次 FAIL**（uniform → weighted retry）→ **`CURRENTLY_NOT_LEARNABLE`**；停止 Evidence Graph full migration；Contribution–Influence **未能预测** learnability。
+- **H20 true-SCAPE A-side**：`evidence_graph` 在 harness-1 + same-state tool-token KL 下 **Gate L 双次 FAIL**（uniform → weighted retry）→ **`CURRENTLY_NOT_LEARNABLE`**；停止 Evidence Graph full migration。
+- **H20 true-SCAPE B-side**：`subtractive_curation` / `importance_tagging` / `verify_tool` 统一 micro tournament **三候选全 MICRO_FAIL** → **Candidate B 未冻结**；Contribution–Influence–Utility **仍未能预测** same-state tool-token OPD learnability。
 - **H20 provisional**：LOCAL_CAL64 + BM25+Qwen 下 A/B **不可 retirement**（Gate S FAIL）；已归档。
-- **H100**：fresh contribution + replication + real influence + H100-4 confirm + `verify_tool` follow-up confirm 已齐；Candidate A=`evidence_graph`。B-side 需联合解读：`verify_tool` 已 CONFIRMED 但 H100-2 utility 仍给 `subtractive_curation` 更强局部 utility。官方 Chroma 仍阻塞，所有 local/HF 结果标注 `LOCAL_COMPAT_ONLY`。
+- **H100**：fresh contribution + replication + real influence + H100-4 confirm 已齐；utility 排序 `subtractive_curation` > `importance_tagging` > `verify_tool`，但 **不能覆盖** H20 learnability gate。官方 Chroma 仍阻塞，所有 local/HF 结果标注 `LOCAL_COMPAT_ONLY`。
 
-详细数字：H20 true-SCAPE 见 `## 2026-08-13 SCAPE H20 true-SCAPE evidence_graph Stage L final`；0813 H100 状态见 `## 2026-08-13 SCAPE 0813 execution status`；H20 provisional 见 `## 2026-08-12 SCAPE non-H100 round final`；H100 见 `## 2026-08-12 SCAPE H100 fresh confirm + real influence final`。
+详细数字：evidence_graph Stage L 见 `## 2026-08-13 SCAPE H20 true-SCAPE evidence_graph Stage L final`；Candidate-B tournament 见 `## 2026-08-13 SCAPE H20 Candidate-B micro-learnability tournament final`；0813 H100 状态见 `## 2026-08-13 SCAPE 0813 execution status`；H20 provisional 见 `## 2026-08-12 SCAPE non-H100 round final`；H100 见 `## 2026-08-12 SCAPE H100 fresh confirm + real influence final`。
 
 ---
 
@@ -149,8 +162,8 @@ Gate L reason: `scaling_regression`（`seed_agree=true`，`invalid_ok=true`，�
 - Gate L (weighted retry): **FAIL** → **`CURRENTLY_NOT_LEARNABLE`**
 - Gate S: **未评测**（proxy 不可宣称）
 - Stage M: **不进入**
-- Candidate B: **冻结**（等 H100-2 `CANDIDATE_B_RECOMMENDATION.json` + H100-4 `H1004_VERIFY_HANDOFF.json`）
-- Next: **不继续** Evidence Graph full migration；可选 follow-up 限于 H100-1 graph placement decomposition / H100-3 attribution-guided loss（需新证据），或换下一 internalization 目标
+- Candidate B: **未冻结**（evidence_graph Gate L FAIL 后转入 B-side tournament；三候选 micro 全 FAIL）
+- Next: **不继续** Evidence Graph full migration；B-side micro tournament **已完成（全 FAIL）**；可选 follow-up：等 `H1001_GRAPH_HYBRID_HANDOFF.json` hybrid case，或新 loss/数据假设下的受控 retry
 
 ### Artifacts
 - `outputs/true_scape_evidence_graph/STAGE_L_REPORT.md`
@@ -162,6 +175,109 @@ Gate L reason: `scaling_regression`（`seed_agree=true`，`invalid_ok=true`，�
 - `outputs/true_scape_evidence_graph/CCR_EVIDENCE_GRAPH.json`
 - `outputs/true_scape_evidence_graph/AGGREGATE.json`
 - checkpoints: `stage_l/gpu*/main_L8K_s42/hf_merged`；`stage_l_retry/gpu0/weighted_L8K_s42/hf_merged`
+
+---
+
+## 2026-08-13 SCAPE H20 Candidate-B micro-learnability tournament final
+
+> 覆盖 `SCAPE/0813/SCAPE-0813-H20.md` §0–§5、§10–§11（Candidate-B True-SCAPE Micro-Learnability Tournament）。
+> 状态：**Micro Stage L 已完成（14 cells）**；三候选 **全 MICRO_FAIL**；**Candidate B 未冻结**；8K / Stage S **按协议跳过**。
+
+### Setting
+- repo: `/data/ppnm/Capability_Evolution/SCAPE`
+- machine: 8×H20-3e（单卡 LoRA；每卡独立队列；`CUDA_VISIBLE_DEVICES` 绑定）
+- model: Harness-1 `pat-jj/harness-1`（local `/data/ppnm/models/harness-1`）
+- candidates（统一 tournament，不手工预冻结 B）:
+  - `subtractive_curation`（SC）
+  - `importance_tagging`（IT）
+  - `verify_tool`（VT；Gate L 仅用 natural states，未混 targeted-eligible）
+- harness: Harness-1；student=`H_-m` rollout 决定 state occupancy；same `xi_t` dual-view；teacher score-only；no future trajectory
+- retrieval: `local_bm25_compat`（官方 Chroma 阻塞）
+- trainer: LoRA tool-token OPD（`scape.training.hf_tool_opd`）；`legacy_scope_path_used=false`
+- data（每候选 query-disjoint splits，前缀分离）:
+  - `{component}_TRAIN_8K.jsonl`（训练池；micro 仅截取 512 / 2K）
+  - `{component}_VALID_512.jsonl`
+  - `{component}_TEST_512.jsonl`
+- loss: uniform name+args tool-token KL + light anchor（`tool_token_kl`）；mask = tool name + arg keys + arg values + end_search
+- training: epochs=1, batch_size=1, lr=1e-5, LoRA r=8/alpha=16；每 cell 从 **同一 base checkpoint 独立初始化**
+- micro scale only: L512 + L2K per candidate × seeds {42, 43}（**不直接跑 8K**）
+- output root: `outputs/true_scape_candidate_b_tournament/`
+- 8-GPU schedule（§3）:
+  - GPU0: SC seed42 L512→L2K
+  - GPU1: SC seed43 L512→L2K
+  - GPU2: IT seed42 L512→L2K
+  - GPU3: IT seed43 L512→L2K
+  - GPU4: VT seed42 L512→L2K
+  - GPU5: VT seed43 L512→L2K
+  - GPU6: SC `action_ce` @2K seed42
+  - GPU7: SC `tool_name_only_kl` @2K seed42
+- scripts（其他 agent 复跑/监控）:
+  - `scripts/build_candidate_b_tournament_splits.py`
+  - `scripts/launch_candidate_b_tournament_micro_8gpu.sh`
+  - `scripts/launch_candidate_b_winner_8k_8gpu.sh`（仅 MICRO_PASS winner 时启用）
+  - `scripts/aggregate_candidate_b_tournament.py`
+  - `scripts/monitor_candidate_b_tournament.sh`
+- ops note: 队列脚本初版 `shift 6` 错误（应为 `shift 5` per cell）导致 L2K 未自动接续；已修复并手动恢复 GPU0–5 L2K 训练。
+
+### Results — Micro Gate summary
+| component | verdict | Gate L reason | seed_agree | scaling_ok | invalid_ok |
+|---|---|---|---|---|---|
+| subtractive_curation | **MICRO_FAIL** | `divergence_not_down` | false | true | true |
+| importance_tagging | **MICRO_FAIL** | `divergence_not_down` | false | false | true |
+| verify_tool | **MICRO_FAIL** | `divergence_not_down` | false | false | true |
+
+MICRO_PASS 要求（§4）：两 seed 方向一致、`D_post_2K < D_pre`、2K 不比 512 系统性退化、invalid tool 不升 — **无一满足**。
+MICRO_WEAK / attribution-guided 2K retry：**未触发**（无候选处于一 seed 正、一 seed 近零）。
+
+### Results — per-cell L_m@2K（uniform `tool_token_kl`）
+| component | seed | d_pre | d_post@2K | L_m@2K | invalid_tool |
+|---|---:|---:|---:|---:|---|
+| subtractive_curation | 42 | -0.1344 | -0.0234 | 0.826 | 0.0 |
+| subtractive_curation | 43 | -0.1344 | -0.0345 | 0.743 | 0.0 |
+| importance_tagging | 42 | -0.0464 | -0.0326 | 0.296 | 0.0 |
+| importance_tagging | 43 | -0.0464 | +0.0009 | 1.020 | 0.0 |
+| verify_tool | 42 | -0.1731 | -0.0382 | 0.780 | 0.0 |
+| verify_tool | 43 | -0.1731 | -0.0326 | 0.811 | 0.0 |
+
+注：Gate L 判定 `d_post < d_pre - 1e-6`（held-out divergence 下降）；上表多数 cell 的 `d_post` 较负的 `d_pre` **更接近 0**，故 Gate 记为未改善，尽管部分 `L_m` 数值偏高（`L_m = 1 - D_post/D_pre` 在负 divergence 区间非单调）。
+
+### Results — SC micro baselines @2K seed42
+| loss_path | d_post@2K | L_m@2K |
+|---|---:|---:|
+| `action_ce` | -0.0284 | 0.789 |
+| `tool_name_only_kl` | -0.0438 | 0.367 |
+
+### Paired / PROBE_VALIDATION_V2
+| component | Contribution | Influence | Utility | Learnability (H20 micro) | Placement |
+|---|---|---|---|---|---|
+| evidence_graph | + | + | semantic-migratable | **FAIL**（uniform + weighted 8K retry） | semantic-migratable / hybrid |
+| subtractive_curation | +（最稳） | + | strong（H100-2） | **MICRO_FAIL** | semantic-migratable |
+| importance_tagging | mixed | + | mid | **MICRO_FAIL** | semantic-migratable |
+| verify_tool | neutral（local） | strong | weak vs subtractive | **MICRO_FAIL** | semantic-migratable |
+
+**PROBE 结论**：Contribution–Influence–Utility **仍不能预测** harness-1 same-state tool-token OPD learnability。Pre-stage 升级为 Contribution–Influence–Utility–Learnability **仍缺乏 learnability 正向证据**。
+
+### Gate / Decision
+- Micro Gate（三候选）: **全 MICRO_FAIL**
+- Candidate B freeze: **否**（`winner_component_id=null`）
+- Winner 8K expansion（§6）: **跳过**（无 MICRO_PASS）
+- Stage S 四格（§8）: **跳过**（无 winner + Gate L 未过）
+- Stage M: **不进入**
+- Evidence Graph full migration: **已停止**（A-side 先前结论不变）
+- Next allowed: 等待 `H1001_GRAPH_HYBRID_HANDOFF.json` 作 hybrid case；或对新 loss/数据管线有明确假设后再开 retry（当前无 MICRO_WEAK，§7 attribution retry **不适用**）
+
+### Artifacts
+- `outputs/true_scape_candidate_b_tournament/DATA_AUDIT.md`
+- `outputs/true_scape_candidate_b_tournament/MICRO_STAGE_L.csv`（14 rows）
+- `outputs/true_scape_candidate_b_tournament/MICRO_STAGE_L_REPORT.md`
+- `outputs/true_scape_candidate_b_tournament/CANDIDATE_B_FINAL.{json,md}`
+- `outputs/true_scape_candidate_b_tournament/PROBE_VALIDATION_V2.md`
+- `outputs/true_scape_candidate_b_tournament/BASELINE_COMPARISON.md`
+- `outputs/true_scape_candidate_b_tournament/WINNER_8K_REPORT.md`（无 8K cells）
+- `outputs/true_scape_candidate_b_tournament/FOUR_GRID_STAGE_S.md`（no_winner）
+- `outputs/true_scape_candidate_b_tournament/RUN_MANIFEST.json`
+- `outputs/true_scape_candidate_b_tournament/TOURNAMENT_ALL_DONE`
+- per-cell checkpoints: `stage_l_micro/gpu*/{SC,IT,VT}_L{512,2K}_s*/hf_merged`
 
 ---
 
@@ -190,6 +306,7 @@ Gate L reason: `scaling_regression`（`seed_agree=true`，`invalid_ok=true`，�
 | H100-4 `verify_tool` independent confirm | `VERIFY_INF_CONFIRM128`, seed=4414; `/opt/scape-hf-scorer/bin/python` | `outputs/h100_4_verify_confirm/`; `H1004_VERIFY_HANDOFF.json` | natural 2048 + targeted 512 states; errors=0; Decision=`CONFIRMED` |
 | H100-4 `auto_populate` argument diagnostic | 128 states from HF per-state rows | `outputs/h100_4_verify_confirm/auto_populate_argument_diagnostic/` | I_args_raw_mean=-0.280; 98/128 negative args signal |
 | H20 true-SCAPE Stage L evidence_graph | 8×H20, 31 cells (V0 18 + weighted retry 13) | `outputs/true_scape_evidence_graph/` | Gate L 双次 FAIL → **`CURRENTLY_NOT_LEARNABLE`**；见 `## 2026-08-13 SCAPE H20 true-SCAPE evidence_graph Stage L final` |
+| H20 Candidate-B micro tournament | 8×H20, 14 micro cells (SC/IT/VT L512/L2K + SC baselines) | `outputs/true_scape_candidate_b_tournament/` | 三候选 **全 MICRO_FAIL**；Candidate B **未冻结**；见 `## 2026-08-13 SCAPE H20 Candidate-B micro-learnability tournament final` |
 | 0813 status consolidation | reads completed artifacts only | `outputs/scape_prestage_v2/0813_STATUS_SUMMARY.{json,md}` | `missing={}` in required-artifact presence check |
 
 ### Key metrics / decisions
@@ -208,20 +325,23 @@ Gate L reason: `scaling_regression`（`seed_agree=true`，`invalid_ok=true`，�
 | final GPU/process status | GPUs idle; no verify/vLLM/torchrun process remains |
 
 ### Candidate / placement conclusion
-- Candidate A remains `evidence_graph`.
+- Candidate A remains `evidence_graph`（但 H20 Gate L **FAIL** → 不做 full internalization migration）。
 - `evidence_graph` placement decomposition supports a hybrid SCAPE target: external graph state should remain available, while graph-aware semantic decisions are migratable into weights and renderer/controller can be slimmed later.
-- Candidate B is **not frozen solely from one axis**:
-  - `importance_tagging`: positive real influence and semantic candidate, but H100-2 utility is weaker than `subtractive_curation`.
-  - `verify_tool`: now independently H100-4-confirmed positive and should remain a high-priority challenger/conditional runtime candidate; however H100-2 short-horizon utility ranks it weakest and local reward delta is 0.
-  - `subtractive_curation`: strongest H100-2 short-horizon utility, positive but weaker real influence; recommended by H100-2 utility as B under `Behavior-only` decision.
+- Candidate B is **not frozen** after H20 micro tournament:
+  - `subtractive_curation`: H100-2 utility 最强，但 micro Gate **MICRO_FAIL**（`divergence_not_down`）。
+  - `importance_tagging`: H100 influence 正、utility mid，但 micro **MICRO_FAIL**（`divergence_not_down` + `scaling_regression`）。
+  - `verify_tool`: H100-4 **CONFIRMED**、influence strong，但 utility 最弱且 micro **MICRO_FAIL**（`divergence_not_down` + `scaling_regression`）。
+  - **不得**仅凭 H100 utility/influence 覆盖 H20 learnability gate 冻结 B。
+- Pre-stage 探针：Contribution–Influence–Utility **未能预测** harness-1 same-state tool-token OPD learnability（见 `PROBE_VALIDATION_V2.md`）。
 - Runtime controls remain `chunk_neighbors` and `content_dedup`; do not promote them to first-round full internalization targets.
-- H20 V0 should continue to use uniform name+args tool-token KL; H100-3 attribution only informs later ablations.
+- H20 micro tournament 使用 uniform `tool_token_kl`；H100-3 attribution 仅作后续 ablation 参考，**未**触发 §7 attribution-guided retry（无 MICRO_WEAK）。
 
 ### Blocked / intentionally not continued
 | workstream | status | reason |
 |---|---|---|
 | Official BrowseComp+ Chroma parity | **blocked** | missing `OPENAI_API_KEY`, `CHROMA_API_KEY`, `CHROMA_DATABASE`; checked once and not polled repeatedly. |
 | H20 Evidence Graph Stage S/M | **not started** | Gate L FAIL (`CURRENTLY_NOT_LEARNABLE`); per auto-stop rule, no Stage S/M or retirement claim. |
+| H20 Candidate-B 8K / Stage S | **skipped** | 三候选 micro 全 MICRO_FAIL；`winner=null`；per `SCAPE-0813-H20.md` §6–§8. |
 | Old SCOPE rollback / KEEP-SKIP / P_m / old Stage M | **not continued** | explicitly forbidden by 0813 coordination. |
 
 ### Repo / worktree hygiene and handoff notes
@@ -229,6 +349,7 @@ Gate L reason: `scaling_regression`（`seed_agree=true`，`invalid_ok=true`，�
 - `scripts/run_h100_3_real_influence_hf.py` supports `--device auto` and `device_map=auto` for multi-GPU checkpoint loading.
 - `scripts/run_h100_4_verify_confirm_hf.py` is the independent `verify_tool` confirm runner; `scripts/finalize_h100_4_verify_confirm.py` finalizes reports.
 - `scripts/finalize_h100_4_auto_populate_diagnostic.py` produces auto_populate argument diagnostic from existing per-state rows.
+- H20 Candidate-B tournament runners: `scripts/build_candidate_b_tournament_splits.py`, `launch_candidate_b_tournament_micro_8gpu.sh`, `launch_candidate_b_winner_8k_8gpu.sh`, `aggregate_candidate_b_tournament.py`, `monitor_candidate_b_tournament.sh`；产物根目录 `outputs/true_scape_candidate_b_tournament/`。
 - Worktree checkout directories (`SCAPE-wt-h100-*`) must remain uncommitted; `CLAUDE.md` is gitignored and must not be committed.
 - Outputs/checkpoints/models/indexes/secrets remain uncommitted; this record points other agents to artifact paths under `outputs/`.
 
