@@ -12,7 +12,7 @@
 | 线 | 机器 / repo | model | retrieval | Candidate A/B |
 |---|---|---|---|---|
 | **非 H100（H20）** | 8×H20；`/data/ppnm/Capability_Evolution/SCAPE` | `/data/ppnm/models/Qwen2.5-7B-Instruct` | BM25 provisional | A=`auto_populate_first_search`；B=`verify_tool` |
-| **H100** | 8×H100；`/mnt/songzijun/Capability_Evolution/SCAPE` + worktrees `SCAPE-wt-h100-*` | `pat-jj/harness-1`（HF continuation-logprob scorer；vLLM smoke 已通过） | local BM25 compat / HF same-state scorer（官方 Chroma 阻塞） | A=`evidence_graph`；B=`importance_tagging` |
+| **H100** | 8×H100；`/mnt/songzijun/Capability_Evolution/SCAPE` + worktrees `SCAPE-wt-h100-*` | `pat-jj/harness-1`（HF continuation-logprob scorer；vLLM smoke 已通过） | local BM25 compat / HF same-state scorer（官方 Chroma 阻塞） | A=`evidence_graph`；B=`importance_tagging`；`verify_tool` 为高优先级 follow-up |
 
 ### 进度板 — 非 H100（H20 provisional）
 | 阶段 | 状态 | 结论 / 产物 |
@@ -32,10 +32,12 @@
 ### 进度板 — H100（0812 fresh confirm / 0813 attribution + sync）
 | 阶段 | 状态 | 结论 / 产物 |
 |---|---|---|
-| Git/code canonicalization + GitHub sync | **已完成** | snapshot commit `0f0934bd9f7a985af747e18dda9c2c666a9c24ba`；sync branch `sync/h100-20260812` pushed to GitHub at `66047fc5d4f7ee20c3111d90c0fea13f0c44c88e` |
+| Git/code canonicalization + GitHub sync | **已完成** | snapshot commit `0f0934bd9f7a985af747e18dda9c2c666a9c24ba`；sync branch `sync/h100-20260812` pushed to GitHub at `66047fc5d4f7ee20c3111d90c0fea13f0c44c88e`，后续 0813 sync head `31a05e9e63339d62f5ac78e743ed28ef6effe093` |
 | H100-1 CAL200 historical contribution | **已完成（local BM25 compat）** | 10 组件 n=200 errors=0；保留为历史基线 |
 | H100-1 fresh contribution confirm | **已完成（local BM25 compat / LOCAL_COMPAT_ONLY）** | `outputs/h100_1_contribution_confirm/`；BCP_CONFIRM400 seed1102 n=400；10/10 errors=0；SHA OK |
+| H100-1 graph placement decomposition | **已完成（LOCAL_COMPAT_ONLY）** | `outputs/h100_1_graph_decomp/`；G0/G1/G2/G3/G4 对比显示 `G3` 接近 `G4`，`G2` 保留少数测得 utility，结论为 `Semantic-migratable` |
 | H100-2 independent replication | **已完成（local BM25 compat / LOCAL_COMPAT_ONLY）** | `outputs/h100_2_independent_repl/`；BCP_REPL200_V2 seed2203 n=200；full + 10 LOO + 4 coalition；16/16 errors=0；SHA OK |
+| H100-2 candidate-B utility resolution | **已完成（LOCAL_COMPAT_ONLY）** | `outputs/h100_2_candidate_b_utility/`；UTILITY_STATE256 对 3 component × K={2,4}；Candidate B 推荐为 `subtractive_curation`，但总体决策为 `Behavior-only` |
 | H100-3 real-model same-state influence | **已完成（HF continuation-logprob）** | `outputs/h100_3_real_influence/`；7 components × 64q × 16 states = 7168 states；7/7 errors=0；SHA OK |
 | H100-3 influence attribution | **已完成（CPU 聚合；GPU rescore skipped）** | `outputs/h100_3_influence_attribution/`；evidence_graph/importance_tagging/verify_tool 各 1024 states；已生成 tool/turn/argument 分层和 H20 loss recommendation |
 | H100-4 real influence confirmation | **已完成（HF continuation-logprob）** | `outputs/h100_4_influence_confirm/`；REAL_INF_CONFIRM128 n=128；3 components × 512 states；3/3 positive；SHA OK |
@@ -96,14 +98,15 @@
 |---|---|---|
 | Official BrowseComp+ Chroma parity | **阻塞** | missing `OPENAI_API_KEY`, `CHROMA_API_KEY`, `CHROMA_DATABASE`; do not poll repeatedly and do not label local/HF evidence as official parity |
 | H20 true-SCAPE Stage L for evidence_graph | **未开始 on this host** | 0813 coordination assigns this to H20; current local evidence only records lightweight/proxy completion, not true same-state tool-token OPD migration |
-| H100-1 evidence graph placement decomposition | **未开始 / not present in this repo snapshot** | only existing H100-1 fresh contribution confirm artifacts are complete; no 0813 placement-decomposition result artifact found |
-| H100-2 Candidate-B utility resolution beyond existing replication | **未开始 / not present in this repo snapshot** | existing H100-2 `BCP_REPL200_V2` artifacts complete; no new 0813 importance_tagging-vs-verify_tool utility resolution artifact found |
+| H100-1 evidence graph placement decomposition | **已完成（LOCAL_COMPAT_ONLY）** | `outputs/h100_1_graph_decomp/` contains audit, G0-G4 decomposition, runtime cost, renderer robustness, manifest, SHA256SUMS |
+| H100-2 Candidate-B utility resolution beyond existing replication | **已完成（LOCAL_COMPAT_ONLY）** | `outputs/h100_2_candidate_b_utility/` contains short-horizon utility per-state/summary, per-component reports, recommendation, SHA256SUMS |
 | Targeted verify-event confirmation | **未开始** | natural verify_tool CONFIRM128 has not recovered yet; targeted stream should remain separate and follow natural confirm |
 
 ### 结论
 - Current completed evidence still supports Candidate A=`evidence_graph`.
-- Candidate B remains `importance_tagging` from completed H100-4 confirm until `verify_tool` independent confirm recovers and completes.
-- H100-3 attribution says `evidence_graph` and `verify_tool` are args-heavy enough that name-only training would be insufficient; H20 V0 still starts with uniform name+args KL per coordination doc.
+- H100-2 utility resolution makes the short-horizon Candidate-B picture more conservative: `subtractive_curation` ranks first on local utility, but the overall decision is `Behavior-only`, so it is not a clean full internalization win.
+- H100-3 attribution says `evidence_graph`, `importance_tagging`, and `verify_tool` are all args-sensitive enough that name-only training would be insufficient; H20 V0 still starts with uniform name+args KL per coordination doc.
+- `importance_tagging` remains a semantic candidate from real influence, but it is now one of several B-side signals rather than a sole freeze point.
 - Runtime controls remain `chunk_neighbors` and `content_dedup`; do not promote them to first-round internalization targets.
 - The only active local recovery item is H100-4 `verify_tool` CONFIRM128 environment repair; official Chroma remains credential-blocked.
 
@@ -456,6 +459,29 @@ H100-4 completed its originally selected confirm set. `verify_tool` became H100-
 - `sentence_compress`、`verify_tool`、`token_budget_marker` 在本地质量指标上中性。
 - **不可**用本 run 宣称官方 Harness-1 reproduction/parity。
 
+### H100-1 graph placement decomposition（2026-08-13）
+
+**Setting**
+- 输入：`outputs/h100_1_contribution_confirm/` + SCAPE renderer audit
+- 输出：`outputs/h100_1_graph_decomp/`
+- 结论标签：`LOCAL_COMPAT_ONLY=true`，`official_chroma_parity=false`
+- 目的：判断 `evidence_graph` 的收益来自 external state、renderer，还是 graph-aware decision surface
+
+**Results**
+| variant | quality delta | trajectory delta | state ops delta | latency delta ms | render tokens delta |
+|---|---:|---:|---:|---:|---:|
+| G0_FULL | 0.002376 | 0.005280 | 3.000 | 6.846 | 180 |
+| G1_GRAPH_OFF | 0.000000 | 0.000000 | 0.000 | 0.000 | 0 |
+| G2_GRAPH_STATE_ONLY | 0.000832 | 0.001848 | 3.000 | 4.450 | 0 |
+| G3_GRAPH_STATE_PLUS_MINIMAL_RENDER | 0.001948 | 0.004329 | 3.000 | 5.613 | 72 |
+| G4_GRAPH_FULL_RENDER | 0.002376 | 0.005280 | 3.000 | 6.846 | 180 |
+
+**Conclusion**
+- `G3` 接近 `G4`，`G2` 只保留少数测得 utility。
+- 当前证据支持 `Semantic-migratable`：保留 external graph state，将训练重点放在 graph-aware tool decision，后续再收缩 renderer/controller，而不是直接删掉 graph state。
+- `GRAPH_RUNTIME_COST.md` 显示 graph 有非零 state/latency 成本，因此 retirement 若发生，也应优先收缩 renderer/controller。
+- `GRAPH_RENDERER_ROBUSTNESS.md` 未检测到明显 field-order 语义依赖。
+
 ### H100-2 setting
 - Run id: `h100_2_replication_coalition_20260811`
 - Env: `/opt/vllm-qwen3-1.7b/bin/python`；Python 3.12.13；torch 2.11.0+cu130；vLLM 0.25.1；8×H100
@@ -488,6 +514,39 @@ H100-4 completed its originally selected confirm set. `verify_tool` became H100-
 - `retrieval_rerank` 两路 recall 皆负 → interaction/benchmark-sensitive。
 - Coalition 多为 diminishing/near-additive，仅作交互备注，非强协同证据。
 - 本 run ≠ 原 H100-2 10-component REPL200 全量计划；是 frozen SCOPE 输出的 consolidation。
+
+### H100-2 candidate-B utility resolution（2026-08-13）
+
+**Setting**
+- 指令：`SCAPE/0813/SCAPE-0813-H100-2.md`
+- 输出：`outputs/h100_2_candidate_b_utility/`
+- 目标组件：`importance_tagging` / `verify_tool` / `subtractive_curation`
+- Probe：same-state short-horizon utility，`UTILITY_STATE256`，每组件 K=2/K=4，natural states=256，targeted states=0
+- 产物：`SHORT_HORIZON_UTILITY_PER_STATE.jsonl`、`SHORT_HORIZON_UTILITY_SUMMARY.csv`、`*_UTILITY.md`、`CANDIDATE_B_RECOMMENDATION.{md,json}`、`SHA256SUMS`；无 `RUN_MANIFEST.json`
+- 标记：`LOCAL_COMPAT_ONLY=true`，`official_chroma_parity=false`
+
+**Results**
+| component | K | n_states | mean T-S | mean T | mean S |
+|---|---:|---:|---:|---:|---:|
+| importance_tagging | 2 | 256 | 0.001600 | 0.002095 | 0.000495 |
+| importance_tagging | 4 | 256 | 0.001917 | 0.002412 | 0.000495 |
+| verify_tool | 2 | 256 | 0.001046 | 0.001046 | 0.000000 |
+| verify_tool | 4 | 256 | 0.001534 | 0.001534 | 0.000000 |
+| subtractive_curation | 2 | 256 | 0.002014 | 0.002839 | 0.000825 |
+| subtractive_curation | 4 | 256 | 0.002239 | 0.003064 | 0.000825 |
+
+**Candidate-B ranking**
+| rank | component | mean short-horizon T-S | real influence + args | local reward delta |
+|---:|---|---:|---:|---:|
+| 1 | subtractive_curation | 0.002126 | 0.032106 | 0.001929 |
+| 2 | importance_tagging | 0.001758 | 0.045332 | 0.001069 |
+| 3 | verify_tool | 0.001290 | 0.069712 | 0.000000 |
+
+**Decision**
+- `CANDIDATE_B_RECOMMENDATION.json` 的总体 decision 为 `Behavior-only`，推荐 Candidate B 为 `subtractive_curation`。
+- `verify_tool` real influence 最高但 local reward delta 为 0，且短 horizon utility 最弱；不应因 influence rank #2 直接升级为主 B。
+- `importance_tagging` 保持语义候选，但 utility 排名低于 `subtractive_curation`。
+- `NULL_REPLAY_NOISE.md` 中 replay noise 暂按 deterministic local artifacts 记为 0；若未来有 live Harness-1 replay runner，需要替换为实测 noise。
 
 ### H100-3 setting
 - Run id: `h100_3_influence_offline_cal64`
@@ -606,3 +665,27 @@ H100-4 completed its originally selected confirm set. `verify_tool` became H100-
 - `chunk_neighbors` is not above null in this real influence run and remains a runtime/hybrid control rather than a first-round internalization target.
 - `content_dedup` and `auto_populate_first_search` show positive tool-name movement but have runtime/control placement concerns and/or negative argument-side score; they should not be selected by influence alone.
 - These results are **not** official Chroma Cloud parity and must be labeled local/HF same-state evidence, not final Harness-1 Cloud/Chroma reproduction.
+
+### H100-3 attribution details
+
+**Tool-level / turn-level**
+- `INFLUENCE_BY_TOOL.csv` keeps `evidence_graph`, `verify_tool`, `importance_tagging` as the top three by combined influence.
+- `INFLUENCE_BY_TURN.csv` and `HIGH_INFLUENCE_ARCHETYPES.jsonl` show the strongest signal concentrated in later turns, especially around `read`, `curate`, `verify`, and `end` actions.
+
+**Argument-class details**
+| component | argument class | disagreement | n_states | I_name_mean | I_args_mean |
+|---|---|---|---:|---:|---:|
+| evidence_graph | doc ids | name change | 169 | 0.123880 | 0.235895 |
+| evidence_graph | termination reason | no meaningful change | 769 | 0.021832 | 0.102246 |
+| evidence_graph | doc ids | no meaningful change | 86 | 0.022191 | 0.019173 |
+| importance_tagging | doc ids | name change | 131 | 0.104890 | 0.167589 |
+| importance_tagging | doc ids | no meaningful change | 85 | 0.023446 | 0.035963 |
+| importance_tagging | termination reason | no meaningful change | 808 | 0.016990 | -0.009967 |
+| verify_tool | doc ids | name change | 127 | 0.069249 | 0.147595 |
+| verify_tool | termination reason | no meaningful change | 764 | 0.011876 | 0.045385 |
+| verify_tool | doc ids | no meaningful change | 133 | 0.012272 | -0.011529 |
+
+**H20 handoff**
+- `H20_LOSS_RECOMMENDATION.md` keeps first-run H20 V0 as **uniform name+args tool-token KL**.
+- Follow-up weighting suggestions: `evidence_graph` name medium / args high; `importance_tagging` name high / args medium; `verify_tool` name medium / args high.
+- This is for later ablations only; it does not override the initial uniform loss.
