@@ -151,15 +151,20 @@ class HFContinuationScorer:
         from transformers import AutoModelForCausalLM, AutoTokenizer
 
         self.torch = torch
-        self.device = torch.device(device if torch.cuda.is_available() else "cpu")
+        auto_device_map = device == "auto"
+        self.device = torch.device("cuda:0" if auto_device_map and torch.cuda.is_available() else (device if torch.cuda.is_available() else "cpu"))
         torch_dtype = {"bfloat16": torch.bfloat16, "float16": torch.float16, "float32": torch.float32, "auto": "auto"}[dtype]
         self.tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-        self.model = AutoModelForCausalLM.from_pretrained(
-            model_path,
-            torch_dtype=torch_dtype,
-            trust_remote_code=True,
-            low_cpu_mem_usage=True,
-        ).to(self.device)
+        kwargs = {
+            "torch_dtype": torch_dtype,
+            "trust_remote_code": True,
+            "low_cpu_mem_usage": True,
+        }
+        if auto_device_map:
+            kwargs["device_map"] = "auto"
+        self.model = AutoModelForCausalLM.from_pretrained(model_path, **kwargs)
+        if not auto_device_map:
+            self.model = self.model.to(self.device)
         self.model.eval()
         self.max_prompt_tokens = int(max_prompt_tokens)
 

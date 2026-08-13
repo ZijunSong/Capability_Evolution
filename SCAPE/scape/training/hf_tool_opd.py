@@ -19,7 +19,7 @@ import torch
 import torch.nn.functional as F
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from scape.training.tool_mask import tool_loss_mask_from_response
+from scape.training.tool_mask import align_char_mask_to_tokens, tool_loss_mask_from_response
 from scape.training.tool_opd import learnability_score, tool_opd_loss
 
 LossPath = Literal["tool_token_kl", "action_ce", "full_response_kl", "offpolicy_matched"]
@@ -64,6 +64,8 @@ class ScapeHFToolOPD:
     torch_dtype: torch.dtype = torch.bfloat16
     learning_rate: float = 1e-5
     anchor_weight: float = 0.1
+    trainable_scope: str = "all"
+    span_mode: str = "tool_token"
 
     def __post_init__(self) -> None:
         self.tokenizer = AutoTokenizer.from_pretrained(
@@ -77,6 +79,20 @@ class ScapeHFToolOPD:
             torch_dtype=self.torch_dtype,
             trust_remote_code=True,
         )
+        if self.trainable_scope != "all":
+            for p in self.model.parameters():
+                p.requires_grad_(False)
+            trainable_names = ("lm_head", "embed_out") if self.trainable_scope == "head" else (self.trainable_scope,)
+            matched = 0
+            for name, p in self.model.named_parameters():
+                if any(part in name for part in trainable_names):
+                    p.requires_grad_(True)
+                    matched += 1
+            if matched == 0:
+                # Fall back to the last parameter tensor so smoke training still
+                # exercises backward/optimizer without allocating full Adam state.
+                last_name, last_param = list(self.model.named_parameters())[-1]
+                last_param.requires_grad_(True)
         self.optimizer = torch.optim.AdamW(
             [p for p in self.model.parameters() if p.requires_grad],
             lr=self.learning_rate,
@@ -88,7 +104,18 @@ class ScapeHFToolOPD:
 
     def response_token_mask(self, response_text: str) -> list[bool]:
         offsets = _offset_mapping(self.tokenizer, response_text)
-        audit = tool_loss_mask_from_response(response_text, token_offsets=offsets)
+        include_name = self.span_mode in ("tool_token", "name", "name_args", "full")
+        include_arg_keys = self.span_mode in ("tool_token", "args", "name_args", "full")
+        include_arg_values = self.span_mode in ("tool_token", "args", "name_args", "full")
+        include_end_search = True
+        audit = tool_loss_mask_from_response(
+            response_text,
+            token_offsets=offsets,
+            include_name=include_name,
+            include_arg_keys=include_arg_keys,
+            include_arg_values=include_arg_values,
+            include_end_search=include_end_search,
+        )
         mask = audit["token_mask"]
         assert mask is not None
         return list(mask)
