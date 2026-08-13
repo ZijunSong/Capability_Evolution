@@ -42,12 +42,13 @@
 | H100-3 influence attribution | **已完成（CPU 聚合；GPU rescore skipped）** | `outputs/h100_3_influence_attribution/`；evidence_graph/importance_tagging/verify_tool 各 1024 states；已生成 tool/turn/argument 分层和 H20 loss recommendation |
 | H100-4 real influence confirmation | **已完成（HF continuation-logprob）** | `outputs/h100_4_influence_confirm/`；REAL_INF_CONFIRM128 n=128；3 components × 512 states；3/3 positive；SHA OK |
 | H100-4 verify_tool follow-up confirm | **已完成（HF continuation-logprob / `/opt` env）** | `outputs/h100_4_verify_confirm/`；VERIFY_INF_CONFIRM128 seed4414 n=128；natural 2048 states + targeted 512 states；errors=0；decision=`CONFIRMED`；`H1004_VERIFY_HANDOFF.json` 已更新 |
+| H100-4 Utility Common128 exact replay | **已完成（HF continuation-logprob / `/opt` env）** | `SCAPE-wt-h100-4/SCAPE/outputs/h100_4_utility_exact_replay/`；复现 H100-2 `UTILITY_COMMON128`：3 components × K={2,4} × 128 = 768 states + replay_noise 768；SHA OK；decision=`MACHINE_SENSITIVE` |
 | Harness-1 restore + vLLM smoke | **已完成（smoke）** | 9 shards；`/v1/models` 200 |
 | 官方 BrowseComp+ Chroma eval / parity | **阻塞** | 缺 `OPENAI_API_KEY` / `CHROMA_API_KEY` / `CHROMA_DATABASE`；不可用 local/HF evidence 冒充 official Chroma |
 
 ### 结论（一句话）
 - **非 H100**：LOCAL_CAL64 + BM25+Qwen 下 A/B **不可 retirement**（Gate S FAIL）；Stage M 已停。
-- **H100**：fresh contribution confirm + independent replication + HF same-state real influence + H100-4 confirm + H100-4 `verify_tool` follow-up confirm 已齐；Candidate A=`evidence_graph`。B-side 证据需联合解读：`verify_tool` 已 CONFIRMED 但 H100-2 short-horizon utility 仍给 `subtractive_curation` 更强局部 utility，`importance_tagging` 保持语义候选。官方 Chroma 仍阻塞，所有 local/retrieval 贡献结果必须标注 `LOCAL_COMPAT_ONLY`。
+- **H100**：fresh contribution confirm + independent replication + HF same-state real influence + H100-4 confirm + H100-4 `verify_tool` follow-up confirm + H100-4 `UTILITY_COMMON128` exact replay 已齐；Candidate A=`evidence_graph`。B-side 证据需联合解读：`verify_tool` 已 CONFIRMED；H100-2/H100-4 exact replay 的 component ranking 一致（`verify_tool > importance_tagging > subtractive_curation`），但 per-state reproducibility 未达阈值，decision=`MACHINE_SENSITIVE`，utility probe 暂停作为 selector 并优先排查环境/model/scorer/runtime 差异。官方 Chroma 仍阻塞，所有 local/retrieval 贡献结果必须标注 `LOCAL_COMPAT_ONLY`。
 
 详细数字：0813 状态见 `## 2026-08-13 SCAPE 0813 execution status`；非 H100 见 `## 2026-08-12 SCAPE non-H100 round final`；H100 历史同步见 `## 2026-08-12 SCAPE H100-1/2/3 synced status`；0812 新 H100 结果见 `## 2026-08-12 SCAPE H100 fresh confirm + real influence final`。
 
@@ -77,6 +78,7 @@
 | H100-4 prior real influence confirm | REAL_INF_CONFIRM128, 3 components (`subtractive_curation`, `importance_tagging`, `evidence_graph`) | `outputs/h100_4_influence_confirm/` | 3/3 positive, errors=0. Supports Candidate A=`evidence_graph`, semantic B candidate=`importance_tagging`, and `subtractive_curation` as positive but weaker real-influence candidate. |
 | H100-4 `verify_tool` independent confirm | `VERIFY_INF_CONFIRM128`, seed=4414, n_queries=128, max_states/query=16; `/opt/scape-hf-scorer/bin/python`; `device_map=auto` | `outputs/h100_4_verify_confirm/`; `outputs/scape_prestage_v2/H1004_VERIFY_HANDOFF.json` | natural states=2048, targeted states=512, errors=0. Natural I_name_normalized=0.018325, I_args_raw=0.039954; targeted I_name_normalized=0.018523. Decision=`CONFIRMED`; recommend_candidate_b=true **as influence evidence**, but must be combined with H100-2 utility. |
 | H100-4 `auto_populate_first_search` argument diagnostic | 128 real-influence states from completed HF per-state rows; no new GPU rescore because source already has token-logprob-derived I_args/I_arg_key/I_arg_value | `outputs/h100_4_verify_confirm/auto_populate_argument_diagnostic/` | I_name_normalized_mean=0.045049; I_args_raw_mean=-0.280096; 98/128 states have negative args signal. Diagnosis: argument signal remains negative; inspect token alignment before treating auto_populate args as learnable signal. |
+| H100-4 Utility Common128 exact replay | Exact replay of H100-2 `UTILITY_COMMON128` common manifest; 4×H100 only; `/opt/scape-hf-scorer/bin/python`; no new split/training/retrieval/scorer changes; components=`subtractive_curation`,`importance_tagging`,`verify_tool`; K=2/4; seed=2225; 768 utility states + 768 same-action replay-noise rows | `SCAPE-wt-h100-4/SCAPE/outputs/h100_4_utility_exact_replay/` | Outputs complete and SHA OK. Overall Pearson=0.772587, Spearman=0.779560, MAD=0.017735, sign agreement=0.868490, top-k(k=16)=0.5625. Component ranking exactly matches H100-2 (`verify_tool > importance_tagging > subtractive_curation`; component-mean Spearman=1.0), but per-state correlation below threshold -> decision=`MACHINE_SENSITIVE`; utility probe selector status=`pause_and_investigate`. |
 | H20 true-SCAPE Evidence Graph V0 smoke / probe check | Candidate A=`evidence_graph`; same-state/dual-view/tool-token KL path smoke | `outputs/true_scape_evidence_graph/` | Data/tool-mask path healthy, but Stage L smoke did not pass: `L_m=-1.550741`; Stage S/M not started by Gate rule. Conclusion: contribution+influence prioritized the right component, but learnability not established. |
 | 0813 status consolidation | reads completed artifacts only; does not synthesize per-state measurements | `outputs/scape_prestage_v2/0813_STATUS_SUMMARY.{json,md}` | summary regenerated after H100-4 verify completion; `missing={}` in required-artifact presence check. |
 
@@ -89,6 +91,12 @@
 | H100-4 verify natural I_args_raw | 0.039954 |
 | H100-4 verify targeted I_name_normalized | 0.018523 |
 | H100-4 verify gate | CONFIRMED |
+| H100-4 exact replay states | 768 utility + 768 replay-noise |
+| H100-4 exact replay Pearson / Spearman | 0.772587 / 0.779560 |
+| H100-4 exact replay MAD / sign agreement | 0.017735 / 0.868490 |
+| H100-4 exact replay top-k agreement k=16 | 0.5625 |
+| H100-4 exact replay component ranking | exact match; `verify_tool > importance_tagging > subtractive_curation` |
+| H100-4 exact replay decision | MACHINE_SENSITIVE; utility probe selector status=`pause_and_investigate` |
 | auto_populate diagnostic I_args_raw_mean | -0.280096 |
 | auto_populate negative args states | 98/128 |
 | required 0813 artifact presence check | missing = `{}` |
@@ -99,11 +107,61 @@
 - Candidate A remains `evidence_graph`.
 - `evidence_graph` placement decomposition supports a hybrid SCAPE target: external graph state should remain available, while graph-aware semantic decisions are migratable into weights and renderer/controller can be slimmed later.
 - Candidate B is **not frozen solely from one axis**:
-  - `importance_tagging`: positive real influence and semantic candidate, but H100-2 utility is weaker than `subtractive_curation`.
-  - `verify_tool`: now independently H100-4-confirmed positive and should remain a high-priority challenger/conditional runtime candidate; however H100-2 short-horizon utility ranks it weakest and local reward delta is 0.
-  - `subtractive_curation`: strongest H100-2 short-horizon utility, positive but weaker real influence; recommended by H100-2 utility as B under `Behavior-only` decision.
+  - `verify_tool`: independently H100-4-confirmed positive as influence evidence and exact replay component mean rank #1 on both H100-2/H100-4; keep as high-priority challenger/conditional runtime candidate, but do **not** promote from utility alone because exact replay decision is `MACHINE_SENSITIVE`.
+  - `importance_tagging`: positive real influence and semantic candidate; exact replay component mean rank #2 on both machines.
+  - `subtractive_curation`: strongest older H100-2 candidate-B short-horizon utility in `UTILITY_STATE256`, but `UTILITY_COMMON128` exact replay component mean rank #3; treat previous utility selector as split/state/runner-sensitive until investigated.
 - Runtime controls remain `chunk_neighbors` and `content_dedup`; do not promote them to first-round full internalization targets.
 - H20 V0 should continue to use uniform name+args tool-token KL; H100-3 attribution only informs later ablations.
+
+### H100-4 Utility Common128 exact replay details（2026-08-13）
+
+**Setting**
+- 指令：`SCAPE/0813-2/SCAPE-0813-H100-4.md`；目标是复现 H100-2 `UTILITY_COMMON128`，检查 cross-machine reproducibility，而不是做新 split。
+- Repo/worktree：`/mnt/songzijun/Capability_Evolution/SCAPE-wt-h100-4/SCAPE`，branch at manifest=`exp/h1004-b-utility-confirm`，head=`9121ec15f9d4b553424d3f78011335e1a8fb0e98`，dirty=true（新增 exact replay 脚本和输出）。
+- Env：`/opt/scape-hf-scorer/bin/python`；Python 3.12.13；torch 2.13.0+cu130；transformers 5.15.0；CUDA 13.0；4×H100 80GB。遵守 `/opt` env rule，未使用 `/mnt` JuiceFS env。
+- Model/scorer：`/mnt/songzijun/models/pat-jj_harness-1-full/harness-1`；`hf_continuation_logprob`；runner corrected to match H100-2 static utility calculation (`run_h1002_utility_stability_worker.py`): same query/component/K, same snapshot construction rule, same `minus_mask(component)`, same dual render, same `js_divergence`/`token_kl`, same branch_T/branch_S formula. No training.
+- Inputs actually used（H100-2 worktree paths）:
+  - `/mnt/songzijun/Capability_Evolution/SCAPE-wt-h100-2/SCAPE/outputs/h100_2_utility_stability/H1004_EXACT_REPLAY_HANDOFF.json`
+  - `/mnt/songzijun/Capability_Evolution/SCAPE-wt-h100-2/SCAPE/outputs/utility_stability/UTILITY_COMMON128_MANIFEST.json`
+  - source H100-2 rows: `/mnt/songzijun/Capability_Evolution/SCAPE-wt-h100-2/SCAPE/outputs/h100_2_utility_stability/UTILITY_COMMON128_RESULTS.jsonl`
+- Important path note：H100-4 doc-stated main paths under `/mnt/songzijun/Capability_Evolution/SCAPE/outputs/...` were missing at run time; the formal artifacts existed under `SCAPE-wt-h100-2/SCAPE/outputs/...`. Other agents should not keep waiting on the main path if the H100-2 handoff points to a worktree output.
+- Scheduling：4 cards only. GPU0 ran SC K2→K4, GPU1 ran IT K2→K4, GPU2 ran VT K2→K4, GPU3 ran same-action replay noise. No GPU job exceeded 4 cards.
+- Scale：3 components (`subtractive_curation`, `importance_tagging`, `verify_tool`) × K={2,4} × 128 queries = 768 utility rows; replay-noise rows=768.
+
+**Artifacts**
+- Output root: `SCAPE-wt-h100-4/SCAPE/outputs/h100_4_utility_exact_replay/`
+- Required outputs present and SHA verified: `EXACT_REPLAY_PER_STATE.csv`, `CROSS_MACHINE_AGREEMENT.json`, `CROSS_MACHINE_AGREEMENT.md`, `REPLAY_NOISE.csv`, `UTILITY_REPRO_DECISION.json`, `RUN_MANIFEST.json`, `SHA256SUMS`.
+- Shards complete: each of 6 utility shard JSONL files has 128 rows; `shards/replay_noise.jsonl` has 768 rows.
+- `sha256sum -c SHA256SUMS` passed after regenerating checksums with absolute output-root paths.
+
+**Results**
+| metric | value |
+|---|---:|
+| n_states | 768 |
+| Pearson | 0.7725874302921338 |
+| Spearman | 0.7795601657192073 |
+| mean absolute difference | 0.017734690358664214 |
+| sign agreement | 0.8684895833333334 |
+| top-k agreement (k=16) | 0.5625 |
+| component ranking exact order match | true |
+| top component match | true |
+| component-mean Spearman | 1.0 |
+
+Component mean ranking matched exactly across machines:
+| rank | H100-2 component | H100-2 mean | H100-4 component | H100-4 mean |
+|---:|---|---:|---|---:|
+| 1 | `verify_tool` | 0.034275959506013004 | `verify_tool` | 0.03415726130444392 |
+| 2 | `importance_tagging` | 0.02709035939710932 | `importance_tagging` | 0.02815882480485213 |
+| 3 | `subtractive_curation` | 0.01346356342368647 | `subtractive_curation` | 0.01496671654327453 |
+
+By-cell weakest reproducibility was `subtractive_curation_K4` (Pearson=0.612418, Spearman=0.590065). Stronger cells include `verify_tool_K2` (Pearson=0.854611) and `subtractive_curation_K2` (Pearson=0.834233).
+
+**Decision / conclusion**
+- Final decision: `MACHINE_SENSITIVE`.
+- Reason: component means/ranking are stable, but per-state Pearson/Spearman/top-k agreement did not satisfy the stricter machine-reproducible threshold.
+- `UTILITY_REPRO_DECISION.json` sets `utility_probe_selector_status="pause_and_investigate"`.
+- Interpretation for other servers/agents: do **not** use Utility Common128 per-state utility as a selector until environment/model/scorer revision/retrieval backend/runtime/floating-point/fork implementation differences are checked. Component-level ranking may be robust enough as a diagnostic, but not as a selector/gate.
+- This run supersedes any assumption that H100-2 utility differences were only split/state-selection artifacts; even exact manifest replay remains machine-sensitive at per-state level.
 
 ### Blocked / intentionally not continued
 | workstream | status | reason |
@@ -117,6 +175,9 @@
 - `scripts/run_h100_3_real_influence_hf.py` now supports `--device auto` and `device_map=auto` for multi-GPU checkpoint loading on nodes where single GPU memory is insufficient.
 - `scripts/run_h100_4_verify_confirm_hf.py` is the independent `verify_tool` confirm runner; `scripts/finalize_h100_4_verify_confirm.py` finalizes natural/targeted/null/decision/handoff reports from completed scorer output.
 - `scripts/finalize_h100_4_auto_populate_diagnostic.py` produces the required auto_populate argument diagnostic from existing real-influence per-state rows without claiming a new GPU rescore.
+- H100-4 Utility Common128 exact replay used H100-2 artifacts that were actually generated under the H100-2 worktree, not the main `SCAPE/outputs` path: `/mnt/songzijun/Capability_Evolution/SCAPE-wt-h100-2/SCAPE/outputs/h100_2_utility_stability/H1004_EXACT_REPLAY_HANDOFF.json` and `/mnt/songzijun/Capability_Evolution/SCAPE-wt-h100-2/SCAPE/outputs/utility_stability/UTILITY_COMMON128_MANIFEST.json`. Other agents should verify real artifact paths before waiting on the doc-stated main path.
+- Exact replay runner/finalizer added in H100-4 worktree: `scripts/run_h100_4_exact_replay.py`, `scripts/finalize_h100_4_exact_replay.py`, `scripts/launch_h1004_exact_replay_wait.sh`. The runner was corrected to match H100-2 `run_h1002_utility_stability_worker.py` static HF continuation utility logic; do not substitute the live-fork runner for this exact replay.
+- H100-4 exact replay final output is `outputs/h100_4_utility_exact_replay/`; required files and `SHA256SUMS` are complete. Decision is `MACHINE_SENSITIVE`, so downstream agents should pause Utility probe as a selector and investigate environment/model/scorer/retrieval/runtime/floating-point/fork differences before using per-state utility selection.
 - Worktree checkout directories (`SCAPE-wt-h100-*`) must remain uncommitted.
 - Outputs/checkpoints/models/indexes/secrets remain uncommitted; this record points other agents to artifact paths under `outputs/`.
 
