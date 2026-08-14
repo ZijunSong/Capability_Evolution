@@ -53,7 +53,9 @@
 | Git/code canonicalization + GitHub sync | **已完成** | snapshot commit `0f0934bd9f7a985af747e18dda9c2c666a9c24ba`；sync branch `sync/h100-20260812` pushed to GitHub at `66047fc5d4f7ee20c3111d90c0fea13f0c44c88e`，后续 0813 sync head `31a05e9e63339d62f5ac78e743ed28ef6effe093` |
 | H100-1 CAL200 historical contribution | **已完成（local BM25 compat）** | 10 组件 n=200 errors=0；保留为历史基线 |
 | H100-1 fresh contribution confirm | **已完成（local BM25 compat / LOCAL_COMPAT_ONLY）** | `outputs/h100_1_contribution_confirm/`；BCP_CONFIRM400 seed1102 n=400；10/10 errors=0；SHA OK |
-| H100-1 graph placement decomposition | **已完成（LOCAL_COMPAT_ONLY）** | `outputs/h100_1_graph_decomp/`；G0/G1/G2/G3/G4 对比显示 `G3` 接近 `G4`，`G2` 保留少数测得 utility，结论为 `Semantic-migratable` |
+| H100-1 graph placement decomposition | **已完成（LOCAL_COMPAT_ONLY）** | `outputs/h100_1_graph_decomp_actual/`；BCP_GRAPH_DECOMP200 seed1114 n=200；G0/G1/G2/G3/G4/G4_FIELD_ORDER_PERTURB；`G3` 接近 `G4`，`G2` 仅保留少数 utility，结论 `Semantic-migratable`；`STATUS_LIVE=complete` |
+| H100-1 renderer dose-response | **已完成（LOCAL_COMPAT_ONLY）** | `outputs/h100_1_graph_renderer_dose/`；GRAPH_RENDER_DOSE400 seed1124 n=400；R0/R1/R2/R3/R4/R5/R6/R7；`student_runtime=R1_GRAPH_STATE_ONLY`，`teacher_view=R2_RENDER24`，`DIRECT_RUNTIME_COMPRESSION_CANDIDATE=true`，`HYBRID_MIGRATION_TARGET_CONFIRMED=false`；`H1001_GRAPH_RENDER_HANDOFF.json` 已写入 `outputs/scape_prestage_v4/` |
+| H100-1 runtime Pareto | **已完成（LOCAL_COMPAT_ONLY）** | `outputs/h100_1_graph_runtime_pareto/`；BCP_GRAPH_PARETO400 seed1125 n=400；`STATE_ONLY_TOO_WEAK`；`G3` 相对 `G4` 的质量差距极小但成本低很多，Pareto knee 落在 `R2/R3` 附近；`GRAPH_PARETO_RESULT.json`、`GRAPH_PARETO_SUMMARY.md` 已产出 |
 | H100-2 independent replication | **已完成（local BM25 compat / LOCAL_COMPAT_ONLY）** | `outputs/h100_2_independent_repl/`；BCP_REPL200_V2 seed2203 n=200；full + 10 LOO + 4 coalition；16/16 errors=0；SHA OK |
 | H100-2 candidate-B utility resolution（旧 short-horizon） | **已完成（LOCAL_COMPAT_ONLY / 已被 live gate 覆盖）** | `outputs/h100_2_candidate_b_utility/`；UTILITY_STATE256 对 3 component × K={2,4}；Candidate B 曾推荐为 `subtractive_curation`，但总体决策为 `Behavior-only`；不得再把 short-horizon utility 当 final success |
 | H100-2 Candidate-B true live fork/replay utility gate | **已完成（7×H100 / HF continuation-logprob / true fork-replay）** | `outputs/h100_2_candidate_b_live_utility/`；UTILITY_LIVE256 seed2214；3 components × K={2,4} × 256 states = 1536 per-state rows；live replay noise 510 rows；SHA OK；decision=`CONDITIONAL_RUNTIME`，ranking=`verify_tool > subtractive_curation > importance_tagging` |
@@ -392,6 +394,43 @@ MICRO_WEAK / attribution-guided 2K retry：**未触发**（无候选处于一 se
 ### H100-3 subtractive attribution addendum
 - output: `outputs/h100_3_subtractive_attribution/`；CPU-only postprocessing；handoff `H1003_SUBTRACTIVE_HANDOFF.json`
 - Conclusion: late-turn heavy, tool-name dominated；H20 handoff remains uniform name+args KL for first pass.
+
+### H100-3 independent KL / scorer verification（0813-2）
+- source instruction: `0813-2/SCAPE-0813-H100-3.md`
+- repo/worktree: `/mnt/songzijun/Capability_Evolution/SCAPE-wt-h100-3` on branch `audit/h1003-independent-kl`
+- script: `SCAPE/scripts/audit_independent_tool_kl.py`
+- environment: `/opt/scape-h1003-hf-scorer/bin/python` with `torch 2.13.0+cu130` and `transformers 5.15.0`
+- inputs: `outputs/h100_3_real_influence_shards/{evidence_graph,subtractive_curation,importance_tagging,verify_tool,chunk_neighbors,auto_populate_first_search,content_dedup}/REAL_INFLUENCE_PER_STATE.jsonl`
+- selection: 256 states per requested task shard, deterministic hash-based sub-sampling, plus 64-state null/manual reference on task 7
+- GPUs: 8-way shard plan, `CUDA_VISIBLE_DEVICES=0..7`; all shard jobs completed and GPU usage returned to idle
+- outputs: `outputs/h100_3_kl_audit/{INDEPENDENT_KL.csv,NULL_TEST.md,MASK_CROSSCHECK.md,H20_METRIC_CROSSCHECK.csv,ROOT_CAUSE_HINT.md,H20_KL_AUDIT_HANDOFF.json}`
+- handoff mirror: `outputs/scape_audit/H1003_KL_AUDIT_HANDOFF.json`
+
+**Results**
+| item | value |
+|---|---:|
+| total rows | 1856 |
+| evidence_graph rows | 832 |
+| subtractive_curation rows | 512 |
+| importance_tagging rows | 256 |
+| verify_tool rows | 256 |
+| min forward KL | 0.0 |
+| min reverse KL | 0.0 |
+| min JS | 0.0 |
+| max torch/manual KL abs diff | 8.881784197001252e-16 |
+| max torch/manual JS abs diff | 2.7755575615628914e-16 |
+
+**Conclusion**
+- The independent scorer check passes non-negativity and matches the manual torch reference to machine precision.
+- The audit uses normalized categorical tool-name distributions and reports canonical KL/JS plus signed gap; do not treat signed gap as a divergence.
+- `H20_METRIC_CROSSCHECK.csv` uses the same-state shard records as the per-state source of `H20_reported_D` proxies; H20 lightweight summary JSON is stage-level only and should not be mistaken for a per-state divergence table.
+- `ROOT_CAUSE_HINT.md` records that if `H20_reported_D` tracks signed gap strongly, it is a signed logprob proxy rather than a mathematical divergence.
+- This finishes the H100-3 KL/scorer verification sub-experiment, but it does **not** imply the full `0813-2` bundle is complete; H100-1, H100-2, H20, and H100-4 still need their own document-driven runs.
+
+**Cross-server / agent notes**
+- Future agents should prefer the worktree script and the merged `outputs/h100_3_kl_audit/` directory over the smoke output.
+- If you need to resume or inspect the audit, start from `H20_KL_AUDIT_HANDOFF.json` and `NULL_TEST.md`.
+- Keep the worktree uncommitted until a deliberate sync/commit is requested.
 
 ---
 
@@ -765,6 +804,57 @@ H100-4 completed its originally selected confirm set. `verify_tool` became H100-
 - `GRAPH_RUNTIME_COST.md` 显示 graph 有非零 state/latency 成本，因此 retirement 若发生，也应优先收缩 renderer/controller。
 - `GRAPH_RENDERER_ROBUSTNESS.md` 未检测到明显 field-order 语义依赖。
 
+### H100-1 renderer dose-response（2026-08-14）
+
+**Setting**
+- 输出：`outputs/h100_1_graph_renderer_dose/`
+- split：`GRAPH_RENDER_DOSE400`
+- seed：1124，n=400
+- variants：`R0_GRAPH_OFF` / `R1_GRAPH_STATE_ONLY` / `R2_RENDER24` / `R3_RENDER48` / `R4_RENDER72` / `R5_RENDER108` / `R6_RENDER144` / `R7_FULL_RENDER`
+- backend：`local_bm25_compat`
+- 标记：`LOCAL_COMPAT_ONLY=true`，`official_chroma_parity=false`，`official_chroma_blocked=true`
+
+**Results**
+| variant | reward | cost | curated | trajectory | final | context tokens | graph bytes | rendered graph tokens |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| R0_GRAPH_OFF | 0.019129 | 189.943 | 0.013684 | 0.027047 | 0.008000 | 0.000 | 0.000 | 0.000 |
+| R1_GRAPH_STATE_ONLY | 0.021400 | 227.838 | 0.015517 | 0.030261 | 0.008000 | 0.000 | 146.948 | 0.000 |
+| R2_RENDER24 | 0.023735 | 227.838 | 0.017121 | 0.033220 | 0.008000 | 24.000 | 146.948 | 24.000 |
+| R3_RENDER48 | 0.025038 | 227.838 | 0.018103 | 0.033845 | 0.008000 | 48.000 | 146.948 | 48.000 |
+| R4_RENDER72 | 0.025440 | 227.838 | 0.018103 | 0.033845 | 0.008000 | 72.000 | 146.948 | 72.000 |
+| R5_RENDER108 | 0.025854 | 227.838 | 0.018103 | 0.034202 | 0.008000 | 108.000 | 146.948 | 108.000 |
+| R6_RENDER144 | 0.026153 | 227.838 | 0.018103 | 0.034452 | 0.008000 | 135.608 | 146.948 | 135.608 |
+| R7_FULL_RENDER | 0.026323 | 227.838 | 0.018103 | 0.034452 | 0.008000 | 293.128 | 146.948 | 293.128 |
+
+**Conclusion**
+- renderer dose-response 显示质量随预算递增，但收益在 `R3-R4` 之后明显变缓。
+- `student_runtime=R1_GRAPH_STATE_ONLY`，`teacher_view=R2_RENDER24`。
+- `DIRECT_RUNTIME_COMPRESSION_CANDIDATE=true`，但 `HYBRID_MIGRATION_TARGET_CONFIRMED=false`，说明当前更像 runtime compression knee 而不是明确的 hybrid migration boundary。
+- `H1001_GRAPH_RENDER_HANDOFF.json` 已写入 `outputs/scape_prestage_v4/`。
+
+### H100-1 runtime Pareto（2026-08-14）
+
+**Setting**
+- 输出：`outputs/h100_1_graph_runtime_pareto/`
+- split：`BCP_GRAPH_PARETO400`
+- seed：1125，n=400
+- variants：`G1_GRAPH_OFF` / `G2_GRAPH_STATE_ONLY` / `G3_GRAPH_STATE_PLUS_MINIMAL_RENDER` / `G4_GRAPH_FULL_RENDER`
+- backend：`local_bm25_compat`
+- 标记：`LOCAL_COMPAT_ONLY=true`，`official_chroma_parity=false`
+
+**Results**
+| variant | reward | cost | curated | trajectory | final | context tokens | graph bytes | rendered graph tokens |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| G1_GRAPH_OFF | 0.019129 | 189.943 | 0.013684 | 0.027047 | 0.008000 | 0.000 | 0.000 | 0.000 |
+| G2_GRAPH_STATE_ONLY | 0.021400 | 227.838 | 0.015517 | 0.030261 | 0.008000 | 0.000 | 146.948 | 0.000 |
+| G3_GRAPH_STATE_PLUS_MINIMAL_RENDER | 0.022143 | 413.237 | 0.016499 | 0.030931 | 0.008000 | 85.670 | 441.572 | 85.670 |
+| G4_GRAPH_FULL_RENDER | 0.022284 | 1361.942 | 0.016499 | 0.031243 | 0.008000 | 211.697 | 848.895 | 211.697 |
+
+**Conclusion**
+- `STATE_ONLY_TOO_WEAK`。
+- `G3` 相对 `G4` 的质量差距极小，但 runtime 成本低很多，说明最优点更接近 minimal render，而不是 full render。
+- `GRAPH_PARETO_RESULT.json`、`GRAPH_PARETO_SUMMARY.md`、`MINIMAL_RENDER_DECISION.json`、`GRAPH_HYBRID_TARGET.md` 已产出。
+
 ### H100-2 setting
 - Run id: `h100_2_replication_coalition_20260811`
 - Env: `/opt/vllm-qwen3-1.7b/bin/python`；Python 3.12.13；torch 2.11.0+cu130；vLLM 0.25.1；8×H100
@@ -972,3 +1062,342 @@ H100-4 completed its originally selected confirm set. `verify_tool` became H100-
 - `H20_LOSS_RECOMMENDATION.md` keeps first-run H20 V0 as **uniform name+args tool-token KL**.
 - Follow-up weighting suggestions: `evidence_graph` name medium / args high; `importance_tagging` name high / args medium; `verify_tool` name medium / args high.
 - This is for later ablations only; it does not override the initial uniform loss.
+
+---
+
+## 2026-08-14 SCAPE 0814-1 five-machine next-round final
+
+> 覆盖 `/mnt/songzijun/Capability_Evolution/SCAPE/0814-1/SCAPE-0813-Next-五机协调.md`、`SCAPE-0813-Next-H20.md`、`SCAPE-0813-Next-H100-1.md`、`SCAPE-0813-Next-H100-2.md`、`SCAPE-0813-Next-H100-3.md`、`SCAPE-0813-Next-H100-4.md`。
+> 状态：**本轮完成到可收口状态**：五机职责均有正式产物或明确 blocker；总报告为 `completed_with_documented_blockers`。
+> 总报告：`outputs/0813_next_h20/SCAPE_0814_1_FIVE_MACHINE_FINAL_REPORT.{json,md}`。
+
+### Global setting / constraints
+
+- Coordination root: `/mnt/songzijun/Capability_Evolution/SCAPE/0814-1/`
+- Canonical H20 repo: `/mnt/songzijun/Capability_Evolution/SCAPE`
+- H100 worktrees:
+  - H100-1: `/mnt/songzijun/Capability_Evolution/SCAPE-wt-h100-1/SCAPE`
+  - H100-2: `/mnt/songzijun/Capability_Evolution/SCAPE-wt-h100-2/SCAPE`
+  - H100-3: `/mnt/songzijun/Capability_Evolution/SCAPE-wt-h100-3/SCAPE`
+  - H100-4: `/mnt/songzijun/Capability_Evolution/SCAPE-wt-h100-4/SCAPE`
+- Model/scorer used for H100 live/fork/value probes: local Harness-1 path `/mnt/songzijun/models/harness-1`; HF continuation-logprob scorer.
+- GPU Python used for new H100 runs: `/opt/vllm-qwen3-1.7b-harness/bin/python` (`torch 2.10.0+cu128`, `vllm 0.19.1`, CUDA available).
+- Retrieval backend: `local_bm25_compat` / BrowseComp-Plus BM25 index. **Official Chroma parity remains blocked**.
+- Official Chroma preflight checked once only; no polling:
+  - `OPENAI_API_KEY`: missing
+  - `CHROMA_API_KEY`: missing
+  - `CHROMA_DATABASE`: missing
+  - Therefore `OFFICIAL_CHROMA_BLOCKED=true`, `official_chroma_parity=false`, `LOCAL_COMPAT_ONLY=true`.
+- No training was launched on H100-1/2/3/4 for this 0814-1 round. H20 did not launch new training after the metric barrier/blocker decision.
+
+### Five-machine status board
+
+| machine | main 0814-1 role | status / decision | key output |
+|---|---|---|---|
+| H20 | Gate-L metric audit → existing ckpt re-eval → conditional Graph-Hybrid | `BLOCKED_BY_METRIC_BUG` | `outputs/0813_next_h20/` |
+| H100-1 | Evidence-Graph renderer dose-response + runtime Pareto | `complete` | `SCAPE-wt-h100-1/SCAPE/outputs/h100_1_graph_renderer_dose/` |
+| H100-2 | SC/IT/VT long-horizon live fork/replay advantage | `CONDITIONAL_RUNTIME` | `SCAPE-wt-h100-2/SCAPE/outputs/h100_2_long_horizon_advantage/` |
+| H100-3 | 7-component advantage-conditioned value-of-influence map | `VALUE_OF_INFLUENCE_MAP_READY` | `SCAPE-wt-h100-3/SCAPE/outputs/h100_3_advantage_conditioned_influence/` |
+| H100-4 | Independent Learnability Metric Audit / Gate-L revalidation | `complete_with_missing_artifact_record`; recommended action `FIX_METRIC_IMPLEMENTATION_FIRST` | `outputs/scape_prestage_v4/H1004_LEARNABILITY_AUDIT_HANDOFF.json` |
+
+### H20 — Metric V2 / Gate-L decision
+
+**Setting**
+- Output root: `outputs/0813_next_h20/`
+- Main files:
+  - `NEXT_DECISION.json`
+  - `LEARNABILITY_GATE_V2.md`
+  - `OLD_GATE_REINTERPRETATION.md`
+  - `H20_METRIC_CONTRACT_V2.md`
+- Purpose: audit whether old `d_pre/d_post` were true KL/JS and whether Gate-L was measuring learnability correctly before launching new training.
+
+**Result**
+- `NEXT_DECISION.json`:
+  - `decision = BLOCKED_BY_METRIC_BUG`
+  - `metric_contract_valid = true`
+  - `legacy_gate_bug = true`
+- `LEARNABILITY_GATE_V2.md` records:
+  - canonical KL / JS metrics are valid;
+  - legacy gate metric is a signed gap, not true divergence;
+  - mask audit passed;
+  - direct replay of the 0814-1 H20 audit is blocked by local pyserini/JVM and missing historical `hf_merged` checkpoint structure.
+
+**Conclusion / action**
+- Do **not** call legacy signed `d_*` KL/JS.
+- Do **not** launch more 8K rescue training until Gate-L metric implementation is fixed.
+- Current H20 path is `FIX_METRIC_IMPLEMENTATION_FIRST`; use canonical metric audits and completed lightweight fallback outputs for decision-making.
+
+### H100-1 — Graph renderer dose-response / runtime Pareto
+
+**Setting**
+- Output root: `SCAPE-wt-h100-1/SCAPE/outputs/h100_1_graph_renderer_dose/`
+- Split: `GRAPH_RENDER_DOSE400`, seed `1124`, n=400.
+- Conditions:
+  - R0 `GRAPH_OFF`
+  - R1 `GRAPH_STATE_ONLY`
+  - R2 `STATE + render24`
+  - R3 `render48`
+  - R4 `render72`
+  - R5 `render108`
+  - R6 `render144`
+  - R7 `FULL_RENDER`
+- This is a no-training runtime/renderer experiment; local BM25 compatibility only.
+
+**Artifacts**
+- `RUN_MANIFEST.json`
+- `STATUS_LIVE.md` (`n_finished=8`, `errors=0`)
+- `GRAPH_RENDER_DOSE_PER_QUERY.jsonl`
+- `GRAPH_RENDER_DOSE_SUMMARY.csv`
+- `GRAPH_RENDER_ADJACENT_INFLUENCE.csv`
+- `GRAPH_RENDER_ADJACENT_INFLUENCE_SAMPLES.jsonl`
+- `GRAPH_RENDER_PARETO.csv`
+- `GRAPH_RENDER_PARETO.md`
+- `GRAPH_HYBRID_TARGET.md`
+- `H1001_GRAPH_RENDER_HANDOFF.json`
+- `SHA256SUMS`
+- Handoff copied to `SCAPE-wt-h100-1/SCAPE/outputs/scape_prestage_v4/H1001_GRAPH_RENDER_HANDOFF.json` and H20 summary directory.
+
+**Result**
+- Handoff:
+  - `student_runtime = R1_GRAPH_STATE_ONLY`
+  - `teacher_view = R2_RENDER24`
+  - `renderer_knee = R2_RENDER24`
+  - `renderer_budget = 24`
+  - `DIRECT_RUNTIME_COMPRESSION_CANDIDATE = true`
+  - `HYBRID_MIGRATION_TARGET_CONFIRMED = false`
+
+**Conclusion**
+- Minimal 24-token render is enough for the current measured runtime/Pareto target; the immediate result is runtime compression rather than proof that this component should be fully internalized into weights.
+- H20 Graph-Hybrid should not assume full evidence-graph removal; use `R1_GRAPH_STATE_ONLY <- R2_RENDER24` as the narrow handoff target if/when metric implementation is fixed.
+
+### H100-2 — Long-horizon Candidate-B live fork/replay advantage
+
+**Setting**
+- Output root: `SCAPE-wt-h100-2/SCAPE/outputs/h100_2_long_horizon_advantage/`
+- Split: `ADV_LIVE256`, seed `2224`.
+- Components:
+  - `verify_tool`
+  - `subtractive_curation`
+  - `importance_tagging`
+- Contract:
+  - same `xi_t` sampled under `H_-m`;
+  - Branch S executes reduced/student action `a_S`;
+  - Branch T executes full-view teacher first action `a_T`;
+  - both branches continue with the same reduced-view continuation policy;
+  - no full-harness takeover;
+  - no training.
+- Horizons:
+  - K=4
+  - K=8
+  - same-action replay noise
+  - terminal / top128 confirm
+
+**Artifacts**
+- `RUN_MANIFEST.json`
+- `STATUS_LIVE.md` (`n_finished=3`, `errors=0`)
+- `ADVANTAGE_PER_STATE.jsonl` (3456 rows)
+- `ADVANTAGE_BY_COMPONENT_HORIZON.csv` (6 rows)
+- `ADVANTAGE_BY_INFLUENCE_QUANTILE.csv` (12 rows)
+- `REPLAY_NOISE.md`
+- `CANDIDATE_B_VALUE_RESOLUTION.md`
+- `H1002_ADVANTAGE_HANDOFF.json`
+- `H1002_UNIFIED_RECORD_AUDIT.{json,md}`
+- `SHA256SUMS`
+- Handoff: `SCAPE-wt-h100-2/SCAPE/outputs/scape_prestage_v4/H1002_ADVANTAGE_HANDOFF.json`
+
+**Result**
+- Overall:
+  - `decision = CONDITIONAL_RUNTIME`
+  - overall mean K4/K8 utility = `-0.002559`
+  - overall mean terminal utility = `0.104727`
+  - overall mean replay noise = `0.000000`
+- Per component:
+  - `importance_tagging`: K4=`-0.006797`, K8=`-0.008555`, terminal=`0.114844`
+  - `subtractive_curation`: K4=`-0.002285`, K8=`-0.004043`, terminal=`0.094336`
+  - `verify_tool`: K4=`0.003457`, K8=`0.002871`, terminal=`0.105000`
+
+**Conclusion**
+- Do **not** write “Candidate B frozen”.
+- `verify_tool` has small positive K4/K8 and positive terminal top128, but near-zero/CI-crossing behavior means it is a conditional runtime/value signal, not a direct migration target.
+- `importance_tagging` and `subtractive_curation` are negative at K4/K8 but positive among terminal top128; interpret as event-conditional, not broad supervision value.
+
+### H100-3 — Advantage-conditioned value-of-influence map
+
+**Setting**
+- Source instruction: `/mnt/songzijun/Capability_Evolution/SCAPE/0814-1/SCAPE-0813-Next-H100-3.md` under the five-machine coordination file `SCAPE-0813-Next-五机协调.md`.
+- Repo/worktree: `/mnt/songzijun/Capability_Evolution/SCAPE-wt-h100-3/SCAPE` on branch `audit/h1003-independent-kl`.
+- Output root: `SCAPE-wt-h100-3/SCAPE/outputs/h100_3_advantage_conditioned_influence/`.
+- Handoff mirror: `SCAPE-wt-h100-3/SCAPE/outputs/scape_prestage_v4/H1003_VALUE_OF_INFLUENCE_HANDOFF.json`.
+- Split: `VAI_K4_7COMP128`, seed `3324`.
+- Components, one logical shard each:
+  - `evidence_graph`
+  - `verify_tool`
+  - `importance_tagging`
+  - `subtractive_curation`
+  - `content_dedup`
+  - `chunk_neighbors`
+  - `auto_populate_first_search`
+- Contract:
+  - same `xi_t` / same-environment state when candidate-bearing states exist;
+  - Branch S executes reduced/student action `a_S`;
+  - Branch T executes full-view teacher first action `a_T`;
+  - both branches continue K=4 steps with the same reduced-view continuation policy;
+  - no full-harness takeover;
+  - no training / no weight update;
+  - `LOCAL_COMPAT_ONLY=true`, `official_chroma_parity=false`.
+- Environment/ops notes:
+  - `/mnt/songzijun/CLAUDE.md` was consulted for the `/opt` GPU-heavy env rule, Chroma credential rule, and no-token-printing/no-reset hygiene.
+  - Existing final manifest was produced with an `/opt` H100 scorer/harness env; current host has `/opt/scape-h1003-hf-scorer/bin/python` usable for lightweight aggregation but lacks system Java/pyserini runtime for fresh BM25 fork reruns.
+  - Official Chroma remains blocked by missing `OPENAI_API_KEY`, `CHROMA_API_KEY`, `CHROMA_DATABASE`; do not poll repeatedly and do not relabel BM25/HF results as official Chroma parity.
+
+**Artifacts**
+- `RUN_MANIFEST.json`
+- `STATUS_LIVE.md` (`n_expected=7`, `n_finished=7`, `errors=0`)
+- `VALUE_OF_INFLUENCE_PER_STATE.jsonl` (**896 rows = 7 components × 128 states**)
+- `VALUE_OF_INFLUENCE_BY_COMPONENT.csv` (7 data rows + header)
+- `VALUE_OF_INFLUENCE_BY_QUANTILE.csv` (28 data rows + header; includes four quantile buckets per component, with zero-signal chunk buckets preserved)
+- `INFLUENCE_ADVANTAGE_CORRELATION.md`
+- `PRESTAGE_FAILURE_EXPLANATION.md`
+- `H1003_VALUE_OF_INFLUENCE_HANDOFF.json`
+- component subdirs: each has `RUN_MANIFEST.json`, `STATUS_LIVE.md`, `COMPONENT_SUMMARY.json`, `VALUE_OF_INFLUENCE_PER_STATE.jsonl`, `SHA256SUMS`
+- root `SHA256SUMS` verified OK after the chunk-neighbors repair and component-summary classification sync.
+
+**Results**
+| component | n | mean I | mean advantage | class | note |
+|---|---:|---:|---:|---|---|
+| `evidence_graph` | 128 | 1.000000 | -0.050391 | `HIGH_I_LOW_A` | high influence, negative downstream value in K4 breadth probe |
+| `verify_tool` | 128 | 1.000000 | -0.002813 | `HIGH_I_LOW_A` | high influence but not broad positive value here; compare H100-2 long-horizon conditional-runtime result |
+| `importance_tagging` | 128 | 1.000000 | -0.005391 | `HIGH_I_LOW_A` | high influence but negative K4 breadth value |
+| `subtractive_curation` | 128 | 1.000000 | +0.003750 | `HIGH_I_HIGH_A` | mild positive breadth signal; does not override H20 gate |
+| `content_dedup` | 128 | 1.000000 | -0.004219 | `RUNTIME_CONTROL` | runtime/control, not migration candidate |
+| `chunk_neighbors` | 128 | 0.000000 | 0.000000 | `RUNTIME_CONTROL` | true zero-signal distribution preserved from real influence snapshot |
+| `auto_populate_first_search` | 128 | 1.000000 | +0.012305 | `HIGH_I_HIGH_A` | positive breadth signal but argument-side concerns from prior H100-4 diagnostic remain |
+
+**Important repair / audit note**
+- Initial H100-3 value-of-influence aggregation had `chunk_neighbors` at `0/128` rows while still marking the run completed. That was insufficient for the H100-3 instruction, which explicitly says to preserve the true 0-signal distribution for components like `chunk_neighbors` rather than selecting only positive states.
+- Repair performed on 2026-08-14:
+  - source snapshot: `/mnt/songzijun/Capability_Evolution/SCAPE/outputs/h100_3_real_influence/shards/chunk_neighbors/REAL_INFLUENCE_PER_STATE.jsonl`;
+  - selected 128 real zero-signal rows;
+  - wrote same-action / zero-advantage diagnostic rows with `runner=h1003_value_of_influence_k4_zero_signal_from_real_snapshot`;
+  - regenerated aggregate JSONL/CSV/MD/handoff and SHA256SUMS;
+  - synchronized each component `COMPONENT_SUMMARY.json` classification with the aggregate CSV.
+- The final row count is now `896`, not `768`; downstream agents should ignore any older cached summary that says `chunk_neighbors n=0` for this 0814-1 H100-3 value map.
+
+**Conclusion**
+- This directly supports the five-machine diagnosis: Influence alone is a policy-effect measure, not a sufficient supervision-value proxy.
+- `evidence_graph`, `verify_tool`, and `importance_tagging` are high-influence but low/negative-advantage under this K4 breadth value probe (`HIGH_I_LOW_A`). This explains why the old Contribution+Influence pre-stage could fail to predict H20 learnability/retirement.
+- `subtractive_curation` and `auto_populate_first_search` are positive in this breadth map, but this does **not** override H20 learnability gates or H100-2 long-horizon/value classification.
+- `content_dedup` and `chunk_neighbors` remain runtime controls. `chunk_neighbors` now correctly documents a true zero-signal/zero-advantage distribution rather than missing data.
+- H20 handoff classification should treat H100-3 as a diagnostic value map only: do not freeze Candidate B or launch Stage S from H100-3 influence/advantage alone.
+
+**Cross-server / agent notes**
+- Read `SCAPE-wt-h100-3/SCAPE/outputs/h100_3_advantage_conditioned_influence/H1003_VALUE_OF_INFLUENCE_HANDOFF.json` for machine-readable classifications.
+- Use `VALUE_OF_INFLUENCE_PER_STATE.jsonl` only after confirming it has 896 lines.
+- If another agent reruns fresh BM25 fork/replay, first restore a Java/pyserini-compatible `/opt` env; this host's `/opt/scape-h1003-hf-scorer` currently lacks a working JVM path for `pyserini`.
+- Keep H100 worktree changes uncommitted unless explicitly asked; check `git status --short --branch` before any sync. Do not reset or checkout over user changes.
+- Heavy outputs/checkpoints remain uncommitted; result-record and scripts should be synced deliberately if needed.
+
+### H100-4 — Independent metric audit / Gate-L revalidation
+
+**Setting / artifacts**
+- Canonical handoff: `outputs/scape_prestage_v4/H1004_LEARNABILITY_AUDIT_HANDOFF.json`
+- Also present: `outputs/scape_prestage_v4/H1004_LEARNABILITY_AUDIT_HANDOFF.md`, `SHA256SUMS`.
+- Purpose: independent revalidation of metric contract and old Gate-L behavior.
+
+**Result**
+- `recommended_h20_action = FIX_METRIC_IMPLEMENTATION_FIRST`
+- Audited rows: 16, ok rows: 16.
+- Controls:
+  - same-model/same-view KL=0, CE=0
+  - perturbed logits KL≈0.18098, CE≈1.82793
+- Component audit available for:
+  - `subtractive_curation`: PASS under available rows
+  - `importance_tagging`: PASS under available rows
+- Missing artifact records explicitly include expected Stage-L summaries for some H20/legacy paths; `evidence_graph` and `verify_tool` reported as `MISSING_ARTIFACT` in the H100-4 handoff.
+
+**Conclusion**
+- H100-4 does not provide a clean “all old Gate FAIL confirmed” because several expected artifacts are missing, but it independently supports the immediate global action: **fix metric implementation first**.
+- Do not substitute other checkpoints for missing artifacts.
+
+### Cross-machine barriers / Go-No-Go
+
+**Barrier 1: Metric V2 / independent audit**
+- Resolved as: `FIX_METRIC_IMPLEMENTATION_FIRST` / metric bug or signed-gap reinterpretation.
+- H20: `legacy_gate_bug=true`, `BLOCKED_BY_METRIC_BUG`.
+- H100-4: recommends `FIX_METRIC_IMPLEMENTATION_FIRST`; missing artifacts are explicitly documented.
+- Action: no new H20 training until Gate-L metric implementation is corrected and old signed gaps are no longer treated as KL/JS.
+
+**Barrier 2: Graph renderer handoff**
+- Resolved by H100-1:
+  - `R1_GRAPH_STATE_ONLY <- R2_RENDER24`
+  - `DIRECT_RUNTIME_COMPRESSION_CANDIDATE=true`
+- Action: if Graph-Hybrid resumes after metric fix, use narrow renderer/controller target rather than full evidence_graph removal.
+
+**Coordination ending conditions satisfied**
+- A. original Gate-L measurement bug / metric issue confirmed or corrected path identified: **true**.
+- B. original fail independently revalidated enough to block blind training: **true**, with documented H100-4 missing-artifact caveat.
+- E. influence vs downstream advantage quantified: **true** via H100-2 + H100-3.
+
+### No-Go compliance / do not repeat
+
+Do **not** run or claim:
+- Evidence Graph full-removal third rescue.
+- SC/IT/VT blind uniform 8K expansion.
+- Candidate-B freeze from influence or short-horizon proxy alone.
+- Multi-component annealing before a single-component/hybrid Stage-S positive.
+- Official Chroma parity while `OPENAI_API_KEY`, `CHROMA_API_KEY`, and `CHROMA_DATABASE` are missing.
+- Local BM25/HF same-state evidence as official Harness-1 Chroma Cloud reproduction.
+
+### Operational notes for other servers / agents
+
+- Latest total coordination report:
+  - `outputs/0813_next_h20/SCAPE_0814_1_FIVE_MACHINE_FINAL_REPORT.json`
+  - `outputs/0813_next_h20/SCAPE_0814_1_FIVE_MACHINE_FINAL_REPORT.md`
+- H100-2 and H100-3 scripts added in worktrees:
+  - `SCAPE-wt-h100-2/SCAPE/scripts/run_h1002_long_horizon_advantage.py`
+  - `SCAPE-wt-h100-2/SCAPE/scripts/finalize_h1002_long_horizon_advantage.py`
+  - `SCAPE-wt-h100-3/SCAPE/scripts/run_h1003_value_of_influence.py`
+- H100 worktrees are dirty; do not reset/checkout over user changes. Check `git status --short --branch` before syncing or committing.
+- If syncing to GitHub, follow `/mnt/songzijun/CLAUDE.md`: only fetch/ff-only pull, only stage target files, use temporary `GIT_ASKPASS` with token from `/mnt/songzijun/mify_api.env`; do not put tokens in remote URL/CLI/logs.
+- At final check, no SCAPE experiment processes were running and GPU0–7 were idle (~1 MiB used, util 0).
+
+### Final decision for next round
+
+`FIX_METRIC_IMPLEMENTATION_FIRST_THEN_USE_H1001_RUNTIME_COMPRESSION_AND_H1002_H1003_VALUE_MAP`.
+
+In plain terms: fix Gate-L metric implementation first; then, if resuming H20, use H100-1's narrow graph renderer target and treat H100-2/H100-3 as value diagnostics. Do not launch additional rescue training or freeze Candidate B from influence alone.
+
+---
+
+## 2026-08-14 SCAPE 0814-1 follow-up addendum
+
+### Setting / env notes
+- H100-4 worktree inspected: `/mnt/songzijun/Capability_Evolution/SCAPE-wt-h100-4/SCAPE`.
+- GPU-heavy Python for H100/H20 audits must stay under `/opt`; on this host `/opt/scape-hf-scorer/bin/python` is usable for the audit/aggregation path.
+- Verified packages in that `/opt` env: `torch`, `transformers`, `accelerate` available; `peft` is absent, but the completed audit path did not require it.
+- Official Chroma remains blocked by missing credentials (`OPENAI_API_KEY`, `CHROMA_API_KEY`, `CHROMA_DATABASE`); continue local/HF-compatible mechanism work only and do not poll repeatedly.
+
+### Latest H100-4 cross-node audit
+- Independent learnability audit completed in `SCAPE/audit/learnability-metric-20260813/`.
+- Canonical outputs there: `RUN_MANIFEST.json`, `STATUS_LIVE.md`, `PER_CHECKPOINT_METRICS.csv`, `PER_CHECKPOINT_METRICS.json`, `H20_OLD_VS_H1004_NEW.csv`, `GATE_L_REVALIDATION.md`, `INDEPENDENT_METRIC_IMPLEMENTATION.md`.
+- Audit verdict: `metric_contract_valid=false`, `old_gate_bug=false`, `recommended_h20_action=FIX_METRIC_IMPLEMENTATION_FIRST`.
+- Audit scope: 16 audited rows, 16 audited-ok rows, 20 missing artifacts explicitly recorded.
+- Important: this is an independent revalidation, but it is **not** a clean all-clear; missing stage-L artifacts remain part of the documented blocker.
+
+### Latest H100-4 confirm / utility status
+- `verify_tool` follow-up confirm is complete and independent: decision `CONFIRMED`, natural states 2048, targeted states 512, `recommend_candidate_b=true`.
+- H100-4 Candidate-B utility confirm is also complete: decision `IMPORTANCE_OVERTAKES` on `B_UTILITY_CONFIRM128`.
+- H100-2 live fork/replay utility remains the broader signal for B-side interpretation: `CONDITIONAL_RUNTIME`, with `verify_tool` as the strongest live conditional-runtime challenger.
+- H100-4 B-utility handoff: `outputs/scape_prestage_v3/H1004_B_UTILITY_HANDOFF.json`.
+- H100-4 verify handoff: `outputs/scape_prestage_v4/H1004_VERIFY_HANDOFF.json`.
+
+### H20 implications
+- H20 true-SCAPE evidence_graph Stage L remains `CURRENTLY_NOT_LEARNABLE`.
+- Stage S / retirement remains blocked until metric implementation is fixed or the gate is otherwise redefined with a valid contract.
+- The correct next move is still `FIX_METRIC_IMPLEMENTATION_FIRST`; only after that should Gate L be retried before any new rescue training.
+
+### Other agent-facing notes
+- No GPU jobs were active during inspection.
+- For cross-server handoff, the most useful pointers are the main-repo audit directory above plus `outputs/0813_next_h20/H1004_LEARNABILITY_AUDIT_HANDOFF.json`.
+- Do not treat the worktree-local copies as the source of truth for the final audit status; the canonical summary lives in the main repo audit directory and the H20 handoff file.
+
