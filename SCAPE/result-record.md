@@ -6,16 +6,32 @@
 
 ---
 
-## 本轮总览（更新于 2026-08-13 晚）
+## 本轮总览（更新于 2026-08-14 早）
 
-### Setting（双线）
+### Setting（双线 + 0814 主线）
 | 线 | 机器 / repo | model | retrieval | Candidate A/B |
 |---|---|---|---|---|
-| **H20 true-SCAPE（主线）** | 8×H20；`/data/ppnm/Capability_Evolution/SCAPE` | `pat-jj/harness-1`（local `/data/ppnm/models/harness-1`） | local_bm25_compat | A=`evidence_graph`（L **FAIL**）；B=**未冻结**（三候选 micro tournament 全 **MICRO_FAIL**） |
+| **H20 0813_next_h20（当前主线）** | 8×H20；`/data/ppnm/Capability_Evolution/SCAPE` commit `484cd1e2` | `pat-jj/harness-1`（local `/data/ppnm/models/harness-1`） | local_bm25_compat | Metric V2 audit **完成**；Graph-Hybrid micro **FAIL** → **`PLACEMENT_BOUNDARY_RESULT`** |
+| **H20 true-SCAPE（0813 旧主线，已归档结论）** | 同上 | 同上 | local_bm25_compat | A=`evidence_graph` L **FAIL**；B 三候选 micro **全 FAIL** |
 | **H20 provisional（已归档）** | 同上 | Qwen2.5-7B-Instruct | BM25 provisional | A=`auto_populate_first_search`；B=`verify_tool` |
-| **H100** | 8×H100；`/mnt/songzijun/Capability_Evolution/SCAPE` + worktrees `SCAPE-wt-h100-*` | `pat-jj/harness-1`（HF continuation-logprob scorer；vLLM smoke 已通过） | local BM25 compat / HF same-state scorer（官方 Chroma 阻塞） | A=`evidence_graph`；B 未冻结；H100-2 utility 推荐 `subtractive_curation` 但 H20 learnability 未过 |
+| **H100** | 8×H100；`/mnt/songzijun/Capability_Evolution/SCAPE` + worktrees | `pat-jj/harness-1`（HF scorer） | local compat（官方 Chroma 阻塞） | A=`evidence_graph`；B 未冻结；**H100 utility/influence 不得覆盖 H20 learnability gate** |
 
-### 进度板 — H20 true-SCAPE evidence_graph（0813 主线）
+### 进度板 — H20 0813_next_h20（`SCAPE-0813-Next-H20.md` + `0814-1/五机协调.md`）
+| 阶段 | 状态 | 结论 / 产物 |
+|---|---|---|
+| Preflight + Metric V2 代码 | **已完成** | `scape/eval/learnability_metrics_v2.py`；`tests/test_learnability_metrics_v2.py`（C0–C4 **PASS**）；`scripts/rescore_existing_stage_l_v2.py` |
+| Phase A：legacy checkpoint V2 重评（无新训练） | **已完成** | 29 ckpt rescored；**0 V2 PASS**；`outputs/0813_next_h20/phase_a/RESCORE_V2.csv` |
+| Phase A：独立 crosscheck（GPU7） | **已完成** | gap_match=1.0；forward_KL_nonneg=1.0；`phase_a/INDEPENDENT_METRIC_CHECK.md` |
+| Phase A：learnability_audit 先验 | **已完成（引用）** | `outputs/learnability_audit/`；legacy `div` = signed_gap（**METRIC_NAMING_BUG**） |
+| Phase A.5：已有 ckpt Stage S | **跳过** | 无 V2 PASS candidate |
+| Phase B：Graph-Hybrid 数据 V2/V3 | **已完成** | `graph_hybrid/data/GH_TRAIN_8K` / `VALID_1K` / `TEST_1K`；query-disjoint |
+| Phase B：Graph-Hybrid micro（8 卡 × 11 cells） | **已完成** | **0/11 V2 PASS**；name-only 两 seed 均 FAIL |
+| Phase B：Graph-Hybrid Stage S 四格 | **未运行** | 无 micro gate pass；见 `GRAPH_HYBRID_STAGE_S.md` |
+| Phase C：Clean mechanism（gpt-oss-20b + public SFT） | **未启动** | Hybrid FAIL 后条件触发；见 `CLEAN_SETTING_STATUS.md` |
+| 决策产物 | **已完成** | `NEXT_DECISION.json` → **`PLACEMENT_BOUNDARY_RESULT`**；`SHA256SUMS`；`STATUS_LIVE.md` |
+| GPU 实验进程 | **空闲** | 0813_next_h20 全流程结束；monitor 已停 |
+
+### 进度板 — H20 true-SCAPE evidence_graph（0813 主线，结论已并入 V2 确认）
 | 阶段 | 状态 | 结论 / 产物 |
 |---|---|---|
 | Canonical pipeline + pytest | **已完成** | 16 passed；`legacy_scope_path_used=false` |
@@ -66,12 +82,13 @@
 | 官方 BrowseComp+ Chroma eval / parity | **阻塞** | 缺 `OPENAI_API_KEY` / `CHROMA_API_KEY` / `CHROMA_DATABASE`；不可用 local/HF evidence 冒充 official Chroma |
 
 ### 结论（一句话）
-- **H20 true-SCAPE A-side**：`evidence_graph` 在 harness-1 + same-state tool-token KL 下 **Gate L 双次 FAIL**（uniform → weighted retry）→ **`CURRENTLY_NOT_LEARNABLE`**；停止 Evidence Graph full migration。
-- **H20 true-SCAPE B-side**：`subtractive_curation` / `importance_tagging` / `verify_tool` 统一 micro tournament **三候选全 MICRO_FAIL** → **Candidate B 未冻结**；Contribution–Influence–Utility **仍未能预测** same-state tool-token OPD learnability。
-- **H20 provisional**：LOCAL_CAL64 + BM25+Qwen 下 A/B **不可 retirement**（Gate S FAIL）；已归档。
-- **H100**：fresh contribution + replication + real influence + H100-4 confirm + H100-4 B-utility independent confirm + H100-2 true live fork/replay utility gate 已齐；Candidate A=`evidence_graph`。B-side H100-2 live gate（UTILITY_LIVE256）判定 `CONDITIONAL_RUNTIME`：`verify_tool` live utility 为正且 K2/K4 一致；H100-4 `B_UTILITY_CONFIRM128` 判定 `IMPORTANCE_OVERTAKES`。**以上 H100 utility/influence 均不能覆盖** H20 learnability micro gate（三候选 MICRO_FAIL）。官方 Chroma 仍阻塞，所有 local/HF 结果标注 `LOCAL_COMPAT_ONLY`。
+- **H20 0813_next_h20（最新）**：Learnability **Metric V2 有效**（C0–C4 PASS）；旧 Gate-L 的 `d_pre/d_post` 为 **signed logprob gap（METRIC_NAMING_BUG）**，非 KL。29 个 legacy checkpoint **V2 全 FAIL**；Graph-Hybrid（V2 student / V3 teacher）micro **11 cell 全 FAIL** → **`PLACEMENT_BOUNDARY_RESULT`**：停止 published-checkpoint full-component / hybrid weight migration；转向 placement boundary / hybrid runtime 叙事。Clean setting（gpt-oss-20b）**未启动**。
+- **H20 true-SCAPE A-side**：`evidence_graph` Gate L 双次 FAIL → V2 重评确认 FAIL；停止 full migration。
+- **H20 true-SCAPE B-side**：SC/IT/VT micro tournament 全 MICRO_FAIL → V2 重评确认 FAIL；Candidate B 未冻结。
+- **H20 provisional**：已归档。
+- **H100**：contribution / replication / influence / utility 证据已齐；**不得**用 H100 utility/influence 覆盖 H20 learnability gate。H100-1 graph-hybrid handoff（V2/V3 placement）仍具解释价值，但 H20 实测 hybrid learnability FAIL。官方 Chroma 仍阻塞（`LOCAL_COMPAT_ONLY`）。
 
-详细数字：evidence_graph Stage L 见 `## 2026-08-13 SCAPE H20 true-SCAPE evidence_graph Stage L final`；Candidate-B tournament 见 `## 2026-08-13 SCAPE H20 Candidate-B micro-learnability tournament final`；0813 H100 状态见 `## 2026-08-13 SCAPE 0813 execution status`；H20 provisional 见 `## 2026-08-12 SCAPE non-H100 round final`；H100 见 `## 2026-08-12 SCAPE H100 fresh confirm + real influence final`。
+详细数字：0813_next_h20 见 `## 2026-08-14 SCAPE H20 0813_next_h20`；evidence_graph Stage L 见 `## 2026-08-13 SCAPE H20 true-SCAPE evidence_graph Stage L final`；Candidate-B 见 `## 2026-08-13 SCAPE H20 Candidate-B micro-learnability tournament final`；0813 H100 见 `## 2026-08-13 SCAPE 0813 execution status`。
 
 ---
 
@@ -972,3 +989,116 @@ H100-4 completed its originally selected confirm set. `verify_tool` became H100-
 - `H20_LOSS_RECOMMENDATION.md` keeps first-run H20 V0 as **uniform name+args tool-token KL**.
 - Follow-up weighting suggestions: `evidence_graph` name medium / args high; `importance_tagging` name high / args medium; `verify_tool` name medium / args high.
 - This is for later ablations only; it does not override the initial uniform loss.
+
+---
+
+## 2026-08-14 SCAPE H20 0813_next_h20（Gate-L V2 audit + Graph-Hybrid micro）
+
+> 指令来源：`0814-1/SCAPE-0813-Next-H20.md`、`0814-1/SCAPE-0813-Next-五机协调.md`
+> 状态：**Phase A + Phase B micro 已完成**；**Stage S / Clean setting 未运行**；`NEXT_DECISION=PLACEMENT_BOUNDARY_RESULT`
+
+### Setting
+- repo: `/data/ppnm/Capability_Evolution/SCAPE`；commit `484cd1e2d80228bc7b780f4b28c2725a51e455fa`
+- machine: 8×H20-3e（8 卡并行队列 + monitor）
+- model: released Harness-1 `pat-jj/harness-1`（local `/data/ppnm/models/harness-1`）
+- trainer/evaluator: `scape.training.hf_tool_opd` + **`scape.eval.learnability_metrics_v2`**（新合约）
+- retrieval: `local_bm25_compat`；**无** official Chroma parity
+- flags: `legacy_scope_path_used=false`；`LOCAL_COMPAT_ONLY=true`；`OFFICIAL_CHROMA_BLOCKED=true`
+- output root: `outputs/0813_next_h20/`
+- orchestration: `scripts/launch_0813_next_h20_phase_a.sh`、`launch_0813_next_h20_graph_hybrid.sh`、`monitor_0813_next_h20.sh`
+
+### Learnability Metric V2 合约（跨机必读）
+| ID | 名称 | 含义 | Gate? |
+|---|---|---|---|
+| M1 | `JS_name` | tool-name span 上 JS(T,S) | Yes（post < pre） |
+| M2 | `CE_T_on_S` | student 在 reduced view 上对 teacher token 的 CE | Yes（post < pre） |
+| M3 | `KL_name/args` | forward KL(T‖S) on spans | 可选 |
+| M4 | action agreement | name/exact/arg 一致率、invalid_tool_rate | Guard |
+| M_diag | `signed_logprob_gap` | mean(log p_T − log p_S) | **禁止作 Gate** |
+
+- 旧 Gate-L 的 `d_pre` / `d_post` / `div` = **M_diag**（可为负），**不是** forward KL。
+- 文档：`outputs/0813_next_h20/METRIC_CONTRACT_V2.md`
+- 单元测试：`tests/test_learnability_metrics_v2.py`（C0–C4）→ **PASS**
+
+### Phase A — Gate-L metric audit（无新 8K 训练）
+| 项 | 结果 |
+|---|---|
+| C0–C4 controls | **PASS** |
+| 独立 crosscheck（64 states，GPU7） | trainer↔evaluator gap match **100%**；forward KL 非负 **100%** |
+| Legacy checkpoint V2 rescore | **29** cells；**0** `v2_gate_pass` |
+| 覆盖 families | `evidence_graph_uniform` / `weighted` / `name_only`；`subtractive_curation`；`importance_tagging`；`verify_tool` |
+| 典型 V2 模式 | CE_T_on_S **下降**（student 更贴近 teacher token），但 **JS_name 上升** → gate **FAIL** |
+| Phase A 决策 | Metric 有效；旧 FAIL **经 V2 确认**；**不重训** legacy → 进入 Graph-Hybrid |
+
+产物：`phase_a/RESCORE_V2.csv`、`OLD_NEW_METRIC_CORRELATION.csv`、`OLD_GATE_REINTERPRETATION.md`、`LEARNABILITY_GATE_V2.json`、`phase_a/INDEPENDENT_METRIC_CHECK.md`；先验审计 `outputs/learnability_audit/`（`GO_NO_GO`: AUDIT_PASS=false，root cause MULTIPLE，与 controlled overfit 未过一致）。
+
+### Phase B — Graph-Hybrid（V2 student ← V3 teacher）
+**Placement（与 H100-1 handoff 对齐）**
+- Student runtime: **V2 = GRAPH_STATE_ONLY**（graph state 外置；prompt 无 full renderer）
+- Teacher view: **V3 = GRAPH_STATE_PLUS_MINIMAL_RENDER**
+- 数据：`graph_hybrid/data/GH_TRAIN_8K`、`GH_VALID_1K`、`GH_TEST_1K`（query-disjoint，same xi_t）
+- builder: `scape/collection/graph_hybrid.py`；`scripts/build_graph_hybrid_splits.py`
+
+**Micro 训练（8 卡，512/2K only）**
+| GPU | queue |
+|---:|---|
+| 0 | `tool_name_only_kl` seed42 L512→L2K |
+| 1 | `tool_name_only_kl` seed43 L512→L2K |
+| 2 | `tool_token_kl` uniform seed42 L512→L2K |
+| 3 | `tool_token_kl` uniform seed43 L512→L2K |
+| 4 | `action_ce` seed42 L2K |
+| 5 | `full_response_kl` seed42 L2K |
+| 6 | `offpolicy_matched` seed42 L2K |
+| 7 | V2/V3 baseline profiler（无训练 cell） |
+
+| 项 | 结果 |
+|---|---|
+| cells completed | **11/11**（`graph_hybrid/micro/gpu*/DONE`） |
+| V2 gate（JS_name↓ + CE↓ + invalid 不恶化） | **0/11 PASS** |
+| name-only 两 seed 一致 PASS | **False** |
+| legacy L_m（signed gap） | name-only L512 离线 L_m 高，但 **V2 JS_name 恶化** |
+| Stage S 四格（S0–S3） | **未运行** |
+
+摘录（V2 on GH_VALID，n=256）：所有 cell `JS_name Δ` ≈ **+0.34~+0.40**；`CE Δ` ≈ **−4.2~−5.4**（CE 改善不足以过 gate）。
+
+产物：`GRAPH_HYBRID_MICRO_REPORT.md`、`graph_hybrid/GRAPH_HYBRID_MICRO_V2.csv`、`GRAPH_HYBRID_STAGE_S.md`（NOT_RUN）。
+
+### Phase C — Clean mechanism setting
+- 条件：Metric V2 valid + Graph-Hybrid FAIL → **已满足**
+- 状态：**NOT_STARTED**（需 `openai/gpt-oss-20b` + Harness-1 **public SFT** trajectories，非 RL ckpt）
+- 见 `CLEAN_SETTING_STATUS.md`
+
+### 决策与 No-Go（其他 agent 须遵守）
+| 决策 | 值 |
+|---|---|
+| `NEXT_DECISION.json` | **`PLACEMENT_BOUNDARY_RESULT`** |
+| 停止 | Evidence Graph **第三次** full-removal rescue；SC/IT/VT 盲扩 8K；multi-component annealing；旧 SCOPE 线 |
+| 允许 | placement boundary / hybrid runtime 论文结论；H100 侧继续 influence/utility **解释**（不覆盖 H20 gate） |
+| 未跑 | Stage S / Stage M；Graph-Hybrid 8K 扩展；Clean SFT |
+
+### 五机协调 — 跨机 handoff
+| 机器 | 与 H20 0813_next 关系 |
+|---|---|
+| **H20** | 本节；Metric V2 + Graph-Hybrid micro **已完成** |
+| **H100-1** | renderer dose-response / `H1001_GRAPH_HYBRID_HANDOFF.json` 定义 V2/V3 **placement 假设**；H20 实测 hybrid learnability **FAIL** |
+| **H100-2** | long-horizon advantage；只改 **解释与候选优先级**，**不得**推翻 H20 learnability gate |
+| **H100-3** | value-of-influence；Influence 高 ≠ 可蒸馏；与 V2 FAIL 一致 |
+| **H100-4** | 独立 Metric V2 重算；应与 H20 `LEARNABILITY_GATE_V2` 交叉验证（barrier：二者一致后才允许新 H20 训练——本 round 已无新训练） |
+
+第一道 barrier（Metric V2 + H100-4 audit）：H20 侧 **controls PASS + 29 ckpt 重评完成**。
+第二道 barrier（H100-1 hybrid handoff）：placement 已用于 Graph-Hybrid 数据构造；learnability **未 PASS**。
+
+### 关键路径索引
+```text
+outputs/0813_next_h20/
+  STATUS_LIVE.md / RUN_MANIFEST.json / DECISION_STATE.json / SHA256SUMS
+  METRIC_CONTRACT_V2.md / LEARNABILITY_GATE_V2.md / NEXT_DECISION.json
+  phase_a/RESCORE_V2.csv / OLD_GATE_REINTERPRETATION.md
+  graph_hybrid/data/ / graph_hybrid/micro/
+  GRAPH_HYBRID_MICRO_REPORT.md / CLEAN_SETTING_STATUS.md
+```
+
+### 论文级结论（本轮新增）
+1. **Learnability 测对了**：旧 `d_*` 是 signed gap；V2 非负 KL/JS + CE 合约可复用。
+2. **Harness component 迁移粒度**：graph **state 外置 + minimal-render decision** 仍无法在 harness-1 weights 上吸收（micro FAIL）。
+3. **Influence ≠ 可蒸馏**：Contribution/Influence 阳性 + V2 learnability 全 FAIL → Pre-stage 第三轴应以 **Metric V2 + placement boundary** 为准，而非继续堆 Candidate 训练。
