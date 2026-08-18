@@ -6,15 +6,30 @@
 
 ---
 
-## 本轮总览（更新于 2026-08-14 早）
+## 本轮总览（更新于 2026-08-17 早）
 
 ### Setting（双线 + 0814 主线）
 | 线 | 机器 / repo | model | retrieval | Candidate A/B |
 |---|---|---|---|---|
-| **H20 0813_next_h20（当前主线）** | 8×H20；`/data/ppnm/Capability_Evolution/SCAPE` commit `484cd1e2` | `pat-jj/harness-1`（local `/data/ppnm/models/harness-1`） | local_bm25_compat | Metric V2 audit **完成**；Graph-Hybrid micro **FAIL** → **`PLACEMENT_BOUNDARY_RESULT`** |
+| **H20 0814_clean_mechanism（当前主线）** | 8×H20；`/data/ppnm/Capability_Evolution/SCAPE` commit `cc229b2d` | `openai/gpt-oss-20b` + Harness-1 **public SFT only**（非 released `pat-jj/harness-1` ckpt） | local_bm25_compat | Clean-SFT FULL/TOOL **C0 完成**；Base Gate **FAIL**；C1 有 V2/V3 gap；**C2 未启动** → `CLEAN_BASE_BLOCKED` |
+| **H20 0813_next_h20（上一主线，结论仍有效）** | 同上；commit `484cd1e2` | `pat-jj/harness-1`（local `/data/ppnm/models/harness-1`） | local_bm25_compat | Metric V2 audit **完成**；Graph-Hybrid micro **FAIL** → **`PLACEMENT_BOUNDARY_RESULT`** |
 | **H20 true-SCAPE（0813 旧主线，已归档结论）** | 同上 | 同上 | local_bm25_compat | A=`evidence_graph` L **FAIL**；B 三候选 micro **全 FAIL** |
 | **H20 provisional（已归档）** | 同上 | Qwen2.5-7B-Instruct | BM25 provisional | A=`auto_populate_first_search`；B=`verify_tool` |
-| **H100** | 8×H100；`/mnt/songzijun/Capability_Evolution/SCAPE` + worktrees | `pat-jj/harness-1`（HF scorer） | local compat（官方 Chroma 阻塞） | A=`evidence_graph`；B 未冻结；**H100 utility/influence 不得覆盖 H20 learnability gate** |
+| **H100** | 8×H100；`/mnt/songzijun/Capability_Evolution/SCAPE` + worktrees | `pat-jj/harness-1`（HF scorer） | local compat（官方 Chroma 阻塞） | A=`evidence_graph`；B 未冻结；**H100 utility/influence 不得覆盖 H20 learnability gate**；H100-4 objective handoff **尚未同步到 H20** |
+
+### 进度板 — H20 0814_clean_mechanism（`0814-2/SCAPE-0814-H20.md`）
+| 阶段 | 状态 | 结论 / 产物 |
+|---|---|---|
+| C0 环境 + provenance | **已完成** | `openai/gpt-oss-20b` 本地冻结；`PUBLIC_SFT_AUDIT.md`；`CLEAN_BASE_PROVENANCE.md` |
+| C0 public SFT audit | **已完成** | `pat-jj/harness-1-train-data` **stage=sft only**；899 条；RL **未混入**；Harmony 转换 25112 examples |
+| C0 CLEAN-SFT-FULL / TOOL smoke→full | **已完成** | 4 路 full（s42/s43 × FULL/TOOL）均 3 epoch；LoRA r=32 / lr=5e-6；~69h/卡 |
+| C0 Full Harness smoke eval（n=4） | **已完成 · Gate FAIL** | raw parse=0.75；FULL=0.75；TOOL=0.25；均 **< 0.99** |
+| C1 Clean V2/V3 gap（`CLEAN_GH_CAL128` seed=8141） | **已完成 · 有 gap** | raw JS=0.053；FULL JS=0.075；TOOL JS=0.144；`enter_train=true` |
+| Barrier H100-4 objective | **未同步** | `imports/h100_4/` 仅 `.gitkeep`；按文档可做 C0/C1，**暂不 8K** |
+| C2 Clean Graph-Hybrid micro 512/2K | **未启动** | Clean-SFT Base Gate 未过；禁止在不合格 base 上训 SCAPE |
+| C3 8K + Stage S | **未启动** | 需 C2 两 seed PASS |
+| 决策产物 | **已写入** | `outputs/0814_clean_mechanism/NEXT_DECISION.json` → **`CLEAN_BASE_BLOCKED`**（含义=Base Gate FAIL，**不是**模型下载失败） |
+| GPU 实验进程 | **训练已停** | C0/C1 完成；keepalive 仍在空转重启已退出的 monitor |
 
 ### 进度板 — H20 0813_next_h20（`SCAPE-0813-Next-H20.md` + `0814-1/五机协调.md`）
 | 阶段 | 状态 | 结论 / 产物 |
@@ -27,9 +42,9 @@
 | Phase B：Graph-Hybrid 数据 V2/V3 | **已完成** | `graph_hybrid/data/GH_TRAIN_8K` / `VALID_1K` / `TEST_1K`；query-disjoint |
 | Phase B：Graph-Hybrid micro（8 卡 × 11 cells） | **已完成** | **0/11 V2 PASS**；name-only 两 seed 均 FAIL |
 | Phase B：Graph-Hybrid Stage S 四格 | **未运行** | 无 micro gate pass；见 `GRAPH_HYBRID_STAGE_S.md` |
-| Phase C：Clean mechanism（gpt-oss-20b + public SFT） | **未启动** | Hybrid FAIL 后条件触发；见 `CLEAN_SETTING_STATUS.md` |
-| 决策产物 | **已完成** | `NEXT_DECISION.json` → **`PLACEMENT_BOUNDARY_RESULT`**；`SHA256SUMS`；`STATUS_LIVE.md` |
-| GPU 实验进程 | **空闲** | 0813_next_h20 全流程结束；monitor 已停 |
+| Phase C：Clean mechanism（gpt-oss-20b + public SFT） | **C0/C1 已完成；C2 未启动** | 详见下方 0814 进度板与 `## 2026-08-17 SCAPE H20 0814_clean_mechanism` |
+| 决策产物 | **已完成** | `outputs/0813_next_h20/NEXT_DECISION.json` → **`PLACEMENT_BOUNDARY_RESULT`**（对 published Harness-1 仍有效） |
+| GPU 实验进程 | **空闲（本线）** | 0813_next_h20 全流程结束；后续算力转到 0814_clean_mechanism |
 
 ### 进度板 — H20 true-SCAPE evidence_graph（0813 主线，结论已并入 V2 确认）
 | 阶段 | 状态 | 结论 / 产物 |
@@ -82,13 +97,14 @@
 | 官方 BrowseComp+ Chroma eval / parity | **阻塞** | 缺 `OPENAI_API_KEY` / `CHROMA_API_KEY` / `CHROMA_DATABASE`；不可用 local/HF evidence 冒充 official Chroma |
 
 ### 结论（一句话）
-- **H20 0813_next_h20（最新）**：Learnability **Metric V2 有效**（C0–C4 PASS）；旧 Gate-L 的 `d_pre/d_post` 为 **signed logprob gap（METRIC_NAMING_BUG）**，非 KL。29 个 legacy checkpoint **V2 全 FAIL**；Graph-Hybrid（V2 student / V3 teacher）micro **11 cell 全 FAIL** → **`PLACEMENT_BOUNDARY_RESULT`**：停止 published-checkpoint full-component / hybrid weight migration；转向 placement boundary / hybrid runtime 叙事。Clean setting（gpt-oss-20b）**未启动**。
+- **H20 0814_clean_mechanism（最新）**：在 **未使用 released Harness-1 ckpt / 未混 RL** 的 clean setting 下，用 gpt-oss-20b + 官方 public SFT 做了 FULL vs TOOL 对照完整 SFT。训练本身收敛，但 **Clean-SFT Base Gate FAIL**（自由生成 n=4：parse 均 < 0.99；TOOL 更差）。C1 same-state V2/V3 **有非零 gap**（可入训条件成立），却因 base 不具备稳定 Harness tool syntax **未进入 C2**。Q1 **尚不能回答**（失败发生在 clean base 建立，而非 SCAPE distillation）。Q2 **未测**（C2 未跑；H100-4 objective handoff 未到）。决策：`CLEAN_BASE_BLOCKED`。
+- **H20 0813_next_h20**：Learnability **Metric V2 有效**（C0–C4 PASS）；29 个 legacy checkpoint **V2 全 FAIL**；Graph-Hybrid micro **11 cell 全 FAIL** → **`PLACEMENT_BOUNDARY_RESULT`** 对 **published Harness-1 weights** 仍成立。
 - **H20 true-SCAPE A-side**：`evidence_graph` Gate L 双次 FAIL → V2 重评确认 FAIL；停止 full migration。
 - **H20 true-SCAPE B-side**：SC/IT/VT micro tournament 全 MICRO_FAIL → V2 重评确认 FAIL；Candidate B 未冻结。
 - **H20 provisional**：已归档。
-- **H100**：contribution / replication / influence / utility 证据已齐；**不得**用 H100 utility/influence 覆盖 H20 learnability gate。H100-1 graph-hybrid handoff（V2/V3 placement）仍具解释价值，但 H20 实测 hybrid learnability FAIL。官方 Chroma 仍阻塞（`LOCAL_COMPAT_ONLY`）。
+- **H100**：contribution / replication / influence / utility 证据已齐；**不得**用 H100 utility/influence 覆盖 H20 learnability gate。官方 Chroma 仍阻塞（`LOCAL_COMPAT_ONLY`）。H100-4 **objective** handoff 仍未落到 H20 `imports/h100_4/`。
 
-详细数字：0813_next_h20 见 `## 2026-08-14 SCAPE H20 0813_next_h20`；evidence_graph Stage L 见 `## 2026-08-13 SCAPE H20 true-SCAPE evidence_graph Stage L final`；Candidate-B 见 `## 2026-08-13 SCAPE H20 Candidate-B micro-learnability tournament final`；0813 H100 见 `## 2026-08-13 SCAPE 0813 execution status`。
+详细数字：0814 clean 见 `## 2026-08-17 SCAPE H20 0814_clean_mechanism`；0813_next_h20 见 `## 2026-08-14 SCAPE H20 0813_next_h20`；evidence_graph Stage L 见 `## 2026-08-13 SCAPE H20 true-SCAPE evidence_graph Stage L final`；Candidate-B 见 `## 2026-08-13 SCAPE H20 Candidate-B micro-learnability tournament final`；0813 H100 见 `## 2026-08-13 SCAPE 0813 execution status`。
 
 ---
 
@@ -995,7 +1011,7 @@ H100-4 completed its originally selected confirm set. `verify_tool` became H100-
 ## 2026-08-14 SCAPE H20 0813_next_h20（Gate-L V2 audit + Graph-Hybrid micro）
 
 > 指令来源：`0814-1/SCAPE-0813-Next-H20.md`、`0814-1/SCAPE-0813-Next-五机协调.md`
-> 状态：**Phase A + Phase B micro 已完成**；**Stage S / Clean setting 未运行**；`NEXT_DECISION=PLACEMENT_BOUNDARY_RESULT`
+> 状态：**Phase A + Phase B micro 已完成**；**Stage S 未运行**；Clean setting 已转到 0814 线（C0/C1 完成、C2 未跑）；本线 `NEXT_DECISION=PLACEMENT_BOUNDARY_RESULT`
 
 ### Setting
 - repo: `/data/ppnm/Capability_Evolution/SCAPE`；commit `484cd1e2d80228bc7b780f4b28c2725a51e455fa`
@@ -1065,8 +1081,8 @@ H100-4 completed its originally selected confirm set. `verify_tool` became H100-
 
 ### Phase C — Clean mechanism setting
 - 条件：Metric V2 valid + Graph-Hybrid FAIL → **已满足**
-- 状态：**NOT_STARTED**（需 `openai/gpt-oss-20b` + Harness-1 **public SFT** trajectories，非 RL ckpt）
-- 见 `CLEAN_SETTING_STATUS.md`
+- 状态：**C0/C1 已于 2026-08-17 完成；C2 因 Clean-SFT Base Gate FAIL 未启动**
+- 详见 `## 2026-08-17 SCAPE H20 0814_clean_mechanism`；产物根 `outputs/0814_clean_mechanism/`
 
 ### 决策与 No-Go（其他 agent 须遵守）
 | 决策 | 值 |
@@ -1074,7 +1090,7 @@ H100-4 completed its originally selected confirm set. `verify_tool` became H100-
 | `NEXT_DECISION.json` | **`PLACEMENT_BOUNDARY_RESULT`** |
 | 停止 | Evidence Graph **第三次** full-removal rescue；SC/IT/VT 盲扩 8K；multi-component annealing；旧 SCOPE 线 |
 | 允许 | placement boundary / hybrid runtime 论文结论；H100 侧继续 influence/utility **解释**（不覆盖 H20 gate） |
-| 未跑 | Stage S / Stage M；Graph-Hybrid 8K 扩展；Clean SFT |
+| 未跑 | Stage S / Stage M；Graph-Hybrid 8K 扩展；**当时** Clean SFT（现已由 0814 线补跑 C0/C1） |
 
 ### 五机协调 — 跨机 handoff
 | 机器 | 与 H20 0813_next 关系 |
@@ -1102,3 +1118,155 @@ outputs/0813_next_h20/
 1. **Learnability 测对了**：旧 `d_*` 是 signed gap；V2 非负 KL/JS + CE 合约可复用。
 2. **Harness component 迁移粒度**：graph **state 外置 + minimal-render decision** 仍无法在 harness-1 weights 上吸收（micro FAIL）。
 3. **Influence ≠ 可蒸馏**：Contribution/Influence 阳性 + V2 learnability 全 FAIL → Pre-stage 第三轴应以 **Metric V2 + placement boundary** 为准，而非继续堆 Candidate 训练。
+
+---
+
+## 2026-08-17 SCAPE H20 0814_clean_mechanism（Clean base C0/C1）
+
+> 指令来源：`todo/0814-2/SCAPE-0814-H20.md`
+> 状态：**Phase C0（clean public SFT + Harness smoke）与 C1（V2/V3 gap）已完成**；**Clean-SFT Base Gate FAIL**；**C2 micro / C3 8K 未运行**；`NEXT_DECISION=CLEAN_BASE_BLOCKED`
+> 本条目回答的是 clean-setting **能否建立可用 base**，不覆盖 0813 对 published Harness-1 的 `PLACEMENT_BOUNDARY_RESULT`。
+
+本轮要回答的两个问题（文档原文）：
+
+```text
+Q1. released Harness-1 的 learnability failure，
+    是模型已在 Harness 中训过、迁移空间不足，
+    还是 SCAPE capability migration 本身不可行？
+
+Q2. token-level tool OPD 出现 CE_T_on_S ↓ 但 JS_name ↑，
+    是否说明目标没直接优化 legal-tool distribution？
+```
+
+### Setting
+- repo: `/data/ppnm/Capability_Evolution/SCAPE`；commit `cc229b2df02bebce51735267c89050d285500b4b`
+- machine: 8×H20-3e（单卡 LoRA；GPU0–3 训练，GPU4–6 等 checkpoint 后评测，GPU7 audit）
+- **base model**: `openai/gpt-oss-20b` → `/data/ppnm/models/gpt-oss-20b`（mxfp4 MoE，本地 HF 以 bf16 dequant 训练）
+- **禁止**：synthetic/mock SFT；混入 Harness-1 RL SEC；从 `pat-jj/harness-1` checkpoint 续训
+- flags: `legacy_scope_path_used=false`；`LOCAL_COMPAT_ONLY=true`
+- trainer: `scape/training/clean_sft.py`（HF LoRA）；FULL vs TOOL **只差 loss mask**
+- LoRA: r=32, α=32, targets=`q_proj,k_proj,v_proj,o_proj`；lr=5e-6；AdamW；grad clip 1.0
+- 官方 recipe 对齐：epochs=3；public SFT only；Harmony 转换 `max_length=16384`；本地 trainer 截断 `max_length=4096`（保留尾部 action）
+- output root: `outputs/0814_clean_mechanism/`
+
+**Public SFT provenance**（`pat-jj/harness-1-train-data` **stage=sft only**）
+| 项 | 值 |
+|---|---|
+| dump records | 899（stage 全为 sft） |
+| RL records used | **0** |
+| unique query/task ids | 880 |
+| turns | 33426（mean 37.18） |
+| tool-call parse / invalid（数据侧） | **1.0 / 0.0** |
+| keep min_recall≥0.1 | 715 / 899 |
+| Harmony examples | **25112** |
+| datasets | browsecompplus 199 / patents 150 / sec 250 / sec_simple 75 / web 150 / web_simple 75 |
+| tool-mask audit（前 512） | parse_rate=1.0；legal_rate=1.0；tool_mask_rate=1.0 |
+
+**两种 Clean SFT（相同 examples / optimizer budget / LoRA rank / epoch count）**
+| 变体 | loss mask |
+|---|---|
+| CLEAN-SFT-FULL | 全部 assistant tokens |
+| CLEAN-SFT-TOOL | 仅 Harmony tool-call / action span |
+
+**C0 8 卡队列**
+| GPU | 任务 |
+|---:|---|
+| 0 | FULL seed42 smoke n=32 → full 25112×3 |
+| 1 | FULL seed43 smoke → full |
+| 2 | TOOL seed42 smoke → full |
+| 3 | TOOL seed43 smoke → full |
+| 4 | raw gpt-oss Harness smoke → FULL s42 Harness eval |
+| 5 | raw V2/V3 n=128 → FULL s42 V2/V3 |
+| 6 | TOOL s42 Harness eval + V2/V3 |
+| 7 | public-SFT audit + tool-mask + metric-v2 smoke n=16 |
+
+C1 pack：`CLEAN_GH_CAL128` seed=**8141**；student V2=`GRAPH_STATE_ONLY`；teacher V3=`GRAPH_STATE_PLUS_MINIMAL_RENDER`。
+
+### Results
+
+#### C0 smoke（n=32, 1 epoch, max_len=2048）
+| cell | mean_train_loss | seconds |
+|---|---:|---:|
+| FULL s42 | 3.235 | 43.8 |
+| FULL s43 | 3.231 | 43.8 |
+| TOOL s42 | 3.690 | 43.5 |
+| TOOL s43 | 3.272 | 42.2 |
+
+#### C0 full public SFT（n=25112, 3 epoch, max_len=4096）
+| cell | mean_train_loss | n_steps | wall |
+|---|---:|---:|---|
+| FULL s42 | 1.210 | 75336 | 248692 s ≈ **69.1 h** |
+| FULL s43 | 1.211 | 75336 | 249540 s ≈ **69.3 h** |
+| TOOL s42 | 0.358 | 75324 | 248881 s ≈ **69.1 h** |
+| TOOL s43 | 0.358 | 75324 | 249080 s ≈ **69.2 h** |
+
+TOOL 比 FULL 少约 12 step：空 tool-mask 样本跳过反传。两 seed 损失几乎重合。checkpoint：`sft/gpu{0,1,2,3}/*/lora_checkpoint`。
+
+#### C0 Full Harness smoke（n=4，自由生成；Gate 主指标）
+| model | parse | legal | invalid | search | read | curate | end_search |
+|---|---:|---:|---:|---|---|---|---|
+| raw gpt-oss-20b | 0.75 | 0.50 | 0.50 | ✓ | ✗ | ✓ | ✗ |
+| CLEAN-SFT-FULL s42 | 0.75 | 0.50 | 0.50 | ✓ | ✓ | ✗ | ✗ |
+| CLEAN-SFT-TOOL s42 | 0.25 | 0.25 | 0.75 | ✓ | ✗ | ✗ | ✗ |
+
+- Gate 阈值：`parse ≥ 0.99` 且 invalid 不明显差于 released Harness-1，且非完全退化。
+- FULL **未优于 raw**；TOOL **更差**。n=4 方差大，但两 base 均远低于 0.99。
+- 生成形态：模型常先写 analysis prose，tool 通道不稳定（错误 tool 名、非 Harmony `to=functions.*`、或根本不 emit call）。
+
+#### C1 / Metric V2 same-state scorer（n=128，seed=8141；**非**自由生成）
+| model | JS_name | CE_T_on_S | KL_name | invalid | tool_name_agreement | nonzero gap |
+|---|---:|---:|---:|---:|---:|---|
+| raw | 0.0535 | 6.008 | 0.265 | **0.0** | 1.0 | true |
+| FULL s42 | 0.0753 | 5.234 | 0.389 | **0.0** | 1.0 | true |
+| TOOL s42 | 0.1438 | 7.007 | 1.409 | **0.0** | 1.0 | true |
+| metric-v2 smoke n=16 | 0.0448 | 5.520 | 0.222 | 0.0 | 1.0 | true |
+
+- `enter_train = has_gap ∧ v3_not_systematically_worse` → **true**（raw / FULL / TOOL 都有非零 JS_name）。
+- 与 Harness smoke **协议不一致**：same-state 打分 `invalid_tool_rate=0`，自由生成 parse 却失败。说明 clean SFT 尚未把 **部署时的 tool 通道** 训稳，但在给定 graph state 上仍能对 8 个合法 tool 分配概率。
+
+### Gate
+| 检查 | 结果 |
+|---|---|
+| Clean-SFT Base Gate（FULL） | **FAIL**（parse 0.75 < 0.99） |
+| Clean-SFT Base Gate（TOOL） | **FAIL**（parse 0.25 < 0.99） |
+| preferred_base | **None**（文档：两者都过则优先 TOOL） |
+| C1 入训条件（V3 vs V2 gap） | **成立** |
+| C2 Clean Learnability Gate | **未跑** |
+| H100-4 `TOKEN_OBJECTIVE_OK` / `DIRECT_TOOL_DISTRIBUTION_BETTER` | **handoff 缺失** |
+
+### Decision
+| 决策 | 值 |
+|---|---|
+| `outputs/0814_clean_mechanism/NEXT_DECISION.json` | **`CLEAN_BASE_BLOCKED`** |
+| 含义 | **不是** gpt-oss-20b 下载失败（模型已冻结，`CLEAN_BASE_PROVENANCE.CLEAN_BASE_BLOCKED=false`）；而是 **Clean-SFT Base Gate 未过**，按文档不进入 C2 |
+| 停止 | 在当前 FULL/TOOL LoRA 上做 Graph-Hybrid 512/2K / 8K；从 released harness-1 续训；混 RL |
+| 允许 | 记录 Q1 被 base 建立阻断；加强 Harmony tool-format SFT / 更长 eval；等 H100-4 objective 后再决定 Q2 实验 |
+| 未跑 | C2 8 卡 micro；C3 Stage S 四格；大规模 8K |
+
+### 对 Q1 / Q2 的当前结论
+1. **Q1 尚不能判决。** 本轮没有得到「clean、已具备 Harness tool syntax、且未在 released Harness-1 上训过」的可用 θ0。失败点在 **public SFT 本地复现未能通过 Base Gate**，不是 C2 distillation FAIL。因此 **不能**把 0813 的 `PLACEMENT_BOUNDARY_RESULT` 直接推广为「SCAPE migration 在任何初始化上都不可行」，也 **不能**解释成「只是 harness-1 已经训过所以没空间」——clean 初始化还没跨过 tool-syntax 门槛。
+2. **Q2 未测。** `route_kl` vs `tool_name_only_kl` 需要过 Gate 的 clean base + H100-4 objective handoff；二者都未具备。C1 上 FULL 的 CE 相对 raw 略降、JS_name 略升，只是 same-state 基线，不是训练后的 OPD 现象。
+3. **FULL vs TOOL**：相同预算下 TOOL 训练 loss 更低（mask 更稀），但自由生成 **更差**。主机制优先 TOOL 的前提（两者都过 Gate）不成立。
+4. **与 0813 的关系**：published Harness-1 上 Graph-Hybrid **仍然**是 `PLACEMENT_BOUNDARY_RESULT`。Clean setting 目前停在更早的一层：本地 public-SFT 还没有复现出官方 Harness 的 tool competence。
+
+### 关键路径索引
+```text
+outputs/0814_clean_mechanism/
+  STATUS_LIVE.md / NEXT_DECISION.json / DECISION_STATE.json / SHA256SUMS
+  CLEAN_BASE_PROVENANCE.md / PUBLIC_SFT_AUDIT.md
+  CLEAN_SFT_COMPARISON.md / CLEAN_PRESTAGE.md / CLEAN_STAGE_S.md
+  data/CLEAN_SFT_TRAIN.jsonl / CLEAN_SFT_CONVERT.json / TOOL_MASK_AUDIT.json
+  sft/gpu0/full_s42_full/  sft/gpu1/full_s43_full/
+  sft/gpu2/tool_s42_full/  sft/gpu3/tool_s43_full/
+  evals/gpu4/{raw_harness_eval,full_s42_harness_eval}/
+  evals/gpu5/{raw_v2v3,full_s42_v2v3}/
+  evals/gpu6/{tool_s42_harness_eval,tool_s42_v2v3}/
+  evals/gpu7/metric_v2_smoke/
+```
+
+### 论文级结论（本轮新增）
+1. **Clean setting 已真正跑起来**：gpt-oss-20b + 官方 public SFT（无 RL、无 released harness-1 ckpt）可训练、可复现两 seed。
+2. **Base Gate 挡住了机制实验**：自由生成 tool parse 未达 0.99；TOOL mask 没有带来更干净的 tool syntax，反而更差。
+3. **Gap 与 competence 分离**：same-state V2/V3 已有 JS_name gap，但部署通道（Harmony tool call）未学会 → 有 gap ≠ 可做 SCAPE micro。
+4. **下一步不应是 8K Graph-Hybrid**，除非先修复 clean tool-format（更强的 Harmony SFT / 更大 Harness eval / 官方 recipe 对齐），或明确放宽 Base Gate 并把它写成 caveated local-compat 结果。
+

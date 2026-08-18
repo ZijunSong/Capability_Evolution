@@ -88,16 +88,21 @@ def run_cell(args: argparse.Namespace) -> dict[str, Any]:
     device_map=device_map,
     learning_rate=args.lr,
     use_lora=True,
+    lora_r=args.lora_r,
+    lora_alpha=max(args.lora_r, args.lora_alpha),
+    anchor_weight=args.anchor_weight,
+    lambda_args=args.lambda_args,
   )
 
-  pre_metrics = mean_divergence(backend, valid_rows, loss_path=args.loss_path)  # type: ignore[arg-type]
+  eval_rows = valid_rows[: min(16, len(valid_rows))]
+  pre_metrics = mean_divergence(backend, eval_rows, loss_path=args.loss_path)  # type: ignore[arg-type]
   pre_agree = _tool_agreement(backend, valid_rows)
 
   t0 = time.time()
   trained = run_tool_opd_train(
     backend,
     train_rows,
-    valid_rows[: max(32, min(256, len(valid_rows)))],
+    eval_rows,
     loss_path=args.loss_path,  # type: ignore[arg-type]
     epochs=args.epochs,
     batch_size=args.batch_size,
@@ -110,7 +115,11 @@ def run_cell(args: argparse.Namespace) -> dict[str, Any]:
   ckpt_dir = out / "lora_checkpoint"
   backend.save_pretrained(str(ckpt_dir))
   merged_dir = out / "hf_merged"
-  backend.merge_and_save(str(merged_dir))
+  try:
+    backend.merge_and_save(str(merged_dir))
+  except Exception as exc:  # noqa: BLE001
+    (out / "merge_skipped.json").write_text(json.dumps({"error": str(exc)[:500]}, indent=2) + "\n")
+    merged_dir = ckpt_dir
 
   summary = {
     "component_id": args.component_id,
@@ -188,6 +197,10 @@ def main() -> int:
   ap.add_argument("--epochs", type=int, default=1)
   ap.add_argument("--batch-size", type=int, default=1)
   ap.add_argument("--lr", type=float, default=1e-5)
+  ap.add_argument("--lora-r", type=int, default=8)
+  ap.add_argument("--lora-alpha", type=int, default=16)
+  ap.add_argument("--anchor-weight", type=float, default=0.05)
+  ap.add_argument("--lambda-args", type=float, default=0.0)
   args = ap.parse_args()
   try:
     summary = run_cell(args)

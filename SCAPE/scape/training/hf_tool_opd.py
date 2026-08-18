@@ -39,6 +39,7 @@ LossPath = Literal[
     "action_ce",
     "full_response_kl",
     "offpolicy_matched",
+    "route_kl",
 ]
 
 # Derived from Stage L baseline ablation (name_only >> args_only >> uniform).
@@ -72,6 +73,12 @@ MASK_MODE_BY_LOSS: dict[str, dict[str, bool]] = {
         "include_name": False,
         "include_arg_keys": True,
         "include_arg_values": True,
+        "include_end_search": False,
+    },
+    "route_kl": {
+        "include_name": True,
+        "include_arg_keys": False,
+        "include_arg_values": False,
         "include_end_search": False,
     },
 }
@@ -116,34 +123,62 @@ class ScapeHFToolOPD:
     torch_dtype: torch.dtype = torch.bfloat16
     learning_rate: float = 1e-5
     anchor_weight: float = 0.1
+    lambda_args: float = 0.0
     use_lora: bool = True
     lora_r: int = 8
     lora_alpha: int = 16
 
     def __post_init__(self) -> None:
+        from pathlib import Path as _Path
+
+        model_dir = _Path(self.model_path)
+        adapter_cfg = model_dir / "adapter_config.json"
+        tok_src = str(model_dir)
+        base_src = self.model_path
+        if adapter_cfg.is_file():
+            try:
+                ac = json.loads(adapter_cfg.read_text(encoding="utf-8"))
+                base_src = ac.get("base_model_name_or_path") or "/data/ppnm/models/gpt-oss-20b"
+            except Exception:
+                base_src = "/data/ppnm/models/gpt-oss-20b"
+            tok_src = base_src if not (model_dir / "tokenizer_config.json").is_file() else str(model_dir)
         self.tokenizer = AutoTokenizer.from_pretrained(
-            self.model_path, trust_remote_code=True
+            tok_src, trust_remote_code=True
         )
         if self.tokenizer.pad_token_id is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
         self.model = AutoModelForCausalLM.from_pretrained(
-            self.model_path,
+            base_src if adapter_cfg.is_file() else self.model_path,
             device_map=self.device_map,
             torch_dtype=self.torch_dtype,
             trust_remote_code=True,
         )
+        self._parent_adapter = None
+        if adapter_cfg.is_file():
+            from peft import PeftModel as _PeftModel
+
+            self._parent_adapter = str(model_dir)
+            self.model = _PeftModel.from_pretrained(self.model, str(model_dir))
+            self.model = self.model.merge_and_unload()
         if self.use_lora:
             from peft import LoraConfig, get_peft_model
 
+            leaf = {n.split(".")[-1] for n, _ in self.model.named_modules()}
+            targets = [m for m in ("q_proj", "k_proj", "v_proj", "o_proj") if m in leaf]
+            if not targets:
+                targets = [m for m in ("qkv_proj", "o_proj") if m in leaf] or ["q_proj"]
             lora_cfg = LoraConfig(
                 r=self.lora_r,
                 lora_alpha=self.lora_alpha,
-                target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+                target_modules=targets,
                 lora_dropout=0.05,
                 bias="none",
                 task_type="CAUSAL_LM",
             )
             self.model = get_peft_model(self.model, lora_cfg)
+        if hasattr(self.model, "config"):
+            self.model.config.use_cache = False
+        # gpt-oss MoE + non-reentrant checkpointing mismatches saved tensors; keep cache off only.
         self.optimizer = torch.optim.AdamW(
             [p for p in self.model.parameters() if p.requires_grad],
             lr=self.learning_rate,
@@ -246,6 +281,16 @@ class ScapeHFToolOPD:
         if not response_ids:
             return torch.zeros(0, 0, device=self._device)
         full = prompt_ids + response_ids
+        max_len = 2048
+        if len(full) > max_len:
+            overflow = len(full) - max_len
+            if overflow < len(prompt_ids):
+                prompt_ids = prompt_ids[overflow:]
+            else:
+                keep = max_len - 1
+                response_ids = response_ids[-keep:]
+                prompt_ids = prompt_ids[-1:]
+            full = prompt_ids + response_ids
         inp = torch.tensor([full], device=self._device)
         if require_grad:
             self.model.train()
@@ -254,9 +299,8 @@ class ScapeHFToolOPD:
             self.model.eval()
             with torch.no_grad():
                 logits = self.model(inp).logits[0]
-        start = len(prompt_ids) - 1
-        rows = [logits[start + i] for i in range(len(response_ids))]
-        return torch.stack(rows)
+        start = max(0, len(prompt_ids) - 1)
+        return logits[start : start + len(response_ids)]
 
     def _teacher_forced_logprobs(
         self,
@@ -412,6 +456,7 @@ class ScapeHFToolOPD:
             "args_only_kl",
             "offpolicy_matched",
             "action_ce",
+            "route_kl",
         ):
             m = torch.tensor(token_mask, device=kl_tok.device, dtype=kl_tok.dtype)
             if float(m.sum().item()) <= 0:
@@ -455,19 +500,22 @@ class ScapeHFToolOPD:
             resp_ids = self.encode(response)
             if not resp_ids:
                 continue
-            student_lp = self._teacher_forced_logprobs(
-                prompt_ids, resp_ids, require_grad=True
-            )
-            with torch.no_grad():
-                teacher_prompt = row["prompt_full"]
-                teacher_lp = self._teacher_forced_logprobs(
-                    self.encode(teacher_prompt), resp_ids, require_grad=False
+            teacher_prompt = row["prompt_full"]
+            student_lp = None
+            teacher_lp = None
+            if loss_path != "route_kl":
+                student_lp = self._teacher_forced_logprobs(
+                    prompt_ids, resp_ids, require_grad=True
                 )
+                with torch.no_grad():
+                    teacher_lp = self._teacher_forced_logprobs(
+                        self.encode(teacher_prompt), resp_ids, require_grad=False
+                    )
 
             token_mask = self.response_token_mask(response, loss_path=loss_path)
             if len(token_mask) != len(resp_ids):
                 token_mask = [True] * len(resp_ids)
-            m = torch.tensor(token_mask, device=student_lp.device, dtype=student_lp.dtype)
+            m = torch.tensor(token_mask, device=self._device, dtype=torch.float32)
 
             if loss_path == "action_ce":
                 # CE on masked action tokens: -student_logprob
@@ -490,30 +538,89 @@ class ScapeHFToolOPD:
                 "tool_name_only_kl",
                 "args_only_kl",
                 "offpolicy_matched",
+                "route_kl",
             ):
-                if loss_path == "weighted_tool_token_kl":
-                    w = torch.tensor(
-                        self.response_token_weights(response, loss_path=loss_path),
-                        device=student_lp.device,
-                        dtype=student_lp.dtype,
+                if loss_path == "route_kl":
+                    s_logits = self._response_position_logits(
+                        prompt_ids, resp_ids, require_grad=True
                     )
-                    if float(w.sum().item()) <= 0:
+                    with torch.no_grad():
+                        t_logits = self._response_position_logits(
+                            self.encode(teacher_prompt), resp_ids, require_grad=False
+                        )
+                    ids_t = torch.tensor(resp_ids, device=s_logits.device, dtype=torch.long)
+                    student_lp = F.log_softmax(s_logits, dim=-1).gather(1, ids_t.unsqueeze(1)).squeeze(1)
+                    legal = [
+                        "fan_out_search",
+                        "search_corpus",
+                        "grep_corpus",
+                        "read_document",
+                        "review_docs",
+                        "curate",
+                        "verify",
+                        "end_search",
+                    ]
+                    name_ids: list[int] = []
+                    for name in legal:
+                        ids = self.encode(name)
+                        name_ids.append(ids[0] if ids else 0)
+                    name_idx = next((i for i, bit in enumerate(token_mask) if bit), 0)
+                    name_idx = min(name_idx, s_logits.size(0) - 1)
+                    idx = torch.tensor(name_ids, device=s_logits.device, dtype=torch.long)
+                    s_sub = s_logits[name_idx].index_select(0, idx)
+                    t_sub = t_logits[name_idx].index_select(0, idx)
+                    t_logp = F.log_softmax(t_sub, dim=-1)
+                    s_logp = F.log_softmax(s_sub, dim=-1)
+                    t_p = t_logp.exp()
+                    route_kl = (t_p * (t_logp - s_logp)).sum()
+                    arg_audit = tool_loss_mask_from_response(
+                        response,
+                        token_offsets=_offset_mapping(self.tokenizer, response),
+                        include_name=False,
+                        include_arg_keys=True,
+                        include_arg_values=True,
+                        include_end_search=False,
+                    )
+                    arg_mask = arg_audit.get("token_mask") or [False] * len(resp_ids)
+                    if len(arg_mask) != len(resp_ids):
+                        arg_mask = [False] * len(resp_ids)
+                    am = torch.tensor(arg_mask, device=student_lp.device, dtype=student_lp.dtype)
+                    if float(am.sum().item()) > 0:
+                        arg_ce = -(student_lp * am).sum() / am.sum()
+                    else:
+                        arg_ce = -student_lp.mean() * 0.0
+                    anchor = -student_lp.mean()
+                    loss = route_kl + self.lambda_args * arg_ce + self.anchor_weight * anchor
+                    packed = tool_opd_loss(
+                        tool_token_kl=float(route_kl.detach().item()),
+                        anchor_kl=float(anchor.detach().item()),
+                        anchor_weight=self.anchor_weight,
+                    )
+                    metrics = packed
+                else:
+                    if loss_path == "weighted_tool_token_kl":
+                        w = torch.tensor(
+                            self.response_token_weights(response, loss_path=loss_path),
+                            device=student_lp.device,
+                            dtype=student_lp.dtype,
+                        )
+                        if float(w.sum().item()) <= 0:
+                            tool_kl = (teacher_lp - student_lp).mean()
+                        else:
+                            tool_kl = ((teacher_lp - student_lp) * w).sum() / w.sum()
+                    elif float(m.sum().item()) <= 0:
                         tool_kl = (teacher_lp - student_lp).mean()
                     else:
-                        tool_kl = ((teacher_lp - student_lp) * w).sum() / w.sum()
-                elif float(m.sum().item()) <= 0:
-                    tool_kl = (teacher_lp - student_lp).mean()
-                else:
-                    tool_kl = ((teacher_lp - student_lp) * m).sum() / m.sum()
-                # light anchor: small CE on all response tokens
-                anchor = -student_lp.mean()
-                packed = tool_opd_loss(
-                    tool_token_kl=float(tool_kl.detach().item()),
-                    anchor_kl=float(anchor.detach().item()),
-                    anchor_weight=self.anchor_weight,
-                )
-                loss = tool_kl + self.anchor_weight * anchor
-                metrics = packed
+                        tool_kl = ((teacher_lp - student_lp) * m).sum() / m.sum()
+                    # light anchor: small CE on all response tokens
+                    anchor = -student_lp.mean()
+                    packed = tool_opd_loss(
+                        tool_token_kl=float(tool_kl.detach().item()),
+                        anchor_kl=float(anchor.detach().item()),
+                        anchor_weight=self.anchor_weight,
+                    )
+                    loss = tool_kl + self.anchor_weight * anchor
+                    metrics = packed
             else:
                 raise ValueError(loss_path)
 
@@ -527,8 +634,27 @@ class ScapeHFToolOPD:
         return {"loss": total / max(1, n), "batch_size": float(n), "loss_path": loss_path}
 
     def save_pretrained(self, out_dir: str) -> None:
+        from pathlib import Path as _P
+
         self.model.save_pretrained(out_dir)
         self.tokenizer.save_pretrained(out_dir)
+        parent = getattr(self, "_parent_adapter", None)
+        if not parent:
+            src = _P(self.model_path)
+            if (src / "adapter_config.json").is_file():
+                parent = str(src)
+        if parent:
+            (_P(out_dir) / "parent_adapter.json").write_text(
+                json.dumps(
+                    {
+                        "parent_adapter": parent,
+                        "note": "OPD LoRA was trained after merge_and_unload of this Clean-SFT adapter",
+                    },
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
 
     def merge_and_save(self, out_dir: str) -> None:
         """Merge LoRA weights into base for serving when applicable."""
@@ -595,10 +721,21 @@ def run_tool_opd_train(
 ) -> dict[str, Any]:
     d_pre = mean_divergence(backend, eval_rows, loss_path=loss_path)
     losses = []
+    n_train = len(train_rows)
     for _ep in range(epochs):
-        for i in range(0, len(train_rows), batch_size):
+        for i in range(0, n_train, batch_size):
             batch = train_rows[i : i + batch_size]
-            losses.append(backend.train_step(batch, loss_path=loss_path))
+            step = backend.train_step(batch, loss_path=loss_path)
+            losses.append(step)
+            if (i // batch_size) % 5 == 0:
+                print(
+                    f"[opd] step={i}/{n_train} loss={step.get('loss')}",
+                    flush=True,
+                )
+            try:
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
     d_post = mean_divergence(backend, eval_rows, loss_path=loss_path)
     return {
         "loss_path": loss_path,
@@ -631,6 +768,7 @@ def assert_loss_paths_distinct() -> dict[str, Any]:
         "tool_name_only_kl",
         "args_only_kl",
         "offpolicy_matched",
+        "route_kl",
     ]
     present = {k: (k in src) for k in required}
     # also ensure offpolicy uses prompt_full for student forward
