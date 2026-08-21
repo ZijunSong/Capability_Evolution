@@ -13,11 +13,10 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any, Literal, Sequence
+from typing import Any, Literal, Mapping, Sequence
 
 import torch
 import torch.nn.functional as F
-from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from scape.training.tool_mask import (
     build_tool_token_mask,
@@ -28,6 +27,12 @@ from scape.training.canonical_metrics import (
     js_from_logits,
     kl_from_logits,
     signed_logprob_gap,
+)
+from scape.training.opd_dataset import ProjectedTrainingStep
+from scape.training.sr_opd_loss import (
+    SR_OPD_LOSS_NAME,
+    compute_sr_opd_ce,
+    pack_sr_opd_metrics,
 )
 from scape.training.tool_opd import learnability_score, tool_opd_loss
 
@@ -40,6 +45,8 @@ LossPath = Literal[
     "full_response_kl",
     "offpolicy_matched",
     "route_kl",
+    "action_ce_plus_nextturn_kl",
+    "sr_opd_ce",
 ]
 
 # Derived from Stage L baseline ablation (name_only >> args_only >> uniform).
@@ -80,6 +87,24 @@ MASK_MODE_BY_LOSS: dict[str, dict[str, bool]] = {
         "include_arg_keys": False,
         "include_arg_values": False,
         "include_end_search": False,
+    },
+    "action_ce": {
+        "include_name": True,
+        "include_arg_keys": True,
+        "include_arg_values": True,
+        "include_end_search": True,
+    },
+    "action_ce_plus_nextturn_kl": {
+        "include_name": True,
+        "include_arg_keys": True,
+        "include_arg_values": True,
+        "include_end_search": True,
+    },
+    "sr_opd_ce": {
+        "include_name": True,
+        "include_arg_keys": True,
+        "include_arg_values": True,
+        "include_end_search": True,
     },
 }
 
@@ -124,6 +149,7 @@ class ScapeHFToolOPD:
     learning_rate: float = 1e-5
     anchor_weight: float = 0.1
     lambda_args: float = 0.0
+    legacy_teacher_kl_weight: float = 0.0
     use_lora: bool = True
     lora_r: int = 8
     lora_alpha: int = 16
@@ -142,6 +168,8 @@ class ScapeHFToolOPD:
             except Exception:
                 base_src = "/data/ppnm/models/gpt-oss-20b"
             tok_src = base_src if not (model_dir / "tokenizer_config.json").is_file() else str(model_dir)
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+
         self.tokenizer = AutoTokenizer.from_pretrained(
             tok_src, trust_remote_code=True
         )
@@ -472,6 +500,7 @@ class ScapeHFToolOPD:
             "offpolicy_matched",
             "action_ce",
             "route_kl",
+            "action_ce_plus_nextturn_kl",
         ):
             m = torch.tensor(token_mask, device=kl_tok.device, dtype=kl_tok.dtype)
             if float(m.sum().item()) <= 0:
@@ -495,18 +524,118 @@ class ScapeHFToolOPD:
             "arg_value_kl": div * (n_val / (n_name + n_key + n_val)),
         }
 
+    def _row_to_projected_step(self, row: Mapping[str, Any] | ProjectedTrainingStep) -> ProjectedTrainingStep:
+        if isinstance(row, ProjectedTrainingStep):
+            return row
+        if row.get("target_text"):
+            return ProjectedTrainingStep(
+                prompt_reduced=str(row.get("prompt_reduced") or row.get("student_prompt") or ""),
+                target_text=str(row["target_text"]),
+                target_action=dict(row.get("target_action") or {}),
+                token_mask=row.get("token_mask"),
+                weight=float(row.get("weight") or row.get("projection_confidence") or 1.0),
+                metadata=dict(row.get("metadata") or {}),
+            )
+        return ProjectedTrainingStep(
+            prompt_reduced=str(row["prompt_reduced"]),
+            target_text=str(row.get("response_text") or ""),
+            target_action=dict(row.get("student_action") or row.get("target_action") or {}),
+            token_mask=row.get("token_mask"),
+            weight=float(row.get("weight") or 1.0),
+            metadata=dict(row.get("metadata") or {}),
+        )
+
+    def train_projected_step(self, step: ProjectedTrainingStep) -> dict[str, Any]:
+        """One SR-OPD CE backward. Logger metrics come from the same tensor."""
+        prompt_ids = self.encode(step.prompt_reduced)
+        resp_ids = self.encode(step.target_text)
+        if not resp_ids:
+            zero = torch.zeros((), device=self._device, requires_grad=True)
+            return pack_sr_opd_metrics(zero, n_supervised=0.0, weight=step.weight)
+        student_lp = self._teacher_forced_logprobs(prompt_ids, resp_ids, require_grad=True)
+        mask_list = list(step.token_mask) if step.token_mask is not None else [True] * len(resp_ids)
+        if len(mask_list) != len(resp_ids):
+            mask_list = [True] * len(resp_ids)
+        token_mask = torch.tensor(mask_list, device=self._device, dtype=student_lp.dtype)
+        token_weight = torch.full_like(token_mask, float(step.weight))
+        loss = compute_sr_opd_ce(student_lp, token_mask, token_weight)
+        if self.legacy_teacher_kl_weight > 0.0:
+            teacher_prompt = str((step.metadata or {}).get("prompt_full") or "")
+            if teacher_prompt:
+                with torch.no_grad():
+                    teacher_lp = self._teacher_forced_logprobs(
+                        self.encode(teacher_prompt), resp_ids, require_grad=False
+                    )
+                loss = loss + float(self.legacy_teacher_kl_weight) * (teacher_lp - student_lp.detach()).mean()
+        metrics = pack_sr_opd_metrics(
+            loss,
+            n_supervised=float(token_mask.sum().item()),
+            weight=step.weight,
+        )
+        loss.backward()
+        metrics["loss_path"] = SR_OPD_LOSS_NAME
+        return metrics
+
+    def train_projected_batch(
+        self,
+        batch: Sequence[ProjectedTrainingStep | dict[str, Any]],
+        *,
+        loss_path: LossPath = "sr_opd_ce",
+    ) -> dict[str, Any]:
+        """Formal SR-OPD batch. Does not branch on component_id."""
+        del loss_path
+        self.model.train()
+        self.optimizer.zero_grad(set_to_none=True)
+        total = 0.0
+        n = 0
+        n_tok = 0.0
+        last_loss_id = 0
+        for raw in batch:
+            step = self._row_to_projected_step(raw)
+            metrics = self.train_projected_step(step)
+            total += float(metrics["loss"])
+            n += 1
+            n_tok += float(metrics["n_supervised_tokens"])
+            last_loss_id = int(metrics["loss_id"])
+        if n > 0:
+            self.optimizer.step()
+        self.model.eval()
+        return {
+            "loss": total / max(1, n),
+            "sr_opd_ce": total / max(1, n),
+            "batch_size": float(n),
+            "n_supervised_tokens": n_tok,
+            "loss_path": SR_OPD_LOSS_NAME,
+            "loss_impl": f"scape.training.hf_tool_opd:{SR_OPD_LOSS_NAME}",
+            "loss_id": last_loss_id,
+        }
+
     def train_step(
         self,
         batch: Sequence[dict[str, Any]],
         *,
         loss_path: LossPath = "tool_token_kl",
     ) -> dict[str, float]:
+        if loss_path == "sr_opd_ce":
+            expanded: list[ProjectedTrainingStep | dict[str, Any]] = []
+            for row in batch:
+                if row.get("projected_steps"):
+                    expanded.extend(list(row["projected_steps"]))
+                else:
+                    expanded.append(row)
+            return self.train_projected_batch(expanded, loss_path="sr_opd_ce")
         self.model.train()
         self.optimizer.zero_grad(set_to_none=True)
         total = 0.0
         n = 0
         for row in batch:
-            if loss_path == "offpolicy_matched":
+            row_loss = str(row.get("loss_kind") or loss_path)
+            if loss_path == "action_ce_plus_nextturn_kl":
+                if row_loss in ("nextturn_kl", "route_kl"):
+                    row_loss = "route_kl"
+                else:
+                    row_loss = "action_ce"
+            if row_loss == "offpolicy_matched" or loss_path == "offpolicy_matched":
                 prompt = row["prompt_full"]
             else:
                 prompt = row["prompt_reduced"]
@@ -515,10 +644,10 @@ class ScapeHFToolOPD:
             resp_ids = self.encode(response)
             if not resp_ids:
                 continue
-            teacher_prompt = row["prompt_full"]
+            teacher_prompt = row.get("prompt_full") or row["prompt_reduced"]
             student_lp = None
             teacher_lp = None
-            if loss_path != "route_kl":
+            if row_loss not in ("route_kl", "action_ce"):
                 student_lp = self._teacher_forced_logprobs(
                     prompt_ids, resp_ids, require_grad=True
                 )
@@ -526,20 +655,25 @@ class ScapeHFToolOPD:
                     teacher_lp = self._teacher_forced_logprobs(
                         self.encode(teacher_prompt), resp_ids, require_grad=False
                     )
+            elif row_loss == "action_ce":
+                student_lp = self._teacher_forced_logprobs(
+                    prompt_ids, resp_ids, require_grad=True
+                )
 
-            token_mask = self.response_token_mask(response, loss_path=loss_path)
+            mask_path = "route_kl" if row_loss == "route_kl" else row_loss
+            token_mask = self.response_token_mask(response, loss_path=mask_path)  # type: ignore[arg-type]
             if len(token_mask) != len(resp_ids):
                 token_mask = [True] * len(resp_ids)
             m = torch.tensor(token_mask, device=self._device, dtype=torch.float32)
 
-            if loss_path == "action_ce":
+            if row_loss == "action_ce":
                 # CE on masked action tokens: -student_logprob
                 if float(m.sum().item()) <= 0:
                     loss = -student_lp.mean()
                 else:
                     loss = -(student_lp * m).sum() / m.sum()
                 metrics = tool_opd_loss(tool_token_kl=float(loss.detach().item()), anchor_kl=0.0)
-            elif loss_path == "full_response_kl":
+            elif row_loss == "full_response_kl":
                 kl = (teacher_lp - student_lp).mean()
                 loss = kl
                 metrics = tool_opd_loss(
@@ -547,7 +681,7 @@ class ScapeHFToolOPD:
                     anchor_kl=0.0,
                     anchor_weight=0.0,
                 )
-            elif loss_path in (
+            elif row_loss in (
                 "tool_token_kl",
                 "weighted_tool_token_kl",
                 "tool_name_only_kl",
@@ -555,7 +689,7 @@ class ScapeHFToolOPD:
                 "offpolicy_matched",
                 "route_kl",
             ):
-                if loss_path == "route_kl":
+                if row_loss == "route_kl":
                     s_logits = self._response_position_logits(
                         prompt_ids, resp_ids, require_grad=True
                     )
@@ -613,7 +747,7 @@ class ScapeHFToolOPD:
                     )
                     metrics = packed
                 else:
-                    if loss_path == "weighted_tool_token_kl":
+                    if row_loss == "weighted_tool_token_kl":
                         w = torch.tensor(
                             self.response_token_weights(response, loss_path=loss_path),
                             device=student_lp.device,
@@ -637,7 +771,7 @@ class ScapeHFToolOPD:
                     loss = tool_kl + self.anchor_weight * anchor
                     metrics = packed
             else:
-                raise ValueError(loss_path)
+                raise ValueError(row_loss)
 
             loss.backward()
             total += float(metrics["loss"])
@@ -705,6 +839,15 @@ def mean_canonical_metrics(
     return {k: v / n for k, v in acc.items()}
 
 
+def _row_score_loss_path(loss_path: LossPath, row: dict[str, Any]) -> LossPath:
+    if loss_path != "action_ce_plus_nextturn_kl":
+        return loss_path
+    kind = str(row.get("loss_kind") or "")
+    if kind in ("nextturn_kl", "route_kl"):
+        return "route_kl"
+    return "action_ce"
+
+
 def mean_divergence(
     backend: ScapeHFToolOPD,
     rows: Sequence[dict[str, Any]],
@@ -717,7 +860,7 @@ def mean_divergence(
             prompt_reduced=row["prompt_reduced"],
             prompt_full=row["prompt_full"],
             response_text=row["response_text"],
-            loss_path=loss_path,
+            loss_path=_row_score_loss_path(loss_path, row),
         )
         for k in acc:
             acc[k] += d[k]
@@ -784,6 +927,8 @@ def assert_loss_paths_distinct() -> dict[str, Any]:
         "args_only_kl",
         "offpolicy_matched",
         "route_kl",
+        "action_ce_plus_nextturn_kl",
+        "sr_opd_ce",
     ]
     present = {k: (k in src) for k in required}
     # also ensure offpolicy uses prompt_full for student forward

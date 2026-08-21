@@ -31,6 +31,11 @@ def run_micro_distill(
     teacher_strategy: str = "ema",
     same_state_jsonl: Path | None = None,
     epochs: int = 1,
+    opd_mode: str = "sr_opd",
+    projection_max_events: int = 8,
+    projection_max_macro_actions: int = 3,
+    legacy_teacher_kl_weight: float = 0.0,
+    projection_audit_path: Path | None = None,
 ) -> dict[str, Any]:
     """Train (or dry-run) one sample-size cell from a fixed base checkpoint.
 
@@ -66,6 +71,16 @@ def run_micro_distill(
             "base_checkpoint": base_checkpoint,
             "dry_run": dry_run,
             "legacy_scope_path_used": False,
+            "opd_mode": opd_mode,
+            "projection_schema_version": "scape_projection_v1",
+            "loss_impl": (
+                "scape.training.hf_tool_opd:sr_opd_ce"
+                if opd_mode == "sr_opd"
+                else "scape.training.hf_tool_opd:tool_token_kl"
+            ),
+            "projection_max_events": projection_max_events,
+            "projection_max_macro_actions": projection_max_macro_actions,
+            "legacy_teacher_kl_weight": legacy_teacher_kl_weight,
             **teacher.manifest_fields(),
             "dropout": schedule.to_dict(),
         },
@@ -83,9 +98,13 @@ def run_micro_distill(
                 n_states=n_samples, component_id=component_id, seed=seed
             )
         eval_rows = rows[: max(1, min(32, len(rows) // 4))]
-        backend = ScapeHFToolOPD(model_path=base_checkpoint)
+        backend = ScapeHFToolOPD(
+            model_path=base_checkpoint,
+            legacy_teacher_kl_weight=legacy_teacher_kl_weight,
+        )
+        loss_path = "sr_opd_ce" if opd_mode == "sr_opd" else "tool_token_kl"
         trained = run_tool_opd_train(
-            backend, rows, eval_rows, loss_path="tool_token_kl", epochs=epochs
+            backend, rows, eval_rows, loss_path=loss_path, epochs=epochs
         )
         summary = {
             "component_id": component_id,
@@ -139,6 +158,8 @@ def run_micro_distill(
         "mean_loss": sum(x["loss"] for x in losses) / len(losses),
         "dry_run": dry_run,
         "legacy_scope_path_used": False,
+        "opd_mode": opd_mode,
+        "projection_schema_version": "scape_projection_v1",
         "teacher": teacher.manifest_fields(),
     }
     (output_dir / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
@@ -169,6 +190,17 @@ def main(argv: Sequence[str] | None = None) -> None:
     ap.add_argument("--no-dry-run", action="store_true", default=False)
     ap.add_argument("--same-state-jsonl", type=Path, default=None)
     ap.add_argument("--epochs", type=int, default=1)
+    ap.add_argument(
+        "--opd-mode",
+        choices=("sr_opd", "legacy_same_action"),
+        default="sr_opd",
+        help="Formal path is sr_opd. legacy_same_action is regression only.",
+    )
+    ap.add_argument("--projection-max-events", type=int, default=8)
+    ap.add_argument("--projection-max-macro-actions", type=int, default=3)
+    ap.add_argument("--reject-nonrealizable", action="store_true", default=True)
+    ap.add_argument("--projection-audit-path", type=Path, default=None)
+    ap.add_argument("--legacy-teacher-kl-weight", type=float, default=0.0)
     args = ap.parse_args(argv)
     dry = True
     if args.no_dry_run:
@@ -185,6 +217,11 @@ def main(argv: Sequence[str] | None = None) -> None:
         dry_run=dry,
         same_state_jsonl=args.same_state_jsonl,
         epochs=args.epochs,
+        opd_mode=args.opd_mode,
+        projection_max_events=args.projection_max_events,
+        projection_max_macro_actions=args.projection_max_macro_actions,
+        legacy_teacher_kl_weight=args.legacy_teacher_kl_weight,
+        projection_audit_path=args.projection_audit_path,
     )
     print(json.dumps(summary, indent=2))
 

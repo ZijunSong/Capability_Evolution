@@ -16,6 +16,7 @@ from scape.adapters.components import minus_mask
 from scape.probes.rollout import FakeSearchEnv
 from scape.rendering.dual_view import DualViewRenderer
 from scape.state.snapshot import EnvironmentSnapshot, snapshot_roundtrip_ok
+from scape.training.action_codec import format_tool_call_text
 from scape.training.tool_mask import legal_tool_names
 
 SNAPSHOT_SCHEMA_VERSION = "scape_snapshot_v1"
@@ -56,10 +57,6 @@ HARNESS1_TOOL_TEMPLATES: list[dict[str, Any]] = [
         "arguments": {"reason": "sufficient evidence"},
     },
 ]
-
-
-def format_tool_call_text(name: str, arguments: Mapping[str, Any]) -> str:
-    return f"to={name}\n{json.dumps(dict(arguments), ensure_ascii=False)}\n"
 
 
 def build_paired_state(

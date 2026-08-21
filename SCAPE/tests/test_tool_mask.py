@@ -5,6 +5,7 @@ from scape.training.tool_mask import (
     extract_argument_spans,
     extract_end_search_spans,
     extract_tool_name_spans,
+    legal_tool_names,
 )
 
 
@@ -46,3 +47,10 @@ def test_end_search_span():
     mask = build_tool_token_mask(SAMPLE)
     kinds = {s.kind for s in mask}
     assert {"tool_name", "argument_key", "argument_value", "end_search"} <= kinds
+
+
+def test_legal_tools_respect_verify_mask():
+    assert "verify" in legal_tool_names()
+    assert "verify" not in legal_tool_names(harness_mask={"verify_tool": False})
+    assert "verify" in legal_tool_names(harness_mask={"verify_tool": True})
+    assert "importance_tagging" not in legal_tool_names(harness_mask={"importance_tagging": True})

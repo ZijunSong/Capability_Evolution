@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 
 TOOL_NAME_RE = re.compile(
@@ -212,30 +212,97 @@ def tool_loss_mask_from_response(
     }
 
 
-def legal_tool_names(extra: Iterable[str] | None = None) -> list[str]:
-    # Harness-1 action interface (canonical) + legacy aliases for older fixtures.
-    base = [
-        "fan_out_search",
-        "search_corpus",
-        "grep_corpus",
-        "read_document",
-        "review_docs",
-        "curate",
-        "verify",
-        "end_search",
-        "multi_tool_use",
-        "prune_chunks",
-        # legacy / provisional aliases
-        "search",
-        "grep",
-    ]
+STUDENT_ALWAYS_LEGAL = [
+    "fan_out_search",
+    "search_corpus",
+    "grep_corpus",
+    "read_document",
+    "review_docs",
+    "curate",
+    "end_search",
+    "multi_tool_use",
+    "prune_chunks",
+    # legacy / provisional aliases
+    "search",
+    "grep",
+]
+
+CURATE_STUDENT_KEYS = frozenset({"add_ids", "remove_ids"})
+CURATE_PRIVILEGED_KEYS = frozenset({"importance"})
+
+ACTION_ARG_SCHEMAS: dict[str, frozenset[str]] = {
+    "fan_out_search": frozenset({"query", "queries", "n", "top_k"}),
+    "search_corpus": frozenset({"query", "top_k", "n"}),
+    "grep_corpus": frozenset({"pattern", "query", "top_k"}),
+    "read_document": frozenset({"doc_id"}),
+    "review_docs": frozenset({"doc_ids"}),
+    "curate": CURATE_STUDENT_KEYS,
+    "end_search": frozenset({"reason"}),
+    "verify": frozenset({"claim", "evidence_ids", "doc_ids", "doc_id"}),
+}
+
+
+def legal_tool_names(
+    extra: Iterable[str] | None = None,
+    harness_mask: Mapping[str, bool] | None = None,
+) -> list[str]:
+    """Student-legal tools under a reduced harness mask.
+
+    When ``harness_mask`` is omitted, ``verify`` stays in the list for legacy
+    fixtures. When the mask is provided, ``verify_tool=False`` removes verify.
+    ``importance_tagging`` is never a Student tool.
+    """
+    base = list(STUDENT_ALWAYS_LEGAL)
+    include_verify = harness_mask is None or bool(harness_mask.get("verify_tool", False))
+    if include_verify:
+        base.append("verify")
     if extra:
         base.extend(list(extra))
-    # stable unique
     seen: set[str] = set()
     out: list[str] = []
     for n in base:
+        if n == "importance_tagging":
+            continue
+        if n == "verify" and harness_mask is not None and not harness_mask.get("verify_tool", False):
+            continue
         if n not in seen:
             seen.add(n)
             out.append(n)
     return out
+
+
+def validate_action_arguments(
+    name: str,
+    arguments: Mapping[str, Any] | None,
+    *,
+    harness_mask: Mapping[str, bool] | None = None,
+) -> tuple[bool, str | None]:
+    """Reduced-schema argument check. Never treats same tool name as realizable."""
+    args = dict(arguments or {})
+    if name == "importance_tagging":
+        return False, "ILLEGAL_TOOL"
+    if name == "verify" and harness_mask is not None and not harness_mask.get("verify_tool", False):
+        return False, "ILLEGAL_TOOL"
+    if name == "curate":
+        if "importance" in args and (
+            harness_mask is None or not harness_mask.get("importance_tagging", False)
+        ):
+            return False, "INVALID_ARGUMENT_SCHEMA"
+        unknown = set(args) - CURATE_STUDENT_KEYS - CURATE_PRIVILEGED_KEYS
+        if unknown:
+            return False, "INVALID_ARGUMENT_SCHEMA"
+        for key in ("add_ids", "remove_ids"):
+            if key in args and args[key] is not None and not isinstance(args[key], (list, tuple)):
+                return False, "INVALID_ARGUMENT_SCHEMA"
+        return True, None
+    allowed = ACTION_ARG_SCHEMAS.get(name)
+    if allowed is None:
+        return True, None
+    extra_keys = set(args) - set(allowed)
+    if extra_keys:
+        return False, "INVALID_ARGUMENT_SCHEMA"
+    if name == "review_docs" and "doc_ids" in args and not isinstance(args["doc_ids"], (list, tuple)):
+        return False, "INVALID_ARGUMENT_SCHEMA"
+    if name == "read_document" and "doc_id" in args and not isinstance(args["doc_id"], str):
+        return False, "INVALID_ARGUMENT_SCHEMA"
+    return True, None

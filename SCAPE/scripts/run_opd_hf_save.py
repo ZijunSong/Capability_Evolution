@@ -66,11 +66,22 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--offline-shadow", action="store_true", default=True)
     p.add_argument("--no-offline-shadow", action="store_false", dest="offline_shadow")
     p.add_argument("--skip-train", action="store_true")
+    p.add_argument(
+        "--opd-mode",
+        choices=("legacy_same_action", "sr_opd"),
+        default="legacy_same_action",
+        help="legacy_same_action keeps this SCOPE path. Formal SR-OPD uses scripts/run_sr_opd_train.py",
+    )
     return p.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+    if args.opd_mode == "sr_opd":
+        raise SystemExit(
+            "Formal SR-OPD no longer uses SCOPE/training/opd. "
+            "Run: python SCAPE/scripts/run_sr_opd_train.py --opd-mode sr_opd ..."
+        )
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
