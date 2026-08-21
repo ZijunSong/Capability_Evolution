@@ -1,5 +1,21 @@
 # SCAPE Result Simplified
 
+## 2026-08-21 V8D_VERIFY_TOOL Teacher-always-on vs Student-always-off 128-state gain
+
+Status: **COMPLETED; four-seed formal 128-state fork, with lower Teacher tool cost and positive Utility delta at K4/K8.**
+
+The run reused the adaptive-rerank frozen cohort: seeds `2214/2215/2216/2217`, 32 states per seed, and 128 paired states per horizon. Teacher used an explicit `verify_tool=True` view at every decision; Student used `verify_tool=False` at every decision. The first action counted toward K, each branch executed exactly 4 or 8 actions, and `full_harness_takeover=0`.
+
+```text
+Horizon   n=128   first-action disagreement   tool-cost Delta (T-S)   Utility Delta (T-S)
+K4        128     13.28125%                    -0.3671875              +0.0055078125
+K8        128     13.28125%                    -0.7265625              +0.0108984375
+```
+
+Audit passed: all eight cells completed `32/32`; each seed's ordered K4/K8 snapshot identity matched; frozen reconstruction mismatch, branch initial-state mismatch, Teacher-mask failure, Student-mask failure, horizon action-count failure, and Full Harness takeover were all zero. These are process/utility metrics only, as requested, and do not claim OPD internalization or qrel recall gain.
+
+Artifacts: `SCAPE/outputs/0821_verify_tool_always_on_off_128/VERIFY_TOOL_ALWAYS_ON_OFF_SUMMARY.json`, `VERIFY_TOOL_ALWAYS_ON_OFF_PER_STATE.jsonl`, raw shards, reconstruction audits, and `SHA256SUMS`. Runner: `SCAPE/scripts/run_verify_tool_always_on_off_128.py`; runtime `/opt/scape-projected-action`.
+
 ## 2026-08-21 adaptive_rerank_instruction Teacher-always-on vs Student-always-off 128-state gain
 
 Status: **COMPLETED; always-on Teacher changes the first action on 10.9375% of states, lowers mean tool cost, and has a positive mean Utility delta at K4/K8.**
