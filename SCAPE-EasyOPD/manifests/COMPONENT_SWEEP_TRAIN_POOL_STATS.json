@@ -1,0 +1,9 @@
+{
+  "n_added": 1554,
+  "n_dev_test_query_overlap": 0,
+  "n_exact_duplicate_queries": 0,
+  "n_existing_kept": 446,
+  "n_train_pool_unique_queries": 2000,
+  "status": "READY_2000",
+  "target": 2000
+}

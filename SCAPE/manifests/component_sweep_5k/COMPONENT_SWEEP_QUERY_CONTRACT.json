@@ -1,0 +1,17 @@
+{
+  "canonical_student_base": null,
+  "counts": {
+    "dev": 128,
+    "test": 256,
+    "train": 446
+  },
+  "event_collection_status": "BLOCKED_RUNTIME_NOT_READY",
+  "query_disjoint": true,
+  "real_runtime_required": true,
+  "reason": "EasyOPD handoff does not provide CANONICAL_STUDENT_BASE and harness/scape runtime is unavailable in the approved environment.",
+  "schema_version": "scape_component_sweep_query_contract_v1",
+  "seed": 8191,
+  "source": "/mnt/songzijun/Capability_Evolution/SCOPE/external/BrowseComp-Plus/data/browsecomp_plus_decrypted.jsonl",
+  "source_sha256": "0374946363a5c59f4d3707fa9c31b9e5152269c0f024668a71687dda4e48a85e",
+  "status": "QUERY_POOL_INSUFFICIENT"
+}

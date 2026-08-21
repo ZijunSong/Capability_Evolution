@@ -80,9 +80,15 @@ model_export/adapter/
 **/.git/
 !/.git/
 harness-1-upstream/
-SCAPE/external/harness-1/
 SCAPE-wt-h100-*/
 **/node_modules/
+
+# Harness-1 source is part of this repository; keep only its VCS metadata out.
+SCAPE/external/harness-1/.git/
+SCAPE/external/harness-1/.venv/
+SCAPE/external/harness-1/outputs/
+SCAPE/external/harness-1/results/
+SCAPE/external/harness-1/runs/
 
 # --- OS / editor ---
 .DS_Store

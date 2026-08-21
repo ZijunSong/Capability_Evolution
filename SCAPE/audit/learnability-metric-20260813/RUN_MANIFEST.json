@@ -1,0 +1,13 @@
+{
+  "stage": "h100_4_learnability_metric_audit",
+  "status": "completed",
+  "exit_code": 0,
+  "repo": "/mnt/songzijun/Capability_Evolution/SCAPE",
+  "python": "/opt/scape-hf-scorer/bin/python",
+  "metric_contract_valid": false,
+  "old_gate_bug": false,
+  "recommended_h20_action": "FIX_METRIC_IMPLEMENTATION_FIRST",
+  "audited_rows": 16,
+  "audited_ok_rows": 16,
+  "missing_artifacts": 20
+}

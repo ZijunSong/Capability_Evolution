@@ -1,0 +1,18 @@
+method:
+  name: scape_component_opd
+component:
+  name: sentence_compress
+  realizability: DIRECT
+  event_only: true
+teacher:
+  mode: same_weights_privileged_view
+  component_enabled: true
+student:
+  component_enabled: false
+  inference_privilege: false
+distillation:
+  loss: reverse_kl
+  token_mask: response
+reference:
+  mode: frozen_init
+  coef: 0.05

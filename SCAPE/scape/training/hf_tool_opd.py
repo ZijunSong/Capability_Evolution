@@ -153,6 +153,8 @@ class ScapeHFToolOPD:
             torch_dtype=self.torch_dtype,
             trust_remote_code=True,
         )
+        if hasattr(self.model, "config"):
+            self.model.config.use_cache = False
         self._parent_adapter = None
         if adapter_cfg.is_file():
             from peft import PeftModel as _PeftModel
@@ -292,15 +294,28 @@ class ScapeHFToolOPD:
                 prompt_ids = prompt_ids[-1:]
             full = prompt_ids + response_ids
         inp = torch.tensor([full], device=self._device)
-        if require_grad:
-            self.model.train()
-            logits = self.model(inp).logits[0]
-        else:
+        # Qwen3 supports logits_to_keep.  Keeping only the response prediction
+        # positions avoids materializing a full [sequence, vocab] tensor for
+        # long Student-visible prefixes while preserving teacher-forced CE/KL.
+        # Fall back to full-sequence logits for models that reject the kwarg.
+        n_response = len(response_ids)
+        keep_kwargs = {"logits_to_keep": n_response + 1}
+
+        def _forward(kwargs: dict[str, Any]) -> torch.Tensor:
+            if require_grad:
+                self.model.train()
+                return self.model(inp, **kwargs).logits[0]
             self.model.eval()
             with torch.no_grad():
-                logits = self.model(inp).logits[0]
-        start = max(0, len(prompt_ids) - 1)
-        return logits[start : start + len(response_ids)]
+                return self.model(inp, **kwargs).logits[0]
+
+        try:
+            logits = _forward(keep_kwargs)
+            return logits[:-1]
+        except TypeError:
+            logits = _forward({})
+            start = max(0, len(prompt_ids) - 1)
+            return logits[start : start + len(response_ids)]
 
     def _teacher_forced_logprobs(
         self,

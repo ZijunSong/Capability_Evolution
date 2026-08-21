@@ -24,7 +24,6 @@ if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
 import run_h100_2_live_fork_replay as base
-from pyserini.search.lucene import LuceneSearcher
 from scape.common.manifest import build_run_manifest, finalize_run_manifest, write_run_manifest
 from scape.common.sha256sums import write_sha256sums
 from scape.common.status import write_status_live
@@ -104,9 +103,40 @@ def row_for_item(args: argparse.Namespace, item: dict[str, Any], queries: dict[s
     component = args.component
     k = args.K
     start = base.state_from_snapshot(item["snapshot"], queries[item["query_id"]], qrels[item["query_id"]], searcher, component)
+    initial_candidate_ids = [str(d["id"]) for d in start.documents]
+    initial_curated_ids = list(start.curated_ids)
     s_final, s_trace = base.run_branch(start, item["a_S"], k=k, scorer=scorer, renderer=renderer, component=component, label="S")
     t_final, t_trace = base.run_branch(start, item["a_T"], k=k, scorer=scorer, renderer=renderer, component=component, label="T")
     sm = s_final.metrics(); tm = t_final.metrics()
+
+    def endpoint(st: base.LiveState, trace: list[dict[str, Any]]) -> dict[str, Any]:
+        attempts = [str(x.get("action", {}).get("arguments", {}).get("doc_id"))
+                    for x in trace if x.get("action", {}).get("name") == "read_document"
+                    and x.get("action", {}).get("arguments", {}).get("doc_id")]
+        # LiveState.execute records successful read observations for every valid
+        # read_document action; retained IDs are the context-visible read IDs at K.
+        successful = list(dict.fromkeys(st.read_ids))
+        return {
+            "initial_candidate_evidence_ids": list(initial_candidate_ids),
+            "final_candidate_evidence_ids": [str(d["id"]) for d in st.documents],
+            "initial_curated_ids": list(initial_curated_ids),
+            "final_curated_ids": list(st.curated_ids),
+            "read_attempt_ids_within_k": attempts,
+            "successful_read_ids_within_k": successful,
+            "read_ids_entered_context": list(successful),
+            "read_ids_retained_at_endpoint": list(successful),
+            "final_activated_evidence_ids": list(dict.fromkeys(st.curated_ids + successful)),
+            "actions": [x.get("action", {}) for x in trace],
+            "observations": list(st.observations),
+            "context_evidence_ids_by_step": [list(successful)],
+            "initial_state_hash": item["snapshot_hash"],
+            "final_state_hash": st.snapshot().content_hash(),
+            "tool_cost": float(st.cost),
+            "duplicate_read_count": max(0, len(attempts) - len(set(attempts))),
+        }
+
+    ep_s = endpoint(s_final, s_trace)
+    ep_t = endpoint(t_final, t_trace)
     return {
         "split": "UTILITY_LIVE256",
         "seed": args.seed,
@@ -124,6 +154,8 @@ def row_for_item(args: argparse.Namespace, item: dict[str, Any], queries: dict[s
         "divergence_type": item["divergence_type"],
         "branch_S_metrics": sm,
         "branch_T_metrics": tm,
+        "branch_S_endpoint": ep_s,
+        "branch_T_endpoint": ep_t,
         "branch_T_minus_S": tm["objective_utility"] - sm["objective_utility"],
         "curated_evidence_gain": tm["curated_evidence_gain"] - sm["curated_evidence_gain"],
         "useful_unique_docs": tm["useful_unique_docs"] - sm["useful_unique_docs"],
@@ -144,7 +176,7 @@ def run_utility(args: argparse.Namespace) -> int:
     queries = base._load_queries(args.browsecomp_root / "topics-qrels" / "queries.tsv")
     qrels = base._load_qrels(args.browsecomp_root / "topics-qrels" / "qrel_evidence.txt")
     qids = base.freeze_qids(args, queries, qrels, out)
-    searcher = LuceneSearcher(str(args.index_path))
+    searcher, _ = base.build_searcher(args.index_path, args.corpus_path)
     scorer = BatchedHFContinuationScorer(args.model, device=args.device, dtype=args.dtype, max_prompt_tokens=args.max_prompt_tokens)
     renderer = DualViewRenderer()
     path = out / "shards" / f"{args.component}_K{args.K}.jsonl"
@@ -168,7 +200,7 @@ def run_noise(args: argparse.Namespace) -> int:
     queries = base._load_queries(args.browsecomp_root / "topics-qrels" / "queries.tsv")
     qrels = base._load_qrels(args.browsecomp_root / "topics-qrels" / "qrel_evidence.txt")
     qids = base.freeze_qids(args, queries, qrels, out)
-    searcher = LuceneSearcher(str(args.index_path))
+    searcher, _ = base.build_searcher(args.index_path, args.corpus_path)
     scorer = BatchedHFContinuationScorer(args.model, device=args.device, dtype=args.dtype, max_prompt_tokens=args.max_prompt_tokens)
     renderer = DualViewRenderer()
     path = out / "shards" / "replay_noise.jsonl"
@@ -217,11 +249,12 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--mode", choices=["utility", "noise", "aggregate"], required=True)
     ap.add_argument("--component", choices=base.COMPONENTS)
-    ap.add_argument("--K", type=int, choices=[2, 4])
+    ap.add_argument("--K", type=int, choices=[2, 4, 8])
     ap.add_argument("--device", default="cuda:0")
     ap.add_argument("--model", default="/mnt/songzijun/models/harness-1")
     ap.add_argument("--browsecomp-root", type=Path, default=bcp)
     ap.add_argument("--index-path", type=Path, default=bcp / "indexes" / "bm25")
+    ap.add_argument("--corpus-path", type=Path, default=REPO / "outputs" / "retrieval" / "browsecomp_local_corpus_v2" / "corpus.jsonl")
     ap.add_argument("--out-dir", type=Path, default=REPO / "outputs" / "h100_2_candidate_b_live_utility")
     ap.add_argument("--seed", type=int, default=2214)
     ap.add_argument("--n-states", type=int, default=256)

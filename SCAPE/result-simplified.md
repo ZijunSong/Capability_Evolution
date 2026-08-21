@@ -234,10 +234,1624 @@ Spec still allows **one** substantive redesign (continuation-aware state selecti
 
 Artifacts: `outputs/h20_clean_auto_0817/` (`RUN_MANIFEST.json`, `STATUS_LIVE.md`, `H20_CLEAN_AUTO_HANDOFF.json`, `BEST_CLEAN_AUTO_STUDENT.json`, `SHA256SUMS`, `base_recovery/`, `auto_data/`, `value/`, `training/`, `real_eval/`).
 
+## 2026-08-21 V8D_VERIFY_TOOL Teacher-always-on vs Student-always-off 128-state gain
+
+Status: **COMPLETED; four-seed formal 128-state fork, with lower Teacher tool cost and positive Utility delta at K4/K8.**
+
+The run reused the adaptive-rerank frozen cohort: seeds `2214/2215/2216/2217`, 32 states per seed, and 128 paired states per horizon. Teacher used an explicit `verify_tool=True` view at every decision; Student used `verify_tool=False` at every decision. The first action counted toward K, each branch executed exactly 4 or 8 actions, and `full_harness_takeover=0`.
+
+```text
+Horizon   n=128   first-action disagreement   tool-cost Delta (T-S)   Utility Delta (T-S)
+K4        128     13.28125%                    -0.3671875              +0.0055078125
+K8        128     13.28125%                    -0.7265625              +0.0108984375
+```
+
+Audit passed: all eight cells completed `32/32`; each seed's ordered K4/K8 snapshot identity matched; frozen reconstruction mismatch, branch initial-state mismatch, Teacher-mask failure, Student-mask failure, horizon action-count failure, and Full Harness takeover were all zero. These are process/utility metrics only, as requested, and do not claim OPD internalization or qrel recall gain.
+
+Artifacts: `SCAPE/outputs/0821_verify_tool_always_on_off_128/VERIFY_TOOL_ALWAYS_ON_OFF_SUMMARY.json`, `VERIFY_TOOL_ALWAYS_ON_OFF_PER_STATE.jsonl`, raw shards, reconstruction audits, and `SHA256SUMS`. Runner: `SCAPE/scripts/run_verify_tool_always_on_off_128.py`; runtime `/opt/scape-projected-action`.
+
+## 2026-08-21 adaptive_rerank_instruction Teacher-always-on vs Student-always-off 128-state gain
+
+Status: **COMPLETED; always-on Teacher changes the first action on 10.9375% of states, lowers mean tool cost, and has a positive mean Utility delta at K4/K8.**
+
+The experiment reused the same frozen cohort as the prior adaptive-rerank fork: seeds `2214/2215/2216/2217`, 32 states per seed and 128 paired states per horizon. The source shards did not retain complete snapshots, so reconstruction advanced each source trajectory with its frozen Student actions and required all target snapshot hashes to match before branching. All eight cells achieved `32/32` exact snapshot-hash matches. Teacher used an explicit `adaptive_rerank_instruction=True` rendering mask at every decision; Student used an explicit `False` mask at every decision. The first action counts toward K, so each branch executes exactly 4 or 8 actions.
+
+```text
+Horizon   n=128   first-action disagreement   tool-cost Delta (T-S)   Utility Delta (T-S)
+K4        128     10.9375%                    -0.0859375              +0.0012890625
+K8        128     10.9375%                    -0.2343750              +0.0035156250
+```
+
+Audit passed: K4/K8 ordered frozen identities match for every seed; frozen reconstruction mismatch, T/S initial-state mismatch, Teacher-mask failure, Student-mask failure, horizon action-count failure and Full Harness takeover are all `0`. The prior once-only zero result used the generic `full_mask()`, whose taxonomy default leaves this component disabled; it therefore does not establish the effect of a genuinely enabled Teacher. The always-on runner bypasses that ambiguity with explicit per-step ON/OFF masks.
+
+Artifacts: `SCAPE/outputs/0821_adaptive_rerank_instruction_always_on_off_128/ADAPTIVE_RERANK_ALWAYS_ON_OFF_SUMMARY.json` (SHA-256 `0561cae05581feb1deb513795c7bd055d4e4617d4dad816243f6076864290dbc`), `ADAPTIVE_RERANK_ALWAYS_ON_OFF_PER_STATE.jsonl` (SHA-256 `aafa58c530c15921c8467829c8ffb94eb292bb41aff50b6eee36dc83e09fa3f4`), raw shards, audits and `SHA256SUMS`. Runner: `SCAPE/scripts/run_adaptive_rerank_always_on_off_128.py`; runtime `/opt/scape-h1004`.
+
+## 2026-08-21 adaptive_rerank_instruction OPD four-cell 384-query evaluation
+
+Status: **COMPLETED; strict Harness/Lucene evaluation**.
+
+```text
+pool: SCAPE-EasyOPD/manifests/browsecomp_plus_eval_pool_384/query_manifest.json
+pool: 384 unique official queries; training query-ID overlap=0; official test subset=76
+manifest SHA-256: 21f3cbbf9d7263df91f2d03150af862959ed0583a3a7071a0fc6498190d5b6ed
+base: Qwen3-30B-A3B-Instruct-2507
+runtime: /opt/scape-easyopd-smoke7; official Pyserini Lucene BM25; Java 21
+Teacher: adaptive rerank instruction exposed in prompt
+Student Before/After: reduced prompt, no inference privilege; After uses actual LoRA adapters from h100_2/formal_hf_adaptive_8gpu
+```
+
+The four settings each completed `384/384` generated rows, with identical ordered query IDs and strict Harness action validation. Official-test metrics (`n=76`) are:
+
+```text
+setting                  Legal action rate   Test Evidence Recall@5
+Teacher                  92.1053%             2.7449%
+Student before OPD       89.4737%             3.6330%
+Student after pure OPD   97.3684%             2.2259%
+Student after RL+OPD     98.6842%             5.2768%
+```
+
+Formal summary: `SCAPE-EasyOPD/outputs/0821_adaptive_rerank_opd_384/scored/SUMMARY.json`; raw generation shards are under `.../shards/`; scorer uses strict Harness schema and official Lucene BM25, reporting only Legal action rate and Evidence Recall@5 as required. `manifest_sha256` in the scorer is the generated canonical manifest artifact; source frozen pool manifest SHA-256 is recorded above.
+
+Interpretation: RL+OPD has the highest Legal action rate and Test Evidence Recall@5 among the four settings. PURE_OPD improves legality over Teacher/Before but has lower test evidence recall; Before exceeds Teacher on recall despite lower legality.
+
+## 2026-08-21 subtractive_curation Teacher-always-on vs Student-always-off 128-state gain
+
+Status: **COMPLETED; first-action disagreement is unchanged from the once protocol; K4 is utility-neutral and K8 has a small positive utility delta with lower Teacher tool cost.**
+
+The experiment reused the exact frozen 128 snapshots from `SCAPE/outputs/0820_subtractive_curation_recall_128_final/manifests/SUBTRACTIVE_STATES_128.jsonl` (manifest SHA-256 `bd55393181aed97448858426e50d58d5368e6ff35e977bd4816a47b5e796dd6e`). The first action counted toward K, so each branch executed exactly 4 or 8 actions. Teacher used the Full view with `subtractive_curation` enabled at every decision; Student used the Reduced view with the component disabled at every decision. `full_harness_takeover=0`.
+
+```text
+Horizon   n=128   first-action disagreement   tool-cost Δ (T-S)   Utility Δ (T-S)
+K4        128     24.2188%                    +0.0000000          +0.0000000
+K8        128     24.2188%                    -0.1171875          +0.0017578 (+0.1758% display)
+```
+
+Audit passed: 128 rows per horizon; cross-horizon ordered snapshot identity `128/128`; every branch has exactly K actions; Teacher traces use Full view on all steps and Student traces use Reduced view on all steps; missing/empty qrel `0`; Full Harness takeover `0`. Artifact: `SCAPE/outputs/0821_subtractive_curation_always_on_off_128/SUBTRACTIVE_ALWAYS_ON_OFF_SUMMARY.json` with raw K4/K8 JSONL. Runner: `SCAPE/scripts/run_subtractive_curation_always_on_off_128.py`; runtime `/opt/scape-easyopd-smoke7`.
+
+## 2026-08-21 auto_populate_first_search Teacher-always-on vs Student-always-off 128-state gain
+
+Status: **COMPLETED; always-on Teacher reduces tool cost and has positive utility delta at K4/K8.**
+
+The experiment reused the frozen `NATURAL_FIRST_SEARCH_seed2230` 128-state cohort. The first action counts toward K; Teacher used the Full view with `auto_populate_first_search` enabled at every decision, while Student used the Reduced view with the component disabled at every decision.
+
+```text
+Horizon   n=128   first-action disagreement   tool-cost Δ (T-S)   Utility Δ (T-S)
+K4        128     100.00%                     -1.8046875          +0.0270703125
+K8        128     100.00%                     -2.9609375          +0.0444140625
+```
+
+Audit passed: K4/K8 ordered snapshot hashes are identical; both shards contain 128 rows; every branch has exactly 4/8 actions; all Teacher continuation decisions use Full view and all Student continuation decisions use Reduced view. Formal summary: `SCAPE/outputs/0821_auto_populate_always_on_off_128/AUTO_ALWAYS_ON_OFF_METRICS_SUMMARY.json`; runner/scorer: `SCAPE/scripts/run_auto_populate_always_on_off_128.py` and `score_auto_populate_always_on_off_128.py`; runtime `/opt/scape-projected-action`.
+
+## 2026-08-21 importance_tagging+subtractive_curation Teacher-always-on vs Student-always-off 128-state gain
+
+Status: **COMPLETED; always-on Teacher has higher tool cost and negative utility delta at both K4 and K8 on the unified frozen cohort.**
+
+The experiment reused the exact 128 frozen snapshots from `outputs/0820_subtractive_curation_recall_128_final/manifests/SUBTRACTIVE_STATES_128.jsonl`. K4 and K8 used the same ordered snapshots (`128/128` identity); the first action counted toward K, so each branch executed exactly 4 or 8 actions. Teacher used the Full view with both `importance_tagging` and `subtractive_curation` enabled at every decision. Student used the Reduced view with both components disabled at every decision. `full_harness_takeover=0` for all rows.
+
+```text
+Horizon   n=128   first-action disagreement   tool-cost Δ (T-S)   Utility Δ (T-S)
+K4        128     35.9375%                    +0.296875           -0.004453125 (-0.4453% display)
+K8        128     35.9375%                    +0.500000           -0.007500000 (-0.7500% display)
+```
+
+Audit passed: 256 total rows (`128` per horizon), unique frozen snapshot hashes `128/128` per horizon, cross-horizon ordered snapshot identity `128/128`, branch trace action-count failures `0`, and Full Harness takeover `0`. The first-action disagreement rate compares the complete action (tool name and arguments), while cost and utility are direct branch-level Teacher minus Student means using the fixed live-fork utility formula.
+
+Artifacts: `SCAPE/outputs/0821_joint_importance_subtractive_always_on_128/JOINT_ALWAYS_ON_SUMMARY.json` and `JOINT_ALWAYS_ON_PER_STATE.jsonl`. Runner: `SCAPE/scripts/run_joint_importance_subtractive_always_on_128.py`; runtime: `/opt/scape-venv`.
+
+## 2026-08-21 sentence_compress Teacher-always-on vs Student-always-off 128-state gain
+
+Status: **COMPLETED; always-on Teacher reduces tool cost and has positive utility delta at K4/K8 on the frozen cohort.**
+
+The experiment reused the exact 128 frozen sentence_compress states from `outputs/0820_sentence_compress_formal_fork_k128_frozen_pool1024/manifests/sentence_compress_states_n128_seed2214.jsonl` (SHA-256 `b77fe21564f72555a6eaf49983b3c2f17af81066f34d557691f2c3a1baef47ee`). The first action counts in K, so each branch executes exactly 4 or 8 actions. Teacher uses the Full view with sentence_compress enabled at every decision; Student uses the Reduced view with the component disabled at every decision. This is distinct from the previous once-only protocol, and `full_harness_takeover=0` remains an explicit invariant.
+
+```text
+K4 n=128: first-action disagreement=100.00%; tool-cost delta=-0.2578125 (-25.78% display); Utility delta=+0.0038671875 (+0.3867% display)
+K8 n=128: first-action disagreement=100.00%; tool-cost delta=-0.4843750 (-48.44% display); Utility delta=+0.0072656250 (+0.7266% display)
+```
+
+Audit passed: K4/K8 ordered snapshot identity `128/128`; frozen snapshot hash mismatches `0`; Teacher-view failures `0`; Student-view failures `0`; horizon action-count failures `0`; branch-level cost/utility recomputation mismatches `0`; Full Harness takeover `0`. A CUDA allocator warning occurred once during K8, but the process continued to `128/128`, exited 0, and every row passed the final deterministic audit.
+
+Artifacts: `SCAPE/outputs/0821_sentence_compress_always_on_off_128/SENTENCE_COMPRESS_ALWAYS_ON_OFF_SUMMARY.json`, `SENTENCE_COMPRESS_ALWAYS_ON_OFF_PER_STATE.jsonl`, raw K4/K8 JSONL, and `SHA256SUMS`. Runner: `SCAPE/scripts/run_sentence_compress_always_on_off_128.py`; runtime: `/opt/scape-sentence-compress-venv`.
+
+
+## 2026-08-21 content_dedup Teacher-always-on vs Student-always-off 128-state gain
+
+Status: **COMPLETED; strict full-horizon component-mask fork, with small negative utility and higher Teacher tool cost.**
+
+The run reused the same frozen 128-state content_dedup cohort from `outputs/0820_content_dedup_real_recall_128/` (64 states per seed `2214/2215`, 128 states per horizon). The first action counted toward K, so each branch executed exactly 4 or 8 actions. Teacher kept `content_dedup` enabled at every decision; Student kept it disabled at every decision. Both branches used the Reduced continuation policy, and `full_harness_takeover=0`.
+
+```text
+Horizon   n=128   first-action disagreement   tool-cost Δ (T-S)   Utility Δ (T-S)
+K4        128     100.00%                    +0.2265625          -0.0033984375 (-0.3398% display)
+K8        128     100.00%                    +0.3437500          -0.0051562500 (-0.5156% display)
+```
+
+Audit passed: 256 total rows, 128 per horizon, source manifest SHA-256 `19455667add65bc06f189f4c8ee8d21ae48150ccd7cfbd4cca05d883a1012fcd`, snapshot mismatch `0`, Full Harness takeover `0`, and exact-K action semantics. Artifact: `SCAPE/outputs/0821_content_dedup_always_on_off_live_128/CONTENT_DEDUP_ALWAYS_ON_OFF_SUMMARY.json` with per-state traces in `CONTENT_DEDUP_ALWAYS_ON_OFF_PER_STATE.jsonl`. Runner: `SCAPE/scripts/run_content_dedup_always_on_off_live_128.py`; runtime `/opt/scape-easyopd-smoke7`.
+
+Interpretation: under the strict always-on/off policy-visible fork, Teacher changed the first action in every paired state, but incurred higher mean tool cost and a small negative utility delta at both horizons. These are process/utility metrics only and do not replace the separate content_dedup qrel recall gate.
+
+## 2026-08-21 token_budget_marker OPD four-cell strict 384-query evaluation
+
+Status: **COMPLETED; strict Harness-schema scoring finished on the frozen 384-query pool.**
+
+- Pool: 384 unique official BrowseComp-Plus queries, training query-ID overlap=0; official test subset=76; manifest SHA-256=`daa46743ef9b1d6acf1dd230e8da92761f3465d47f2a8d4f7981f3ff7c380092`.
+- Existing immutable model-action shards were rescored without overwriting them. Legal actions require strict Harness contracts; valid fan-out queries use rank-wise round-robin top-5 fusion over official Pyserini Lucene. Recall@100/1000 were not computed.
+- Formal artifact: `SCAPE-EasyOPD/outputs/0821_token_budget_marker_opd_384/r5_strict_final_20260821_v2/`; runtime `/opt/scape-venv` with system Java 21.
+
+```text
+setting                  Legal action rate   test Evidence Recall@5
+Teacher                       21.0526%                 0.6579%
+Student before OPD             9.2105%                 0.4386%
+Student after pure OPD         9.2105%                 0.2193%
+Student after RL+OPD           7.8947%                 0.2193%
+```
+
+The four official-test values are computed over exactly 76 queries. Relative to Student Before OPD, PURE_OPD is `+0.00 pp` Legal / `-0.2193 pp` Recall@5, and RL+OPD is `-1.3158 pp` Legal / `-0.2193 pp` Recall@5.
+
+
+## 2026-08-21 content_dedup OPD four-cell 384-query test evaluation
+
+Status: **COMPLETED; ALL FOUR SETTINGS RECALL-NEUTRAL UNDER THE FROZEN 384-QUERY TEST CONTRACT**.
+
+```text
+pool: SCAPE-EasyOPD/manifests/browsecomp_plus_eval_pool_384/query_manifest.json
+pool: 384 unique official queries; training query-ID overlap=0
+manifest SHA-256: 21f3cbbf9d7263df91f2d03150af862959ed0583a3a7071a0fc6498190d5b6ed
+base: Qwen3-30B-A3B-Instruct-2507 staged read-only at /dev/shm
+runtime: /opt/scape-easyopd-smoke7; max_steps=6; student_inference_privilege=false
+Teacher: V8D_CONTENT_DEDUP=1
+Student Before: V8D_CONTENT_DEDUP=0, base/no adapter
+Student After: V8D_CONTENT_DEDUP=0, actual LoRA adapters; PURE_OPD and RL_PLUS_OPD seeds 42/43
+```
+
+All six underlying cells completed `384/384`, `error_rate=0`, and every recorded tool call was legal. The requested four-setting aggregation is:
+
+```text
+setting                  Legal action rate   test trajectory recall
+Teacher                  100.00%             0.1157407%
+Student before OPD       100.00%             0.1157407%
+Student after pure OPD   100.00%             0.1157407%
+Student after RL+OPD     100.00%             0.1157407%
+```
+
+PURE_OPD seed42/43 and RL_PLUS_OPD seed42/43 each independently produced the same values. Formal summary: `SCAPE-EasyOPD/outputs/0821_content_dedup_opd_384/CONTENT_DEDUP_OPD_384_TEST_SUMMARY.json`.
+
+Interpretation: this real Harness-1 test run found no difference in Legal action rate or trajectory recall across the four settings. It therefore provides no test-recall evidence of content_dedup internalization by either OPD method. `trajectory_recall` is the runner's executed-state test recall field; the old frozen OPD-valid-row action-level diagnostic remains a separate metric and is not substituted here.
+
+## 2026-08-21 adaptive_rerank_instruction 128-state cost/utility completion
+
+Status: **COMPLETED; no model rerun required; cost and utility are both neutral**.
+
+The formal recall fork already contained complete Teacher/Student branch metrics, so the adaptive_rerank_instruction component was scored offline rather than rerun. Source rows: `SCAPE/outputs/0820_adaptive_rerank_instruction_recall_128/shards/adaptive_rerank_instruction_seed{2214,2215,2216,2217}_K{4,8}.jsonl`; 4 seeds × 2 horizons × 32 rows = 256 paired states. The scorer directly used branch-level `tool_search_cost` and `objective_utility`, and independently re-evaluated the fixed live-fork utility formula:
+
+```text
+0.45 * evidence_coverage
++ 0.20 * useful_unique_docs / max(1, gold_count)
++ 0.20 * verified_supported_claims / max(1, gold_count)
+- 0.05 * redundancy
+- 0.015 * tool_search_cost
+- 0.03 * unsupported_claims
+```
+
+K4 Teacher/Student tool cost means are equal, giving cost Δ `+0.0000`; utility means are equal, giving utility Δ `+0.000000`. K8 is identical: cost Δ `+0.0000`, utility Δ `+0.000000`. Both horizons have 128/128 zero paired deltas, positive/negative/zero=`0/0/128`, and formula/endpoint-cost mismatch count `0`. The formal runner executes exactly K actions including the forced first action, uses Reduced continuation for both branches, and has `full_harness_takeover=0`.
+
+Artifacts: `SCAPE/outputs/0820_adaptive_rerank_instruction_recall_128/scored_reference_metrics/ADAPTIVE_RERANK_COST_UTILITY_SUMMARY.json` (SHA-256 `d1707ae5d825d880bbc1d5a477bac4f64f46b4e75327cb5cdf7e99526a78ee3f`) and `ADAPTIVE_RERANK_COST_UTILITY_PER_STATE.jsonl` (SHA-256 `d370aebda8813adfd09802693e6c8669d2b98b95d0f062555db1cbc8022cab72`).
+
+Interpretation: adaptive_rerank_instruction remains recall-neutral and shows no measurable cost or utility separation on this frozen cohort; the gain table now records `+0.0000` and `+0.000000`, replacing the previous N/A values.
+
+## 2026-08-21 sentence_compress OPD 384-query rerun
+
+Status: **COMPLETED; official Lucene BM25 rescoring passed for all six seed-level traces (384/384 each)**. The strict pool was reconstructed from official BrowseComp-Plus queries/evidence-qrels/gold-qrels minus component-training query IDs. Qwen3-30B base and existing PURE/RL+OPD adapters were used; action parsing accepts the Harness compact `tool/args`, `tool_input`, and equivalent forms. Pyserini Lucene was run against the official BM25 index using a private JRE21 unpacked under `/opt/jdk21`; no `/mnt` environment was modified.
+
+```text
+Setting                         Legal action rate       Test Evidence Recall@5
+Teacher                         100.00%                 0.2195%
+Student Before OPD              100.00%                 1.5436%
+Student After PURE OPD          56.38%                  0.7718%
+Student After RL+OPD            12.76%                  0.0000%
+```
+
+PURE seed42=`100.00% / 1.5436%`; PURE seed43=`12.76% / 0.0000%`. RL+OPD seed42/43=`12.76% / 0.0000%`. Each After method aggregates two seeds × 384 query rows. Formal artifact: `SCAPE-EasyOPD/outputs/sentence_compress_opd_384_20260821/FINAL_4CELL_SUMMARY.json`; per-query ordered BM25 traces are in each setting's `PER_QUERY.jsonl`; `SHA256SUMS` is in the same directory. Conclusion: neither After method improves Legal action rate or Test Evidence Recall@5 over Student Before; PURE is highly seed-unstable and RL+OPD collapses to zero recall.
+
+## 2026-08-21 paired 128-state gain reference-metric audit
+
+Status: **COMPLETED; offline diagnostic metrics extracted without changing formal recall gates**.
+
+Using the detailed per-state traces from the 0820 recall forks, `scripts/explore_gain_reference_metrics_128.py` wrote `outputs/0821_gain_reference_metrics_128/GAIN_REFERENCE_METRICS_PER_STATE.jsonl` and `GAIN_REFERENCE_METRICS_SUMMARY.json`. The audit adds three interpretable layers alongside endpoint qrel recall: first-action disagreement, successful-read set delta, and utility/cost deltas when raw branch fields are available.
+
+Key pooled K4/K8 signals include: `auto_populate_first_search` first-action disagreement `100%`, utility delta `+0.010664/+0.010313`, and tool-cost delta `-0.7109375/-0.6875`; `subtractive_curation` first-action disagreement `24.22%`, successful-read set delta `+0.015625`, and utility delta `-0.000234/-0.000234`; `importance_tagging` successful-read set delta `+0.0859375/+0.078125`; `content_dedup` `+0.0390625/+0.0625`; `sentence_compress` `+0.0546875/+0.0390625`; and joint `importance_tagging+subtractive_curation` `+0.0963855/+0.0602410` with utility delta `-0.004518/-0.007410`.
+
+Interpretation: endpoint candidate/activated recall remains a qrel coverage safety gate, while the new process and efficiency signals explain recall-neutral but behaviorally distinct components. Compact artifacts that lack complete branch provenance are marked `N/A`; no unavailable cost or utility field is inferred. Token-budget-marker remains invalidated for insufficient real budget pressure.
+
+## 2026-08-21 sentence_compress 128-state gain reference metrics rerun
+
+Status: **COMPLETED; diagnostic process/efficiency metrics recorded; formal usable-evidence recall remains neutral**.
+
+Setting: frozen sentence_compress 128-state cohort from `outputs/0820_sentence_compress_formal_fork_k128_frozen_pool1024/manifests/sentence_compress_states_n128_seed2214.jsonl`; Teacher/Full enabled `sentence_compress` only for the first action, Student/Reduced disabled it, both continuations used Reduced policy, and `full_harness_takeover=0`. The approved environment was `/opt/scape-projected-action`; model `/mnt/songzijun/models/pat-jj_harness-1-full/harness-1`. The complete source artifact is `outputs/0820_sentence_compress_formal_fork_k128_frozen_pool1024/SENTENCE_COMPRESS_VALUE_PER_STATE.jsonl` (128 rows per K).
+
+Fresh rerun completed with 128/128 rows for both K4 and K8 in `outputs/0821_sentence_compress_reference_rerun_128/shards/`. Seed-merged metrics (Teacher minus Student): K4 first-action disagreement `100.00%`, successful read set delta `+0.0859`, tool cost delta `-0.0625`, utility delta `+0.000938`; K8 first-action disagreement `100.00%`, successful read set delta `+0.0859`, tool cost delta `+0.0781`, utility delta `-0.001172`. The separate offline usable-evidence replay remains `1.1824%` Teacher/Student at both K4/K8 with paired gain `0.00 pp`; these process metrics must not be interpreted as qrel recall gain.
+
+## 2026-08-20 subtractive_curation formal 128-state candidate/activated evidence recall rerun
+
+Status: **COMPLETED; BOTH PAIRED RECALL GAINS ARE 0.00 PP**.
+
+Setting:
+
+```text
+component: subtractive_curation
+seed: 2214
+horizons: K4, K8
+states: frozen 128-state master cohort; 128 unique snapshots, 66 queries; ordered K4/K8 snapshot match 128/128
+eligibility: endpoint candidate documents and curated IDs are present in every frozen snapshot
+Teacher/Full: subtractive_curation enabled for first fork action only
+Student/Reduced: subtractive_curation disabled for first fork action
+continuation: Reduced policy for both branches; full_harness_takeover=0
+normalization: split_at_first_underscore_v1
+qrel: BrowseComp-Plus topics-qrels/qrel_evidence.txt, SHA-256 a6f594975be57339de9e4e9f67f13c044f647feda77c0b84c45a1581e3041bd1
+runner/scorer: run_subtractive_curation_recall_128.py / score_subtractive_curation_recall_128.py
+environment: /opt/scape-easyopd-smoke7
+```
+
+Seed-merged paired results:
+
+```text
+K4 candidate_evidence_pool_recall gain: 0.00 pp, paired/bootstrap CI95 [0.00, 0.00], pos/neg/zero=0/0/128
+K4 activated_evidence_recall gain:      0.00 pp, paired/bootstrap CI95 [0.00, 0.00], pos/neg/zero=0/0/128
+K8 candidate_evidence_pool_recall gain: 0.00 pp, paired/bootstrap CI95 [0.00, 0.00], pos/neg/zero=0/0/128
+K8 activated_evidence_recall gain:      0.00 pp, paired/bootstrap CI95 [0.00, 0.00], pos/neg/zero=0/0/128
+query-cluster bootstrap CI95: [0.00, 0.00] pp for both metrics and horizons
+Teacher/Student absolute means: candidate 2.2656%/2.2656%; activated 0.3906%/0.3906% at K4 and K8
+```
+
+Audit and interpretation:
+
+- Every branch stores endpoint candidate IDs, curated IDs, read attempts, successful read observations, context entry/retention IDs and the activated union. The scorer verified `final_activated = final_curated union retained_reads` for all 512 branch endpoints.
+- `invalid_provenance=0`, `snapshot_mismatch=0`, `ordered_snapshot_match=128`, `full_harness_takeover=0`, `missing_or_empty_qrel_count=0`.
+- Candidate precision T/S is `0.7812%/0.7812%`, pool size `10.0/10.0`; activated precision T/S is `0.3906%/0.3906%`, activated size `2.0/2.0` at both horizons.
+- Mean successful reads T/S are K4 `0.7188/0.7031` and K8 `0.7656/0.7500`; successful reads are append-only retained at endpoint. Tool-cost delta is `+0.015625` at both horizons; weighted utility delta is `-0.000234375` (`-0.0234%`) at both horizons.
+- The formal recall gate fails: subtractive_curation produces no candidate-pool or activated-evidence recall gain. These endpoint results supersede the old reward-only artifact for the two columns in `/mnt/songzijun/增益.md`.
+
+Artifacts: `SCAPE/outputs/0820_subtractive_curation_recall_128_final/`; summary `SUBTRACTIVE_CANDIDATE_ACTIVATED_RECALL_GATE.json`; per-state scorer `SUBTRACTIVE_CANDIDATE_ACTIVATED_RECALL_PER_STATE.jsonl`.
+
+## 2026-08-20 evidence_graph formal 128-state candidate/activated evidence recall rerun
+
+Status: **COMPLETED; BOTH PAIRED RECALL GAINS ARE 0.00 PP**.
+
+Setting:
+
+```text
+component: evidence_graph
+seed: 2214
+horizons: K4, K8
+states: same frozen 128-state cohort at each horizon; ordered snapshot match 128/128
+Teacher/Full: evidence_graph enabled for first fork action only
+Student/Reduced: evidence_graph disabled for first fork action
+continuation: Reduced policy for both branches; full_harness_takeover=0
+normalization: split_at_first_underscore_v1
+qrel: BrowseComp-Plus topics-qrels/qrel_evidence.txt, SHA-256 a6f594975be57339de9e4f67f13c044f647feda77c0b84c45a1581e3041bd1
+runner: run_evidence_graph_recall_formal_fork.py; environment /opt/scape-h1004
+```
+
+Seed-merged paired results:
+
+```text
+K4 candidate_evidence_pool_recall gain: 0.00 pp, CI95 [0.00, 0.00], pos/neg/zero=0/0/128
+K4 activated_evidence_recall gain:      0.00 pp, CI95 [0.00, 0.00], pos/neg/zero=0/0/128
+K8 candidate_evidence_pool_recall gain: 0.00 pp, CI95 [0.00, 0.00], pos/neg/zero=0/0/128
+K8 activated_evidence_recall gain:      0.00 pp, CI95 [0.00, 0.00], pos/neg/zero=0/0/128
+Teacher/Student absolute means: K4 candidate 2.6538%/2.6538%, activated 0.6337%/0.6337%; K8 identical.
+```
+
+Audit and interpretation:
+
+- Scored raw endpoint provenance, not the previous `usable_evidence_recall@K` replay artifact: candidate IDs, curated IDs, successful reads, context entry/retention and activated union were persisted and independently checked.
+- `invalid_provenance=0`, `snapshot_mismatch=0`, `ordered_snapshot_match=128`, `full_harness_takeover=0`, `missing_or_empty_qrel_count=0`.
+- Candidate precision T/S was `1.25%/1.25%`, candidate pool size `10.0/10.0`; activated precision T/S was `1.9531%/1.9531%`, activated size `2.0/2.0`.
+- Successful reads were K4 `0.9453/0.2109` and K8 `0.9453/0.2109` (T/S); context retention was `1.0/1.0`. Utility deltas were `-2.8008%` at K4 and `-4.6523%` at K8, with tool-cost deltas `+1.8672` and `+3.1016`, respectively.
+- Formal recall gate therefore failed: evidence_graph produced no candidate-pool or activated-evidence recall gain, while adding tool cost and reducing weighted utility. The old usable-evidence result remains historical and is not used for the table.
+- The gain table was corrected from `N/A` using the existing raw branch-level metrics (no rerun required): `tool_cost_delta` is Teacher minus Student, K4 `+1.8671875` and K8 `+3.1015625`; `weighted_utility_delta` is K4 `-0.0280078125` and K8 `-0.0465234375` (table displays these as `+186.7188%/+310.1563%` and `-2.8008%/-4.6523%`). The raw shards preserve `branch_S_metrics`/`branch_T_metrics` including `tool_search_cost` and `objective_utility`, and the scorer independently computes these paired deltas.
+
+Artifacts: `SCAPE/outputs/0820_evidence_graph_recall_formal_20260820/`; scorer summary `scored/EVIDENCE_GRAPH_EVIDENCE_RECALL_SUMMARY.json`; per-state scorer `scored/EVIDENCE_GRAPH_EVIDENCE_RECALL_PER_STATE.jsonl`; raw branch metrics `shards/evidence_graph_K4.jsonl` and `shards/evidence_graph_K8.jsonl`.
+
+## 2026-08-20 importance_tagging + subtractive_curation fresh 128-state evidence-recall experiment
+
+Status: **COMPLETED; BOTH PAIRED RECALL GAINS ARE 0.00 PP**.
+
+Setting:
+
+```text
+component: importance_tagging + subtractive_curation, independent both-on vs both-off treatment
+seeds: 8423, 8424
+horizons: K4, K8
+states: 128 fresh frozen states per seed; 256 unique states and 512 paired horizon rows total
+Teacher/Full: both components enabled for the first fork action only
+Student/Reduced: both components disabled for the first fork action
+continuation: both branches use Reduced policy; full_harness_takeover=0
+normalization: split_at_first_underscore_v1
+qrel: BrowseComp-Plus topics-qrels/qrel_evidence.txt, SHA-256 a6f594975be57339de9e4e9f67f13c044f647feda77c0b84c45a1581e3041bd1
+```
+
+Seed-merged paired results:
+
+```text
+K4 candidate_evidence_pool_recall gain: 0.00 pp, CI95 [0.00, 0.00], pos/neg/zero=0/0/256
+K4 activated_evidence_recall gain:      0.00 pp, CI95 [0.00, 0.00], pos/neg/zero=0/0/256
+K8 candidate_evidence_pool_recall gain: 0.00 pp, CI95 [0.00, 0.00], pos/neg/zero=0/0/256
+K8 activated_evidence_recall gain:      0.00 pp, CI95 [0.00, 0.00], pos/neg/zero=0/0/256
+per-seed deltas: both metrics are 0.00 pp for seeds 8423 and 8424; seed sample std=0.00 pp
+```
+
+Audit and interpretation:
+
+- Fresh rerun completed for two independently frozen cohorts: seed 8423 `128/128` and seed 8424 `128/128`; every state stores its complete initial snapshot and both K4/K8 checkpoints.
+- Each state forks T/S from the same saved snapshot. K4 and K8 come from one K8 trajectory whose horizon does not enter the prompt or random stream; the first four actions are therefore identical by construction. Full Harness takeover is `0/512`.
+- Every branch stores endpoint candidate IDs, final curated IDs, read attempts, successful read observations, IDs entering context, IDs retained at endpoint, and final activated IDs. The scorer verified `final_activated = final_curated union retained_reads` for every T/S checkpoint.
+- Absolute candidate recall is Teacher/Student `1.7499% / 1.7499%` at both K4 and K8; mean candidate precision is `0.8594% / 0.8594%`, and mean pool size is `10.0 / 10.0`.
+- Absolute activated recall is Teacher/Student `0.5549% / 0.5549%` at both K4 and K8; mean activated precision is `0.9766% / 0.9766%`, and mean activated-set size is `2.0 / 2.0`.
+- Both seeds independently yield candidate and activated paired deltas of `0.00 pp`; seed sample std is `0.00 pp`. The fresh experiment therefore finds no recall gain from the combination.
+- Historical weighted utility remains separate: K4 `-0.3574%`, K8 `-0.5566%`; the combination has neither recall gain nor utility gain.
+
+Artifacts:
+
+```text
+SCAPE/outputs/0820_joint_importance_subtractive_recall_fresh_128/JOINT_CANDIDATE_ACTIVATED_EVIDENCE_RECALL_FRESH.json
+SCAPE/outputs/0820_joint_importance_subtractive_recall_fresh_128/JOINT_FRESH_VALUE_PER_STATE.jsonl
+SCAPE/outputs/0820_joint_importance_subtractive_recall_fresh_128/manifests/FRESH_COHORT_seed8423.json
+SCAPE/outputs/0820_joint_importance_subtractive_recall_fresh_128/manifests/FRESH_COHORT_seed8424.json
+```
+
+## 2026-08-20 BrowseComp-Plus 500-query evaluation pool construction
+
+Status: **CANDIDATE_REJECTED_TRAIN_OVERLAP; not a valid frozen evaluation pool**.
+
+Setting:
+
+```text
+source: official BrowseComp-Plus topics-qrels/queries.tsv
+qrels: qrel_evidence.txt + qrel_golds.txt
+seed: 20260820
+target: 500
+stratification: proportional sampling over 4x4 evidence/gold document-count strata
+```
+
+The candidate artifact is under `SCAPE-EasyOPD/manifests/browsecomp_plus_eval_pool/`. It contains 500 unique official query IDs, exact `queries.tsv` text, non-empty evidence/gold qrel document IDs, source hashes, a run manifest, and SHA256SUMS. Independent replay passed all structural invariants. However, 278 selected query IDs overlap the existing SCAPE component training pool (normalized-text overlap is 0), so the candidate is explicitly rejected by the no-training-overlap gate. All 830 official queries are qrel-eligible; only 384 remain after strict ID exclusion against the 446 official IDs in the existing training pool, making a valid 500-row pool impossible under the current data policy. No retrieval leaderboard evaluation should consume this artifact until the training/evaluation query policy is changed and the pool is regenerated.
+
+
+## 2026-08-20 auto_populate_first_search 128-state same-state K4/K8 reward fork
+
+Status: **COMPLETED; VALUE_POSITIVE; RECALL METRIC STILL N/A**.
+
+Setting:
+
+```text
+component: auto_populate_first_search only
+strata: NATURAL_FIRST_SEARCH, AUTO_EFFECT_ACTIVE
+seeds: 2230, 2231
+horizons: K4, K8
+states: 128 per (stratum, seed), 1024 rows total
+state source: first 128 frozen states from each canonical 512-state manifest, then fresh live fork/replay
+Teacher/Full: auto_populate_first_search enabled for first fork action
+Student/Reduced: auto_populate_first_search disabled for first fork action
+continuation: both branches use reduced policy; no full-harness takeover
+model: /mnt/songzijun/models/pat-jj_harness-1-full/harness-1
+python: /opt/scape-projected-action/bin/python (torch 2.10.0+cu128, transformers 5.14.1, pyserini package with local-corpus fallback)
+```
+
+Reward summary, Teacher - Student:
+
+```text
+NATURAL_FIRST_SEARCH K4: mean=+0.0106640625 (+1.0664%), seed std=0.0016572815, normal CI95=[+0.0077426,+0.0135856], positive/negative/zero=212/43/1
+NATURAL_FIRST_SEARCH K8: mean=+0.0103125000 (+1.0313%), seed std=0.0023201941, normal CI95=[+0.0061652,+0.0144598], positive/negative/zero=206/46/4
+AUTO_EFFECT_ACTIVE K4: mean=+0.0106640625 (+1.0664%), seed std=0.0016572815, normal CI95=[+0.0077426,+0.0135856], positive/negative/zero=212/43/1
+AUTO_EFFECT_ACTIVE K8: mean=+0.0103125000 (+1.0313%), seed std=0.0023201941, normal CI95=[+0.0061652,+0.0144598], positive/negative/zero=206/46/4
+```
+
+Audit and interpretation:
+
+- All 8 cells completed with `n=128`; total `1024` rows.
+- Within every `(stratum, seed)`, K4/K8 manifests matched `128/128` `snapshot_hash` values exactly; cross-stratum overlap was `0/128` for both seeds.
+- Every cell had replay-noise q95 `0.0`; formal gate decision is `VALUE_POSITIVE`.
+- The reward fork is not a `usable_evidence_recall@K` result: endpoint `final_curated_ids`, final working-memory evidence IDs, and retained read IDs were not fully persisted. Keep recall as `N/A` until those fields are available; do not relabel reward as recall.
+
+Artifacts:
+
+```text
+SCAPE/outputs/0820_auto_populate_first_search_value_confirm_128/AUTO_VALUE_CONFIRM/AUTO_VALUE_GATE.json
+SCAPE/outputs/0820_auto_populate_first_search_value_confirm_128/AUTO_VALUE_CONFIRM/AUTO_VALUE_BY_STRATUM_SEED_K.csv
+SCAPE/outputs/0820_auto_populate_first_search_value_confirm_128/AUTO_VALUE_CONFIRM/AUTO_VALUE_PER_STATE.jsonl
+SCAPE/outputs/0820_auto_populate_first_search_value_confirm_128/AUTO_VALUE_CONFIRM/AUTO_VALUE_128_AUDIT.json
+SCAPE/outputs/0820_auto_populate_first_search_value_confirm_128/RUN_MANIFEST.json
+```
+
+The earlier `AUTO_VALUE_CONFIRM512x2` result remains historical only; the component-gain table now reports this 128-state rerun.
+
+## 2026-08-20 importance_tagging single-component 128-state utility rerun
+
+Status: **COMPLETED; 128-STATE K4/K8 UTILITY GATE FAILED**.
+
+Setting:
+
+```text
+component: importance_tagging only
+states: 128 per seed/horizon; 2 seeds (8423, 8424); 512 rows total
+Teacher/Full: importance_tagging ON for first fork action
+Student/Reduced: importance_tagging OFF for first fork action
+continuation: both branches use Reduced policy; no full-harness takeover
+runner: true_live_fork_replay_hf_bm25_batched_stream
+model: /mnt/songzijun/models/pat-jj_harness-1-full/harness-1
+python_env: /opt/scape-projected-action
+output: SCAPE/outputs/0820_importance_tagging_single_128_rerun/
+```
+
+Audit:
+
+```text
+K4/K8 ordered same-state pairing: 2/2 seeds passed
+snapshot_hash matches: 256/256 paired rows
+rows: 512/512; each seed/K cell: 128/128
+full_harness_takeover: false for all rows
+```
+
+Teacher - Student weighted utility results:
+
+```text
+K4 merged n=256: mean=-0.00263671875 (-0.26%), CI95=[-0.0074381,+0.0021647], positive/negative/zero=102/120/34
+K8 merged n=256: mean=-0.00298828125 (-0.30%), CI95=[-0.0104534,+0.0044769], positive/negative/zero=111/115/30
+```
+
+Per-seed means were K4 `-0.00046875` / `-0.0048046875` and K8 `+0.0012890625` / `-0.007265625` for seeds 8423/8424 respectively. Mean evidence-coverage and curated-evidence deltas were `0.0`; mean tool-search-cost deltas were K4 `+0.17578125` and K8 `+0.19921875`.
+
+Conclusion: the corrected 128-state rerun does not provide a positive importance-tagging utility gain. Both aggregate CIs cross zero, so this is weaker/inconclusive than the prior 512-state negative estimate, but the component still fails the gate and must not be promoted to OPD. This result supersedes the old 512-state values in the gain table; the old artifact remains historical.
+
+Reference metrics completion (2026-08-21): the existing `IMPORTANCE_128_VALUE_PER_STATE.jsonl` already contains paired `branch_S_metrics.tool_search_cost`, `branch_T_metrics.tool_search_cost`, and `branch_T_minus_S` for all 256 states per horizon, so no rerun was needed. Offline recomputation gives tool-cost delta K4 `+0.17578125`, K8 `+0.19921875`; utility delta K4 `-0.00263671875`, K8 `-0.00298828125`. These values were filled into `增益.md`; they are Teacher minus Student and share the same 128-state paired fork/audit.
+
+Artifacts:
+
+```text
+SCAPE/outputs/0820_importance_tagging_single_128_rerun/IMPORTANCE_128_K4_K8_GATE.json
+SCAPE/outputs/0820_importance_tagging_single_128_rerun/IMPORTANCE_128_K4_K8_GATE.md
+SCAPE/outputs/0820_importance_tagging_single_128_rerun/IMPORTANCE_128_SUMMARY.csv
+SCAPE/outputs/0820_importance_tagging_single_128_rerun/IMPORTANCE_128_VALUE_PER_STATE.jsonl
+SCAPE/outputs/0820_importance_tagging_single_128_rerun/K{4,8}_seed{8423,8424}/shards/*.jsonl
+```
+
+## 2026-08-20 importance_tagging candidate/activated evidence recall 128-state formal replay
+
+Status: **COMPLETED; ZERO PAIRED CANDIDATE-POOL AND ACTIVATED-EVIDENCE RECALL GAIN**.
+
+Setting and audit:
+
+```text
+component: importance_tagging
+states: 128 per seed/horizon; seeds 8423/8424; 256 paired rows per K
+Teacher: importance_tagging ON for first action; Student: OFF; Reduced continuation for both
+runner: true_live_fork_replay_hf_bm25_batched_stream with endpoint provenance fields
+python_env: /opt/scape-projected-action
+qrel SHA-256: a6f594975be57339de9e4f67f13c044f647feda77c0b84c45a1581e3041bd1
+normalization: str(doc_id).split("_", 1)[0]
+ordered snapshot matches: K4 128/128; K8 128/128
+invalid provenance: 0; full_harness_takeover: 0
+```
+
+Results (seed-merged paired-row means):
+
+```text
+K4 candidate recall Teacher/Student=1.4431% / 1.4431%, gain=+0.00 pp
+K4 activated recall Teacher/Student=0.3472% / 0.3472%, gain=+0.00 pp
+K8 candidate recall Teacher/Student=1.4431% / 1.4431%, gain=+0.00 pp
+K8 activated recall Teacher/Student=0.3472% / 0.3472%, gain=+0.00 pp
+```
+
+For both metrics and horizons, positive/negative/zero paired counts were `0/0/256`, paired bootstrap CI95 was `[0.00, 0.00] pp`, and both seeds independently had `+0.00 pp`. Candidate precision/set size were `0.8984% / 0.8984%` and `10 / 10`; activated precision/set size were `1.1719% / 1.1719%` and `2 / 2`. The component therefore has no recall gain under the formal paired fork.
+
+Artifacts:
+
+```text
+SCAPE/outputs/0820_importance_tagging_recall_128/scored/IMPORTANCE_RECALL_K4_K8_GATE.json
+SCAPE/outputs/0820_importance_tagging_recall_128/scored/IMPORTANCE_RECALL_PER_STATE.jsonl
+SCAPE/outputs/0820_importance_tagging_recall_128/K{4,8}_seed{8423,8424}{,_formal}/shards/importance_tagging_K{4,8}.jsonl
+```
+
+## 2026-08-20 importance_tagging usable_evidence_recall@K deterministic trace audit
+
+Status: **COMPLETED; ZERO PAIRED USABLE-EVIDENCE RECALL GAIN; ABSOLUTE RECALL N/A**.
+
+Setting and proof:
+
+```text
+component: importance_tagging
+formal source: SCAPE/outputs/0816_2_importance_proper_fork_formal_final/IMPORTANCE_PROPER_VALUE_PER_STATE.jsonl
+rows: 1024 per K; K4/K8 each combine seeds 8423/8424
+qrel: SCOPE/external/BrowseComp-Plus/topics-qrels/qrel_evidence.txt
+document-ID normalization: str(doc_id).split("_", 1)[0]
+endpoint U_K: final curated IDs union final working-memory evidence IDs union successful read_document IDs retained in context
+```
+
+The formal trace schema does not store complete endpoint IDs, but it does store branch action traces. Audit of all 1024 paired rows at each horizon found that every branch action is `read_document` or `end_search`; there are no branch-local search, curate, review, or verify transitions. In the runner, `read_document` only records a read ID and does not mutate curated IDs or working-memory documents. Therefore both branches retain the same frozen curated/working-memory endpoint state and `R_K` is a subset of shared `W_K`; hence `U^T_K = U^S_K` for every paired row. The paired delta is therefore exactly zero without inventing absolute endpoint IDs.
+
+Results:
+
+```text
+K4 n=1024: paired delta=0.00 pp; paired CI95=[0.00,0.00] pp; positive/negative/zero=0/0/1024
+K8 n=1024: paired delta=0.00 pp; paired CI95=[0.00,0.00] pp; positive/negative/zero=0/0/1024
+Teacher absolute recall: N/A
+Student absolute recall: N/A
+```
+
+Conclusion: `importance_tagging` has no paired `usable_evidence_recall@K` gain in the formal same-state fork. Its historical weighted utility remains negative (K4 `-0.93%`, K8 `-1.51%`), so the component gate remains failed. Absolute recall is not fabricated because endpoint evidence IDs were not persisted.
+
+Artifact basis: `SCAPE/outputs/0816_2_importance_proper_fork_formal_final/IMPORTANCE_PROPER_VALUE_PER_STATE.jsonl` and `IMPORTANCE_K4_K8_GATE.json`.
+
+## 2026-08-20 subtractive_curation candidate-pool and activated-evidence recall audit
+
+Status: **COMPLETED; ZERO PAIRED CANDIDATE-POOL RECALL GAIN; ACTIVATED-EVIDENCE RECALL N/A**.
+
+Setting and proof:
+
+```text
+component: subtractive_curation
+formal source: SCAPE/outputs/0820_subtractive_curation_single_128_final/SUBTRACTIVE_VALUE_PER_STATE.jsonl
+states: 128 per K; K4/K8 same-state snapshot audit=128/128
+qrel: SCOPE/external/BrowseComp-Plus/topics-qrels/qrel_evidence.txt
+qrel SHA-256: a6f594975be57339de9e4e9f67f13c044f647feda77c0b84c45a1581e3041bd1
+document-ID normalization: str(doc_id).split("_", 1)[0]
+endpoint candidate pool P_K: normalized endpoint working-memory/candidate evidence IDs
+activated set A_K: final curated IDs union successful read_document IDs retained in context
+```
+
+All saved Teacher and Student branch actions are `read_document` or `end_search`; there are no branch-local search, curate, review, or verify transitions. Under the formal runner, neither action changes the candidate pool, so the endpoint candidate pool is identical across branches and candidate-pool recall has zero paired delta for every row. However, Teacher and Student read traces differ, and the artifact does not persist successful read observations or endpoint context-retention provenance. Therefore the formal activated-evidence recall cannot be reconstructed and is reported as `N/A`, not zero.
+
+Results:
+
+```text
+K4 n=128: candidate-pool paired delta=0.00 pp; CI95=[0.00,0.00] pp; positive/negative/zero=0/0/128; activated delta=N/A
+K8 n=128: candidate-pool paired delta=0.00 pp; CI95=[0.00,0.00] pp; positive/negative/zero=0/0/128; activated delta=N/A
+Teacher/Student absolute candidate recall: N/A
+Teacher/Student absolute activated recall: N/A
+```
+
+Absolute recall remains `N/A` because the formal per-state artifact omitted gold/endpoint candidate-pool, curated, working-memory, successful-read, and retained-read evidence IDs. A reconstruction from current corpus files is not a provenance-complete substitute for those omitted fork snapshots. Conclusion: `subtractive_curation` adds no paired candidate-pool recall; activated-evidence recall is not assessable from this artifact. Its historical weighted utility remains negative (K4 `-0.63%`, K8 `-1.28%`) and is not relabeled as recall.
+
+Artifact: `SCAPE/outputs/0820_subtractive_curation_single_128_final/SUBTRACTIVE_USABLE_EVIDENCE_RECALL.json`.
+
+## 2026-08-20 evidence_graph usable_evidence_recall@K endpoint replay
+
+Status: **COMPLETED; ZERO USABLE-EVIDENCE RECALL GAIN**.
+
+Setting and replay audit:
+
+```text
+component: evidence_graph
+formal source: SCAPE/outputs/0820_evidence_graph_formal_fork_128/shards/evidence_graph_K{4,8}.jsonl
+states: 128 per K; K4/K8 ordered snapshot_hash match=128/128
+search backend: local_corpus_token_overlap
+qrel: SCOPE/external/BrowseComp-Plus/topics-qrels/qrel_evidence.txt
+qrel SHA-256: a6f594975be57339de9e4e9f67f13c044f647feda77c0b84c45a1581e3041bd1
+document-ID normalization: str(doc_id).split("_", 1)[0]
+endpoint U_K: final curated IDs union final working-memory document IDs union successful read_document IDs retained in context
+```
+
+The saved branch traces contain only `read_document` and `end_search`; there are no branch-local search or curate mutations. Therefore the frozen initial working-memory documents can be deterministically reconstructed from the fixed local corpus, while branch read IDs come directly from the trace. Teacher and Student share the same starting snapshot and continuation policy.
+
+Results:
+
+```text
+K4 n=128: Teacher=1.6611%, Student=1.6611%, paired delta=0.00 pp
+  paired bootstrap CI95=[0.00,0.00] pp; positive/negative/zero=0/0/128
+K8 n=128: Teacher=1.6611%, Student=1.6611%, paired delta=0.00 pp
+  paired bootstrap CI95=[0.00,0.00] pp; positive/negative/zero=0/0/128
+```
+
+Conclusion: `evidence_graph` adds no `usable_evidence_recall@K` in this 128-state same-state fork. Its historical weighted utility deltas remain negative (K4 `-2.84%`, K8 `-4.87%`), so the component gate remains failed. Recall and weighted utility are reported separately and are not interchangeable.
+
+Artifact: `SCAPE/outputs/0820_evidence_graph_formal_fork_128/EVIDENCE_GRAPH_USABLE_EVIDENCE_RECALL.json`.
+
+## 2026-08-20 content_dedup corrected 128-state same-state reward fork
+
+Status: **CONTENT_DEDUP_CORRECTED_128_STATE_K4_K8_REWARD_GATE_PASS**.
+
+Setting:
+
+```text
+component: content_dedup
+source pool: SCAPE-EasyOPD/outputs/component_sweep_0818/h100_2/content_dedup_corrected_high_redundancy_v3/TRAIN_STATES_5K.jsonl
+selection: deterministic SHA-256 ordering by seed=20260820, n_states=128
+K4/K8 state identity audit: 128/128 unique states, identical ordered state_uid list
+Full branch: content_dedup ON
+Reduced branch: content_dedup OFF
+Continuation: same reduced policy on both branches; no full-harness takeover
+student_inference_privilege: false
+runner: SCAPE/scripts/run_content_dedup_corrected_reward_fork.py
+```
+
+Result:
+
+```text
+K4 mean Teacher-Student reward delta = +0.2832011245 (+28.32%)
+  bootstrap CI95=[+0.2485665091, +0.3192347296]
+  positive/negative/zero=128/0/0
+  gate_passed=true
+
+K8 mean Teacher-Student reward delta = +0.1873082674 (+18.73%)
+  bootstrap CI95=[+0.1743259729, +0.1999209890]
+  positive/negative/zero=128/0/0
+  gate_passed=true
+```
+
+Artifacts:
+
+```text
+SCAPE/outputs/0820_content_dedup_corrected_reward_fork_128/CONTENT_DEDUP_CORRECTED_K4_K8_GATE.json
+SCAPE/outputs/0820_content_dedup_corrected_reward_fork_128/CONTENT_DEDUP_CORRECTED_K4_K8_SUMMARY.csv
+SCAPE/outputs/0820_content_dedup_corrected_reward_fork_128/CONTENT_DEDUP_CORRECTED_REWARD_PER_STATE.jsonl
+SCAPE/outputs/0820_content_dedup_corrected_reward_fork_128/RUN_MANIFEST.json
+SCAPE/outputs/0820_content_dedup_corrected_reward_fork_128/SHA256SUMS
+```
+
+Conclusion: the corrected single-component `content_dedup` gate remains passed under the unified 128-state protocol. These values replace the prior 5000-state values in `/mnt/songzijun/增益.md`; the 5000-state run remains an intact historical large-sample artifact.
+
+## 2026-08-20 H100-2 content_dedup adapter-conditioned OPD comparison
+
+Status: **CONTENT_DEDUP_ACTION_LEVEL_OPD_COMPARISON_COMPLETE_NO_INTERNALIZATION_SIGNAL_TASK_REWARD_NA**.
+
+Setting:
+
+```text
+base: /mnt/songzijun/models/Qwen3-30B-A3B-Instruct-2507
+rows: content_dedup_corrected_high_redundancy_v3/OPD_VALID_ROWS.jsonl, n=500 frozen valid states
+Teacher: base + prompt_full (content_dedup component-on canonical target/signal)
+Student Before: same base + prompt_reduced, no privilege
+Student After: prompt_reduced + actual LoRA; PURE_OPD and RL_PLUS_OPD seeds 42/43
+student_inference_privilege: false for all recorded rows
+adapter reload: 4/4 manual safetensors state-dict
+inference: greedy, max_new_tokens=128
+pairing/bootstrap: identical 500 state_uid; 10000 paired seed-row bootstrap resamples
+```
+
+Action-level results:
+
+```text
+Teacher:             legal=1.000, exact_projected_target=1.000
+Student Before:      legal=0.064, exact_projected_target=0.000
+PURE seed42 After:   legal=0.008, exact=0.000
+PURE seed43 After:   legal=0.000, exact=0.000
+RL+OPD seed42 After: legal=0.004, exact=0.000
+RL+OPD seed43 After: legal=0.024, exact=0.000
+
+PURE seed-merged legal=0.004 +/- 0.005657; delta vs Before=-0.060 +/- 0.005657
+  paired seed-row CI95=[-0.076,-0.045], positive/negative/zero=4/64/932
+RL+OPD seed-merged legal=0.014 +/- 0.014142; delta vs Before=-0.050 +/- 0.014142
+  paired seed-row CI95=[-0.067,-0.033], positive/negative/zero=14/64/922
+Both methods exact-target=0; delta=0; positive/negative/zero=0/0/1000.
+```
+
+Training diagnostic and constraints:
+
+- Teacher-forced valid divergence improved from Before `0.736175` to PURE `0.143824/0.150096` and RL_PLUS_OPD `0.153125/0.134477`, but this did not transfer to legal generation or exact projected-target matching.
+- This is a frozen OPD-valid-row action-level diagnostic, not BrowseComp DEV/TEST terminal reward. Overall reward, trajectory/curated-evidence/final-answer recall, turns and tool calls remain `N/A`.
+- PURE was trained with actual `action_ce`; the current `RL_PLUS_OPD` artifact is the trainer's minimal extra `tool_token_kl` hook, not formal online GRPO. Preserve the artifact name but do not claim protocol-complete RL+OPD.
+- Teacher sees the canonical target in `prompt_full`; Teacher=100% is a conditioned upper bound, not a task-reward measurement.
+- The corrected high-redundancy fork uses corrected duplicate ids. Its pre-OPD same-state K4/K8 utility gate remains passed, but the current OPD adapters fail the action-level learnability comparison; do not claim Student After > Before.
+
+Artifacts:
+
+```text
+SCAPE-EasyOPD/scripts/eval_content_dedup_opd_comparison.py
+SCAPE-EasyOPD/scripts/summarize_content_dedup_opd_comparison.py
+SCAPE-EasyOPD/outputs/component_sweep_0818/h100_2/content_dedup_adapter_conditioned/CONTENT_DEDUP_OPD_COMPARISON_SUMMARY.json
+/mnt/songzijun/opd对比.md
+```
+
+## 2026-08-20 Single-component subtractive_curation same-state K4/K8 fork
+
+Status: **COMPLETED; NO POSITIVE REWARD GAIN**.
+
+Setting:
+
+```text
+component: subtractive_curation only
+states: 128 per K (256 rows total), four deterministic 32-state cohorts
+same-state contract: K4/K8 rows use identical xi_t snapshots; all 128 paired checks matched snapshot_hash
+Teacher/Full: subtractive_curation ON for the forced first action
+Student/Reduced: subtractive_curation OFF for the forced first action
+continuation: both branches use the reduced policy; no full-harness takeover
+runner: SCAPE/scripts/run_h100_2_live_fork_replay_stream.py (batched scorer; local corpus fallback)
+model: /mnt/songzijun/models/pat-jj_harness-1-full/harness-1
+```
+
+Teacher - Student reward summary:
+
+```text
+K4 n=128: mean=-0.0063281250 (-0.63%), median=0, CI95 normal approx=[-0.0143267,+0.0016705], pos/neg/zero=52/57/19
+K8 n=128: mean=-0.0127734375 (-1.28%), median=0, CI95 normal approx=[-0.0254542,-0.0000927], pos/neg/zero=57/61/10
+```
+
+Interpretation: under this closed-loop reward definition, opening subtractive_curation did not produce a positive Teacher advantage. K4 is statistically inconclusive because its CI crosses zero; K8 is a small negative effect with the normal-approximation CI just below zero. Mean evidence-coverage gain was 0.0 and the Teacher branch incurred positive mean tool-cost deltas (K4 +0.421875, K8 +0.8515625). This is a valid single-component same-state fork result, not a DEV/TEST adapter-training claim.
+
+Artifacts:
+
+```text
+SCAPE/outputs/0820_subtractive_curation_single_128_final/SUBTRACTIVE_K4_K8_GATE.json
+SCAPE/outputs/0820_subtractive_curation_single_128_final/SUBTRACTIVE_K4_K8_GATE.md
+SCAPE/outputs/0820_subtractive_curation_single_128_final/SUBTRACTIVE_SUMMARY.csv
+SCAPE/outputs/0820_subtractive_curation_single_128_final/SUBTRACTIVE_VALUE_PER_STATE.jsonl
+```
+
+## 2026-08-20 Joint importance + subtractive curation pre-OPD fork pilot
+
+Status: **JOINT_PREOPD_K4_K8_GATE_FAILED_PILOT128**.
+
+Setting:
+
+```text
+component: importance_tagging_plus_subtractive_curation
+contract: same xi_t; Teacher/Full has importance_tagging + subtractive_curation ON for first branch; Student/Reduced has both OFF; both continuations use reduced policy; no full-harness takeover
+seeds: 8423, 8424
+K: 4, 8
+states: 128 per seed/K cell, 512 rows total
+runner: SCAPE/scripts/run_joint_importance_subtractive_preopd_fork.py
+output: SCAPE/outputs/0820_joint_importance_subtractive_preopd_fork_pilot128_retry/
+```
+
+Results:
+
+```text
+seed8423 K4: +0.04%  (mean T-S=+0.000352, pos/neg/zero=53/59/16)
+seed8423 K8: -0.02%  (mean T-S=-0.000234, pos/neg/zero=53/63/12)
+seed8424 K4: -0.75%  (mean T-S=-0.007500, pos/neg/zero=42/72/14)
+seed8424 K8: -1.09%  (mean T-S=-0.010898, pos/neg/zero=46/73/9)
+merged K4: -0.36%
+merged K8: -0.56%
+```
+
+Conclusion:
+
+The joint bundle does **not** pass the pre-OPD same-state reward utility gate in the 128-state pilot. The previous projected qrel / LoRA artifacts remain useful diagnostics, but they are not evidence that the joint component has positive pre-OPD reward gain.
+
+Artifacts:
+
+```text
+SCAPE/outputs/0820_joint_importance_subtractive_preopd_fork_pilot128_retry/JOINT_PREOPD_K4_K8_GATE.json
+SCAPE/outputs/0820_joint_importance_subtractive_preopd_fork_pilot128_retry/JOINT_PREOPD_K4_K8_GATE.md
+SCAPE/outputs/0820_joint_importance_subtractive_preopd_fork_pilot128_retry/JOINT_PREOPD_SUMMARY.csv
+SCAPE/outputs/0820_joint_importance_subtractive_preopd_fork_pilot128_retry/JOINT_PREOPD_VALUE_PER_STATE.jsonl
+```
+
+## 2026-08-20 token_budget_marker adapter-conditioned paired OPD evaluation
+
+Status: **TOKEN_BUDGET_ADAPTER_CONDITIONED_PAIRED_EVAL_READY_AND_POSITIVE**.
+
+A dedicated evaluator was added because the previous `SCAPERealClosedLoopEvaluator` used fixed scripted actions and did not load cell adapters. The corrected evaluation uses the same Qwen3 base, the actual LoRA adapter for each After cell, the same reduced no-privilege DEV/TEST prompts, Qwen3 compact tool serialization mapped to legal Harness-1 actions, and official `ToolSet` execution. Reward is `0.25 legal + 0.25 executable + 0.25 live Harness-1 execution`; comparisons are paired by query_id with 2000 bootstrap replicates.
+
+```text
+Student Before: DEV=0.5625, TEST=0.5391
+
+PURE_OPD seed42: DEV=0.7031, delta=+0.1406 CI95 [0.0762,0.2051]; TEST=0.7002, delta=+0.1611 CI95 [0.1113,0.2080]
+PURE_OPD seed43: DEV=0.6973, delta=+0.1348 CI95 [0.0645,0.2051]; TEST=0.7090, delta=+0.1699 CI95 [0.1230,0.2197]
+RL_PLUS_OPD seed42: DEV=0.7090, delta=+0.1465 CI95 [0.0820,0.2109]; TEST=0.6885, delta=+0.1494 CI95 [0.0996,0.1992]
+RL_PLUS_OPD seed43: DEV=0.6914, delta=+0.1289 CI95 [0.0586,0.1992]; TEST=0.6621, delta=+0.1230 CI95 [0.0703,0.1729]
+```
+
+All 8 cell-split paired CI95 lower bounds are positive. Seed-aggregated relative gains are PURE OPD `+24.48%` DEV / `+30.71%` TEST and RL+OPD `+24.48%` DEV / `+25.27%` TEST. Invalid-tool rates decrease and live Harness-1 execution rates increase for every cell/split. Artifact: `SCAPE-EasyOPD/outputs/component_sweep_0818/h100_4/token_budget_marker/adapter_conditioned_full/TOKEN_BUDGET_ADAPTER_CONDITIONED_PAIRED_SUMMARY.json`; consolidated table: `/mnt/songzijun/opd对比.md`.
+
+## 2026-08-20 sentence_compress same-state K4/K8 reward fork
+
+Status: **SENTENCE_COMPRESS_K4_K8_WEAK_POSITIVE_CI_CROSSES_ZERO**.
+
+Setting:
+
+```text
+component: sentence_compress
+states: 128 frozen xi_t states from sentence_compress Reduced/Student state occupancy
+states_manifest: SCAPE/outputs/0820_sentence_compress_formal_fork_k128_frozen_pool1024/manifests/sentence_compress_states_n128_seed2214.jsonl
+Teacher/Full branch: sentence_compress ON for the first fork action
+Student/Reduced branch: sentence_compress OFF for the first fork action
+continuation: both branches continue with the reduced policy; no full-harness takeover
+runner: true_live_fork_replay_hf_bm25
+model: /mnt/songzijun/models/pat-jj_harness-1-full/harness-1
+python_env: /opt/scape-sentence-compress-venv
+```
+
+Reward gain summary, Teacher - Student:
+
+```text
+K4 n=128: mean=+0.0043359375, median=+0.0150000000, CI95 normal approx=[-0.0031796863, +0.0118515613], pos/neg/zero=67/50/11, mean tool-cost delta=-0.2890625
+K8 n=128: mean=+0.0038671875, median=+0.0000000000, CI95 normal approx=[-0.0085086283, +0.0162430033], pos/neg/zero=63/50/15, mean tool-cost delta=-0.2578125
+```
+
+Artifacts:
+
+```text
+SCAPE/outputs/0820_sentence_compress_formal_fork_k128_frozen_pool1024/SENTENCE_COMPRESS_K4_K8_REWARD_GAIN.json
+SCAPE/outputs/0820_sentence_compress_formal_fork_k128_frozen_pool1024/SENTENCE_COMPRESS_K4_K8_REWARD_GAIN.md
+SCAPE/outputs/0820_sentence_compress_formal_fork_k128_frozen_pool1024/SENTENCE_COMPRESS_VALUE_PER_STATE.jsonl
+```
+
+Interpretation and constraints:
+
+- The 128-state same-xi_t fork gives small positive mean Teacher-Student reward gain at both K4 and K8.
+- The normal-approx CI crosses zero for both horizons, so this is weak positive evidence, not a statistically clean DEV/TEST promotion result.
+- No replay-noise shard was completed for the 128-state run; earlier 16-state smoke was directionally negative and should not be used as the controlling result.
+- This run answers the requested K4/K8 closed-loop reward fork on the same xi_t states. A formal DEV/TEST closed-loop claim would require a larger split or paired bootstrap/replay-noise completion before promotion.
+
+## 2026-08-20 H100-1 auto_populate_first_search formal OPD comparison
+
+Status: **AUTO_FORMAL_OPD_TRAINING_RELOAD_AND_AUTO_ACTION_COMPARISON_COMPLETE_TASK_REWARD_PENDING**.
+
+Setting:
+
+```text
+component: auto_populate_first_search
+base: /mnt/songzijun/models/Qwen3-30B-A3B-Instruct-2507
+collector: real Harness-1; synthetic_fallback=false; synthetic_row_count=0
+support: 2000 queries / 8000 rollouts / 8000 unique event-active / 5000 frozen TRAIN_STATES
+OPD rows: 4500 train / 500 valid
+student_inference_privilege: false
+cells: PURE_OPD seed42/43; RL_PLUS_OPD seed42/43
+LoRA: r=8, alpha=16, lr=1e-5, anchor=0.05, one epoch
+reload: 4/4 manual safetensors state-dict pass; native PEFT conversion incompatible
+```
+
+Formal cell results:
+
+```text
+PURE_OPD seed42:     pre_div=1.5158456155 post_div=0.2291391738 delta=-1.2867064417; steps=4500; loss=0.2930067274; reload=true
+PURE_OPD seed43:     pre_div=1.5158456155 post_div=0.2287955356 delta=-1.2870500799; steps=4500; loss=0.2938684896; reload=true
+RL_PLUS_OPD seed42:  pre_div=1.5158456155 post_div=0.2304975062 delta=-1.2853481093; steps=9000; loss=0.2586068922; reload=true
+RL_PLUS_OPD seed43:  pre_div=1.5158456155 post_div=0.2276069658 delta=-1.2882386497; steps=9000; loss=0.2579987532; reload=true
+```
+
+Aggregates:
+
+```text
+PURE_OPD post_div=0.2289673547 +/- 0.0002431394; delta=-1.2868782603 +/- 0.0002431394
+RL_PLUS_OPD post_div=0.2290522362 +/- 0.0020442757; delta=-1.2867933795 +/- 0.0020442757
+```
+
+AUTO-specific action comparison on the same 500 frozen OPD valid rows:
+
+```text
+Teacher:             legal_rate=0.910; exact_projected_target_rate=0.090
+Student Before:      legal_rate=0.996; exact_projected_target_rate=0.004
+PURE_OPD After:      legal_rate=0.422; exact_projected_target_rate=0.006; reload=manual_safetensors
+RL_PLUS_OPD After:   legal_rate=0.868; exact_projected_target_rate=0.058; reload=manual_safetensors
+```
+
+The evaluator is `/mnt/songzijun/Capability_Evolution/SCAPE-EasyOPD/scripts/eval_auto_opd_comparison.py`; outputs are under `.../auto_populate_first_search/adapter_conditioned_formal_v2/`. Teacher uses `prompt_full` with teacher-only AUTO semantics; Before/After use the same `prompt_reduced`, and both After conditions are adapter-conditioned with `student_inference_privilege=false`.
+
+Interpretation and hard constraints:
+
+- Both methods and both seeds improve the valid-row teacher-forced divergence proxy, but the primary new comparison is the AUTO-specific adapter-conditioned action evaluation above.
+- RL+OPD After improves projected-target exact match from Before `0.004` to `0.058`, but remains below Teacher `0.090`; PURE_OPD improves only to `0.006` and has a severe legal-action drop to `0.422`.
+- This is still not a formal terminal/real-task reward result: the evaluator measures projected action matching on frozen OPD rows, not BrowseComp terminal reward, trajectory recall, or final-answer recall. Task reward remains `N/A`.
+- The earlier generic adaptive-rerank smoke was not promoted and is not part of the new comparison.
+- Existing earlier AUTO real closed-loop artifacts under a different/local compatibility recipe did not show Student After beating Base; do not claim `PASS_BOTH`, paper-grade task-reward win, or leaderboard promotion.
+- Canonical summary table: `/mnt/songzijun/opd对比.md`.
+- Canonical training root: `SCAPE-EasyOPD/outputs/component_sweep_0818/h100_1_qwen3/auto_populate_first_search/`.
+
+## 2026-08-20 token_budget_marker full DEV/TEST evaluation completed
+
+Four existing OPD training cells were evaluated with the no-`--skip-closed-loop` runner:
+
+```text
+PURE_OPD_seed42: DEV 128, TEST 256, error_rate=0, mean_reward=0.001/0.001
+PURE_OPD_seed43: DEV 128, TEST 256, error_rate=0, mean_reward=0.001/0.001
+RL_PLUS_OPD_seed42: DEV 128, TEST 256, error_rate=0, mean_reward=0.001/0.001
+RL_PLUS_OPD_seed43: DEV 128, TEST 256, error_rate=0, mean_reward=0.001/0.001
+```
+
+The live loop used real Harness-1 tools and `student_inference_privilege=false`, but `SCAPERealClosedLoopEvaluator` does not load each cell's LoRA adapter into generation. Therefore the `0.001` values are successful scripted live-loop smoke rewards, not adapter-conditioned Student After reward deltas. The exporter also still sets `prompt_full == prompt_reduced`, so persisted divergence proxies remain zero. Formal adapter-conditioned Student After reward remains `N/A`; artifacts are retained under `SCAPE-EasyOPD/outputs/component_sweep_0818/h100_4/token_budget_marker/formal_evals_full/`.
+
+Status: **OPD_TRAINING_ARTIFACTS_COMPLETE_BUT_FORMAL_LEARNABILITY_GATE_BLOCKED**.
+
+Setting and artifact status:
+
+```text
+base: Qwen3-30B-A3B-Instruct-2507
+component: token_budget_marker
+collection: real_harness1, 5000 unique train states, synthetic=0
+OPD rows: 4500 train / 500 valid
+cells: PURE_OPD seed42/43; RL_PLUS_OPD seed42/43
+adapter reload: 4/4 pass via manual safetensors state-dict fallback
+student_inference_privilege: false
+```
+
+Audit result:
+
+```text
+Teacher divergence proxy: 0.0
+Student Before divergence proxy: 0.0
+PURE_OPD After divergence proxy: 0.0
+RL_PLUS_OPD After divergence proxy: 0.0
+DEV/TEST real closed-loop: skipped in all four formal eval cells
+```
+
+The zero values are not formal reward results: the current token-budget exporter records `prompt_full == prompt_reduced`, and the evals were generated with `--skip-closed-loop`. Therefore these artifacts prove training completion and adapter reload only. They do not prove Teacher utility or adapter-conditioned Student After reward.
+
+Under the 0819-3 placement protocol, Positive Utility must pass before Student After can be evaluated. The 2026-08-20 128-state rerun used a frozen shared candidate cache and produced `K4=-0.0041015625` (CI95 `[-0.0103802301,+0.0021771051]`, positive/negative/zero=`47/66/15`) and `K8=-0.00046875` (CI95 `[-0.0113573681,+0.0104198681]`, positive/negative/zero=`54/63/11`). K4/K8 ordered snapshot hashes matched `128/128`; both continuations were reduced-policy only and full-harness takeover was `0/256`. The formal utility gate therefore remains failed / unstable, and the placement decision remains `KEEP_RUNTIME_OR_DROP_COMPONENT`. Artifact: `SCAPE/outputs/0820_token_budget_marker_formal_fork_128_final/TOKEN_BUDGET_MARKER_K4_K8_GATE.json`.
+
+The previous 64-state values (`K4=-0.002578125`, `K8=+0.001171875`) are retained only as historical measurements and are no longer the current table values.
+
+## 2026-08-20 token_budget_marker evidence-recall 128-state formal fork (invalidated)
+
+Status: **INVALID_INSUFFICIENT_BUDGET_PRESSURE; DIAGNOSTIC_ONLY**.
+
+The prior 128-state cohort is withdrawn from the formal gain table. Its marker values were only `remaining=6144..7936` in the simplified runner, with no real Harness-1 threshold/rejection/prune pressure and no candidate-pool transition. It therefore cannot support a token-budget component judgment, even though the paired fork and endpoint scorer were internally consistent.
+
+Setting and provenance:
+
+```text
+component: token_budget_marker
+cohort: frozen TOKEN_BUDGET_MARKER_STATES_128.jsonl
+seed: 2214 (single frozen cohort; seed-balanced value equals pooled value)
+K: 4 and 8; first forced action counts as step 1
+model: local Harness-1 checkpoint /mnt/songzijun/models/pat-jj_harness-1-full/harness-1
+environment: /opt/scape-easyopd-smoke7
+normalization: split_at_first_underscore_v1
+qrel_sha256: a6f594975be57339de9e4e9f67f13c044f647feda77c0b84c45a1581e3041bd1
+context retention: successful read observations append-only retained to endpoint
+```
+
+Teacher enabled `token_budget_marker` only for the first action; Student disabled it; both branches used Reduced continuation and `full_harness_takeover=0`. K4 and K8 each have 128 valid paired rows, ordered snapshot hashes match `128/128`, and no qrel is missing or empty. Independent scoring from endpoint candidate IDs and activated IDs passed the union/success/context-retention audit.
+
+```text
+K4 candidate recall:  Teacher 2.265625% / Student 2.265625%, delta 0.00 pp
+K4 activated recall: Teacher 0.390625% / Student 0.390625%, delta 0.00 pp
+K8 candidate recall:  Teacher 2.265625% / Student 2.265625%, delta 0.00 pp
+K8 activated recall: Teacher 0.390625% / Student 0.390625%, delta 0.00 pp
+paired CI95: [0.00, 0.00] pp for both metrics and both horizons
+positive/negative/zero: 0/0/128 for both metrics and horizons
+utility delta: K4 -0.0041015625; K8 -0.0017578125
+```
+
+Diagnostic artifact: `SCAPE/outputs/0820_token_budget_marker_evidence_recall_formal/scored_final/TOKEN_BUDGET_MARKER_EVIDENCE_RECALL_SUMMARY.json` and `TOKEN_BUDGET_MARKER_EVIDENCE_RECALL_PER_STATE.jsonl`. The observed `0.00 pp` values are retained only to document the invalid low-pressure cohort and have been restored to `N/A` in `/mnt/songzijun/增益.md`. A replacement cohort must use real tokenizer-counted Harness-1 pressure states before formal scoring.
+
+
+## 2026-08-20 H100-2 content_dedup corrected high-redundancy reward fork + OPD
+
+Status: **CONTENT_DEDUP_CORRECTED_K4_K8_REWARD_GATE_PASS_AND_OPD_COMPLETE**.
+
+Setting:
+
+```text
+component: content_dedup
+source xi_t: SCAPE-EasyOPD/outputs/component_sweep_0818/h100_2/content_dedup_corrected_high_redundancy_v3/TRAIN_STATES_5K.jsonl
+n_states: 5000 real_harness1 corrected high-redundancy states
+Student inference privilege: false
+Full branch: content_dedup ON, uses recorded dedup-on canonical projectable target
+Reduced branch: content_dedup OFF, acts on unfiltered duplicate-heavy pool
+Continuation: same reduced policy on both branches; no full-harness takeover
+runner: SCAPE/scripts/run_content_dedup_corrected_reward_fork.py
+```
+
+Corrected collection support:
+
+```text
+collection_status=READY_5K
+n_queries_selected=2000
+n_rollouts_total=8000
+n_event_active_raw=32000
+n_unique_event_active=32000
+TRAIN_STATES_5K rows=5000
+synthetic_row_count=0
+mean_duplicate_suppressed_count=22.0016
+OPD rows=4500 train / 500 valid
+```
+
+Same-state reward fork result:
+
+```text
+K4 Teacher-Student mean reward delta = +0.261302
+  CI95=[+0.255786, +0.266558]
+  positive/negative/zero = 5000/0/0
+  gate_passed=true
+
+K8 Teacher-Student mean reward delta = +0.179341
+  CI95=[+0.177273, +0.181299]
+  positive/negative/zero = 5000/0/0
+  gate_passed=true
+```
+
+Corrected OPD/internalization result:
+
+```text
+formal training root: SCAPE-EasyOPD/outputs/component_sweep_0818/h100_2/content_dedup_formal_hf_corrected_compact_8gpu/
+completed cells: PURE_OPD seed42/43; RL_PLUS_OPD seed42/43
+adapter reload: 4/4 passed via manual safetensors state-dict fallback
+Student Before div: 0.736175
+PURE_OPD seed42 After div:     0.143824, delta=0.592351
+PURE_OPD seed43 After div:     0.150096, delta=0.586080
+RL_PLUS_OPD seed42 After div:  0.153125, delta=0.583050
+RL_PLUS_OPD seed43 After div:  0.134477, delta=0.601698
+```
+
+Artifacts:
+
+```text
+SCAPE/outputs/0820_content_dedup_corrected_reward_fork/CONTENT_DEDUP_CORRECTED_K4_K8_GATE.json
+SCAPE/outputs/0820_content_dedup_corrected_reward_fork/CONTENT_DEDUP_CORRECTED_K4_K8_SUMMARY.csv
+SCAPE/outputs/0820_content_dedup_corrected_reward_fork/CONTENT_DEDUP_CORRECTED_REWARD_PER_STATE.jsonl
+SCAPE/outputs/0820_content_dedup_corrected_reward_fork/SHA256SUMS
+SCAPE-EasyOPD/outputs/component_sweep_0818/h100_2/H1002_CONTENT_DEDUP_CORRECTED_GAIN_OPD_SUMMARY.json
+SCAPE-EasyOPD/outputs/component_sweep_0818/h100_2/content_dedup_corrected_high_redundancy_v3/H1002_CONTENT_DEDUP_OPD_ROWS_MANIFEST.json
+```
+
+Conclusion:
+
+```text
+CONTENT_DEDUP_CORRECTED_SINGLE_COMPONENT_REWARD_GATE_PASS
+```
+
+This supersedes the earlier zero-trigger content_dedup sampling conclusion for the single-component corrected high-redundancy gate. The older H100-3 retrieval bundle conclusion remains `DISCARD_RETRIEVAL_BUNDLE` for the AUTO/AUTO_DEDUP bundle, not for corrected single-component dedup utility.
+
+## 2026-08-19 H100-2 retrieval/runtime component sweep Qwen3 fast-start
+
+Status: **H1002_ADAPTIVE_RERANK_FORMAL_EVAL_COMPLETE_REWARD_SMOKE_LIMITED**.
+
+Setting:
+
+```text
+machine role: H100-2
+components: content_dedup, chunk_neighbors, adaptive_rerank_instruction
+canonical_student_base: /mnt/songzijun/models/Qwen3-30B-A3B-Instruct-2507
+logical_model_id: Qwen3-30B-A3B-Instruct-2507
+runtime env: /opt/scape-easyopd-smoke7 via SCAPE-EasyOPD/scripts/setup_scape_easyopd_smoke7_env.sh
+collector: real Harness-1 bridge, collector_mode=real_harness1
+student_inference_privilege: false
+query pool: 2000 train-side queries
+synthetic_fallback: false
+```
+
+Phase U / support gates:
+
+```text
+adaptive_rerank_instruction: READY_5K
+  n_queries_selected=2000
+  n_rollouts_total=8000
+  n_unique_event_active=8000
+  TRAIN_STATES_5K rows=5000
+  OPD rows=4500 train / 500 valid
+  loss_path=full_response_kl
+  synthetic_row_count=0
+
+content_dedup: INSUFFICIENT_5K_EVENT_SUPPORT
+  real_harness1 Stage E event support=0
+  OPD training launched: no
+
+chunk_neighbors: NON_REALIZABLE_EXTERNAL_INFORMATION
+  no student-visible neighbor injection hook located and real event support=0
+  OPD training launched: no
+```
+
+Formal adaptive training/eval:
+
+```text
+formal training root: SCAPE-EasyOPD/outputs/component_sweep_0818/h100_2/formal_hf_adaptive_8gpu/
+formal eval root:     SCAPE-EasyOPD/outputs/component_sweep_0818/h100_2/formal_evals/
+completed cells: PURE_OPD seed42/43; RL_PLUS_OPD seed42/43
+adapter reload: 4/4 passed via manual safetensors state-dict fallback
+PEFT native Qwen3 conversion: still avoided due WeightConverter.__init__(distributed_operation) incompatibility
+```
+
+Valid-row divergence diagnostic:
+
+```text
+Student Before div: 0.665565
+PURE_OPD seed42 After div:     -0.083540, delta=0.749105, bootstrap 95% CI positive
+PURE_OPD seed43 After div:     -0.087396, delta=0.752961, bootstrap 95% CI positive
+RL_PLUS_OPD seed42 After div:  -0.004367, delta=0.669933, bootstrap 95% CI positive
+RL_PLUS_OPD seed43 After div:  -0.080368, delta=0.745934, bootstrap 95% CI positive
+```
+
+Closed-loop caveat:
+
+The DEV=128 and TEST=256 live Harness-1 summaries completed with `student_inference_privilege=false` and mean smoke reward `0.001` for all cells. However, the current `SCAPERealClosedLoopEvaluator` is a scripted tool-success smoke loop and does not load each saved adapter for generation. Therefore these artifacts prove that the no-privilege live tool loop can run, but they are **not** a paper-grade Student After > Student Before reward claim; adapter-conditioned closed-loop reward delta is recorded as `N/A_smoke_reward_no_adapter_conditioning`.
+
+Artifacts:
+
+```text
+SCAPE-EasyOPD/outputs/component_sweep_0818/h100_2/H1002_COMPONENT_HANDOFF.json
+SCAPE-EasyOPD/outputs/component_sweep_0818/h100_2/H1002_FORMAL_EVAL_SUMMARY.json
+SCAPE-EasyOPD/outputs/component_sweep_0818/h100_2/H1002_FORMAL_ADAPTIVE_SUMMARY.json
+SCAPE-EasyOPD/outputs/component_sweep_0818/h100_2/H1002_COMPONENT_ROWS.{json,csv}
+SCAPE-EasyOPD/outputs/component_sweep_0818/h100_2/SHA256SUMS
+SCAPE-EasyOPD/outputs/component_sweep_0818/h100_2/components/adaptive_rerank_instruction/TRAIN_STATES_5K.jsonl
+```
+
+Conclusion:
+
+```text
+H1002_ADAPTIVE_RERANK_FORMAL_EVAL_COMPLETE_REWARD_SMOKE_LIMITED
+```
+
+`adaptive_rerank_instruction` has a positive adapter/reload/divergence internalization diagnostic, but final paper-grade PASS/FAIL still requires an adapter-conditioned real closed-loop evaluator. `content_dedup` and `chunk_neighbors` remain stopped by support/realizability gates, with no synthetic promotion.
+
+## 2026-08-19 H100-4 Qwen3 fast-start control component sweep
+
+Status: **H100-4 complete / no formal H100-4 OPD training launched by protocol gate**.
+
+Setting:
+
+```text
+machine role: H100-4
+components: token_budget_marker, verify_tool
+canonical_student_base: /mnt/songzijun/models/Qwen3-30B-A3B-Instruct-2507
+logical_model_id: Qwen3-30B-A3B-Instruct-2507
+runtime env: /opt/scape-h1004 via SCAPE-EasyOPD/scripts/setup_scape_easyopd_smoke7_env.sh
+collector: real Harness-1 bridge, collector_mode=real_harness1
+student_inference_privilege: false
+query pool: 2000 train-side queries
+rollouts: 4 per query, 8000 rollouts/component
+selection_seed: 20260818
+synthetic_fallback: false
+```
+
+Code/contract changes completed:
+
+```text
+- EasyOPD formal collector and Harness1Bridge were switched from the stale openai/gpt-oss-20b contract to the local Qwen3-30B-A3B-Instruct-2507 contract.
+- Added Qwen3NativeChatAdapter using the local tokenizer native chat template; H100-4 acceptance passed with HARNESS1_EASYOPD_READY and synthetic_fallback=false.
+- Added real bridge events for token_budget_marker and verify_tool.
+- token_budget_marker records Harness-1 token-budget marker/accounting on the same Student pre-state; it remains PARTIAL and does not expose hidden counters as a Student target.
+- verify_tool records Teacher action-space availability of verify(doc_ids, claim), while Student action space remains without verify.
+- H100-4 runner now reads EasyOPD Qwen3 train-pool/handoff paths and writes outputs under SCAPE-EasyOPD/outputs/component_sweep_0818/h100_4/.
+- Master aggregation now prioritizes Qwen3 handoffs: h100_1_qwen3, h100_3_qwen3_faststart, h100_4.
+```
+
+Phase U collection results:
+
+```text
+token_budget_marker: READY_5K
+  n_queries_selected=2000
+  n_rollouts_total=8000
+  n_unique_event_active=8000
+  TRAIN_STATES_5K rows=5000
+  synthetic_row_count=0
+
+verify_tool: READY_5K
+  n_queries_selected=2000
+  n_rollouts_total=8000
+  n_unique_event_active=8000
+  TRAIN_STATES_5K rows=5000
+  synthetic_row_count=0
+```
+
+OPD pilot and diagnostics:
+
+```text
+token_budget_marker OPD_PILOT:
+  pilot states=256 real_harness1 states
+  Qwen3-30B LoRA training steps=4
+  adapter saved=true
+  PEFT native reload: failed with WeightConverter.__init__(distributed_operation)
+  Transformers load_adapter fallback: same failure
+  manual safetensors mapped reload: passed, 384/384 LoRA tensors loaded
+  post-reload forward: passed
+  ADAPTER_RELOAD_ACCEPTANCE status=ADAPTER_RELOAD_READY
+
+Teacher/Before diagnostic gate:
+  token_budget_marker:
+    token measurement=qwen3_native_chat_template_next_context_with_current_observation
+    budget_proxy=30720
+    used_tokens_proxy_min=1183
+    used_tokens_proxy_max=6703
+    marker_present_rate=1.0
+    actionable_marker_rate=0.0
+    usage bins: low_under_60=5000/5000
+    decision=TEACHER_COMPONENT_NO_POSITIVE_UTILITY
+  verify_tool:
+    verify_action_available_rate=1.0
+    student_has_verify_tool=false
+    decision=NON_REALIZABLE_ACTION_SPACE_MISMATCH
+```
+
+Conclusion:
+
+```text
+H1004_COMPONENT_SWEEP_COMPLETE_NO_FORMAL_TRAINING
+```
+
+`token_budget_marker` has real 5K support and an engineering OPD_PILOT adapter/reload proof, but the frozen 5K states never reach actionable token-budget pressure. Because Teacher diagnostic utility is not positive, formal PURE_OPD / RL_PLUS_OPD seed42/43 training is stopped by protocol. `verify_tool` is a real Teacher action-space component but is non-realizable for a Student without the verify interface, so Student After PURE_OPD / RL_PLUS_OPD are N/A. No synthetic data or smoke rows were promoted.
+
+Artifacts:
+
+```text
+SCAPE-EasyOPD/outputs/component_sweep_0818/h100_4/H1004_COMPONENT_HANDOFF.json
+SCAPE-EasyOPD/outputs/component_sweep_0818/h100_4/H1004_TEACHER_BEFORE_DIAGNOSTICS.json
+SCAPE-EasyOPD/outputs/component_sweep_0818/h100_4/token_budget_marker/TRAIN_STATES_5K.jsonl
+SCAPE-EasyOPD/outputs/component_sweep_0818/h100_4/token_budget_marker/OPD_PILOT/ADAPTER_RELOAD_ACCEPTANCE.json
+SCAPE-EasyOPD/outputs/component_sweep_0818/h100_4/verify_tool/TRAIN_STATES_5K.jsonl
+SCAPE-EasyOPD/outputs/component_sweep_0818/h100_4/SHA256SUMS
+SCAPE-EasyOPD/outputs/component_sweep_0818/master/RUN_MANIFEST.json
+SCAPE-EasyOPD/outputs/component_sweep_0818/master/COMPONENT_10_MAIN_TABLE.{csv,md}
+```
+
+Master status after this update remains **not paper-grade final**:
+
+```text
+MASTER_TABLE_BLOCKED_PHASE_E_INCOMPLETE
+```
+
+H100-4 is no longer the blocker. The remaining master blockers are non-H100-4 components whose Teacher/Before/After Phase E metrics are still missing or running, plus component-specific insufficient/non-realizable gates. The master table is a coordination artifact, not a final scientific result.
+
+## 2026-08-19 H100-4 post-sweep infra + capability placement gate
+
+Status: **H1004_POST_SWEEP_INFRA_AND_PLACEMENT_READY**.
+
+Setting:
+
+```text
+machine role: H100-4
+canonical_student_base: /mnt/songzijun/models/Qwen3-30B-A3B-Instruct-2507
+logical_model_id: Qwen3-30B-A3B-Instruct-2507
+runtime env: /opt/scape-h1004 via scripts/setup_scape_easyopd_smoke7_env.sh
+collector: real Harness-1 bridge, collector_mode=real_harness1
+student_inference_privilege: false
+components audited: verify_tool, importance_tagging, subtractive_curation, auto_populate_first_search, content_dedup, chunk_neighbors, evidence_graph, sentence_compress, token_budget_marker, adaptive_rerank_instruction
+```
+
+Code and contract updates completed:
+
+```text
+- Added h1004_post_sweep.py core module for Qwen3 reload audit, handoff discovery, capability placement gate, master table build, and final handoff writeout.
+- Added scripts/h1004_validate_qwen3_reload.py.
+- Added scripts/h1004_capability_placement_gate.py.
+- Added scripts/h1004_discover_component_handoffs.py.
+- Added scripts/h1004_build_capability_placement_master.py.
+- Added scripts/run_h1004_post_sweep.py.
+- Coordination updates were appended to SCAPE实验协调.md.
+```
+
+Reload audit result:
+
+```text
+Qwen3 base load: pass
+native PeftModel.from_pretrained: fail
+  root cause: WeightConverter.__init__(distributed_operation) incompatibility in PEFT/Transformers adapter reload path
+manual safetensors fallback: pass
+LoRA tensors loaded: 384/384
+adapter trainable params: 3,342,336
+disable/enable output difference: pass
+roundtrip logits cosine: 0.999878...
+acceptance status: QWEN3_ADAPTER_RELOAD_READY_WITH_COMPAT_FALLBACK
+```
+
+Handoff / master discovery result:
+
+```text
+available handoffs: 4/4
+base blockers: none
+collector blockers: none
+phase E blockers:
+  - importance_tagging: TEACHER_METRIC_REQUIRED_BEFORE_TRAINING
+  - auto_populate_first_search: TEACHER_METRIC_REQUIRED_BEFORE_TRAINING
+  - evidence_graph: TEACHER_METRIC_REQUIRED_BEFORE_TRAINING
+  - sentence_compress: TEACHER_METRIC_REQUIRED_BEFORE_TRAINING
+  - adaptive_rerank_instruction: PHASE_E_FOUR_CELLS_RUNNING
+master status: MASTER_TABLE_BLOCKED_PHASE_E_INCOMPLETE
+```
+
+Final artifacts:
+
+```text
+SCAPE-EasyOPD/outputs/component_sweep_0818/h100_4/post_phase_u/H1004_POST_SWEEP_HANDOFF.json
+SCAPE-EasyOPD/outputs/component_sweep_0818/h100_4/post_phase_u/qwen3_reload/QWEN3_RELOAD_ACCEPTANCE.json
+SCAPE-EasyOPD/outputs/component_sweep_0818/master/RUN_MANIFEST.json
+SCAPE-EasyOPD/outputs/component_sweep_0818/master/SHA256SUMS
+```
+
+Conclusion:
+
+```text
+H1004_POST_SWEEP_INFRA_AND_PLACEMENT_READY
+```
+
+Interpretation:
+
+- H100-4 has now completed the post-sweep infrastructure task: Qwen3 reload is audited, placement gating is implemented, and the master table was rebuilt.
+- The Qwen3 adapter reload path is not fully native yet; the safe/working contract is the manual safetensors fallback, not the broken native PEFT converter path.
+- `token_budget_marker` remains `KEEP_RUNTIME_OR_DROP_COMPONENT`; `verify_tool` remains `KEEP_RUNTIME_PLACEMENT_BOUNDARY`.
+- The final master remains blocked by external Phase E incompleteness on H100-1/2/3, so there is still no paper-grade final result.
+
+## 2026-08-21 token_budget_marker Teacher-always-on vs Student-always-off 128-state gain
+
+Status: **completed; no process/utility separation**. Reused the frozen real-pressure cohort `SCAPE/outputs/0820_token_budget_marker_pressure_rebuild/manifests/PRESSURE_STATES_128.jsonl` (128 unique snapshots, SHA-256 `05ddafd1d852d28a4fbc388313e0f06b8be174c69faa176e904b46f3afe4c3ab`). The frozen Teacher/Student first actions were retained and counted as step 1; Teacher then used the Full/component-on view for every remaining continuation step, while Student used the Reduced/component-off view throughout. K4 and K8 each completed 128 paired rows.
+
+| Horizon | First-action disagreement | Tool-cost Δ | Utility Δ |
+|---|---:|---:|---:|
+| K4 | 0.00% | 0.0 | 0.0000 |
+| K8 | 0.00% | 0.0 | 0.0000 |
+
+All deltas are Teacher minus Student. Mean Teacher/Student tool costs were `3.625/3.625` for K4 and `3.6484375/3.6484375` for K8. Audit passed with K4/K8 ordered snapshot identity `128/128`; invalid provenance, snapshot mismatch, trace-length mismatch, branch-level metric formula mismatch, and Full Harness takeover were all zero. Thus extending `token_budget_marker` from once-on to continuation always-on did not alter the frozen first actions and produced no tool-cost or utility gain on this real-pressure cohort. Formal artifacts: `SCAPE/outputs/0821_token_budget_marker_always_on_off_128/scored/TOKEN_BUDGET_MARKER_ALWAYS_ON_OFF_SUMMARY.json` and `TOKEN_BUDGET_MARKER_ALWAYS_ON_OFF_PER_STATE.jsonl`; runner/scorer: `scripts/run_token_budget_marker_formal_fork.py` and `scripts/score_token_budget_marker_always_on_off.py`; runtime `/opt/scape-easyopd-smoke7`.
+
+## 2026-08-21 token_budget_marker real-pressure 128-state recall rerun
+
+Status: **completed / formal recall gate valid; no observable gain**.
+
+The previously invalidated low-pressure cohort was replaced by the frozen real-corpus pressure manifest `SCAPE/outputs/0820_token_budget_marker_pressure_rebuild/manifests/PRESSURE_STATES_128.jsonl`. It contains 128 unique same-state snapshots from 66 queries, with tokenizer-measured real-context usage in three fixed bins: `over_half=43`, `warning=43`, `critical=42`; measured usage ranged from `19080` to `28588` of budget `30720`. All 128 rows had non-empty qrels, and the marker was present in the Teacher first-action view and absent from the Student view.
+
+Setting and provenance:
+
+```text
+component: token_budget_marker
+cohort: PRESSURE_STATES_128.jsonl (frozen before rerun)
+seed: 2214; K4/K8; first forced action counts as step 1
+model: /mnt/songzijun/models/pat-jj_harness-1-full/harness-1
+runtime: /opt/scape-h1004; attention: flex_attention
+normalization: split_at_first_underscore_v1
+qrel_sha256: a6f594975be57339de9e4e9f67f13c044f647feda77c0b84c45a1581e3041bd1
+continuation: Reduced for both branches; full_harness_takeover=0
+```
+
+The formal outputs are `SCAPE/outputs/0821_token_budget_marker_real_pressure_recall_128/scored/TOKEN_BUDGET_MARKER_EVIDENCE_RECALL_SUMMARY.json` and `TOKEN_BUDGET_MARKER_EVIDENCE_RECALL_PER_STATE.jsonl`; raw K4/K8 rows are in `token_budget_marker_K4.jsonl` and `token_budget_marker_K8.jsonl`. Audit passed with `128/128` ordered snapshot match, `invalid_provenance=0`, `missing_or_empty_qrel=0`, and `full_harness_takeover=0`.
+
+```text
+K4 candidate recall:  Teacher 2.265625% / Student 2.265625%, delta 0.00 pp
+K4 activated recall: Teacher 0.390625% / Student 0.390625%, delta 0.00 pp
+K8 candidate recall:  Teacher 2.265625% / Student 2.265625%, delta 0.00 pp
+K8 activated recall: Teacher 0.390625% / Student 0.390625%, delta 0.00 pp
+K4/K8 paired counts: positive/negative/zero = 0/0/128 for both metrics
+paired and query-cluster bootstrap CI95: [0.00, 0.00] pp for both metrics
+first-action disagreement: 0.00% (all pressure bins)
+successful read-set delta / tool-cost delta / utility delta: +0.0000 / +0.0000 / +0.000000
+```
+
+Conclusion: this rerun closes the prior insufficient-pressure validity gap, but the token marker did not alter the first action or any endpoint evidence set on this frozen pressure cohort. The gain-table result is therefore formally recall-neutral and process-neutral, not invalidated for lack of pressure. The earlier diagnostic artifact remains historical only.
+
+## 2026-08-19 H100-1 action/projectable component sweep Phase U
+
+Status: **Phase U ready / Phase E blocked by canonical base availability**.
+
+Completed:
+
+```text
+components: auto_populate_first_search, importance_tagging, subtractive_curation
+TRAIN_POOL: 2000 unique queries = 446 original train queries + 1554 train-corpus document-grounded synthetic query specs
+leakage audit: n_exact_duplicate_queries=0, n_dev_test_query_overlap=0
+per component: n_queries_selected=2000, n_rollouts_total=8000, n_unique_event_active=8000, TRAIN_STATES_5K rows=5000, synthetic_row_count=0
+collector_mode: real_harness1
+model_id contract: openai/gpt-oss-20b
+```
+
+Artifacts:
+
+```text
+SCAPE-EasyOPD/manifests/COMPONENT_SWEEP_TRAIN_POOL.json
+SCAPE-EasyOPD/manifests/COMPONENT_SWEEP_TRAIN_POOL_PROVENANCE.jsonl
+SCAPE-EasyOPD/manifests/COMPONENT_SWEEP_TRAIN_POOL_STATS.json
+SCAPE-EasyOPD/manifests/COMPONENT_SWEEP_QUERY_LEAKAGE_AUDIT.md
+SCAPE-EasyOPD/outputs/component_sweep_0818/h100_1/{auto_populate_first_search,importance_tagging,subtractive_curation}/TRAIN_STATES_5K.jsonl
+SCAPE-EasyOPD/outputs/component_sweep_0818/h100_1/H1001_OPD_ROWS_MANIFEST.json
+SCAPE-EasyOPD/outputs/component_sweep_0818/h100_1/H1001_COMPONENT_HANDOFF.json
+SCAPE-EasyOPD/outputs/component_sweep_0818/h100_1/PHASE_E_BLOCKER_GPT_OSS_BASE.md
+```
+
+Phase E was not launched. `openai/gpt-oss-20b` is not locally resolvable by Transformers with `local_files_only=True`; no cached `models--openai--gpt-oss-20b` snapshot was found. Per the 0819 protocol, Qwen or `pat-jj/harness-1` checkpoints must not be substituted for the canonical base. Current handoff status is `H1001_PHASE_U_READY_PHASE_E_BLOCKED` with decision `STOP_GPT_OSS_BASE_UNAVAILABLE`.
+
+
+## 2026-08-19 H100-3 component sweep Phase U preflight
+
+Status: **framework gate tightened / preflight passed**.
+
+Completed in this turn:
+
+```text
+- `scripts/scape_component_opd.py collect` now has explicit `--mode formal|smoke` separation.
+- Formal collection requires real `--query-manifest` and `--rollout-manifest` inputs.
+- Formal rows are validated for `collector_mode=real_harness1`, `runtime_name=harness1`, and required student-visible fields.
+- Collection stats now report `synthetic_row_count`, `runtime_name`, and `model_id=openai/gpt-oss-20b`.
+- Existing smoke tests still pass: 8/8 in `tests/methods/test_scape_component_opd_5k_collection.py` and `tests/methods/test_scape_component_opd_training_entrypoint.py`.
+- `/opt/scape-easyopd-smoke7/bin/python` imports `easyopd`, `verl`, `torch`, and `transformers` successfully.
+- `outputs/component_sweep_0818/preflight/ENVIRONMENT.txt` was written.
+- `outputs/scape_easyopd/framework/HARNESS1_RUNTIME_INVENTORY.md` already contains the current Harness-1 entry inventory.
+```
+
+Current interpretation:
+
+```text
+- The legacy smoke collector is still available only as an explicit smoke path.
+- Formal 5K collection is now fenced against synthetic fallback and can only proceed from real Harness-1 rollouts.
+- No real on-policy 5K rollout has been started yet in this turn.
+```
+
+Next required step: launch the real Harness-1 rollout collection path once the manifest/rollout artifacts are ready, then monitor it and only promote the result if `synthetic_row_count == 0` and the 5K gate is satisfied.
+
+
+## 2026-08-18 H100-3 SCAPE-EasyOPD framework migration
+
+Status: **framework acceptance complete / `SCAPE_EASYOPD_READY`**. Canonical framework directory: `/mnt/songzijun/Capability_Evolution/SCAPE-EasyOPD`; runtime: `/opt/scape-easyopd-smoke7` (no Python/conda runtime created under `/mnt`).
+
+Completed:
+
+```text
+EasyOPD registry/config: pass
+8 × H100 visible: pass
+BF16 matmul on all 8: pass
+upstream dry-runs: gkd/sod/opcd pass
+SCAPE component contract/loss tests: 19 passed
+verl one-step Qwen3-1.7B training smoke: pass
+live SCAPE/Harness-1 AgentLoop: pass
+real closed-loop evaluator: pass
+actual LoRA projected-action update + adapter reload: pass
+verify_tool NON_REALIZABLE guard: pass
+content_dedup zero-event guard: pass
+```
+
+Key artifacts now exist in `SCAPE-EasyOPD/`: `UPSTREAM_LOCK.*`, `FRAMEWORK_SELECTION_AUDIT.md`, `LEGACY_OPD_CODE_AUDIT.md`, `VERL_PATCH_AUDIT.md`, `SCAPE_*_CONTRACT.md`, `COMPONENT_REALIZABILITY_MATRIX.*`, acceptance/test summaries, `RUN_MANIFEST.json`, `STATUS_LIVE.md`, `H1003_SCAPE_EASYOPD_HANDOFF.json`, and `SHA256SUMS`.
+
+Important caveat: this is a **framework acceptance smoke**, not a positive scientific component result. The completed path proves the EasyOPD/verl OPD path, vLLM rollout, FSDP actor, checkpoint save, actual LoRA reload, live SCAPE/Harness multi-turn Search loop, and unified real closed-loop evaluator are runnable. Recommended next component for full-scale experiments is `auto_populate_first_search`, because it has a legal projected-action path and passed the actual LoRA + real closed-loop smoke.
+
+## 2026-08-18 0818 todo snapshot
+
+> 下面这组是当前 `todo/0818` 的最新状态汇总，用于标清楚 **已完成 / 进行中 / 未完成**。旧的历史结果仍保留在后文。
+
+| Task | Status | Setting | Current result | Conclusion |
+|---|---|---|---|---|
+| H100-1 `PROJECTED_ACTION_AUTO` | **进行中 / 阻塞** | 8×H100；actual LoRA/PEFT；`student_inference_privilege=false`；第一次成功 search 后把 harness 的 `auto_populate_first_search` side-effect 投影为 Student 可执行的 `curate(add_ids=...)`，再做真实 multi-step closed-loop。 | 代码审计已确认旧 AUTO 目标和真实 side-effect 不一致：真实 runtime 里是 search 后由 harness 自动写入 curated set，而不是模型显式发出 `curate`。当前可合法投影的 projected-action 支持为 `0/1024`，没有伪造样本；正式 on-policy 重采集与 8-GPU 训练尚未启动。 | 先恢复 `/opt` ML 环境，再做真实 on-policy 采集与 projection split；当前不能进入 paper-grade GO，属于阻塞态。 |
+| H100-2 `PROJECTED_CURATION_BUNDLE` | **未完成 / 需 redesign** | 8×H100；actual model only；`importance_tagging + subtractive_curation` 联合内化；Student 仍然无 privilege，目标是把 `curated_ids_pre -> curated_ids_post` 的 state delta 编译成原生 `curate(add_ids, remove_ids)`。 | 最新 live 状态仍停在 support gate：`42/512` unique states，`valid add ids=42`，`valid remove ids=42`，`terminal reward nonzero=42`，但正式 8-GPU actual-LoRA 阵列未启动。 | 当前结论是 `REDESIGN_ONCE_CURATION_BUNDLE`；若后续仍无法拿到足够支持或闭环增益，则应放弃该 bundle。 |
+| H100-3 `RETRIEVAL_HYGIENE_BUNDLE` | **已完成** | 8×H100；actual LoRA；no-privilege Student；联合 `auto_populate_first_search`、`content_dedup`，并诊断 `adaptive_rerank_instruction` 是否带来组合增益。 | Phase 1–3 gate 未证明互补性：`AUTO_DEDUP <= max(AUTO, DEDUP)`，`content_dedup` 触发案例为 0，`rerank` 也没有提升 `AUTO_DEDUP`。后续 actual-LoRA 与 real closed-loop 已跑完，但 DEV/TEST 都未超过 Base。 | 最终结论为 `DISCARD_RETRIEVAL_BUNDLE`。 |
+| H100-4 actual-model baselines + novelty guard | **已完成** | actual-model baselines；no-privilege real closed-loop；同时做 novelty collision audit，避免把 harness internalization、privileged/action-only distillation、selective OPD、state-matching、outcome verification、evidence-conditioned self-distillation 误报为新贡献。 | 已完成 OPSD_ACTION_PI、OPHSD_FAITHFUL、MATCHED_TEXT_PRIVILEGE 和 fallback baseline 的实际训练/闭环；SEED/OPID faithful contract 仍受阻并按规范回退。16-query serial real closed-loop 中 Base 最好，所有完成的 adapter 都没有超过 Base。 | 科学结论是没有拿到 `Ours > Base` 或强 baseline 的正结果；新颖性结论是相关 collision hypotheses 仍需逐篇核实，当前不能宣称新机制首创。 |
+
+## 2026-08-18 H100-3 RETRIEVAL_HYGIENE_BUNDLE
+
+Status: **completed all required phases — `DISCARD_RETRIEVAL_BUNDLE`**. Canonical output: `outputs/0818_retrieval_hygiene_bundle/`. `CLAUDE.md` was reread before continuation. The actual PEFT/LoRA matrix, full DEV=128 real closed-loop matrix, and full TEST=112 real closed-loop matrix all completed with eight-way GPU parallelism; final GPU check showed all eight idle and no retrieval-bundle workers remained.
+
+### Contract and artifacts
+
+- Actual LoRA/LLM weights: true; route-head substitution: false.
+- Student inference privilege: false.
+- Real runtime document ids and executable projected args were used.
+- Projection artifacts include `AUTO_PROJECTED_DATA.jsonl`, `DEDUP_PROJECTED_DATA.jsonl`, `AUTO_DEDUP_PROJECTED_DATA.jsonl`, `AUTO_DEDUP_RERANK_PROJECTED_DATA.jsonl`, and `SHUFFLED_BUNDLE_PROJECTION_DATA.jsonl`.
+- The first smoke exposed the known Harmony evaluator contract issue (`NoneType.new`); rerunning with `SCAPE_FORCE_LOCAL_HARMONY=1` produced valid real tool calls and `error_rate=0` for every method. The initial parser-failure smoke is not included as scientific evidence.
+- Formal TEST manifest: `outputs/0818_retrieval_hygiene_bundle/test_manifest_112.json`, formed from the 128 unique H100-2 real-loop queries after excluding the 16 corrected smoke queries.
+
+### Phase 1–3 gate
+
+```text
+source rows: AUTO=1024, content_dedup=1024, matched unique=2048
+content_dedup trigger cases at MinHash/shingle threshold 0.82: 0
+AUTO_PROJECTED mean reward:              0.452595
+DEDUP_PROJECTED mean reward:             0.006397
+AUTO_DEDUP_PROJECTED mean reward:        0.452595
+AUTO_DEDUP_RERANK_PROJECTED mean reward: 0.452595
+SHUFFLED_BUNDLE mean reward:             0.154771
+decision: DISCARD_RERANK_USE_DEDUP_GPU45
+```
+
+The value gate did not establish complementarity: `AUTO_DEDUP <= max(AUTO, DEDUP)`, and rerank did not improve `AUTO_DEDUP`. The frozen `content_dedup` shard contained no active duplicate event: 1024 rows, 242 unique document ids, zero exact cross-id duplicate text clusters, and zero MinHash-triggered clusters.
+
+### Phase 4 actual-LoRA matrix
+
+Eight cells completed successfully with finite losses and reloadable LoRA adapters:
+
+```text
+AUTO        seed42/43:        D_post=1.3150 / 1.2734
+DEDUP       seed42/43:        D_post=0.1661 / 0.1993
+AUTO_DEDUP  seed42/43:        D_post=1.3472 / 1.1276
+SHUFFLED    seed42/43:        D_post=0.4815 / 0.4740
+```
+
+### Phase 5 full real closed-loop results
+
+Every DEV/TEST cell completed with `error_rate=0` and `student_inference_has_privilege=false`.
+
+```text
+DEV n=128, matched-base reward deltas
+AUTO        seed42/43:       -0.109655 / -0.150484
+DEDUP       seed42/43:       +0.023288 / +0.004711
+AUTO_DEDUP  seed42/43:       -0.128499 / -0.081656
+SHUFFLED    seed42/43:       -0.034547 / -0.010992
+
+TEST n=112, paired reward deltas
+AUTO        seed42/43:       -0.104089 / -0.136393
+DEDUP       seed42/43:       +0.003589 / +0.008973
+AUTO_DEDUP  seed42/43:       -0.136393 / -0.068196
+SHUFFLED    seed42/43:       -0.030509 / -0.019741
+```
+
+Pooled split aggregates:
+
+```text
+DEV:  AUTO=-0.115988, DEDUP=+0.018792, AUTO_DEDUP=-0.091782, SHUFFLED=-0.009474
+TEST: AUTO=-0.127317, DEDUP=+0.000103, AUTO_DEDUP=-0.107576, SHUFFLED=-0.028612
+```
+
+The full result does not satisfy the required GO conditions: `AUTO_DEDUP` is below matched Base on both splits and both seeds; it is also below AUTO-only and shuffled controls. DEDUP has small positive deltas but does not establish bundle complementarity, and its source has no active duplicate-trigger events.
+
+### Paired bootstrap and mechanism conclusion
+
+Full per-query paired bootstrap artifacts are in `PAIRED_BOOTSTRAP.csv`. TEST 95% intervals for AUTO and AUTO+DEDUP remain strictly negative; DEDUP intervals are small and do not rescue the bundle claim. Mechanism metrics are in `RETRIEVAL_MECHANISM_METRICS.csv`; no simultaneous improvement in earlier curation, duplicate reduction, and unique relevant evidence was established. The allowed event-conditioned redesign was audited once, but zero real dedup-trigger rows means generating a new training wave would require fabrication and is prohibited.
+
+```text
+DISCARD_RETRIEVAL_BUNDLE
+```
+
+Handoff: `outputs/0818_retrieval_hygiene_bundle/H1003_0818_HANDOFF.json`. Full aggregates: `RETRIEVAL_FULL_SPLIT_AGGREGATE.csv`. Checksums: `outputs/0818_retrieval_hygiene_bundle/SHA256SUMS`.
+
+## 2026-08-18 H100-4 actual-model baselines / novelty guard
+
+Status: **completed actual-model baseline run with closed-loop completion and fallback replacement**. The approved `/opt/scape-h1004` runtime was restored, all eight H100 GPUs were exercised, and six actual HF/PEFT LoRA cells completed on the real 512/128 train-valid contract: OPSD_ACTION_PI seeds 42/43, OPHSD_FAITHFUL seeds 42/43, and MATCHED_TEXT_PRIVILEGE seeds 42/43. SEED/OPID remains blocked by missing faithful Search skill-analyzer/adaptation contract, so GPU6/7 were repurposed per spec to closest faithful SMRC-SD / OVCSD actual-model fallback cells; both fallback cells trained and completed n=16 real closed-loop evaluation.
+
+Canonical output: `outputs/0818_actual_baselines_novelty/`. The final status files and run manifest now record `training_complete_closed_loop_complete`. The six completed actual-model rows are adapter-only and no-privilege at inference. A serial real-closed-loop smoke over the six adapters ran on one query (`query_id=471`) with `max_steps=6`; Base and all six adapters completed the episode, all at `overall_reward=0.001`, so there was no win over Base in that smoke. A later 16-query serial real closed-loop run completed for Base plus all six adapters; Base achieved `overall_reward=0.14961805555555555`, while the best adapter tied at `-0.024125`, so the completed closed-loop result is still negative for every adapter relative to Base. A prior 16-query parallel smoke was stopped after shared local Chroma stalled, and those partial results were not promoted.
+
+The existing collision guard is preserved: do not claim first harness internalization, first privileged/action-only distillation, first selective/state-conditioned OPD, first state-aligned correction, first evidence-conditioned search self-distillation, or first privileged-information representation. C1/C2/C3 remain pending full paper-level audit; no novelty claim is made.
+
+Required 0818 outputs and SHA256 are under the canonical output directory, including `RUN_MANIFEST.json`, `STATUS_LIVE.md`, the six `TRAINING_SUMMARY.json` cell artifacts, the route-level fallback summaries, and `eval/all_six_serial_n1/REAL_CLOSED_LOOP_HANDOFF.json`. Faithful actual-model baselines are now runnable on `/opt`; the remaining scientific question is whether a broader real-closed-loop evaluation can beat Base and the stronger historical references.
+
+## 2026-08-18 H100-2 PROJECTED_CURATION_BUNDLE
+
+Status: **blocked before formal training**. Canonical output: `outputs/0818_projected_curation_bundle/`.
+
+### Setting
+
+```text
+experiment: PROJECTED_CURATION_BUNDLE
+required target states: 512
+actual collected states: 42
+valid add ids: 42
+valid remove ids: 42
+terminal reward nonzero: 42
+student inference privilege: false
+```
+
+### Current result
+
+- The collect/evaluator repair pass produced a consistent low-support corpus with valid add/remove ids and nonzero terminal reward.
+- The formal gate failed on support: `42/512` unique states, so the 8-GPU actual-LoRA matrix was not launched.
+- The `/opt` ML runtime is still missing: `/opt/scape-hf-scorer/bin/python`, `/opt/scape/bin/python`, and `/opt/scape-venv/bin/python` do not exist; system Python also lacks `torch`, `transformers`, and `peft`.
+- The new resumable orchestrator wrote a consistent `H1002_PROJECTED_CURATION_BUNDLE_0818_HANDOFF.json`, `RUN_MANIFEST.json`, and `STATUS_LIVE.md` that supersede the contradictory older discard text in the same output directory.
+- Eight H100 GPUs are visible and idle, but no valid actual-model training can start until an approved `/opt` environment is restored and the support gate is met.
+
+### Decision
+
+```text
+REDESIGN_ONCE_CURATION_BUNDLE
+```
+
+### Next required step
+
+Restore the approved `/opt` ML environment, recollect to the formal 512-state target, then rerun the gate and only after that launch the 8-way training matrix and closed-loop evaluation.
+
 ## 2026-08-17 0816-2 final summary
 
 
 Status: completed in main checkout `/mnt/songzijun/Capability_Evolution/SCAPE`. This is the concise end-state summary for the 0816-2 round.
+
+## 2026-08-18 H100-2 PROJECTED_CURATION_BUNDLE
+
+Status: **completed as discard**. The bundle was audited against the current `importance_tagging + subtractive_curation` evidence set and closed as `DISCARD_CURATION_BUNDLE`, not GO or redesign.
+
+### Setting
+
+```text
+output root: outputs/0818_projected_curation_bundle/
+student_inference_privilege: false
+inputs checked:
+  - outputs/0818_projected_action_auto/RUN_MANIFEST.json
+  - outputs/btp_h100_3_subtractive_audit_0816_final/H1003_SUBTRACTIVE_AUDIT_HANDOFF.json
+  - outputs/h100_2_candidate_b_live_utility/CANDIDATE_B_LIVE_HANDOFF.json
+  - outputs/h100_2_structured_privilege_formal_0816/H1002_STRUCTURED_PRIVILEGE_HANDOFF.json
+```
+
+### Evidence summary
+
+- `importance_tagging` live utility remains negative in the true live fork/replay gate.
+- `subtractive_curation` does not provide a stable positive utility signal and the subtractive audit still reports missing terminal gold/reference contract and zero valid remove-id supervision.
+- The AUTO-style projected-action path does not yield trainable projected curate rows for curation, and the current evidence set has no usable `curated_ids_pre -> curated_ids_post` delta for a bundle-level `curate(add_ids, remove_ids)` target.
+- No terminal reward contract is available in the audited same-state rows, so real closed-loop bundle training would be unsupported.
+
+### Decision
+
+```text
+DISCARD_CURATION_BUNDLE
+```
+
+### Interpretation
+
+- Do not launch LoRA or real closed-loop training from this evidence set.
+- Do not reframe this as a redesign win; the current data contract is insufficient for a projected curation bundle.
+- The next required step would be evaluator/data-contract repair and recollection of real curate-event-positive rows with valid add/remove ids and terminal gold/reference fields.
+
 
 ### Setting
 
@@ -579,6 +2193,13 @@ Value-confirm setting:
 
 Value-confirm result:
 
+Recall rerun (formal 128-state cohort; output `outputs/0820_auto_populate_first_search_recall_128_rerun/`):
+
+- Re-ran all 8 paired cells (NATURAL_FIRST_SEARCH/AUTO_EFFECT_ACTIVE × seeds 2230/2231 × K4/K8), 1024 rows total, using the frozen 128-state manifests and the same Teacher/Student first-action fork with Reduced continuation.
+- Added and independently persisted endpoint candidate IDs, curated IDs, successful read IDs, entered/retained context IDs, and qrel-normalized candidate/activated recall fields. `full_harness_takeover=0`; all K4/K8 frozen-state provenance remained paired.
+- Seed-merged pooled results: K4 candidate-pool Teacher/Student `1.2602%/1.2602%`, gain `+0.00 pp`; activated Teacher/Student `1.1393%/1.1393%`, gain `+0.00 pp`. K8 values are identical: candidate `1.2602%/1.2602%`, activated `1.1393%/1.1393%`, both gains `+0.00 pp`. All 512 paired rows per horizon were zero delta (`positive/negative/zero=0/0/512`).
+- Recall gate conclusion: `recall-neutral`; the historical utility-positive result remains a separate utility layer and is not used to claim evidence-recall gain.
+
 ```text
 decision: VALUE_POSITIVE
 value rows: 4096 = 2 strata x 2 seeds x 2 horizons x 512 states
@@ -713,6 +2334,30 @@ Implementation / recovery notes:
 - `AUTO_EFFECT_ACTIVE` uses real renderer/mask state: full `auto_seed` available, reduced `auto_seed` absent, before first search. It is not a keyword filter.
 - Finalizer `RUN_MANIFEST.json` records `status=completed`, `exit_code=0`, and completed shards `AUTO_VALUE_CONFIRM`, `gate`, `schema`, `handoff`.
 - After completion, no `run_btp_h1002_auto_populate.py`, `train_route_opd.py`, or `launch_btp_auto` processes were running; `nvidia-smi` showed all 8 GPUs idle.
+
+## 2026-08-20 content_dedup candidate/activated recall 128-state rerun
+
+- 已扩展真实 HF/BM25 same-state fork runner，使其支持 `content_dedup`，并落盘 T/S endpoint candidate IDs、final curated IDs、成功 read/context-retention IDs 和 final activated IDs。运行环境为 `/opt/scape-easyopd-smoke7`，模型为 `pat-jj_harness-1-full/harness-1`，未在 `/mnt` 创建或更新环境。
+- 正式 cohort 使用 seed `2214/2215`，每 seed 每 horizon `64` states，K4/K8 各合并为 `128` paired rows。每个 seed 的 K4/K8 ordered snapshot hash 均 `64/64` 一致；T/S initial-state hash mismatch=`0`，missing/empty qrel=`0`，invalid provenance=`0`，Full Harness takeover=`0`。
+- qrel SHA-256=`a6f594975be57339de9e4e9f67f13c044f647feda77c0b84c45a1581e3041bd1`，corpus SHA-256=`21cbf37b998da25842d993917f37b3a020f0802c66ae20ff003aaa071f52b7be`，normalization=`split_at_first_underscore`。
+- K4 candidate recall T/S=`0.620040%/0.620040%`，paired gain=`+0.00 pp`，CI95=`[0.00,0.00]`；activated recall T/S=`0.173611%/0.173611%`，paired gain=`+0.00 pp`，CI95=`[0.00,0.00]`。K8 数值完全相同。两 horizon、两指标 positive/negative/zero 均为 `0/0/128`；seed 2214/2215 的 paired gain 均为 `0.00 pp`，seed sample std=`0.00 pp`。
+- Candidate precision T/S=`0.46875%/0.46875%`，mean set size=`10/10`；activated precision T/S=`0.78125%/0.78125%`，mean set size=`2/2`。结论：在该真实 qrel-compatible fork 上，content_dedup 没有 candidate 或 activated evidence recall 增益。
+- 正式输出：`SCAPE/outputs/0820_content_dedup_real_recall_128/CONTENT_DEDUP_RECALL_PER_STATE.jsonl`、`CONTENT_DEDUP_RECALL_K4_K8_GATE.json`、`RUN_MANIFEST.json`。早期 blocked eligibility artifact 和 `INVALID_DIAGNOSTIC_ONLY` artifact 仅保留为失败尝试，不用于当前表格。
+- 同状态 raw shard 已保存 branch endpoint `tool_search_cost` 与 `objective_utility`；离线提取产物为 `SCAPE/outputs/0820_content_dedup_real_recall_128/CONTENT_DEDUP_UTILITY_PER_STATE.jsonl` 和 `CONTENT_DEDUP_UTILITY_SUMMARY.json`。K4 `tool cost Δ=+0.2109375`、`utility Δ=-0.0031640625`；K8 `+0.3046875`、`-0.0045703125`（均 Teacher−Student，128 paired rows，Full Harness takeover=0）。已据此补入 `/mnt/songzijun/增益.md`，无需重跑模型。
+
+## 2026-08-21 auto_populate_first_search OPD 384-query four-condition evaluation
+
+- Strict pool is frozen and valid: 384 unique queries after official query/evidence/gold intersection and component-training query-ID exclusion; official test subset `76`; all four ordered query ID lists agree. Manifest SHA-256=`daa46743ef9b1d6acf1dd230e8da92761f3465d47f2a8d4f7981f3ff7c380092`.
+- Conditions are Teacher, Student Before OPD, Student After PURE_OPD seed42 and Student After RL+OPD seed42. All four 384-query model-action generations completed with the same Qwen3 base and greedy decoding; After adapters used manual safetensors reload.
+- Early local-proxy and deep scorer artifacts were invalidated by independent audits of action/fan-out semantics; their values must not be quoted. The final metric contract reports only strict Harness-schema Legal action rate and official-test Evidence Recall@5; Recall@100/1000 are explicitly not computed and their rows were removed from `opd对比.md`.
+- Final official-test (`n=76`): Teacher Legal/R@5=`85.53%/2.73%`; Student Before=`94.74%/2.92%`; PURE_OPD After=`97.37%/4.05%` (`+2.63/+1.13 pp` vs Before); RL+OPD After=`98.68%/3.86%` (`+3.95/+0.94 pp`). Strict legality requires `fan_out_search.queries` to contain 1–5 nonempty strings; illegal actions receive zero recall.
+- Java 21 is at `/opt/scape-jdk21`; Recall@5 uses official pyserini Lucene, retrieving top-5 for every legal fan-out subquery and applying rank-wise round-robin deduplicated fusion. Formal artifact: `SCAPE-EasyOPD/outputs/0821_auto_populate_opd_384_formal_v2/r5_final/`; summary SHA-256=`419c91ebaf3b0275f3ded9e414a4779835120358381807a2ab2e8bcf41efd1e5`; SHA256SUMS `10/10` passed. Runtime remains `/opt/scape-projected-action`; no environment was created or updated under `/mnt`.
+
+## 2026-08-20 auto_populate_first_search recall audit
+
+- 已核对 `/mnt/songzijun/增益2.md` 的新指标定义，并检查正式 artifact `outputs/0820_auto_populate_first_search_value_confirm_128/AUTO_VALUE_CONFIRM/AUTO_VALUE_PER_STATE.jsonl`（1024 rows；NATURAL_FIRST_SEARCH/AUTO_EFFECT_ACTIVE，seed 2230/2231，K4/K8）。
+- 该 artifact 仅保存 utility、动作与简化 trace；没有 `gold_evidence_ids`、endpoint candidate-pool IDs、`final_curated_ids`、working-memory evidence IDs、成功 read/context-retention provenance。因此既不能计算 `candidate_evidence_pool_recall@K`，也不能计算 `activated_evidence_recall@K`；不能用历史 reward、route probability 或 read action 参数替代。
+- 结论：auto-populate K4/K8 两项 recall 增益均为 `N/A`，不是 0；`/mnt/songzijun/增益.md` 的增益表已将原历史 weighted utility 与 `usable_evidence_recall@K` 两列替换为 candidate-pool recall 与 activated-evidence recall 两列，并按 seed 合并口径记录不可计算原因。
 
 ## 2026-08-16 H100-2 Structured Privilege vs Matched Text formal matrix and real closed-loop
 
@@ -1830,6 +3475,38 @@ AUTO - Shuffle reward delta:-0.28026956494600075
 invalid_tool_ok:            true
 ```
 
+## 2026-08-18 H100-1 PROJECTED_ACTION_AUTO attempt
+
+Status: **blocked before training**. The requested independent output root is `outputs/0818_projected_action_auto/`.
+
+### Contract audit completed
+
+- Runtime evidence confirms `auto_populate_first_search` triggers in `external/harness-1/training/train_sft.py:187-196` after a successful first `fan_out_search` or `search_corpus` with nonempty result ids.
+- The hook is `external/harness-1/harness/ultra_core.py:1935-1971`; it appends top-K ids already in the working-memory pool and marks them `fair`.
+- The prompt explicitly says the model should not re-add these documents (`ultra_core.py:372-377`), and no explicit model-visible `curate` call is emitted for the automatic side effect.
+- Existing old AUTO sources were audited: 1,180 paper-grade unique states and 1,024 real influence states contain only `end_search` / `read_document` teacher actions; `curate` actions and projected real ids are absent.
+
+Artifacts written:
+
+```text
+outputs/0818_projected_action_auto/AUTO_TARGET_CONTRACT_AUDIT.md
+outputs/0818_projected_action_auto/AUTO_TARGET_CONTRACT_AUDIT.json
+outputs/0818_projected_action_auto/AUTO_FAILURE_CASES.jsonl
+outputs/0818_projected_action_auto/AUTO_FAILURE_CASE_ANALYSIS.md
+outputs/0818_projected_action_auto/PROJECTED_ACTION_SCHEMA.md
+outputs/0818_projected_action_auto/PROJECTED_ACTION_DATA_AUDIT.md
+outputs/0818_projected_action_auto/PROJECTED_ACTION_TRAIN.jsonl
+outputs/0818_projected_action_auto/PROJECTED_ACTION_VALID.jsonl
+outputs/0818_projected_action_auto/PROJECTED_ACTION_TEST.jsonl
+outputs/0818_projected_action_auto/SHUFFLED_PROJECTED_ACTION_TRAIN.jsonl
+```
+
+Projection support from existing data is `0/1024`: no recorded `curated_ids_pre` / `curated_ids_post` runtime delta exists, so no training rows were fabricated. A real on-policy collection launcher was prepared as `scripts/collect_projected_action_auto_0818.py`, but execution was blocked because this machine lacks the approved `/opt` ML runtime recorded by prior experiments (`torch`, `transformers`, `peft`, and `pyserini` are unavailable; `/opt/scape-hf-scorer/bin/python` does not exist). The 8 attempted shard launches exited immediately with code 127 and left all GPUs idle.
+
+### Decision
+
+`PROJECTED_ACTION_AUTO` has not reached training or closed-loop evaluation. It must not be called GO, redesign, or discard based on this blocked attempt. Resume only after restoring an approved `/opt` environment and collecting genuine pre/post runtime deltas; then run the specified 8-cell actual-LoRA matrix and real closed-loop gate.
+
 Conclusion:
 
 ```text
@@ -2385,3 +4062,282 @@ Operational status:
 
 - No SCAPE recovery or training processes remain.
 - All 8 GPUs were idle after finalization.
+
+## 2026-08-18 PROJECTED_ACTION_AUTO continuation
+
+### Environment
+
+Created approved venv at `/opt/scape-projected-action` (no `/mnt` conda changes). Installed and validated:
+
+```text
+torch:        2.10.0+cu128  # vLLM dependency resolution upgraded requested 2.9.1
+transformers: 5.14.1
+peft:         0.19.1
+vllm:         0.19.1
+pyserini:     2.3.0
+chromadb:     1.5.9
+```
+
+All 8 H100 GPUs passed BF16 matmul smoke. `torch==2.9.1` installed initially, then the requested `vllm==0.19.1` resolver replaced it with `torch==2.10.0`; this actual lock must be reported, not rounded to 2.9.1.
+
+### Projection collection
+
+- Corrected collector: `scripts/collect_projected_action_auto_0818.py`.
+- Eight GPU shards completed successfully with real gpt-oss/Harness-1 weights and local BM25 retrieval.
+- First collection and continuation collection each produced `830/830` positives; final source is `outputs/0818_projected_action_auto/collection/PROJECTED_ONPOLICY_RAW_NEXTTURN.jsonl`.
+- Every projected `add_ids` comes from the first-search result ids visible in the reduced state; no hidden ids, mock actions, or duplicated unique states were used.
+- Final query-disjoint split: `train=581`, `valid=124`, `test=125`; `830` unique projected states and `830` unique query ids. Support is below the requested 1000 and is explicitly recorded.
+- Each row now includes real post-curate next-turn reduced/full prompts and next-turn teacher action/distribution for continuation-level KL.
+
+### Training
+
+Six actual PEFT-LoRA cells completed on GPUs 2-7:
+
+```text
+PROJECTED_ACTION_CE                         seeds 42,43
+PROJECTED_ACTION_CE_PLUS_NEXTTURN_KL       seeds 42,43
+SHUFFLED_PROJECTED_ACTION_CE                seeds 42,43
+```
+
+All cells wrote reloadable `lora_checkpoint`, finite training output, actual model weights, and `student_inference_privilege=false`. The `curate` action span audit passed 2/2 in smoke and recognized tool name, `add_ids`, and `remove_ids` fields. Compact reduced prompts were required to avoid 20B-model OOM; full provenance remains in raw rows.
+
+Training output root:
+
+```text
+outputs/0818_projected_action_auto/training/
+```
+
+### Closed-loop status
+
+Real closed-loop smoke has not yet completed. The evaluator import required local-only compatibility fixes for optional hosted dependencies (`tinker`, `structlog`, `chz`, `json_repair`); `chromadb` was installed in `/opt`. Multiple smoke attempts progressed through configuration and dataset setup but stopped at further import compatibility before GPU evaluation. The latest retry was blocked by the command safety executor being temporarily unavailable, so no closed-loop metric is claimed.
+
+Current conclusion remains:
+
+```text
+TRAINING_COMPLETED_CLOSED_LOOP_PENDING
+```
+
+No GO / REDESIGN / DISCARD decision is valid until Base, old AUTO reference, both projected variants, and shuffled control complete the same real multi-step closed-loop evaluator with paired metrics.
+
+## 2026-08-18 SCAPE-EasyOPD migration update
+
+- New upstream workspace: `SCAPE-EasyOPD/` extracted from `EasyOPD-main.zip`.
+- Upstream SHA locked at `277b76fb675a11b0236a9c86573207251ac41727`.
+- Added a reproducible environment script for other servers: `SCAPE-EasyOPD/scripts/setup_scape_easyopd_env.sh`.
+- The script creates a `/opt` venv, installs torch/pyyaml/pytest/transformers/peft/accelerate, and exports `PYTHONPATH` for EasyOPD.
+- Added a new EasyOPD method: `scape_component_opd` with component registry, projection, state, tool-span, control, diagnostics, CLI, and YAML configs.
+- Validation status:
+  - `python scripts/run_easyopd.py --method scape_component_opd --config easyopd/config/scape_component_opd.yaml --dry-run` pass
+  - `python scripts/scape_component_opd.py audit --component verify_tool --allow-refusal` pass
+  - `python scripts/scape_component_opd.py collect --component content_dedup --dry-run` pass and returns zero event support as expected
+  - `python scripts/scape_component_opd.py run --component evidence_graph --dry-run` pass
+  - Expanded pytest smoke on snapshot/dual-view/rollout/tool-mask/component-mask + new SCAPE contracts: `13 passed`
+- Current conclusion: framework skeleton and smoke tests are ready; actual verl-side training and full integration still need the approved `/opt` ML stack and later end-to-end run scripts.
+
+## 2026-08-19 H100-1 5K component sweep gate
+
+- Read the H100-1 protocol in `todo/0819-1/H100-1_component_sweep_5K_event_states_20260818.md` and verified the EasyOPD handoff. The only handoff found is `SCAPE-EasyOPD/H1003_SCAPE_EASYOPD_HANDOFF.json`; it reports `SCAPE_EASYOPD_READY`, but does not provide `CANONICAL_STUDENT_BASE`, and the protocol's nested handoff path does not exist.
+- EasyOPD component contract tests pass (`12 passed, 1 skipped`). All three H100-1 components pass the registry realizability audit: `auto_populate_first_search=PROJECTABLE`, `importance_tagging=PARTIAL/PROJECTABLE`, and `subtractive_curation=PROJECTABLE`.
+- Added `SCAPE-EasyOPD/scripts/prepare_component_sweep.py`, a provenance-preserving query manifest freezer. It reads the real BrowseComp-Plus query source, excludes answers/gold documents from runtime manifests, performs deterministic query-disjoint splitting, and records source SHA256 and gate status.
+- Frozen manifests are under `SCAPE/manifests/component_sweep_5k/`. The real source contains 830 unique queries, yielding `446 TRAIN_POOL / 128 DEV / 256 TEST`; status is `QUERY_POOL_INSUFFICIENT`, below the mandatory 1,000 TRAIN query minimum.
+- Formal 5K collection is blocked before GPU execution: the EasyOPD workspace has no importable real `harness`/`scape` runtime, the approved `/opt/scape-easyopd-smoke7` interpreter from handoff is absent, and no canonical student base is specified. The current CLI collector is a four-row synthetic smoke path and cannot be used for paper-grade collection.
+- No training/evaluator process was started; all eight GPUs remained idle and no stuck process required cleanup. No event-active state, 5K training file, Teacher metric, Student Before metric, or Student After metric is claimed. Required next gate is to restore the approved EasyOPD/verl runtime, provide `CANONICAL_STUDENT_BASE`, and supply a real query pool with at least 1,000 train queries before collecting independent on-policy rollouts.
+
+
+## 2026-08-19 H100-2 Qwen3 retrieval/runtime component sweep
+
+Status: **H1002_ADAPTIVE_RERANK_FORMAL_TRAINING_COMPLETE_METRICS_PENDING**.
+
+Setting:
+
+```text
+machine role: H100-2
+components: content_dedup, chunk_neighbors, adaptive_rerank_instruction
+canonical_student_base: /mnt/songzijun/models/Qwen3-30B-A3B-Instruct-2507
+logical_model_id: Qwen3-30B-A3B-Instruct-2507
+runtime env: /opt/scape-easyopd-smoke7 via SCAPE-EasyOPD/scripts/setup_scape_easyopd_smoke7_env.sh
+collector: real Harness-1 bridge, collector_mode=real_harness1
+student_inference_privilege: false
+query pool: 2000 train-side queries
+selection_seed: 20260818
+synthetic_fallback: false
+```
+
+Phase U / gate results:
+
+```text
+adaptive_rerank_instruction: READY_5K
+  n_queries_selected=2000
+  n_rollouts_total=8000
+  n_unique_event_active=8000
+  TRAIN_STATES_5K rows=5000
+  synthetic_row_count=0
+
+content_dedup: INSUFFICIENT_5K_EVENT_SUPPORT
+  n_unique_event_active=0
+  synthetic_row_count=0
+
+chunk_neighbors: NON_REALIZABLE_EXTERNAL_INFORMATION
+  no student-visible Harness-1 neighbor injection hook located
+  n_unique_event_active=0
+  synthetic_row_count=0
+
+2026-08-21 V8D_CHUNK_NEIGHBORS Teacher-always-on vs Student-always-off 128-state gain
+  runner: scripts/run_chunk_neighbors_always_on_off_128.py
+  source cohort: outputs/0820_adaptive_rerank_instruction_128_cohorts, seeds 2214/2215/2216/2217, 32 states/seed
+  artifact: outputs/0821_chunk_neighbors_always_on_off_128_retry/CHUNK_NEIGHBORS_ALWAYS_ON_OFF_SUMMARY.json
+  protocol: Teacher chunk_neighbors ON at every decision; Student OFF at every decision; first action included in K; exactly K actions; no Full Harness takeover
+  K4: first-action disagreement=11.71875%; tool-cost delta=+0.0546875; utility delta=-0.0008203125 (-0.0820%)
+  K8: first-action disagreement=11.71875%; tool-cost delta=+0.0390625; utility delta=-0.0005859375 (-0.0586%)
+  audit: both horizons 128/128 rows; ordered K4/K8 identity and reconstructed snapshot hashes 128/128; mask/action-count/takeover failures=0
+  interpretation: measured SCAPE mask-level branch difference only; no student-visible upstream Harness-1 neighbor-injection hook was located, so this is not proof of real external chunk-neighbor runtime injection.
+```
+
+Training implementation notes:
+
+```text
+- Previous verl/vLLM formal retries failed because of Hydra reward struct mismatch, OOM, and vLLM LoRA unsupported for Qwen3MoeForCausalLM.
+- H100-2 switched to the same logits-sliced HF LoRA path validated on H100-1/H100-4.
+- Added scripts/export_h1002_adaptive_opd_rows.py to convert adaptive_rerank_instruction DIRECT same-state rows into OPD_TRAIN_ROWS.jsonl / OPD_VALID_ROWS.jsonl.
+- Added --loss-path to scripts/train_h1001_projectable_cell.py; adaptive_rerank uses full_response_kl.
+```
+
+Formal adaptive_rerank_instruction cells:
+
+```text
+PURE_OPD seed42: completed, train_steps=4500, adapter_reload_pass=true
+  pre_div=0.665565, post_div=-0.083540
+PURE_OPD seed43: completed, train_steps=4500, adapter_reload_pass=true
+  pre_div=0.665565, post_div=-0.087396
+RL_PLUS_OPD seed42: completed, train_steps=9000, adapter_reload_pass=true
+  pre_div=0.665565, post_div=-0.004367
+RL_PLUS_OPD seed43: completed, train_steps=9000, adapter_reload_pass=true
+  pre_div=0.665565, post_div=-0.080368
+```
+
+Conclusion so far:
+
+```text
+H1002 adaptive_rerank_instruction training/reload stage is complete.
+Final scientific PASS/FAIL is not yet assigned because Teacher, Student Before, Student After real closed-loop DEV/TEST reward metrics, paired bootstrap, and mechanism audit remain pending.
+```
+
+Artifacts:
+
+```text
+SCAPE-EasyOPD/outputs/component_sweep_0818/h100_2/H1002_COMPONENT_HANDOFF.json
+SCAPE-EasyOPD/outputs/component_sweep_0818/h100_2/H1002_FORMAL_ADAPTIVE_SUMMARY.json
+SCAPE-EasyOPD/outputs/component_sweep_0818/h100_2/H1002_COMPONENT_ROWS.{json,csv}
+SCAPE-EasyOPD/outputs/component_sweep_0818/h100_2/SHA256SUMS
+SCAPE-EasyOPD/outputs/component_sweep_0818/h100_2/components/adaptive_rerank_instruction/H1002_ADAPTIVE_OPD_ROWS_MANIFEST.json
+SCAPE-EasyOPD/outputs/component_sweep_0818/h100_2/formal_hf_adaptive_8gpu/*/summary.json
+SCAPE-EasyOPD/outputs/component_sweep_0818/h100_2/formal_hf_adaptive_8gpu/*/ADAPTER_RELOAD_ACCEPTANCE.json
+```
+
+## 2026-08-21 subtractive/joint tool-cost delta backfill
+
+检查了 `subtractive_curation` 和 `importance_tagging+subtractive_curation` 的现有 128-state 原始 paired artifacts，确认无需重新调用模型：两者均保存了 `branch_T_metrics.tool_search_cost` 与 `branch_S_metrics.tool_search_cost`。此前 `explore_gain_reference_metrics_128.py` 错把 row-level 已经是 Teacher-Student 的 `tool_search_cost` 当作两个 branch 值，导致统一摘要中的成本 Δ 为 0/N/A。
+
+已修复 extractor：成本指标现在显式从 branch-level 字段计算 `mean(T-S)`，并保留按 K 分组的来源、样本数及 Teacher/Student 均值。重新生成产物：`SCAPE/outputs/0821_gain_reference_metrics_128/GAIN_REFERENCE_METRICS_SUMMARY.json` 与 `GAIN_REFERENCE_METRICS_PER_STATE.jsonl`。
+
+- `subtractive_curation` 正式完整 artifact `outputs/0820_subtractive_curation_recall_128_final/SUBTRACTIVE_CANDIDATE_ACTIVATED_RECALL_PER_STATE.jsonl`：K4 `T=4.5000`、`S=4.484375`、工具成本 Δ=`+0.015625`；K8 `T=6.8203125`、`S=6.8046875`、Δ=`+0.015625`，各 128 rows。
+- `importance_tagging+subtractive_curation` 使用完整 512-row pilot artifact `outputs/0820_joint_importance_subtractive_preopd_fork_pilot128_retry/JOINT_PREOPD_VALUE_PER_STATE.jsonl`（K4/K8 各 256 rows）：K4 `T=5.0078125`、`S=4.76953125`、Δ=`+0.23828125`；K8 `T=6.67578125`、`S=6.3046875`、Δ=`+0.37109375`。
+- later `0820_joint_importance_subtractive_recall_128_final/JOINT_RECALL_PER_STATE.jsonl` 仅有 166 rows 且 provenance/状态不完整，因此未将其用于联合组件成本汇总；表格中的联合成本值明确标注为完整 pilot artifact 的同一组件/协议成本指标。
+
+`增益.md` 已将两组件 K4/K8 的工具成本 Δ 从 `N/A*` 更新为上述值，并移除过时的“字段不足”注释。
+
+## 2026-08-20 adaptive_rerank_instruction 128-state evidence recall fork
+
+Setting:
+
+```text
+component: adaptive_rerank_instruction
+cohort: existing frozen four-seed cohort, seeds 2214/2215/2216/2217, 32 states per seed
+horizons: K4 and K8; forced first action counted inside K
+paired rows: 128 per horizon, 256 total
+Teacher: component ON for first action only
+Student: component OFF for first action only
+continuation: Reduced policy for both branches; Full Harness takeover=0
+runtime: /opt/scape-h1004 (torch 2.10.0+cu128, transformers 5.14.1)
+normalization: split_at_first_underscore
+qrel_sha256: a6f594975be57339de9e4e9f67f13c044f647feda77c0b84c45a1581e3041bd1
+```
+
+Recall results (pooled paired state mean, seed-balanced because every seed contributes 32 rows):
+
+```text
+K4 candidate_evidence_pool_recall@K: Teacher 7.9861%, Student 7.9861%, delta +0.00 pp, paired bootstrap CI95 [0.00, 0.00] pp, query-cluster CI95 [0.00, 0.00] pp
+K4 activated_evidence_recall@K:    Teacher 3.8194%, Student 3.8194%, delta +0.00 pp, paired bootstrap CI95 [0.00, 0.00] pp, query-cluster CI95 [0.00, 0.00] pp
+K8 candidate_evidence_pool_recall@K: Teacher 7.9861%, Student 7.9861%, delta +0.00 pp, paired bootstrap CI95 [0.00, 0.00] pp, query-cluster CI95 [0.00, 0.00] pp
+K8 activated_evidence_recall@K:    Teacher 3.8194%, Student 3.8194%, delta +0.00 pp, paired bootstrap CI95 [0.00, 0.00] pp, query-cluster CI95 [0.00, 0.00] pp
+```
+
+All four metric/horizon combinations have positive/negative/zero counts `0/0/128`; Teacher and Student candidate pool mean size are `10.0/10.0`, activated set mean size `2.0/2.0`, candidate precision `2.50%/2.50%`, and activated precision `6.25%/6.25%`. All seeds have zero paired delta and seed sample std `0.00 pp`. Audit: 256/256 valid rows, empty qrel=0, snapshot mismatch=0, invalid provenance=0, endpoint identity failures=0, Full Harness takeover=0.
+
+Conclusion: adaptive_rerank_instruction produced no measurable candidate-pool or activated-evidence recall gain under this same-state paired fork. This is a recall-layer result and does not replace or imply a weighted-utility conclusion.
+
+Artifacts: `SCAPE/outputs/0820_adaptive_rerank_instruction_recall_128/ADAPTIVE_RERANK_RECALL_K4_K8.json`, `ADAPTIVE_RERANK_RECALL_PER_STATE.jsonl`, `scripts/run_adaptive_rerank_recall_128.py`, `scripts/score_adaptive_rerank_recall_128.py`.
+
+## 2026-08-21 importance_tagging Teacher-always-on vs Student-always-off utility fork
+
+Status: **COMPLETED; NO STABLE CROSS-HORIZON UTILITY GAIN**.
+
+Setting:
+
+```text
+component: importance_tagging only
+frozen cohort: seeds 8423/8424, 128 states per seed; 256 paired rows per K
+Teacher: Full view and importance_tagging enabled at the forced first action and every continuation action
+Student: Reduced view and importance_tagging disabled at the forced first action and every continuation action
+horizons: K4/K8; forced first action plus K continuation actions, matching the existing live-fork convention
+model: /mnt/songzijun/models/pat-jj_harness-1-full/harness-1
+python_env: /opt/scape-projected-action
+runner: scripts/run_importance_tagging_always_on_off.py
+output: SCAPE/outputs/0821_importance_tagging_always_on_off_256/
+```
+
+Requested metrics are Teacher - Student:
+
+```text
+K4 n=256: first-action disagreement=100.00%; tool-cost delta=+0.1171875; Utility delta=-0.0017578125 (-0.1758%); positive/negative/zero utility=113/122/21
+K8 n=256: first-action disagreement=100.00%; tool-cost delta=-0.0546875; Utility delta=+0.0008203125 (+0.0820%); positive/negative/zero utility=117/115/24
+```
+
+Audit: all four seed/K cells completed with 128/128 rows; every seed had K4/K8 ordered query/snapshot matches `128/128`, rebuilt snapshots matched source hashes `128/128`, and source first actions matched `128/128`. Teacher policy views were Full for every recorded step, Student policy views Reduced for every recorded step, branch initial hashes matched, and Full Harness takeover was `0`.
+
+Conclusion: always-on importance_tagging changes the first action on every paired state, but the utility and cost directions differ between K4 and K8. This is horizon-dependent process separation, not a stable positive gain claim.
+
+Artifacts: `SCAPE/outputs/0821_importance_tagging_always_on_off_256/IMPORTANCE_ALWAYS_ON_OFF_SUMMARY.json`, `IMPORTANCE_ALWAYS_ON_OFF_PER_STATE.jsonl`, `IMPORTANCE_ALWAYS_ON_OFF_SUMMARY.md`, `audits/RECONSTRUCTION_K{4,8}_SEED{8423,8424}.json`.
+
+## 2026-08-21 token_budget_marker OPD 4-cell on strict 384-query evaluation pool
+
+Setting:
+
+```text
+component: token_budget_marker
+pool: 384 official BrowseComp-Plus queries present in both qrels, after strict query-ID exclusion of component training pool
+pool_status: FROZEN_VALID; training_overlap_query_ids=0
+Teacher: Qwen3 canonical base, token-budget privileged context
+Student before OPD: same canonical base, reduced/no-privilege context
+Student after PURE_OPD: actual LoRA adapter, seed42 artifact
+Student after RL+OPD: actual LoRA adapter, seed42 artifact
+model: /mnt/songzijun/models/Qwen3-30B-A3B-Instruct-2507
+retrieval: official BrowseComp-Plus BM25, ordered top-1000 docids
+qrel: qrel_evidence.txt, sha256=a6f594975be57339de9e4e9e67f13c044f647feda77c0b84c45a1581e3041bd1
+normalization: split_at_first_underscore_v1
+parser: compact_tool_json_v2; adapter reload passed via PEFT native path
+```
+
+The first generation pass was rescored offline after correcting the Qwen3 compact action schema (`{"tool": ..., ...}`); no model generations were changed. Each setting has 384/384 unique query rows, with ordered `retrieved_docids` retained per query. Legal action means a recognized Harness-1 tool name; recall is mean evidence qrel recall over the BM25 top-k result list.
+
+```text
+                                      Legal action rate    Evidence Recall@5    Evidence Recall@100    Evidence Recall@1000
+Teacher                                  73.9583%              1.3519%              4.0451%                11.2443%
+Student before OPD                       60.9375%              0.6550%              2.9352%                 8.6441%
+Student after pure OPD                    83.8542%              1.3403%              4.0770%                12.1403%
+Student after RL+OPD                      82.0313%              1.0929%              4.1200%                12.0368%
+```
+
+Relative to Student before OPD, Legal action rate changes are `Teacher +13.0208 pp`, `PURE_OPD +22.9167 pp`, and `RL+OPD +21.0938 pp`. Evidence Recall@100 changes are `Teacher +1.10997 pp`, `PURE_OPD +1.14180 pp`, and `RL+OPD +1.18479 pp`; Recall@1000 changes are `Teacher +2.60025 pp`, `PURE_OPD +3.49621 pp`, and `RL+OPD +3.39276 pp`. These are absolute paired-condition means, not terminal answer reward or K4/K8 closed-loop recall.
+
+Artifacts: `SCAPE-EasyOPD/outputs/0821_token_budget_marker_opd_384/SUMMARY.json`, `384_QUERY_MANIFEST.json`, `{TEACHER,STUDENT_BEFORE_OPD,STUDENT_AFTER_PURE_OPD,STUDENT_AFTER_RL_PLUS_OPD}/PER_QUERY.jsonl`, `scripts/eval_token_budget_marker_opd_384.py`, `scripts/rescore_token_budget_marker_opd_384.py`.

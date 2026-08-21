@@ -34,7 +34,59 @@ REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-from pyserini.search.lucene import LuceneSearcher
+try:
+    from pyserini.search.lucene import LuceneSearcher
+except Exception:  # pragma: no cover - optional production dependency
+    LuceneSearcher = None
+
+
+class _LocalHit:
+    def __init__(self, docid: str, raw: str, score: float) -> None:
+        self.docid = docid
+        self.raw = raw
+        self.score = score
+
+
+class LocalCorpusSearcher:
+    """Small deterministic fallback when the Lucene/pyserini stack is absent."""
+
+    def __init__(self, corpus_path: Path) -> None:
+        self.corpus_path = corpus_path
+        self.docs: list[tuple[str, str]] = []
+        with corpus_path.open(encoding="utf-8") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                docid = str(row.get("id") or row.get("docid") or row.get("source"))
+                text = str(row.get("text") or row.get("contents") or row.get("content") or "")
+                if docid and text:
+                    self.docs.append((docid, text))
+
+    @staticmethod
+    def _tokens(text: str) -> set[str]:
+        return {x for x in text.lower().replace("_", " ").split() if len(x) > 2}
+
+    def search(self, query: str, k: int = 20) -> list[_LocalHit]:
+        q = self._tokens(query)
+        scored = []
+        for docid, text in self.docs:
+            dt = self._tokens(text)
+            overlap = len(q & dt)
+            phrase = 1.0 if query.lower() in text.lower() else 0.0
+            score = float(overlap) + phrase
+            if score > 0:
+                scored.append((score, docid, text))
+        scored.sort(key=lambda x: (-x[0], x[1]))
+        return [_LocalHit(docid, json.dumps({"id": docid, "contents": text}, ensure_ascii=False), score) for score, docid, text in scored[:k]]
+
+
+def build_searcher(index_path: Path, corpus_path: Path) -> tuple[Any, str]:
+    if LuceneSearcher is not None and index_path.exists():
+        return LuceneSearcher(str(index_path)), "pyserini_lucene"
+    if not corpus_path.exists():
+        raise FileNotFoundError(f"Neither Lucene index nor fallback corpus exists: {index_path} / {corpus_path}")
+    return LocalCorpusSearcher(corpus_path), "local_corpus_token_overlap"
 
 from scape.adapters.components import full_mask, minus_mask
 from scape.common.hashing import stable_split
@@ -54,7 +106,7 @@ TOOL_NAMES = (
     "verify",
     "end_search",
 )
-COMPONENTS = ("subtractive_curation", "importance_tagging", "verify_tool")
+COMPONENTS = ("subtractive_curation", "importance_tagging", "verify_tool", "content_dedup")
 ARG_THRESHOLD = 0.12
 
 
@@ -464,7 +516,7 @@ def run_utility_shard(args: argparse.Namespace) -> int:
     queries = _load_queries(args.browsecomp_root / "topics-qrels" / "queries.tsv")
     qrels = _load_qrels(args.browsecomp_root / "topics-qrels" / "qrel_evidence.txt")
     qids = freeze_qids(args, queries, qrels, out)
-    searcher = LuceneSearcher(str(args.index_path))
+    searcher, search_backend = build_searcher(args.index_path, args.corpus_path)
     scorer = HFContinuationScorer(args.model, device=args.device, dtype=args.dtype, max_prompt_tokens=args.max_prompt_tokens)
     renderer = DualViewRenderer()
     component = args.component
@@ -496,6 +548,11 @@ def run_utility_shard(args: argparse.Namespace) -> int:
                 "divergence_type": item["divergence_type"],
                 "branch_S_metrics": sm,
                 "branch_T_metrics": tm,
+                "initial_candidate_evidence_ids": list(start.documents),
+                "branch_S_endpoint": {"final_candidate_evidence_ids": [d["id"] for d in s_final.documents], "final_curated_ids": list(s_final.curated_ids), "successful_read_ids_within_k": list(s_final.read_ids), "read_ids_entered_context": list(s_final.read_ids), "read_ids_retained_at_endpoint": list(s_final.read_ids), "final_activated_evidence_ids": list(dict.fromkeys(s_final.curated_ids + s_final.read_ids))},
+                "branch_T_endpoint": {"final_candidate_evidence_ids": [d["id"] for d in t_final.documents], "final_curated_ids": list(t_final.curated_ids), "successful_read_ids_within_k": list(t_final.read_ids), "read_ids_entered_context": list(t_final.read_ids), "read_ids_retained_at_endpoint": list(t_final.read_ids), "final_activated_evidence_ids": list(dict.fromkeys(t_final.curated_ids + t_final.read_ids))},
+                "branch_S_initial_state_hash": start.snapshot().content_hash(),
+                "branch_T_initial_state_hash": start.snapshot().content_hash(),
                 "branch_T_minus_S": tm["objective_utility"] - sm["objective_utility"],
                 "curated_evidence_gain": tm["curated_evidence_gain"] - sm["curated_evidence_gain"],
                 "useful_unique_docs": tm["useful_unique_docs"] - sm["useful_unique_docs"],
@@ -508,6 +565,7 @@ def run_utility_shard(args: argparse.Namespace) -> int:
                 "branch_S_trace": s_trace,
                 "branch_T_trace": t_trace,
                 "runner": "true_live_fork_replay_hf_bm25",
+                "search_backend": search_backend,
             }
             rows.append(row)
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
@@ -524,7 +582,7 @@ def run_noise_shard(args: argparse.Namespace) -> int:
     queries = _load_queries(args.browsecomp_root / "topics-qrels" / "queries.tsv")
     qrels = _load_qrels(args.browsecomp_root / "topics-qrels" / "qrel_evidence.txt")
     qids = freeze_qids(args, queries, qrels, out)
-    searcher = LuceneSearcher(str(args.index_path))
+    searcher, search_backend = build_searcher(args.index_path, args.corpus_path)
     scorer = HFContinuationScorer(args.model, device=args.device, dtype=args.dtype, max_prompt_tokens=args.max_prompt_tokens)
     renderer = DualViewRenderer()
     rows = []
@@ -640,11 +698,12 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--mode", choices=["utility", "noise", "aggregate"], required=True)
     ap.add_argument("--component", choices=COMPONENTS)
-    ap.add_argument("--K", type=int, choices=[2, 4])
+    ap.add_argument("--K", type=int, choices=[2, 4, 8])
     ap.add_argument("--device", default="cuda:0")
     ap.add_argument("--model", default="/mnt/songzijun/models/harness-1")
     ap.add_argument("--browsecomp-root", type=Path, default=bcp)
     ap.add_argument("--index-path", type=Path, default=bcp / "indexes" / "bm25")
+    ap.add_argument("--corpus-path", type=Path, default=REPO / "outputs" / "retrieval" / "browsecomp_local_corpus_v2" / "corpus.jsonl")
     ap.add_argument("--out-dir", type=Path, default=REPO / "outputs" / "h100_2_candidate_b_live_utility")
     ap.add_argument("--seed", type=int, default=2214)
     ap.add_argument("--n-states", type=int, default=256)

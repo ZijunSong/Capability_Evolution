@@ -1,0 +1,35 @@
+method:
+  name: scape_component_opd
+
+component:
+  name: evidence_graph
+  event_only: true
+
+teacher:
+  mode: same_weights_privileged_view
+  component_enabled: true
+
+student:
+  component_enabled: false
+  inference_privilege: false
+
+rollout:
+  policy: current_student
+  multi_turn: true
+  max_steps: 8
+
+distillation:
+  loss: reverse_kl
+  token_mask: response
+  step_weighting: none
+
+reference:
+  mode: frozen_init
+  coef: 0.05
+
+controls:
+  shuffled_target: true
+  matched_text: false
+
+evaluation:
+  real_closed_loop: true
