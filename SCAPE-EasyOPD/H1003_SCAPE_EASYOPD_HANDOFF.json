@@ -1,0 +1,33 @@
+{
+  "actual_lora_checkpoint_reload_pass": true,
+  "blocked_components": [
+    "verify_tool (correctly runtime-only unless student tool added)",
+    "content_dedup (blocked when event support is zero)"
+  ],
+  "blocking_issues": [],
+  "direct_component_smoke_pass": true,
+  "easyopd_sha": "277b76fb675a11b0236a9c86573207251ac41727",
+  "environment": "/opt/scape-easyopd-smoke7",
+  "event_support_zero_blocks_training": true,
+  "gpu_count": 8,
+  "live_scape_agent_loop_pass": true,
+  "loss_numeric_tests_pass": true,
+  "no_double_peft_wrap": true,
+  "no_privilege_inference_pass": true,
+  "non_realizable_guard_pass": true,
+  "on_policy_contract_pass": true,
+  "projectable_component_smoke_pass": true,
+  "query_disjoint_split_pass": true,
+  "ready_components": [
+    "auto_populate_first_search",
+    "evidence_graph"
+  ],
+  "real_closed_loop_smoke_pass": true,
+  "recommended_next_component": "auto_populate_first_search",
+  "shuffled_control_contract_pass": true,
+  "state_fork_pass": true,
+  "status": "SCAPE_EASYOPD_READY",
+  "tool_span_contract_pass": true,
+  "upstream_tests_pass": true,
+  "verl_sha": null
+}

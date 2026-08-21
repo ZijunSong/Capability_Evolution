@@ -1,0 +1,11 @@
+Component,Effect type,Student-native realizability,Default training mode,Current support,Decision
+verify_tool,ACTION_SPACE_CHANGE,NON_REALIZABLE,none,guard implemented,keep runtime / reject
+importance_tagging,ARGUMENT_PRIVILEGE,PARTIAL,projected_action_ce,schema/support smoke,gated
+subtractive_curation,AUTOMATIC_SIDE_EFFECT,PROJECTABLE,projected_action_ce,delta projection implemented,gated
+auto_populate_first_search,AUTOMATIC_SIDE_EFFECT,PROJECTABLE,projected_action_ce + next_turn_kl,collect + verl smoke + LoRA smoke,trainable smoke
+content_dedup,AUTOMATIC_POOL_FILTER,PARTIAL,none,zero-event guard implemented,block on zero support
+chunk_neighbors,EXTERNAL_INFORMATION_AUGMENTATION,PARTIAL,none,runtime preferred guard,keep runtime unless projected sequence legal
+evidence_graph,PRIVILEGED_CONTEXT,DIRECT,reverse_kl,state/view smoke,candidate
+sentence_compress,PRIVILEGED_CONTEXT,DIRECT,reverse_kl,registered,candidate
+token_budget_marker,PRIVILEGED_CONTEXT,PARTIAL,reverse_kl,registered,candidate/runtime
+adaptive_rerank_instruction,PRIVILEGED_RETRIEVAL_CONTEXT,PARTIAL,reverse_kl,registered,candidate

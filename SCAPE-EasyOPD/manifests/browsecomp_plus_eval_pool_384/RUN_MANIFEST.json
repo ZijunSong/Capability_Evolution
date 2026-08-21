@@ -1,0 +1,13 @@
+{
+  "builder": "/mnt/songzijun/Capability_Evolution/SCAPE-EasyOPD/scripts/build_browsecomp_plus_eval_pool.py",
+  "inputs": {
+    "/mnt/songzijun/Capability_Evolution/SCAPE-EasyOPD/manifests/COMPONENT_SWEEP_TRAIN_POOL.json": "7e6df5ac9a46518964e3807e3610777182201ebf4ea26284e940764327a91506",
+    "/mnt/songzijun/Capability_Evolution/SCOPE/datagen/splits/browsecompplus_splits.json": "2a5efdfca09d88b310504ed7ff90ec44d4df1095ef5a6140cebfb212857060d0",
+    "/mnt/songzijun/Capability_Evolution/SCOPE/external/BrowseComp-Plus/topics-qrels/qrel_evidence.txt": "a6f594975be57339de9e4e9f67f13c044f647feda77c0b84c45a1581e3041bd1",
+    "/mnt/songzijun/Capability_Evolution/SCOPE/external/BrowseComp-Plus/topics-qrels/qrel_golds.txt": "b875af4a745712bee7a94f464ed989232f8c77977c31824428470e11dcb28c73",
+    "/mnt/songzijun/Capability_Evolution/SCOPE/external/BrowseComp-Plus/topics-qrels/queries.tsv": "d3d47d3cd6a8e14fa24268b75fbbda50dadd280d09c30412257978933b9c0bfa"
+  },
+  "schema_version": "browsecomp_plus_eval_pool_run_v1",
+  "seed": 20260820,
+  "status": "FROZEN_VALID"
+}

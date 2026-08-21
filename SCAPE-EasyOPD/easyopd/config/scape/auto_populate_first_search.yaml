@@ -1,0 +1,17 @@
+method:
+  name: scape_component_opd
+component:
+  name: auto_populate_first_search
+  realizability: PROJECTABLE
+  event_only: true
+distillation:
+  loss: projected_action_ce
+  token_mask: tool_plus_args
+  next_turn_kl: true
+teacher:
+  mode: full_harness_runtime_teacher
+student:
+  inference_privilege: false
+projection:
+  target_source: harness_effect_projection
+  require_visible_add_ids: true

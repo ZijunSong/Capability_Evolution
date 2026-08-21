@@ -1,0 +1,1 @@
+SCAPE component suite: 19 passed. Upstream method dry-runs for gkd/sod/opcd passed. Live SCAPE AgentLoop and SCAPERealClosedLoopEvaluator acceptance smokes passed.

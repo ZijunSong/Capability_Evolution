@@ -132,6 +132,8 @@ class ScapeHFToolOPD:
             torch_dtype=self.torch_dtype,
             trust_remote_code=True,
         )
+        if hasattr(self.model, "config"):
+            self.model.config.use_cache = False
         if self.use_lora:
             from peft import LoraConfig, get_peft_model
 
@@ -247,16 +249,19 @@ class ScapeHFToolOPD:
             return torch.zeros(0, 0, device=self._device)
         full = prompt_ids + response_ids
         inp = torch.tensor([full], device=self._device)
+        # Qwen3 supports logits_to_keep.  Keeping only the response prediction
+        # positions avoids materializing a full [sequence, vocab] tensor for
+        # long Student-visible prefixes while preserving teacher-forced CE/KL.
+        n_response = len(response_ids)
+        kwargs = {"logits_to_keep": n_response + 1}
         if require_grad:
             self.model.train()
-            logits = self.model(inp).logits[0]
+            logits = self.model(inp, **kwargs).logits[0]
         else:
             self.model.eval()
             with torch.no_grad():
-                logits = self.model(inp).logits[0]
-        start = len(prompt_ids) - 1
-        rows = [logits[start + i] for i in range(len(response_ids))]
-        return torch.stack(rows)
+                logits = self.model(inp, **kwargs).logits[0]
+        return logits[:-1]
 
     def _teacher_forced_logprobs(
         self,

@@ -1,0 +1,18 @@
+method:
+  name: scape_component_opd
+component:
+  name: chunk_neighbors
+  realizability: PARTIAL
+  event_only: true
+teacher:
+  mode: same_weights_privileged_view
+  component_enabled: true
+student:
+  component_enabled: false
+  inference_privilege: false
+distillation:
+  loss: none
+  token_mask: response
+reference:
+  mode: frozen_init
+  coef: 0.05

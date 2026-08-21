@@ -1,0 +1,18 @@
+{
+  "blockers": [],
+  "easyopd_sha": "277b76fb675a11b0236a9c86573207251ac41727",
+  "environment": "/opt/scape-easyopd-smoke7",
+  "gpu_count": 8,
+  "gpu_name": "NVIDIA H100 80GB HBM3",
+  "harness_runtime_deps_installed": true,
+  "live_scape_agent_loop": "pass",
+  "peft": "0.20.0",
+  "python": "3.12.13",
+  "ray": "2.47.1",
+  "real_closed_loop_evaluator": "pass",
+  "status": "SCAPE_EASYOPD_READY",
+  "torch": "2.6.0+cu124",
+  "transformers": "5.15.0",
+  "verl_core_modified": true,
+  "vllm": "0.8.5.post1"
+}

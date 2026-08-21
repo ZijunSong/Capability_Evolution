@@ -1,0 +1,11 @@
+method:
+  name: scape_component_opd
+component:
+  name: verify_tool
+  realizability: NON_REALIZABLE
+distillation:
+  loss: none
+gates:
+  expected_refusal: NON_REALIZABLE_ACTION_SPACE_MISMATCH
+student:
+  inference_privilege: false
