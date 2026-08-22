@@ -240,6 +240,7 @@ class SlidingWindowSearchEnv(Env):
         text_token_counter: Optional[Callable[[str], int]] = None,
         max_turns: int = MAX_TURNS,
         rollout_idx: int = 0,
+        decision_observer: Optional[Any] = None,
     ):
         self.toolset = toolset
         self.search_tool = search_tool
@@ -249,6 +250,9 @@ class SlidingWindowSearchEnv(Env):
         self.text_token_counter = text_token_counter
         self.max_turns = max_turns
         self.rollout_idx = rollout_idx
+        # Read-only SCAPE observer. Must never change reward / WM / tools.
+        self.decision_observer = decision_observer
+        self.scape_decision_points: List[Any] = []
 
         self.enc = load_harmony_encoding(HarmonyEncodingName.HARMONY_GPT_OSS)
         self.stop_condition: StopCondition = [200002, 200012]
@@ -419,6 +423,44 @@ class SlidingWindowSearchEnv(Env):
             event_id=f"{self._episode_id}:{self._current_turn}",
         )
 
+    def _notify_decision_pre(self, action: Action) -> None:
+        observer = getattr(self, "decision_observer", None)
+        if observer is None:
+            return
+        try:
+            observer.on_pre_action(self, action)
+        except Exception:
+            logger.warning("scape_decision_observer_pre_failed", qid=self.query_id)
+
+    def _notify_decision_post(
+        self,
+        action: Action,
+        *,
+        reward: Optional[float],
+        structurally_valid: bool = True,
+    ) -> None:
+        observer = getattr(self, "decision_observer", None)
+        if observer is None:
+            return
+        try:
+            observer.on_post_action(
+                self,
+                action,
+                reward=reward,
+                structurally_valid=structurally_valid,
+            )
+        except Exception:
+            logger.warning("scape_decision_observer_post_failed", qid=self.query_id)
+
+    def _notify_decision_format_error(self, action: Optional[Action] = None) -> None:
+        observer = getattr(self, "decision_observer", None)
+        if observer is None:
+            return
+        try:
+            observer.on_format_error(self, action)
+        except Exception:
+            logger.warning("scape_decision_observer_format_failed", qid=self.query_id)
+
     def _compute_repeated_query_score(self) -> float | None:
         history = [h for h in self.wm.search_history if "search" in h or "fan_out" in h]
         if len(history) < 2:
@@ -491,6 +533,7 @@ class SlidingWindowSearchEnv(Env):
             return self._handle_format_error("Reasoning-only action with no tool calls")
 
         self._record_student_action(action)
+        self._notify_decision_pre(action)
 
         # Check for episode end
         has_end_search = any(
@@ -512,6 +555,7 @@ class SlidingWindowSearchEnv(Env):
                 turns=self._current_turn,
                 query_id=self.query_id,
             )
+            self._notify_decision_post(action, reward=self._terminal_reward)
             return StepResult(
                 reward=self._terminal_reward,
                 episode_done=True,
@@ -529,6 +573,9 @@ class SlidingWindowSearchEnv(Env):
         except Exception as e:
             logger.error("tool_exec_error", error=str(e)[:300], qid=self.query_id)
             self._terminal_reward = FORMAT_ERROR_PENALTY
+            self._notify_decision_post(
+                action, reward=FORMAT_ERROR_PENALTY, structurally_valid=False
+            )
             return StepResult(
                 reward=FORMAT_ERROR_PENALTY,
                 episode_done=True,
@@ -613,6 +660,7 @@ class SlidingWindowSearchEnv(Env):
             self._terminal_metrics["max_turns_reached"] = 1.0
             self._episode_ended = True
             self._save_trajectory()
+            self._notify_decision_post(action, reward=self._terminal_reward)
             return StepResult(
                 reward=self._terminal_reward,
                 episode_done=True,
@@ -627,6 +675,7 @@ class SlidingWindowSearchEnv(Env):
         except Exception as e:
             logger.error("render_error", error=str(e)[:300], qid=self.query_id)
             self._terminal_reward = 0.0
+            self._notify_decision_post(action, reward=0.0, structurally_valid=False)
             return StepResult(
                 reward=0.0,
                 episode_done=True,
@@ -635,6 +684,7 @@ class SlidingWindowSearchEnv(Env):
                 metrics={"no_error": 0.0, "max_turns_reached": 0.0},
             )
 
+        self._notify_decision_post(action, reward=None)
         return StepResult(
             reward=0.0,
             episode_done=False,
@@ -737,6 +787,7 @@ class SlidingWindowSearchEnv(Env):
                 qid=self.query_id,
             )
             self._terminal_reward = FORMAT_ERROR_PENALTY
+            self._notify_decision_format_error()
             return StepResult(
                 reward=FORMAT_ERROR_PENALTY,
                 episode_done=True,

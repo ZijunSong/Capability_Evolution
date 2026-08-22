@@ -12,6 +12,11 @@ from training.opd.replay_buffer import OPDReplayBuffer
 from training.opd.teacher_scorer import TeacherScorer
 
 
+# Historical same-action / extra-step hook. Not protocol-complete RL+OPD.
+PROTOCOL_NAME = "legacy_rl_plus_tool_kl"
+protocol_complete_rl_opd = False
+
+
 class OPDTrainer:
     def __init__(
         self,
