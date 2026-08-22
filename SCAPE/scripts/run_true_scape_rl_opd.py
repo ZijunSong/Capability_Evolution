@@ -33,7 +33,16 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--rl-loss-fn", default="cispo")
     p.add_argument("--lambda-opd", type=float, default=0.1)
-    p.add_argument("--target-component", default="auto_populate_first_search")
+    p.add_argument("--target-component", default="sentence_compress")
+    p.add_argument("--component", default="", help="Alias of --target-component")
+    p.add_argument("--gpu", type=int, default=0)
+    p.add_argument("--sft-adapter", default="")
+    p.add_argument("--query-manifest", type=Path, default=None)
+    p.add_argument("--eval-manifest", type=Path, default=None)
+    p.add_argument("--n-queries", type=int, default=64)
+    p.add_argument("--max-new-tokens", type=int, default=384)
+    p.add_argument("--n-eval", type=int, default=None)
+    p.add_argument("--validate-only", action="store_true")
     p.add_argument("--student-harness-config", default="H_min")
     p.add_argument("--teacher-harness-config", default="H_full")
     p.add_argument("--batch-size", type=int, default=32)
@@ -47,6 +56,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--kl-penalty-coef", type=float, default=0.005)
     p.add_argument("--kl-reference-checkpoint", default="")
     p.add_argument("--base-checkpoint", default="")
+    p.add_argument("--base-model", default="")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--max-steps", type=int, default=64)
     p.add_argument("--out", type=Path, required=True)
@@ -127,40 +137,29 @@ def main() -> None:
     manifest = write_manifest(args, out / "RUN_MANIFEST.json")
     print(json.dumps(manifest, indent=2), flush=True)
 
-    if args.training_mode == TRAINING_MODE_PURE_OPD:
-        print(
-            "[rl_opd] PURE_OPD: use SCAPE/scripts/run_sr_opd_train.py for offline sr_opd_ce",
-            flush=True,
-        )
-        return
+    if args.component:
+        args.target_component = args.component
+    else:
+        args.component = args.target_component
+    args.train_steps = args.max_steps
+    if not args.base_model:
+        args.base_model = args.base_checkpoint
 
-    if resolved_lambda(args) <= 0.0:
-        print(
-            "[rl_opd] lambda_opd=0: skip Teacher/projector/OPD FB; "
-            "RL-only path is SCOPE/training/train_rl.py CISPO",
-            flush=True,
-        )
-        if not args.dry_run:
-            print(
-                "[rl_opd] launch native RL via SCOPE/training/train_rl.py "
-                "(Tinker train.main). This wrapper does not monkey-patch cookbook.",
-                flush=True,
-            )
-        return
+    from scape.training.four_cell_runtime import run_from_rl_opd_args
 
-    if args.dry_run:
-        print(
-            "[rl_opd] dry-run: joint contract is hybrid_train_substep "
-            "(cispo FB + cross_entropy FB + one optim_step)",
-            flush=True,
-        )
+    if args.dry_run or args.validate_only or args.training_mode == TRAINING_MODE_PURE_OPD or resolved_lambda(args) > 0:
+        result = run_from_rl_opd_args(args)
+        print(json.dumps({"live": not (args.dry_run or args.validate_only), **{k: result.get(k) for k in ("ok", "q1_joint_one_optim", "q2_on_policy_projection", "q3_teacher_does_not_change_reward") if k in result}}, indent=2), flush=True)
         return
 
     print(
-        "[rl_opd] live Tinker loop: attach DecisionObserver to SlidingWindowSearchEnv, "
-        "then scape.training.tinker_rl_opd_trainer.run_hybrid_training_step",
+        "[rl_opd] lambda_opd=0: skip Teacher/projector/OPD FB; "
+        "RL-only path can use this HF loop or SCOPE/training/train_rl.py CISPO",
         flush=True,
     )
+    result = run_from_rl_opd_args(args)
+    print(json.dumps({"live": True, "training_mode": args.training_mode}, indent=2), flush=True)
+    del result
 
 
 if __name__ == "__main__":

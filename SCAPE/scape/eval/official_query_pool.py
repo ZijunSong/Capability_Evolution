@@ -1,0 +1,188 @@
+"""BrowseComp-Plus official 384-query pool and train-query resolution."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from pathlib import Path
+from typing import Any
+
+REPO = Path(__file__).resolve().parents[2]
+SCOPE = REPO.parent / "SCOPE"
+EASYOPD = REPO.parent / "SCAPE-EasyOPD"
+
+CANDIDATE_BCP_ROOTS = (
+    SCOPE / "external" / "BrowseComp-Plus",
+    Path("/mnt/songzijun/Capability_Evolution/SCOPE/external/BrowseComp-Plus"),
+    Path("/data/ppnm/Capability_Evolution/SCOPE/external/BrowseComp-Plus"),
+)
+CANDIDATE_TRAIN_POOLS = (
+    EASYOPD / "manifests" / "COMPONENT_SWEEP_TRAIN_POOL.json",
+    Path("/mnt/songzijun/Capability_Evolution/SCAPE-EasyOPD/manifests/COMPONENT_SWEEP_TRAIN_POOL.json"),
+)
+CANDIDATE_EVAL_384 = (
+    EASYOPD / "manifests" / "browsecomp_plus_eval_pool_384" / "query_manifest.json",
+    Path("/mnt/songzijun/Capability_Evolution/SCAPE-EasyOPD/manifests/browsecomp_plus_eval_pool_384/query_manifest.json"),
+)
+
+OFFICIAL_384_COUNT = 384
+
+
+def first_existing(paths: tuple[Path, ...]) -> Path | None:
+    for path in paths:
+        if path.is_file() or path.is_dir():
+            return path
+    return None
+
+
+def default_bcp_root() -> Path | None:
+    return first_existing(CANDIDATE_BCP_ROOTS)
+
+
+def default_eval_384_manifest() -> Path | None:
+    return first_existing(CANDIDATE_EVAL_384)
+
+
+def default_train_pool() -> Path | None:
+    return first_existing(CANDIDATE_TRAIN_POOLS)
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def read_queries_tsv(path: Path) -> dict[str, str]:
+    out: dict[str, str] = {}
+    with path.open(encoding="utf-8") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            qid, query = line.rstrip("\n").split("\t", 1)
+            out[str(qid)] = query
+    return out
+
+
+def read_qrels(path: Path) -> dict[str, list[str]]:
+    out: dict[str, list[str]] = {}
+    with path.open(encoding="utf-8") as handle:
+        for line in handle:
+            parts = line.split()
+            if len(parts) >= 4 and float(parts[3]) > 0:
+                out.setdefault(str(parts[0]), []).append(str(parts[2]))
+    return {qid: sorted(set(ids)) for qid, ids in out.items()}
+
+
+def _as_record(raw: Any) -> dict[str, Any] | None:
+    if isinstance(raw, str):
+        return {"query_id": raw, "query": raw}
+    if not isinstance(raw, dict):
+        return None
+    qid = str(raw.get("query_id") or raw.get("id") or "")
+    if not qid:
+        return None
+    query = str(raw.get("query") or raw.get("question") or raw.get("query_text") or qid)
+    rec = dict(raw)
+    rec["query_id"] = qid
+    rec["query"] = query
+    rec["evidence_docids"] = [str(x) for x in (raw.get("evidence_docids") or raw.get("evidence") or [])]
+    rec["gold_docids"] = [str(x) for x in (raw.get("gold_docids") or raw.get("golds") or [])]
+    return rec
+
+
+def load_query_manifest(path: Path) -> list[dict[str, Any]]:
+    if path.suffix == ".jsonl":
+        rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    else:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(payload, list):
+            rows = payload
+        else:
+            rows = payload.get("queries") or payload.get("records") or []
+            if not rows and payload.get("query_ids"):
+                rows = [{"query_id": str(q), "query": str(q)} for q in payload["query_ids"]]
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw in rows:
+        rec = _as_record(raw)
+        if rec is None or rec["query_id"] in seen:
+            continue
+        seen.add(rec["query_id"])
+        out.append(rec)
+    return out
+
+
+def attach_bcp_fields(rows: list[dict[str, Any]], *, bcp_root: Path | None = None) -> list[dict[str, Any]]:
+    root = bcp_root or default_bcp_root()
+    if root is None:
+        return rows
+    qpath = root / "topics-qrels" / "queries.tsv"
+    epath = root / "topics-qrels" / "qrel_evidence.txt"
+    gpath = root / "topics-qrels" / "qrel_golds.txt"
+    queries = read_queries_tsv(qpath) if qpath.is_file() else {}
+    evidence = read_qrels(epath) if epath.is_file() else {}
+    golds = read_qrels(gpath) if gpath.is_file() else {}
+    attached: list[dict[str, Any]] = []
+    for row in rows:
+        rec = dict(row)
+        qid = rec["query_id"]
+        if qid in queries and (rec.get("query") in {"", qid} or rec.get("query") == rec.get("query_id")):
+            rec["query"] = queries[qid]
+        elif rec.get("query") == rec.get("query_id") and qid in queries:
+            rec["query"] = queries[qid]
+        rec.setdefault("evidence_docids", evidence.get(qid, []))
+        rec.setdefault("gold_docids", golds.get(qid, []))
+        if not rec.get("evidence_docids"):
+            rec["evidence_docids"] = evidence.get(qid, [])
+        if not rec.get("gold_docids"):
+            rec["gold_docids"] = golds.get(qid, [])
+        attached.append(rec)
+    return attached
+
+
+def load_official_384(*, manifest: Path | None = None, bcp_root: Path | None = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    path = manifest or default_eval_384_manifest()
+    if path is None:
+        raise FileNotFoundError("official 384 query_manifest.json not found")
+    rows = attach_bcp_fields(load_query_manifest(path), bcp_root=bcp_root)
+    meta = {
+        "path": str(path),
+        "query_count": len(rows),
+        "official_384": len(rows) == OFFICIAL_384_COUNT,
+        "sha256": sha256_file(path),
+        "pool_contract": "browsecomp_plus_eval_pool_384",
+    }
+    return rows, meta
+
+
+def load_train_queries(
+    *,
+    manifest: Path | None = None,
+    bcp_root: Path | None = None,
+    n_queries: int | None = None,
+    exclude_eval_ids: set[str] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    path = manifest or default_train_pool()
+    if path is None:
+        raise FileNotFoundError("train query pool not found")
+    rows = attach_bcp_fields(load_query_manifest(path), bcp_root=bcp_root)
+    blocked = exclude_eval_ids or set()
+    rows = [r for r in rows if r["query_id"] not in blocked]
+    if n_queries is not None:
+        rows = rows[: int(n_queries)]
+    meta = {
+        "path": str(path),
+        "query_count": len(rows),
+        "excluded_eval_ids": len(blocked),
+        "sha256": sha256_file(path),
+    }
+    return rows, meta
+
+
+def overlap_ids(train: list[dict[str, Any]], eval_rows: list[dict[str, Any]]) -> list[str]:
+    left = {r["query_id"] for r in train}
+    right = {r["query_id"] for r in eval_rows}
+    return sorted(left & right)

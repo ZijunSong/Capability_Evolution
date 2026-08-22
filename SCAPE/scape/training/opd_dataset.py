@@ -31,6 +31,8 @@ TEACHER_ONLY_PROMPT_MARKERS = (
     "importance_table",
     "evidence_graph_internal",
     "teacher_only_observation",
+    "compressed_teacher_view",
+    "VERIFY_RESULT_SECRET",
 )
 
 

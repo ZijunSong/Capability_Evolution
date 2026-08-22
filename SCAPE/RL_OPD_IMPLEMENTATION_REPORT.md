@@ -114,4 +114,25 @@ async off-policy、跨 version OPD replay、window-slicing 去重、PCGrad、现
 | `scripts/run_true_scape_rl_opd.py` | batch 32 / group 8 / 4 substeps / 6 turns / 64 steps / λ=0.1 / 3 OPD states | 4 / 2 / 1 / 2 / 2 |
 | `scripts/run_gptoss_four_cell_smoke.py` | 64 queries / group 8 / 6 turns / 8 train steps / 384 new tokens / GPU 0 | 6 / 2 / 2 / 1 / 256 |
 
-对齐 `train_rl.py`（group 8、batch 32、CISPO、4 substeps）与既有 closed-loop 四格 n=64、`max_steps=6`。Harness-1 的 `MAX_TURNS=35` 对单卡 HF 四格过重，全量默认用 6 turn。64 query 由 seed query 扩展；论文级数字仍需 BrowseComp+ manifest。
+对齐 `train_rl.py`（group 8、batch 32、CISPO、4 substeps）与既有 closed-loop 四格 n=64、`max_steps=6`。Harness-1 的 `MAX_TURNS=35` 对单卡 HF 四格过重，全量默认用 6 turn。
+
+## 20. sentence_compress 正式四格入口
+
+另一台机器上的审计是对的：旧 launcher 只写 manifest / dry-run，`run_gptoss_four_cell_smoke.py` 是 synthetic `auto_populate` debug，不能当 sentence_compress 正式实验。现已补齐：
+
+| 入口 | 作用 |
+|---|---|
+| `scripts/collect_sentence_compress_states.py` | on-policy collector；过滤长 observation 的 sentence_compress-active states |
+| `scripts/run_sr_opd_train.py --train-adapter` | 投影后真实 HF `sr_opd_ce` 并保存 adapter |
+| `scripts/run_true_scape_rl_opd.py` | 不再停在 print；`--dry-run/--validate-only` 验线，否则走 live HF joint loop |
+| `scripts/run_sr_opd_four_cell.py` | 正式 Before / RL / PURE / RL+OPD；同 θ₀；保存 adapter；384 评测 |
+| `scripts/eval_sr_opd_four_cell.py --audit-only` | adapter reload + 384 pool 审计 |
+
+Teacher 是 `sentence_compress` side branch：`OBS_TRANSFORM`（`compressed_teacher_view`，Student 不可见）→ 下游 `curate`/`search_corpus`。压缩文本不得进入 Student prefix。
+
+正式评测指标：`legal_action_rate`、`test_evidence_recall_at_5`、`mean_tool_calls_per_query`、`tool_search_cost`。无 retrieval backend 时 recall 记 `null`，不得回填 20260821 旧 reverse-KL 数字。
+
+```bash
+python SCAPE/scripts/run_sr_opd_four_cell.py --out $OUT --component sentence_compress --validate-only
+python SCAPE/scripts/run_sr_opd_four_cell.py --out $OUT --component sentence_compress --base-model $MODEL --sft-adapter $SFT
+```

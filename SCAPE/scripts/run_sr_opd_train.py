@@ -34,6 +34,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--projection-jsonl", type=Path, required=True)
     p.add_argument("--component-id", required=True)
     p.add_argument("--legacy-teacher-kl-weight", type=float, default=0.0)
+    p.add_argument("--train-adapter", action="store_true", help="After projection, run HF sr_opd_ce and save an adapter.")
+    p.add_argument("--base-model", default="")
+    p.add_argument("--adapter-out", type=Path, default=None)
+    p.add_argument("--gpu", type=int, default=0)
     return p.parse_args()
 
 
@@ -106,7 +110,35 @@ def main() -> None:
     with out_rows.open("w", encoding="utf-8") as handle:
         for row in emitted:
             handle.write(json.dumps(row, ensure_ascii=False) + "\n")
-    print(json.dumps({"audit": str(args.projection_audit_path), "rows": str(out_rows)}, indent=2))
+    payload = {"audit": str(args.projection_audit_path), "rows": str(out_rows), "n_projected_rows": len(emitted)}
+    if args.train_adapter:
+        if not args.base_model:
+            raise SystemExit("--train-adapter requires --base-model")
+        from scape.training.hf_tool_opd import ScapeHFToolOPD
+        from scape.training.opd_dataset import ProjectedTrainingStep
+
+        steps: list[ProjectedTrainingStep] = []
+        for row in emitted:
+            for raw in row.get("projected_steps") or []:
+                steps.append(
+                    ProjectedTrainingStep(
+                        prompt_reduced=str(raw.get("prompt_reduced") or ""),
+                        target_text=str(raw.get("target_text") or ""),
+                        target_action=dict(raw.get("target_action") or {}),
+                        token_mask=raw.get("token_mask"),
+                        weight=float(raw.get("weight") or raw.get("projection_confidence") or 1.0),
+                        metadata=dict(raw.get("metadata") or {}),
+                    )
+                )
+        if not steps:
+            raise SystemExit("no projected steps to train")
+        backend = ScapeHFToolOPD(model_path=args.base_model, device_map=f"cuda:{int(args.gpu)}", use_lora=True)
+        metrics = backend.train_projected_batch(steps, loss_path="sr_opd_ce")
+        adapter_out = args.adapter_out or args.projection_audit_path.with_name("adapter")
+        adapter_out.mkdir(parents=True, exist_ok=True)
+        backend.save_pretrained(str(adapter_out))
+        payload.update({"adapter": str(adapter_out), "train": metrics, "n_supervised_steps": len(steps)})
+    print(json.dumps(payload, indent=2))
 
 
 if __name__ == "__main__":
