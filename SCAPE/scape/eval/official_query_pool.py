@@ -24,6 +24,17 @@ CANDIDATE_EVAL_384 = (
     EASYOPD / "manifests" / "browsecomp_plus_eval_pool_384" / "query_manifest.json",
     Path("/mnt/songzijun/Capability_Evolution/SCAPE-EasyOPD/manifests/browsecomp_plus_eval_pool_384/query_manifest.json"),
 )
+CANDIDATE_SPLITS = (
+    SCOPE / "datagen" / "splits" / "browsecompplus_splits.json",
+    REPO / "external" / "harness-1" / "datagen" / "splits" / "browsecompplus_splits.json",
+    Path("/mnt/songzijun/Capability_Evolution/SCOPE/datagen/splits/browsecompplus_splits.json"),
+)
+CANDIDATE_SENTENCE_STATES = (
+    EASYOPD / "outputs" / "component_sweep_0818" / "h100_3_qwen3_faststart" / "sentence_compress" / "TRAIN_STATES_5K.jsonl",
+    Path("/mnt/songzijun/Capability_Evolution/SCAPE-EasyOPD/outputs/component_sweep_0818/h100_3_qwen3_faststart/sentence_compress/TRAIN_STATES_5K.jsonl"),
+    EASYOPD / "outputs" / "component_sweep_0818" / "h100_3_qwen3_faststart" / "sentence_compress" / "EVENT_ACTIVE_STATES_ALL.jsonl",
+    Path("/mnt/songzijun/Capability_Evolution/SCAPE-EasyOPD/outputs/component_sweep_0818/h100_3_qwen3_faststart/sentence_compress/EVENT_ACTIVE_STATES_ALL.jsonl"),
+)
 
 OFFICIAL_384_COUNT = 384
 
@@ -45,6 +56,36 @@ def default_eval_384_manifest() -> Path | None:
 
 def default_train_pool() -> Path | None:
     return first_existing(CANDIDATE_TRAIN_POOLS)
+
+
+def default_split_file() -> Path | None:
+    return first_existing(CANDIDATE_SPLITS)
+
+
+def default_sentence_train_states() -> Path | None:
+    return first_existing(CANDIDATE_SENTENCE_STATES)
+
+
+def official_test_ids(split_file: Path | None = None) -> set[str]:
+    path = split_file or default_split_file()
+    if path is None:
+        return set()
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    return {str(x) for x in payload.get("test_query_ids") or []}
+
+
+def tag_official_split(rows: list[dict[str, Any]], *, split_file: Path | None = None) -> list[dict[str, Any]]:
+    test_ids = official_test_ids(split_file)
+    tagged = []
+    for row in rows:
+        rec = dict(row)
+        rec["official_split"] = "test" if rec["query_id"] in test_ids else "train"
+        tagged.append(rec)
+    return tagged
+
+
+def official_test_subset(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [r for r in rows if r.get("official_split") == "test"]
 
 
 def sha256_file(path: Path) -> str:
@@ -147,13 +188,18 @@ def load_official_384(*, manifest: Path | None = None, bcp_root: Path | None = N
     path = manifest or default_eval_384_manifest()
     if path is None:
         raise FileNotFoundError("official 384 query_manifest.json not found")
-    rows = attach_bcp_fields(load_query_manifest(path), bcp_root=bcp_root)
+    rows = tag_official_split(attach_bcp_fields(load_query_manifest(path), bcp_root=bcp_root))
+    test_rows = official_test_subset(rows)
     meta = {
         "path": str(path),
         "query_count": len(rows),
         "official_384": len(rows) == OFFICIAL_384_COUNT,
+        "official_test_count": len(test_rows),
+        "official_test_expected": 76,
+        "split_file": str(default_split_file()) if default_split_file() else None,
         "sha256": sha256_file(path),
         "pool_contract": "browsecomp_plus_eval_pool_384",
+        "score_split": "official_test_76",
     }
     return rows, meta
 

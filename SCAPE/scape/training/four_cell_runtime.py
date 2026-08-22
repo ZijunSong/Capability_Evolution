@@ -18,7 +18,12 @@ from scape.adapters.components import minus_mask
 from scape.eval.adapter_reload_audit import audit_saved_adapter, write_reload_audit
 from scape.eval.browsecomp_retrieval import RetrievalBackend, hits_to_doc_store, open_retrieval
 from scape.eval.official_query_pool import attach_bcp_fields, load_official_384, load_train_queries, overlap_ids
-from scape.eval.sr_opd_four_cell_eval import search_metrics, summarize_traces, write_eval_outputs
+from scape.eval.sr_opd_four_cell_eval import search_metrics, split_summaries, summarize_traces, write_eval_outputs
+from scape.training.frozen_state_loader import (
+    doc_store_from_points,
+    groups_from_frozen_points,
+    load_train_states,
+)
 from scape.state.snapshot import capture_snapshot
 from scape.training.action_codec import STUDENT_NATIVE_TOOLS, render_action
 from scape.training.hf_rl_opd_client import (
@@ -98,6 +103,10 @@ def build_manifest(args: argparse.Namespace, *, extra: dict[str, Any] | None = N
         "sft_adapter": getattr(args, "sft_adapter", ""),
         "scale": "smoke" if getattr(args, "smoke", False) else "full",
         "backend": "hf_debug",
+        "seeds": list(getattr(args, "seeds", [args.seed])),
+        "train_state_source": "train_states_5k_or_on_policy",
+        "score_split": "official_test_76",
+        "legacy_adapters_not_used": True,
         **dict(extra or {}),
     }
 
@@ -119,6 +128,8 @@ def labeled_doc_store(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def doc_store_for_row(row: dict[str, Any], searcher: RetrievalBackend | None) -> dict[str, Any]:
+    if row.get("frozen_doc_store"):
+        return dict(row["frozen_doc_store"])
     if searcher is not None and searcher.name != "none":
         hits = searcher.search(str(row.get("query") or ""), 12)
         store = hits_to_doc_store(hits)
@@ -465,6 +476,11 @@ async def train_cell(
             reject_rate=float(batch.projection_stats.get("reject_rate") or 0.0),
         )
         metrics_acc.append(m.to_dict())
+    from scape.training.tinker_rl_opd_trainer import HybridLoopState
+
+    loop = HybridLoopState(policy_version=policy_version)
+    for _ in metrics_acc:
+        loop.bump_after_update()
     return {
         "call_log": list(client.calls),
         "n_optimizer_steps": sum(1 for c in client.calls if c[0] == "opt"),
@@ -473,6 +489,8 @@ async def train_cell(
         "projection_stats": last_batch_stats,
         "substeps": metrics_acc,
         "backend": HFDebugTrainingClient.backend_name,
+        "policy_version_start": policy_version,
+        "policy_version_end": loop.policy_version if metrics_acc else policy_version,
     }
 
 
@@ -510,11 +528,14 @@ def eval_closed_loop(backend, rows: list[dict[str, Any]], *, component_id, max_n
             }
         )
     retrieval_name = searcher.name if searcher is not None else "none"
-    summary = summarize_traces(traces, setting="closed_loop", retrieval_name=retrieval_name)
-    summary["teacher_leak_rate"] = leak / max(1, len(rows))
-    summary["mean_reward"] = sum(t["reward"] for t in traces) / max(1, len(traces))
-    summary["mean_gold_recall"] = sum(float(t["gold_recall"]) for t in traces) / max(1, len(traces))
-    return summary, traces
+    split = split_summaries(traces, setting="closed_loop", retrieval_name=retrieval_name, eval_rows=rows)
+    official = dict(split["official_test"])
+    official["teacher_leak_rate"] = leak / max(1, len(rows))
+    official["all_pool"] = split["all_pool"]
+    official["primary_split"] = "official_test"
+    official["n_all_pool"] = len(traces)
+    official["n_official_test"] = official.get("n_queries")
+    return official, traces
 
 
 def resolve_queries(args: argparse.Namespace) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
@@ -529,7 +550,27 @@ def resolve_queries(args: argparse.Namespace) -> tuple[list[dict[str, Any]], lis
     overlap = overlap_ids(train_rows, eval_rows)
     if overlap:
         raise RuntimeError(f"train/eval query overlap: {overlap[:8]}")
-    return train_rows, eval_rows, {"train": train_meta, "eval": eval_meta, "overlap": overlap}
+    states_path = getattr(args, "train_states", None)
+    frozen_limit = None if getattr(args, "n_train_states", None) in {None, 0} else int(args.n_train_states)
+    frozen_points, frozen_meta = load_train_states(
+        Path(states_path) if states_path else None,
+        component_id=getattr(args, "component", "sentence_compress"),
+        limit=frozen_limit,
+    )
+    if frozen_points:
+        by_q = {p.query_id: True for p in frozen_points}
+        for row in train_rows:
+            store = doc_store_from_points(frozen_points, row["query_id"])
+            if store:
+                row["frozen_doc_store"] = store
+        frozen_meta["n_train_rows_with_docs"] = sum(1 for r in train_rows if r.get("frozen_doc_store"))
+        frozen_meta["n_frozen_query_overlap_train"] = sum(1 for r in train_rows if r["query_id"] in by_q)
+    return (
+        train_rows,
+        eval_rows,
+        {"train": train_meta, "eval": eval_meta, "overlap": overlap, "frozen_states": frozen_meta},
+        frozen_points,
+    )
 
 
 def validate_wiring(args: argparse.Namespace) -> dict[str, Any]:
@@ -541,7 +582,7 @@ def validate_wiring(args: argparse.Namespace) -> dict[str, Any]:
     teacher_fn = teacher_for(args.component)
     if teacher_fn is None:
         raise SystemExit(f"no teacher registered for component={args.component}")
-    train_rows, eval_rows, pool_meta = resolve_queries(args)
+    train_rows, eval_rows, pool_meta, frozen_points = resolve_queries(args)
     wm = {
         "query": train_rows[0]["query"],
         "documents": [{"id": "d_long", "text": ("Long noisy passage. " * 40) + train_rows[0]["query"]}],
@@ -569,6 +610,10 @@ def validate_wiring(args: argparse.Namespace) -> dict[str, Any]:
         "n_train_queries": len(train_rows),
         "n_eval_queries": len(eval_rows),
         "eval_is_official_384": int(pool_meta["eval"]["query_count"]) == 384,
+        "official_test_count": int(pool_meta["eval"].get("official_test_count") or 0),
+        "official_test_is_76": int(pool_meta["eval"].get("official_test_count") or 0) == 76,
+        "train_states": pool_meta.get("frozen_states") or {},
+        "n_frozen_states": len(frozen_points),
         "projection_kind": projection.kind.value,
         "n_projected_steps": len(steps),
         "teacher_leak_in_student_prefix": leaked,
@@ -585,8 +630,9 @@ def run_four_cell(args: argparse.Namespace) -> dict[str, Any]:
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    train_rows, eval_rows, pool_meta = resolve_queries(args)
+    train_rows, eval_rows, pool_meta, frozen_points = resolve_queries(args)
     searcher = open_retrieval()
+    frozen_groups = groups_from_frozen_points(frozen_points) if frozen_points else []
     manifest = build_manifest(
         args,
         extra={"pool": pool_meta, "retrieval": searcher.name, "cells": list(cells_for_mode(getattr(args, "training_mode", "four_cell")))},
@@ -618,22 +664,25 @@ def run_four_cell(args: argparse.Namespace) -> dict[str, Any]:
         restore_trainable(backend.model, theta0)
         backend.optimizer = torch.optim.AdamW([p for p in backend.model.parameters() if p.requires_grad], lr=1e-5)
         print(f"[four_cell] cell={cell} rollout", flush=True)
-        groups = [
-            rollout_group(
-                backend,
-                row=row,
-                component_id=args.component,
-                group_size=args.group_size,
-                max_turns=args.max_turns,
-                max_new=args.max_new_tokens,
-                policy_version="v0",
-                seed=args.seed + 100 * (abs(hash(cell)) % 1000),
-                sample=True,
-                enc=enc,
-                searcher=searcher,
-            )
-            for row in train_rows
-        ]
+        if cell == "pure_opd" and frozen_groups:
+            groups = frozen_groups
+        else:
+            groups = [
+                rollout_group(
+                    backend,
+                    row=row,
+                    component_id=args.component,
+                    group_size=args.group_size,
+                    max_turns=args.max_turns,
+                    max_new=args.max_new_tokens,
+                    policy_version="v0",
+                    seed=args.seed + 100 * (abs(hash(cell)) % 1000),
+                    sample=True,
+                    enc=enc,
+                    searcher=searcher,
+                )
+                for row in train_rows
+            ]
         collected = filter_component_states(
             [p for g in groups for p in g.decision_points],
             component_id=args.component,
@@ -700,6 +749,7 @@ def run_four_cell(args: argparse.Namespace) -> dict[str, Any]:
             searcher=searcher,
         )
         ev["setting"] = cell
+        ev["reported_split"] = "official_test"
         cell_dir = out / cell
         cell_dir.mkdir(parents=True, exist_ok=True)
         with (cell_dir / "PER_QUERY.jsonl").open("w", encoding="utf-8") as handle:
@@ -716,7 +766,7 @@ def run_four_cell(args: argparse.Namespace) -> dict[str, Any]:
         }
         (cell_dir / "CELL.json").write_text(json.dumps(cells[cell], indent=2) + "\n", encoding="utf-8")
         eval_summaries.append(ev)
-        print(json.dumps({"cell": cell, **{k: ev.get(k) for k in ("legal_action_rate", "test_evidence_recall_at_5", "mean_tool_calls_per_query", "tool_search_cost")}}, ensure_ascii=False), flush=True)
+        print(json.dumps({"cell": cell, "split": "official_test", **{k: ev.get(k) for k in ("n_queries", "legal_action_rate", "test_evidence_recall_at_5", "mean_tool_calls_per_query", "tool_search_cost")}}, ensure_ascii=False), flush=True)
 
     write_reload_audit(out / "ADAPTER_RELOAD_AUDIT.json", adapter_audits)
     (out / "ADAPTER_MAP.json").write_text(json.dumps(adapter_map, indent=2) + "\n", encoding="utf-8")
@@ -769,6 +819,12 @@ def coerce_runtime_args(args: argparse.Namespace) -> argparse.Namespace:
         args.eval_manifest = None
     if not hasattr(args, "n_eval"):
         args.n_eval = None
+    if not hasattr(args, "train_states"):
+        args.train_states = None
+    if not hasattr(args, "n_train_states"):
+        args.n_train_states = None
+    if not hasattr(args, "seeds"):
+        args.seeds = [int(args.seed)]
     if getattr(args, "smoke", False):
         args.n_queries = min(int(args.n_queries), 6)
         args.group_size = min(int(args.group_size), 2)
@@ -779,6 +835,32 @@ def coerce_runtime_args(args: argparse.Namespace) -> argparse.Namespace:
     return args
 
 
+def run_seeded_four_cell(args: argparse.Namespace) -> dict[str, Any]:
+    """Train seed 42/43 (or --seeds) from the same launch, each with its own adapter + manifest."""
+    args = coerce_runtime_args(args)
+    seeds = [int(x) for x in (getattr(args, "seeds", None) or [args.seed])]
+    root = Path(args.out)
+    root.mkdir(parents=True, exist_ok=True)
+    per_seed = {}
+    for seed in seeds:
+        child = argparse.Namespace(**vars(args))
+        child.seed = seed
+        child.out = root / f"seed{seed}"
+        print(f"[four_cell] seed={seed} out={child.out}", flush=True)
+        per_seed[str(seed)] = run_four_cell(child)
+    payload = {
+        "component": args.component,
+        "opd_loss": "sr_opd_ce",
+        "rl_loss_fn": "cispo",
+        "seeds": seeds,
+        "score_split": "official_test_76",
+        "legacy_adapters_not_used": True,
+        "per_seed": {k: {"q1": v.get("q1_joint_one_optim"), "q2": v.get("q2_on_policy_projection"), "q3": v.get("q3_teacher_does_not_change_reward"), "out": str(root / f"seed{k}")} for k, v in per_seed.items()},
+    }
+    (root / "SEEDED_FOUR_CELL_SUMMARY.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    return payload
+
+
 def run_from_rl_opd_args(args: argparse.Namespace) -> dict[str, Any]:
     """Live path for run_true_scape_rl_opd.py."""
     args = coerce_runtime_args(args)
@@ -787,4 +869,6 @@ def run_from_rl_opd_args(args: argparse.Namespace) -> dict[str, Any]:
         Path(args.out).mkdir(parents=True, exist_ok=True)
         (Path(args.out) / "VALIDATE.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
         return report
+    if len(getattr(args, "seeds", [args.seed]) or [args.seed]) > 1:
+        return run_seeded_four_cell(args)
     return run_four_cell(args)

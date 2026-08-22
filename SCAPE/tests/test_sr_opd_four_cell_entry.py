@@ -36,6 +36,8 @@ def test_validate_wiring_sentence_compress(tmp_path: Path):
     report = validate_wiring(A())
     assert report["ok"]
     assert report["eval_is_official_384"]
+    assert report["official_test_is_76"]
+    assert report["official_test_count"] == 76
     assert report["n_train_queries"] == 8
     assert report["teacher_leak_in_student_prefix"] is False
     assert report["n_projected_steps"] >= 1

@@ -127,12 +127,19 @@ async off-policy、跨 version OPD replay、window-slicing 去重、PCGrad、现
 | `scripts/run_true_scape_rl_opd.py` | 不再停在 print；`--dry-run/--validate-only` 验线，否则走 live HF joint loop |
 | `scripts/run_sr_opd_four_cell.py` | 正式 Before / RL / PURE / RL+OPD；同 θ₀；保存 adapter；384 评测 |
 | `scripts/eval_sr_opd_four_cell.py --audit-only` | adapter reload + 384 pool 审计 |
+| `scripts/run_sentence_compress_sr_opd_four_cell.py` | **正式 sentence_compress 编排器**：TRAIN_STATES_5K + seed 42/43 + official-test 76 |
 
 Teacher 是 `sentence_compress` side branch：`OBS_TRANSFORM`（`compressed_teacher_view`，Student 不可见）→ 下游 `curate`/`search_corpus`。压缩文本不得进入 Student prefix。
 
 正式评测指标：`legal_action_rate`、`test_evidence_recall_at_5`、`mean_tool_calls_per_query`、`tool_search_cost`。无 retrieval backend 时 recall 记 `null`，不得回填 20260821 旧 reverse-KL 数字。
 
+正式指标只在 official-test 76 上汇总（384 pool 仍生成动作，记为 `all_pool`）。旧 EasyOPD `OPD_PILOT` / `global_step_*` adapter 不得作为本次结果。
+
 ```bash
-python SCAPE/scripts/run_sr_opd_four_cell.py --out $OUT --component sentence_compress --validate-only
-python SCAPE/scripts/run_sr_opd_four_cell.py --out $OUT --component sentence_compress --base-model $MODEL --sft-adapter $SFT
+# 另一台机器请先 checkout origin/scope/round14-capability-portfolio 的最新 commit，不要停在 5784f05。
+python SCAPE/scripts/run_sentence_compress_sr_opd_four_cell.py --out $OUT --validate-only
+python SCAPE/scripts/run_sentence_compress_sr_opd_four_cell.py \
+  --out $OUT --base-model $MODEL --sft-adapter $SFT --gpu 0 \
+  --train-states $EASYOPD/outputs/component_sweep_0818/h100_3_qwen3_faststart/sentence_compress/TRAIN_STATES_5K.jsonl \
+  --seeds 42,43
 ```

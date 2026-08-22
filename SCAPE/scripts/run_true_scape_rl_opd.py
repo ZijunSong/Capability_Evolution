@@ -43,6 +43,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--max-new-tokens", type=int, default=384)
     p.add_argument("--n-eval", type=int, default=None)
     p.add_argument("--validate-only", action="store_true")
+    p.add_argument("--train-states", type=Path, default=None)
+    p.add_argument("--seeds", default="42", help="Comma-separated seeds; sentence_compress formal uses 42,43")
     p.add_argument("--student-harness-config", default="H_min")
     p.add_argument("--teacher-harness-config", default="H_full")
     p.add_argument("--batch-size", type=int, default=32)
@@ -144,7 +146,14 @@ def main() -> None:
     args.train_steps = args.max_steps
     if not args.base_model:
         args.base_model = args.base_checkpoint
+    args.seeds = [int(x) for x in str(getattr(args, "seeds", "42")).split(",") if str(x).strip()]
 
+    print(
+        "[rl_opd] launching scape.training.four_cell_runtime "
+        f"(component={args.component} mode={args.training_mode} "
+        f"{'validate-only' if args.dry_run or args.validate_only else 'live'})",
+        flush=True,
+    )
     from scape.training.four_cell_runtime import run_from_rl_opd_args
 
     if args.dry_run or args.validate_only or args.training_mode == TRAINING_MODE_PURE_OPD or resolved_lambda(args) > 0:

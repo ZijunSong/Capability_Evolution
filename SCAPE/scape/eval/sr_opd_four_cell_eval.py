@@ -57,6 +57,19 @@ def search_metrics(searcher: RetrievalBackend, query: str, evidence: list[str]) 
     }
 
 
+def split_summaries(traces: list[dict[str, Any]], *, setting: str, retrieval_name: str, eval_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    by_id = {r["query_id"]: r for r in eval_rows}
+    for tr in traces:
+        rec = by_id.get(tr["query_id"]) or {}
+        tr["official_split"] = rec.get("official_split") or "train"
+    all_pool = summarize_traces(traces, setting=setting, retrieval_name=retrieval_name)
+    test_traces = [t for t in traces if t.get("official_split") == "test"]
+    official = summarize_traces(test_traces, setting=setting, retrieval_name=retrieval_name)
+    official["split"] = "official_test"
+    official["n_expected"] = 76
+    return {"setting": setting, "all_pool": all_pool, "official_test": official, "primary_split": "official_test"}
+
+
 def write_eval_outputs(
     out: Path,
     *,
