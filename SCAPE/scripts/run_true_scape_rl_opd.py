@@ -68,6 +68,14 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Override defaults to batch 4 / group 2 / 2 steps for debug.",
     )
+    p.add_argument("--rollout-backend", choices=("vllm", "hf"), default="vllm")
+    p.add_argument("--gpu-schedule", choices=("scheme_a", "resident_hf"), default="scheme_a")
+    p.add_argument("--tensor-parallel-size", type=int, default=None)
+    p.add_argument("--max-model-len", type=int, default=8192)
+    p.add_argument("--train-device-map", default="")
+    p.add_argument("--gpu-memory-utilization", type=float, default=0.90)
+    p.add_argument("--no-on-policy-refresh", action="store_false", dest="on_policy_refresh")
+    p.add_argument("--on-policy-refresh", action="store_true", default=True)
     return p.parse_args()
 
 

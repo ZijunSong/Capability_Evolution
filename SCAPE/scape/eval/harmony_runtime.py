@@ -51,16 +51,29 @@ def _ensure_scope() -> None:
         sys.path.insert(0, str(REPO))
 
 
+# gpt-oss / Harness-1 Harmony. Never cl100k_base.
+O200K_HARMONY = "o200k_harmony"
+CANONICAL_STOP_TOKEN_IDS = [200012, 200002]  # <|call|>, <|return|> — not <|end|>
+
+
 def load_harmony_enc():
     _ensure_scope()
     from openai_harmony import HarmonyEncodingName, load_harmony_encoding
 
-    return load_harmony_encoding(HarmonyEncodingName.HARMONY_GPT_OSS)
+    enc = load_harmony_encoding(HarmonyEncodingName.HARMONY_GPT_OSS)
+    stops = [int(x) for x in enc.stop_tokens_for_assistant_actions()]
+    if 200012 not in stops or 200002 not in stops:
+        raise RuntimeError(
+            f"Harmony encoder is not gpt-oss/{O200K_HARMONY}: stop_tokens={stops}. "
+            "cl100k_base fallback is forbidden."
+        )
+    return enc
 
 
 def stop_ids_for_tool_actions(enc=None) -> list[int]:
-    enc = enc or load_harmony_enc()
-    return [int(x) for x in enc.stop_tokens_for_assistant_actions()]
+    """IDs that end an assistant tool action. Always <|call|> and <|return|> only."""
+    del enc
+    return list(CANONICAL_STOP_TOKEN_IDS)
 
 
 def decode_ids(enc, ids: Sequence[int]) -> str:

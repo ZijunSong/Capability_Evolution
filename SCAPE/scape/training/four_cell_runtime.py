@@ -1,7 +1,8 @@
 """Formal Before / RL / PURE / RL+OPD loop for sr_opd_ce + CISPO.
 
-backend=hf_debug. Each hybrid substep is CISPO FB → CE FB → one optim_step.
-Teacher is a side branch and must not change RL rewards.
+Default backend is vLLM batched rollout + HF train (Scheme A). Each hybrid
+substep is CISPO FB → CE FB → one optim_step. RL / RL+OPD re-rollout after
+every optimizer step. Teacher is a side branch and must not change RL rewards.
 """
 
 from __future__ import annotations
@@ -29,8 +30,6 @@ from scape.training.action_codec import STUDENT_NATIVE_TOOLS, render_action
 from scape.training.hf_rl_opd_client import (
     HFDebugTrainingClient,
     group_relative_advantages,
-    restore_trainable,
-    snapshot_trainable,
 )
 from scape.training.on_policy_collector import filter_component_states, write_collected_states
 from scape.training.opd_dataset import render_student_prompt
@@ -102,7 +101,17 @@ def build_manifest(args: argparse.Namespace, *, extra: dict[str, Any] | None = N
         "base_model": args.base_model,
         "sft_adapter": getattr(args, "sft_adapter", ""),
         "scale": "smoke" if getattr(args, "smoke", False) else "full",
-        "backend": "hf_debug",
+        "backend": (
+            "vllm_rollout+hf_train"
+            if str(getattr(args, "rollout_backend", "vllm") or "vllm") == "vllm"
+            else "hf_debug"
+        ),
+        "train_backend": "hf_debug",
+        "gpu_schedule": str(getattr(args, "gpu_schedule", "scheme_a") or "scheme_a"),
+        "on_policy_refresh": bool(getattr(args, "on_policy_refresh", True)),
+        "harmony_encoding": "o200k_harmony",
+        "stop_token_ids": [200012, 200002],
+        "tensor_parallel_size": getattr(args, "tensor_parallel_size", None),
         "seeds": list(getattr(args, "seeds", [args.seed])),
         "train_state_source": "train_states_5k_or_on_policy",
         "score_split": "official_test_76",
@@ -317,6 +326,7 @@ def one_episode(
             old_prompt = prompt_ids[-384:] if len(prompt_ids) > 384 else prompt_ids
             old_act = action_ids[:128]
             old_lp = backend._teacher_forced_logprobs(old_prompt, old_act, require_grad=False)
+        token_logprobs = [float(x) for x in old_lp.detach().cpu().tolist()] if old_lp.numel() else []
         old_mean = float(old_lp.mean().item()) if old_lp.numel() else 0.0
         post = snap_from_state(qid, st, component_id)
         points.append(
@@ -344,7 +354,10 @@ def one_episode(
                 "prompt_ids": prompt_ids,
                 "action_text": gen["text"],
                 "action_ids": action_ids,
+                "token_logprobs": token_logprobs,
+                "action_mask": [1] * len(action_ids),
                 "logprob_old": old_mean,
+                "logprob_provenance": "hf_teacher_forced",
                 "n_tokens": len(action_ids),
                 "policy_version": policy_version,
                 "valid": valid,
@@ -494,7 +507,44 @@ async def train_cell(
     }
 
 
-def eval_closed_loop(backend, rows: list[dict[str, Any]], *, component_id, max_new, max_turns, seed, enc, searcher) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+def eval_closed_loop(
+    backend,
+    rows: list[dict[str, Any]],
+    *,
+    component_id,
+    max_new,
+    max_turns,
+    seed,
+    enc,
+    searcher,
+    generate_batch: Callable[[Any], Any] | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    if generate_batch is not None:
+        from scape.training.batched_env_rollout import rollout_queries_batched, traces_from_groups
+
+        groups = rollout_queries_batched(
+            generate_batch,
+            rows,
+            component_id=component_id,
+            group_size=1,
+            max_turns=max_turns,
+            max_new=max_new,
+            policy_version="eval",
+            seed=seed,
+            sample=False,
+            enc=enc,
+            searcher=searcher,
+        )
+        traces, leak = traces_from_groups(groups, rows, searcher=searcher)
+        retrieval_name = searcher.name if searcher is not None else "none"
+        split = split_summaries(traces, setting="closed_loop", retrieval_name=retrieval_name, eval_rows=rows)
+        official = dict(split["official_test"])
+        official["teacher_leak_rate"] = leak / max(1, len(rows))
+        official["all_pool"] = split["all_pool"]
+        official["primary_split"] = "official_test"
+        official["n_all_pool"] = len(traces)
+        official["n_official_test"] = official.get("n_queries")
+        return official, traces
     traces: list[dict[str, Any]] = []
     leak = 0
     for i, row in enumerate(rows):
@@ -623,66 +673,355 @@ def validate_wiring(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def uses_vllm(args: argparse.Namespace) -> bool:
+    return str(getattr(args, "rollout_backend", "vllm") or "vllm") == "vllm"
+
+
+def uses_scheme_a(args: argparse.Namespace) -> bool:
+    return uses_vllm(args) and str(getattr(args, "gpu_schedule", "scheme_a") or "scheme_a") == "scheme_a"
+
+
+def train_device_map_for(args: argparse.Namespace) -> str:
+    explicit = str(getattr(args, "train_device_map", "") or "")
+    if explicit:
+        return explicit
+    if uses_scheme_a(args):
+        return "auto"
+    return f"cuda:{int(getattr(args, 'gpu', 0))}"
+
+
+def load_hf_backend(args: argparse.Namespace, device_map: str, *, adapter_dir: str | None = None):
+    from scape.training.hf_tool_opd import ScapeHFToolOPD
+    from scape.training.vllm_hybrid import load_adapter_weights
+
+    model_src = args.sft_adapter if args.sft_adapter and Path(args.sft_adapter).exists() else args.base_model
+    backend = ScapeHFToolOPD(
+        model_path=model_src,
+        device_map=device_map,
+        learning_rate=1e-5,
+        use_lora=True,
+        lora_r=8,
+        lora_alpha=16,
+    )
+    if adapter_dir:
+        load_adapter_weights(backend, adapter_dir)
+    return backend
+
+
+def merge_train_stats(parts: list[dict[str, Any]]) -> dict[str, Any]:
+    if not parts:
+        return {
+            "update_type": "eval_only",
+            "n_optimizer_steps": 0,
+            "n_rl_forward_backward": 0,
+            "n_opd_forward_backward": 0,
+            "skipped_teacher": True,
+        }
+    last = parts[-1]
+    return {
+        **last,
+        "call_log": [c for p in parts for c in (p.get("call_log") or [])],
+        "n_optimizer_steps": sum(int(p.get("n_optimizer_steps") or 0) for p in parts),
+        "n_rl_forward_backward": sum(int(p.get("n_rl_forward_backward") or 0) for p in parts),
+        "n_opd_forward_backward": sum(int(p.get("n_opd_forward_backward") or 0) for p in parts),
+        "substeps": [s for p in parts for s in (p.get("substeps") or [])],
+        "n_on_policy_rollouts": len(parts),
+        "policy_version_start": parts[0].get("policy_version_start"),
+        "policy_version_end": last.get("policy_version_end"),
+    }
+
+
 def run_four_cell(args: argparse.Namespace) -> dict[str, Any]:
     import torch
     from scape.eval.harmony_runtime import load_harmony_enc
-    from scape.training.hf_tool_opd import ScapeHFToolOPD
+    from scape.training.batched_env_rollout import rollout_queries_batched
+    from scape.training.tinker_rl_opd_trainer import HybridLoopState
+    from scape.training.vllm_hybrid import (
+        HFGenerateClient,
+        SchemeARuntime,
+        VLLMGenerateClient,
+        default_tensor_parallel_size,
+        load_adapter_weights,
+        materialize_vllm_base,
+        wait_gpus_quiet,
+    )
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     train_rows, eval_rows, pool_meta, frozen_points = resolve_queries(args)
     searcher = open_retrieval()
     frozen_groups = groups_from_frozen_points(frozen_points) if frozen_points else []
+    vllm_on = uses_vllm(args)
+    scheme_a = uses_scheme_a(args)
+    device_map = train_device_map_for(args)
+    tp = default_tensor_parallel_size(getattr(args, "tensor_parallel_size", None))
     manifest = build_manifest(
         args,
-        extra={"pool": pool_meta, "retrieval": searcher.name, "cells": list(cells_for_mode(getattr(args, "training_mode", "four_cell")))},
+        extra={
+            "pool": pool_meta,
+            "retrieval": searcher.name,
+            "cells": list(cells_for_mode(getattr(args, "training_mode", "four_cell"))),
+            "tensor_parallel_size": tp,
+            "train_device_map": device_map,
+        },
     )
     (out / "RUN_MANIFEST.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     teacher_fn = teacher_for(args.component)
     if teacher_fn is None:
         raise SystemExit(f"no teacher registered for {args.component}")
 
-    model_src = args.sft_adapter if args.sft_adapter and Path(args.sft_adapter).exists() else args.base_model
     t0 = time.time()
-    backend = ScapeHFToolOPD(
-        model_path=model_src,
-        device_map=f"cuda:{int(args.gpu)}",
-        learning_rate=1e-5,
-        use_lora=True,
-        lora_r=8,
-        lora_alpha=16,
-    )
-    theta0 = snapshot_trainable(backend.model)
+    runtime = SchemeARuntime()
+    vllm_base = args.base_model
+    if vllm_on:
+        vllm_base = materialize_vllm_base(
+            base_model=args.base_model,
+            sft_adapter=str(args.sft_adapter or ""),
+            cache_dir=out / "vllm_base_merged_sft",
+            device_map=device_map,
+        )
+        wait_gpus_quiet()
+
+    print("[four_cell] init theta0 HF LoRA", flush=True)
+    backend = load_hf_backend(args, device_map)
+    theta0_dir = out / "adapters" / "theta0"
+    theta0_dir.mkdir(parents=True, exist_ok=True)
+    backend.save_pretrained(str(theta0_dir))
+    if scheme_a:
+        runtime.attach_hf(backend)
+        runtime.detach_hf()
+        backend = None
+        wait_gpus_quiet()
+    else:
+        runtime.attach_hf(backend)
+
     enc = load_harmony_enc()
     chosen_cells = cells_for_mode(getattr(args, "training_mode", "four_cell"))
     adapter_map: dict[str, str | None] = {}
     adapter_audits: list[dict[str, Any]] = []
     cells: dict[str, Any] = {}
     eval_summaries: list[dict[str, Any]] = []
+    session_i = {"n": 0}
+    ev_rows = eval_rows if getattr(args, "official_eval", True) else train_rows
+    if getattr(args, "n_eval", None):
+        ev_rows = ev_rows[: int(args.n_eval)]
 
-    for cell in chosen_cells:
-        restore_trainable(backend.model, theta0)
-        backend.optimizer = torch.optim.AdamW([p for p in backend.model.parameters() if p.requires_grad], lr=1e-5)
-        print(f"[four_cell] cell={cell} rollout", flush=True)
-        if cell == "pure_opd" and frozen_groups:
-            groups = frozen_groups
-        else:
-            groups = [
-                rollout_group(
-                    backend,
-                    row=row,
+    def next_session(tag: str) -> Path:
+        session_i["n"] += 1
+        path = out / "vllm_sessions" / f"{session_i['n']:03d}_{tag}"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def vllm_lora(path: str | None) -> str | None:
+        if not path:
+            return None
+        weight = Path(path) / "adapter_model.safetensors"
+        return path if weight.is_file() else None
+
+    def open_vllm(lora_path: str | None, tag: str) -> VLLMGenerateClient:
+        wait_gpus_quiet()
+        client = VLLMGenerateClient(
+            model_path=vllm_base,
+            session_dir=next_session(tag),
+            tensor_parallel_size=tp,
+            max_model_len=int(getattr(args, "max_model_len", 8192) or 8192),
+            lora_path=vllm_lora(lora_path),
+            gpu_memory_utilization=float(getattr(args, "gpu_memory_utilization", 0.90) or 0.90),
+            enforce_eager=bool(getattr(args, "enforce_eager", True)),
+        )
+        runtime.attach_vllm(client)
+        print(f"[four_cell] vLLM start tp={tp} lora={client.lora_path} tag={tag}", flush=True)
+        client.start()
+        return client
+
+    def close_vllm() -> None:
+        runtime.detach_vllm()
+        wait_gpus_quiet()
+
+    def ensure_hf(adapter_path: str | None):
+        nonlocal backend
+        if backend is None:
+            backend = runtime.attach_hf(load_hf_backend(args, device_map, adapter_dir=adapter_path))
+            return backend
+        load_adapter_weights(backend, adapter_path)
+        backend.optimizer = torch.optim.AdamW(
+            [p for p in backend.model.parameters() if p.requires_grad], lr=1e-5
+        )
+        return backend
+
+    def release_hf() -> None:
+        nonlocal backend
+        if scheme_a and backend is not None:
+            runtime.detach_hf()
+            backend = None
+            wait_gpus_quiet()
+
+    def collect_groups(lora_path: str | None, policy_version: str, tag: str, *, sample: bool, rows, group_size: int):
+        if vllm_on:
+            client = open_vllm(lora_path, tag)
+            try:
+                return rollout_queries_batched(
+                    client.generate_batch,
+                    rows,
                     component_id=args.component,
-                    group_size=args.group_size,
+                    group_size=group_size,
                     max_turns=args.max_turns,
                     max_new=args.max_new_tokens,
-                    policy_version="v0",
-                    seed=args.seed + 100 * (abs(hash(cell)) % 1000),
-                    sample=True,
+                    policy_version=policy_version,
+                    seed=args.seed + 100 * (abs(hash(tag)) % 1000),
+                    sample=sample,
                     enc=enc,
                     searcher=searcher,
                 )
-                for row in train_rows
-            ]
+            finally:
+                close_vllm()
+        gen = HFGenerateClient(ensure_hf(lora_path), enc=enc)
+        return rollout_queries_batched(
+            gen.generate_batch,
+            rows,
+            component_id=args.component,
+            group_size=group_size,
+            max_turns=args.max_turns,
+            max_new=args.max_new_tokens,
+            policy_version=policy_version,
+            seed=args.seed + 100 * (abs(hash(tag)) % 1000),
+            sample=sample,
+            enc=enc,
+            searcher=searcher,
+        )
+
+    def eval_now(lora_path: str | None, tag: str):
+        if vllm_on:
+            client = open_vllm(lora_path, tag)
+            try:
+                return eval_closed_loop(
+                    None,
+                    ev_rows,
+                    component_id=args.component,
+                    max_new=args.max_new_tokens,
+                    max_turns=args.max_turns,
+                    seed=args.seed,
+                    enc=enc,
+                    searcher=searcher,
+                    generate_batch=client.generate_batch,
+                )
+            finally:
+                close_vllm()
+        gen = HFGenerateClient(ensure_hf(lora_path), enc=enc)
+        return eval_closed_loop(
+            backend,
+            ev_rows,
+            component_id=args.component,
+            max_new=args.max_new_tokens,
+            max_turns=args.max_turns,
+            seed=args.seed,
+            enc=enc,
+            searcher=searcher,
+            generate_batch=gen.generate_batch,
+        )
+
+    def save_and_audit(cell: str, adapter_dir: Path) -> dict[str, Any]:
+        adapter_dir.mkdir(parents=True, exist_ok=True)
+        if backend is None:
+            raise RuntimeError(f"cannot save adapter for {cell}: HF backend is not loaded")
+        backend.save_pretrained(str(adapter_dir))
+        file_audit = audit_saved_adapter(adapter_dir, cell=cell)
+        load_adapter_weights(backend, theta0_dir)
+        info = load_adapter_weights(backend, adapter_dir)
+        file_audit["reload_path"] = "saved_adapter_state_dict"
+        file_audit["unexpected_lora"] = info.get("unexpected_lora") or []
+        return file_audit
+
+    for cell in chosen_cells:
+        adapter_live = str(theta0_dir)
+        loop = HybridLoopState(policy_version="v0")
+        print(f"[four_cell] cell={cell} phases", flush=True)
+        groups = None
+        train_parts: list[dict[str, Any]] = []
+        use_frozen = cell == "pure_opd" and bool(frozen_groups)
+        refresh = bool(getattr(args, "on_policy_refresh", True)) and cell in {"rl", TRAINING_MODE_RL_OPD}
+        n_train = 0 if cell == "before" else int(args.train_steps)
+
+        if use_frozen:
+            groups = frozen_groups
+        elif refresh:
+            for step in range(n_train):
+                print(f"[four_cell] cell={cell} on-policy rollout step={step} policy={loop.policy_version}", flush=True)
+                groups = collect_groups(
+                    adapter_live, loop.policy_version, f"{cell}_rollout{step}", sample=True, rows=train_rows, group_size=args.group_size
+                )
+                rewards_before = [r for g in groups for r in g.terminal_rewards]
+                ensure_hf(adapter_live)
+                part = asyncio.run(
+                    train_cell(
+                        name=cell,
+                        backend=backend,
+                        groups=groups,
+                        lambda_opd=cell_lambda(cell, args.lambda_opd),
+                        train_steps=1,
+                        policy_version=loop.policy_version,
+                        opd_states_per_trajectory=args.opd_states_per_trajectory,
+                        component_id=args.component,
+                        teacher_fn=teacher_fn,
+                    )
+                )
+                rewards_after = [r for g in groups for r in g.terminal_rewards]
+                if rewards_before != rewards_after:
+                    raise RuntimeError("Teacher shadow mutated RL rewards")
+                adapter_dir = out / "adapters" / cell
+                adapter_dir.mkdir(parents=True, exist_ok=True)
+                backend.save_pretrained(str(adapter_dir))
+                adapter_live = str(adapter_dir)
+                if step == n_train - 1:
+                    adapter_audits.append(save_and_audit(cell, adapter_dir))
+                train_parts.append(part)
+                loop.bump_after_update()
+                release_hf()
+        else:
+            print(f"[four_cell] cell={cell} rollout", flush=True)
+            groups = collect_groups(
+                adapter_live, loop.policy_version, f"{cell}_rollout", sample=True, rows=train_rows, group_size=args.group_size
+            )
+
+        if groups is None:
+            raise RuntimeError(f"cell={cell} produced no rollout groups")
+        if not refresh and n_train > 0:
+            rewards_before = [r for g in groups for r in g.terminal_rewards]
+            ensure_hf(adapter_live)
+            train_parts.append(
+                asyncio.run(
+                    train_cell(
+                        name=cell,
+                        backend=backend,
+                        groups=groups,
+                        lambda_opd=cell_lambda(cell, args.lambda_opd),
+                        train_steps=n_train,
+                        policy_version=loop.policy_version,
+                        opd_states_per_trajectory=args.opd_states_per_trajectory,
+                        component_id=args.component,
+                        teacher_fn=teacher_fn,
+                    )
+                )
+            )
+            rewards_after = [r for g in groups for r in g.terminal_rewards]
+            if rewards_before != rewards_after:
+                raise RuntimeError("Teacher shadow mutated RL rewards")
+            if cell != "before":
+                adapter_dir = out / "adapters" / cell
+                adapter_audits.append(save_and_audit(cell, adapter_dir))
+                adapter_map[cell] = str(adapter_dir)
+                adapter_live = str(adapter_dir)
+            release_hf()
+        elif cell == "before":
+            adapter_map[cell] = None
+            adapter_audits.append(
+                {"cell": cell, "adapter_dir": None, "reload_ready": True, "exists": False, "reload_path": "theta0_no_adapter"}
+            )
+        elif refresh:
+            adapter_map[cell] = adapter_live
+            if not any(a.get("cell") == cell for a in adapter_audits):
+                adapter_audits.append(audit_saved_adapter(Path(adapter_live), cell=cell))
+
         collected = filter_component_states(
             [p for g in groups for p in g.decision_points],
             component_id=args.component,
@@ -692,62 +1031,17 @@ def run_four_cell(args: argparse.Namespace) -> dict[str, Any]:
             collected,
             out / cell / "collected_states.jsonl",
             component_id=args.component,
-            extra={"cell": cell, "n_rollout_points": sum(len(g.decision_points) for g in groups)},
+            extra={
+                "cell": cell,
+                "n_rollout_points": sum(len(g.decision_points) for g in groups),
+                "policy_version": groups[0].policy_version if groups else "v0",
+                "on_policy_refresh": refresh,
+            },
         )
         gstat = group_stats(groups)
-        rewards_before = [r for g in groups for r in g.terminal_rewards]
-        train_stats = asyncio.run(
-            train_cell(
-                name=cell,
-                backend=backend,
-                groups=groups,
-                lambda_opd=cell_lambda(cell, args.lambda_opd),
-                train_steps=0 if cell == "before" else args.train_steps,
-                policy_version="v0",
-                opd_states_per_trajectory=args.opd_states_per_trajectory,
-                component_id=args.component,
-                teacher_fn=teacher_fn,
-            )
-        )
-        rewards_after = [r for g in groups for r in g.terminal_rewards]
-        if rewards_before != rewards_after:
-            raise RuntimeError("Teacher shadow mutated RL rewards")
-        adapter_dir = out / "adapters" / cell
-        restore_trainable(backend.model, theta0)
-        reload_path = "theta0_no_adapter"
-        if cell != "before":
-            adapter_dir.mkdir(parents=True, exist_ok=True)
-            backend.save_pretrained(str(adapter_dir))
-            adapter_map[cell] = str(adapter_dir)
-            file_audit = audit_saved_adapter(adapter_dir, cell=cell)
-            from safetensors.torch import load_file
-            from scape.eval.adapter_reload_audit import remap_lora_state
-
-            weights = remap_lora_state(load_file(str(adapter_dir / "adapter_model.safetensors")))
-            missing, unexpected = backend.model.load_state_dict(weights, strict=False)
-            lora_missing = [x for x in missing if "lora_" in x]
-            if lora_missing:
-                raise RuntimeError(f"adapter reload failed for {cell}: {lora_missing}")
-            reload_path = "saved_adapter_state_dict"
-            file_audit["reload_path"] = reload_path
-            file_audit["unexpected_lora"] = [x for x in unexpected if "lora_" in x]
-            adapter_audits.append(file_audit)
-        else:
-            adapter_map[cell] = None
-            adapter_audits.append({"cell": cell, "adapter_dir": None, "reload_ready": True, "exists": False, "reload_path": reload_path})
-        ev_rows = eval_rows if getattr(args, "official_eval", True) else train_rows
-        if getattr(args, "n_eval", None):
-            ev_rows = ev_rows[: int(args.n_eval)]
-        ev, traces = eval_closed_loop(
-            backend,
-            ev_rows,
-            component_id=args.component,
-            max_new=args.max_new_tokens,
-            max_turns=args.max_turns,
-            seed=args.seed,
-            enc=enc,
-            searcher=searcher,
-        )
+        train_stats = merge_train_stats(train_parts)
+        print(f"[four_cell] cell={cell} eval", flush=True)
+        ev, traces = eval_now(str(theta0_dir) if cell == "before" else adapter_live, f"{cell}_eval")
         ev["setting"] = cell
         ev["reported_split"] = "official_test"
         cell_dir = out / cell
@@ -762,11 +1056,24 @@ def run_four_cell(args: argparse.Namespace) -> dict[str, Any]:
             "n_decision_points": gstat["n_decision_points"],
             "n_component_states": len(collected),
             "reward_unchanged_by_teacher": True,
-            "adapter": adapter_map[cell],
+            "adapter": adapter_map.get(cell),
+            "on_policy_refresh": refresh,
+            "rollout_backend": "vllm" if vllm_on else "hf",
         }
         (cell_dir / "CELL.json").write_text(json.dumps(cells[cell], indent=2) + "\n", encoding="utf-8")
         eval_summaries.append(ev)
-        print(json.dumps({"cell": cell, "split": "official_test", **{k: ev.get(k) for k in ("n_queries", "legal_action_rate", "test_evidence_recall_at_5", "mean_tool_calls_per_query", "tool_search_cost")}}, ensure_ascii=False), flush=True)
+        print(
+            json.dumps(
+                {
+                    "cell": cell,
+                    "split": "official_test",
+                    **{k: ev.get(k) for k in ("n_queries", "legal_action_rate", "test_evidence_recall_at_5", "mean_tool_calls_per_query", "tool_search_cost")},
+                },
+                ensure_ascii=False,
+            ),
+            flush=True,
+        )
+        release_hf()
 
     write_reload_audit(out / "ADAPTER_RELOAD_AUDIT.json", adapter_audits)
     (out / "ADAPTER_MAP.json").write_text(json.dumps(adapter_map, indent=2) + "\n", encoding="utf-8")
@@ -781,7 +1088,11 @@ def run_four_cell(args: argparse.Namespace) -> dict[str, Any]:
     summary = {
         "elapsed_sec": time.time() - t0,
         "manifest": manifest,
-        "cells": {k: {kk: vv for kk, vv in v.items() if kk != "train"} | {"train": {tk: tv for tk, tv in (v.get("train") or {}).items() if tk != "call_log"}} for k, v in cells.items()},
+        "cells": {
+            k: {kk: vv for kk, vv in v.items() if kk != "train"}
+            | {"train": {tk: tv for tk, tv in (v.get("train") or {}).items() if tk != "call_log"}}
+            for k, v in cells.items()
+        },
         "official_eval": official,
         "q1_joint_one_optim": (
             int(rl_opd.get("n_rl_forward_backward") or 0) >= 1
@@ -790,6 +1101,8 @@ def run_four_cell(args: argparse.Namespace) -> dict[str, Any]:
         ),
         "q2_on_policy_projection": any(c.get("n_decision_points") for c in cells.values()),
         "q3_teacher_does_not_change_reward": all(c.get("reward_unchanged_by_teacher") for c in cells.values()),
+        "on_policy_refresh": bool(getattr(args, "on_policy_refresh", True)),
+        "rollout_backend": "vllm" if vllm_on else "hf",
     }
     (out / "FOUR_CELL_SUMMARY.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     return summary
@@ -825,6 +1138,22 @@ def coerce_runtime_args(args: argparse.Namespace) -> argparse.Namespace:
         args.n_train_states = None
     if not hasattr(args, "seeds"):
         args.seeds = [int(args.seed)]
+    if not hasattr(args, "rollout_backend"):
+        args.rollout_backend = "vllm"
+    if not hasattr(args, "gpu_schedule"):
+        args.gpu_schedule = "scheme_a"
+    if not hasattr(args, "on_policy_refresh"):
+        args.on_policy_refresh = True
+    if not hasattr(args, "tensor_parallel_size"):
+        args.tensor_parallel_size = None
+    if not hasattr(args, "max_model_len"):
+        args.max_model_len = 8192
+    if not hasattr(args, "train_device_map"):
+        args.train_device_map = ""
+    if not hasattr(args, "gpu_memory_utilization"):
+        args.gpu_memory_utilization = 0.90
+    if not hasattr(args, "enforce_eager"):
+        args.enforce_eager = True
     if getattr(args, "smoke", False):
         args.n_queries = min(int(args.n_queries), 6)
         args.group_size = min(int(args.group_size), 2)

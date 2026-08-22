@@ -63,4 +63,10 @@ def test_manifest_marks_new_loss():
     assert man["rl_loss_fn"] == "cispo"
     assert man["legacy_tool_token_kl_hook_used"] is False
     assert man["protocol_complete_rl_opd"] is True
+    assert man["backend"] == "vllm_rollout+hf_train"
+    assert man["train_backend"] == "hf_debug"
+    assert man["gpu_schedule"] == "scheme_a"
+    assert man["on_policy_refresh"] is True
+    assert man["harmony_encoding"] == "o200k_harmony"
+    assert man["stop_token_ids"] == [200012, 200002]
     json.dumps(man)

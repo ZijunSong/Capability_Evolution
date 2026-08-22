@@ -27,6 +27,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--gpu", type=int, default=0)
     p.add_argument("--n-eval", type=int, default=None)
     p.add_argument("--audit-only", action="store_true")
+    p.add_argument("--rollout-backend", choices=("vllm", "hf"), default="vllm")
+    p.add_argument("--tensor-parallel-size", type=int, default=None)
+    p.add_argument("--max-model-len", type=int, default=8192)
+    p.add_argument("--gpu-memory-utilization", type=float, default=0.90)
     return p.parse_args()
 
 
@@ -67,41 +71,89 @@ def main() -> int:
     from scape.eval.browsecomp_retrieval import open_retrieval
     from scape.eval.harmony_runtime import load_harmony_enc
     from scape.training.four_cell_runtime import eval_closed_loop
-    from scape.training.hf_rl_opd_client import restore_trainable, snapshot_trainable
-    from scape.training.hf_tool_opd import ScapeHFToolOPD
-    from safetensors.torch import load_file
-    from scape.eval.adapter_reload_audit import remap_lora_state
+    from scape.training.vllm_hybrid import (
+        HFGenerateClient,
+        SchemeARuntime,
+        VLLMGenerateClient,
+        default_tensor_parallel_size,
+        wait_gpus_quiet,
+    )
 
     rows = rows[: args.n_eval] if args.n_eval else rows
-    backend = ScapeHFToolOPD(model_path=args.base_model, device_map=f"cuda:{int(args.gpu)}", use_lora=True)
-    theta0 = snapshot_trainable(backend.model)
     enc = load_harmony_enc()
     searcher = open_retrieval()
     summaries = []
-    for cell, path in (adapter_map or {"before": None}).items():
-        restore_trainable(backend.model, theta0)
-        if path:
-            weights = remap_lora_state(load_file(str(Path(path) / "adapter_model.safetensors")))
-            missing, _un = backend.model.load_state_dict(weights, strict=False)
-            if [x for x in missing if "lora_" in x]:
-                raise RuntimeError(f"reload failed: {cell}")
-        ev, traces = eval_closed_loop(
-            backend,
-            rows,
-            component_id=args.component,
-            max_new=384,
-            max_turns=6,
-            seed=42,
-            enc=enc,
-            searcher=searcher,
-        )
-        ev["setting"] = cell
-        cell_dir = args.out / str(cell)
-        cell_dir.mkdir(parents=True, exist_ok=True)
-        with (cell_dir / "PER_QUERY.jsonl").open("w", encoding="utf-8") as handle:
-            for tr in traces:
-                handle.write(json.dumps(tr, ensure_ascii=False) + "\n")
-        summaries.append(ev)
+    runtime = SchemeARuntime()
+    if args.rollout_backend == "vllm":
+        tp = default_tensor_parallel_size(args.tensor_parallel_size)
+        for i, (cell, path) in enumerate((adapter_map or {"before": None}).items()):
+            wait_gpus_quiet()
+            session = args.out / "vllm_sessions" / f"eval_{i}_{cell}"
+            client = VLLMGenerateClient(
+                model_path=args.base_model,
+                session_dir=session,
+                tensor_parallel_size=tp,
+                max_model_len=int(args.max_model_len),
+                lora_path=str(path) if path else None,
+                gpu_memory_utilization=float(args.gpu_memory_utilization),
+            )
+            runtime.attach_vllm(client)
+            try:
+                client.start()
+                ev, traces = eval_closed_loop(
+                    None,
+                    rows,
+                    component_id=args.component,
+                    max_new=384,
+                    max_turns=6,
+                    seed=42,
+                    enc=enc,
+                    searcher=searcher,
+                    generate_batch=client.generate_batch,
+                )
+            finally:
+                runtime.detach_vllm()
+            ev["setting"] = cell
+            cell_dir = args.out / str(cell)
+            cell_dir.mkdir(parents=True, exist_ok=True)
+            with (cell_dir / "PER_QUERY.jsonl").open("w", encoding="utf-8") as handle:
+                for tr in traces:
+                    handle.write(json.dumps(tr, ensure_ascii=False) + "\n")
+            summaries.append(ev)
+    else:
+        from scape.training.hf_rl_opd_client import restore_trainable, snapshot_trainable
+        from scape.training.hf_tool_opd import ScapeHFToolOPD
+        from safetensors.torch import load_file
+        from scape.eval.adapter_reload_audit import remap_lora_state
+
+        backend = ScapeHFToolOPD(model_path=args.base_model, device_map=f"cuda:{int(args.gpu)}", use_lora=True)
+        theta0 = snapshot_trainable(backend.model)
+        gen = HFGenerateClient(backend, enc=enc)
+        for cell, path in (adapter_map or {"before": None}).items():
+            restore_trainable(backend.model, theta0)
+            if path:
+                weights = remap_lora_state(load_file(str(Path(path) / "adapter_model.safetensors")))
+                missing, _un = backend.model.load_state_dict(weights, strict=False)
+                if [x for x in missing if "lora_" in x]:
+                    raise RuntimeError(f"reload failed: {cell}")
+            ev, traces = eval_closed_loop(
+                backend,
+                rows,
+                component_id=args.component,
+                max_new=384,
+                max_turns=6,
+                seed=42,
+                enc=enc,
+                searcher=searcher,
+                generate_batch=gen.generate_batch,
+            )
+            ev["setting"] = cell
+            cell_dir = args.out / str(cell)
+            cell_dir.mkdir(parents=True, exist_ok=True)
+            with (cell_dir / "PER_QUERY.jsonl").open("w", encoding="utf-8") as handle:
+                for tr in traces:
+                    handle.write(json.dumps(tr, ensure_ascii=False) + "\n")
+            summaries.append(ev)
     payload = write_eval_outputs(
         args.out,
         component_id=args.component,

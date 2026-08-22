@@ -52,6 +52,16 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--validate-only", action="store_true", help="Check collector/teacher/384 pool without loading a model.")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--smoke", action="store_true")
+    p.add_argument("--rollout-backend", choices=("vllm", "hf"), default="vllm")
+    p.add_argument("--gpu-schedule", choices=("scheme_a", "resident_hf"), default="scheme_a")
+    p.add_argument("--tensor-parallel-size", type=int, default=None, help="vLLM TP. Default: all visible GPUs.")
+    p.add_argument("--max-model-len", type=int, default=8192)
+    p.add_argument("--train-device-map", default="", help="HF device_map. Default auto under scheme_a.")
+    p.add_argument("--gpu-memory-utilization", type=float, default=0.90)
+    p.add_argument("--enforce-eager", action="store_true", default=True)
+    p.add_argument("--no-enforce-eager", action="store_false", dest="enforce_eager")
+    p.add_argument("--no-on-policy-refresh", action="store_false", dest="on_policy_refresh")
+    p.add_argument("--on-policy-refresh", action="store_true", default=True)
     return p.parse_args()
 
 

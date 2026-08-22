@@ -12,6 +12,10 @@ import torch
 
 from scape.training.tinker_opd_datum import TinkerOPDDatum
 
+# Truncation shared with vLLM behavior-policy logprobs so CISPO ratios match.
+CISPO_MAX_PROMPT_TOKENS = 384
+CISPO_MAX_ACTION_TOKENS = 128
+
 
 class HFDebugTrainingClient:
     """Duck-types the Tinker TrainingClient used by hybrid_train_substep."""
@@ -31,12 +35,10 @@ class HFDebugTrainingClient:
 
     def _truncate_pair(self, prompt_ids: list[int], action_ids: list[int]) -> tuple[list[int], list[int]]:
         # Long Harmony prefixes + full logits OOM on gpt-oss MoE during backward.
-        max_prompt = 384
-        max_action = 128
-        if len(prompt_ids) > max_prompt:
-            prompt_ids = prompt_ids[-max_prompt:]
-        if len(action_ids) > max_action:
-            action_ids = action_ids[:max_action]
+        if len(prompt_ids) > CISPO_MAX_PROMPT_TOKENS:
+            prompt_ids = prompt_ids[-CISPO_MAX_PROMPT_TOKENS:]
+        if len(action_ids) > CISPO_MAX_ACTION_TOKENS:
+            action_ids = action_ids[:CISPO_MAX_ACTION_TOKENS]
         return prompt_ids, action_ids
 
     def _cispo_backward(self, rows: Sequence[Any]) -> dict[str, float]:
