@@ -1,5 +1,62 @@
 # SCAPE Result Simplified
 
+## 2026-08-23 verify_tool SR-OPD/CISPO vLLM-hybrid four-cell rerun
+
+- Formal configuration: `/mnt/songzijun/models/pat-jj_harness-1-full/harness-1`, seed42, 64 train queries, group size 8, maximum 6 rollout/evaluation turns, 8 train steps, official pool 384 / official-test 76, zero train/eval query-ID overlap. Runtime uses Scheme A vLLM 0.19.1 native `GptOssForCausalLM` batched rollout with TP=8 plus HF/Transformers training; offline Harmony vocabulary is loaded from the supplied bundle. Objective is `sr_opd_ce` + CISPO with `rl_fb+opd_fb+single_optim`; legacy tool-token KL is false.
+- `verify_tool` Teacher-only verification output is hidden from Student. The direct projection emits Student-realizable `read_document` targets (or `search_corpus` when no visible document exists), with coverage=1.0, reject rate=0.0, and Teacher-prefix leak=false. All four cells produced 76/76 official-test `PER_QUERY.jsonl` traces using `pyserini_lucene`; both After adapters passed safetensors reload audit.
+- Formal metrics in order Legal / R@5 / mean tool calls / tool search cost: Teacher=`100.00% / 1.1404% / 6.0000 / 0.0000`; Before=`65.79% / 2.9386% / 6.0000 / 3.8421`; PURE=`53.95% / 3.8158% / 6.0000 / 3.0526`; RL+OPD=`57.89% / 2.7318% / 6.0000 / 3.2632`.
+- Relative to Before, PURE legality=`-11.84 pp`, R@5=`+0.8772 pp`, search cost=`-0.7895`; RL+OPD legality=`-7.89 pp`, R@5=`-0.2067 pp`, search cost=`-0.5789`. PURE trades a substantial legality decrease for recall/cost changes; RL+OPD is below Before on both legality and R@5. The four-cell gate is closed, but neither After setting supports successful verify_tool internalization.
+- Artifact: `outputs/0823_verify_tool_sr_opd_cispo_vllm_hybrid_formal_seed42/seed42/FOUR_CELL_SUMMARY.json`, `FOUR_CELL_OFFICIAL_SUMMARY.json`, `ADAPTER_RELOAD_AUDIT.json`, and the four cell `PER_QUERY.jsonl` files. Earlier 2026-08-22 manifest-only diagnostics and legacy-loss/smoke values are not used.
+
+## 2026-08-23 sentence_compress SR-OPD/CISPO vLLM-hybrid four-cell rerun
+
+- Exact formal configuration: `/mnt/songzijun/models/pat-jj_harness-1-full/harness-1`, seed42, 64 train queries, group size 8, maximum 6 turns, 8 train steps, official pool 384 / official-test 76. Runtime is Scheme A vLLM 0.19.1 batched rollout + HF/Transformers train; objective is `sr_opd_ce` + CISPO with `rl_fb+opd_fb+single_optim`, no legacy tool-token KL. Train/eval overlap is zero and Teacher-only compressed observations do not enter Student prefixes.
+- Formal artifact: `outputs/0823_sentence_compress_sr_opd_cispo_vllm_hybrid_formal_seed42/seed42/`. All four cells have `76/76` official-test traces with `pyserini_lucene`. Requested metric order (Legal / R@5 / mean tool calls / tool search cost): Teacher=`100.00% / 1.1404% / 6.0000 / 0.0000`; Before=`65.13% / 2.9276% / 6.0000 / 3.7368`; PURE=`58.11% / 3.8158% / 6.0000 / 3.2368`; RL+OPD=`57.68% / 3.0482% / 6.0000 / 3.2763`.
+- PURE completed the 64×8×≤6 vLLM rollout and 8 SR-OPD optimizer updates; RL+OPD completed the single 64×8×≤6 rollout and 8 CISPO+OPD joint optimizer updates. Both LoRA adapters passed safetensors reload and produced 76/76 official-test traces.
+- Because cross-device Accelerate GPT-OSS MoE evaluation raised `RuntimeError: unknown parameter type`, After adapters were evaluated with HF/Transformers on one 80-GiB GPU using `device_map={'': 0}`. This is an evaluation compatibility path only; training rollouts remained Scheme A vLLM 0.19.1 TP=8 + HF training. No smoke or legacy-loss values were used.
+- Relative to Before, PURE improves R@5 by `+0.8882 pp` and lowers search cost by `0.5000`, but lowers legality by `7.02 pp`; RL+OPD improves R@5 by `+0.1206 pp` and lowers search cost by `0.4605`, but lowers legality by `7.46 pp`. The four-cell gate is closed, but neither After setting demonstrates overall successful internalization because legality declines despite recall/cost gains.
+- Wiring/runtime fixes made during the rerun: prefer the repository-pinned Harness-1 import path; accept the official tokenizer's effective vocabulary (`len=200019`, canonical call/return IDs) instead of rejecting its base `vocab_size=199998`; add vLLM teacher projected-action execution; expose runner `enforce_eager`; keep formal retrieval fail-closed. Focused contract tests: `21 passed`.
+
+## 2026-08-22 vLLM + Transformers hybrid backend integration
+
+- 已从 GitHub `scope/round14-capability-portfolio` fast-forward 到 `c0c3876`，引入 vLLM batched rollout + HF/Transformers train 的 Scheme A hybrid backend；本地正式实验改动已恢复并合并，原始工作树另保留在 `stash@{0}` 作为恢复点。
+- 覆盖通用、sentence_compress、adaptive_rerank_instruction、auto_populate_first_search、token_budget_marker、verify_tool 的 SR-OPD/CISPO four-cell runners；统一默认 `rollout_backend=vllm`、`gpu_schedule=scheme_a`、Harmony=`o200k_harmony`、stop IDs=`[200012,200002]`，同时保留 `--rollout-backend hf` debug fallback。
+- 新 backend/rollout/runtime 与全部 runner 已通过 `py_compile`；在 `/opt/scape-projected-action`（torch/vLLM 可导入）完成五个 component runner 参数默认值和 runtime import smoke。该环境未安装 pytest，因此 focused pytest 未执行；本次没有启动大模型 live rollout，也没有产生或改写任何正式实验指标。
+
+## 2026-08-22 adaptive_rerank_instruction latest SR-OPD/CISPO OPD four-cell rerun
+
+- 正式模型为 `/mnt/songzijun/models/pat-jj_harness-1-full/harness-1`；runner `scripts/run_adaptive_rerank_sr_opd_four_cell.py` 使用 Student-realizable direct `search_corpus(query=original_query)` target。Teacher-only rerank instruction 未进入 Student prefix。
+- 协议为 `sr_opd_ce` + CISPO，RL+OPD 严格执行 `rl_fb+opd_fb+single_optim`，不使用 legacy tool-token KL。固定 seed42、8 train queries、group size 2、首动作 horizon、8 updates；PURE counters=`0 RL FB / 8 OPD FB / 8 optim`，RL+OPD=`8/8/8`，projection coverage=1.0、reject rate=0.0，Teacher shadow 不改变 RL reward。
+- 评测使用严格无训练 query-ID overlap 的冻结 384-query pool 中全部 76 条 official-test query；retrieval=`pyserini_lucene`，四格各 76/76 per-query traces，adapter reload audit 全通过，Teacher leak rate=0。正式 runtime 对 retrieval fail-closed，不允许 local token-overlap fallback 冒充正式评测。
+- 指标（Legal / Test Evidence Recall@5 / mean tool calls / tool search cost）：Teacher=`100.00% / 1.1404% / 1.0000 / 1.0000`；Before=`63.16% / 3.3772% / 1.0000 / 0.6316`；PURE=`68.42% / 2.4342% / 1.0000 / 0.6842`；RL+OPD=`65.79% / 2.7632% / 1.0000 / 0.6579`。
+- 相对 Before，PURE legality `+5.26 pp`、R@5 `-0.9430 pp`；RL+OPD legality `+2.63 pp`、R@5 `-0.6140 pp`。结论：两种 latest-loss After 都改善合法率但降低 R@5，不支持检索效果成功内化。
+- Artifact：`outputs/0822_adaptive_rerank_sr_opd_cispo_formal_seed42/seed42/FOUR_CELL_SUMMARY.json`、`FOUR_CELL_OFFICIAL_SUMMARY.json`、`ADAPTER_RELOAD_AUDIT.json` 和四格 `PER_QUERY.jsonl`。`opd对比.md` 已更新；2026-08-21 Qwen3/legacy-loss 数值仅保留为历史记录。
+
+## 2026-08-22 auto_populate_first_search latest SR-OPD/CISPO OPD four-cell rerun
+
+- Added `scripts/run_auto_populate_sr_opd_four_cell.py` and `scape/training/auto_populate_teacher.py`. The hidden first-search curated delta is projected to Student-realizable `curate(add_ids/remove_ids)` targets; no `auto_seed` or Teacher-only view is exposed.
+- Wiring gate passed: `sr_opd_ce`, CISPO, `rl_fb+opd_fb+single_optim`, no legacy tool-token KL, official evaluation pool 384, official test 76, train/eval overlap 0, projection macro, Teacher-prefix leak false.
+- Model: `/mnt/songzijun/models/pat-jj_harness-1-full/harness-1`. The supplied `/mnt/songzijun/o200k_base.tiktoken.tar.gz` is complete, but approved `openai_harmony==0.0.8` could not load the official HarmonyGptOss vocabulary from it; fallback was used only for smoke diagnostics.
+- Diagnostic smoke artifact: `SCAPE/outputs/0822_auto_populate_sr_opd_four_cell_smoke/seed42/`. It completed four diagnostic cells, but used `--smoke` (6 train queries, 2 effective test rows) and local token-overlap retrieval. RL/CISPO and RL+OPD reward groups were constant at `-0.2`, so `q1_joint_one_optim=false`; smoke values are not formal metrics.
+- Formal 384-query / 76 official-test four-cell evaluation was not produced. Teacher, Student Before OPD, Student After PURE OPD, and Student After RL+OPD metrics (`legal_action_rate`, `test_evidence_recall_at_5`, `mean_tool_calls_per_query`, `tool_search_cost`) remain `N/A`; old legacy-loss values are retired.
+- Follow-up rerun with the current source and `/opt/scape-projected-action` loaded all nine Harness-1 weight shards, but the 20B single-card rollout stalled with about 40.5 GiB resident GPU memory, 0% GPU utilization, and no rollout/CELL artifact after more than four minutes; the diagnostic process was stopped. The current rerun output is `SCAPE/outputs/0822_auto_populate_sr_opd_four_cell_smoke_rerun/`. `harmony_runtime.py` was minimally fixed so a missing `openai_harmony` import also reaches the deterministic local fallback. This fallback and the stalled smoke are diagnostic only; they do not qualify any four-cell metric.
+- Follow-up two-GPU probe: `run_auto_populate_sr_opd_four_cell.py` now accepts `--gpu auto`; with `CUDA_VISIBLE_DEVICES=0,1`, model-parallel loading succeeded and each GPU held about 20.6 GiB. However, the 1-query/1-turn smoke again stalled after weight loading with both GPUs at 0% utilization and no rollout/CELL artifact, so the process was stopped. This shows that sequential two-GPU scheduling alone does not close the Harness-1 generation/runtime gate; formal metrics remain `N/A`.
+
+## 2026-08-22 GPT-OSS-20B auto_populate_first_search pre-OPD always-on/off rerun
+
+- 使用 SCAPE pre-OPD live-fork runner，模型为 `/mnt/songzijun/models/openai/gpt-oss-20b`；不是 SCAPE-EasyOPD。Teacher 每步使用 Full/auto-populate-on view，Student 每步使用 Reduced/auto-populate-off view，首动作计入 K，两个分支均无 `full_harness_takeover`。
+- 覆盖两种 setting：`NATURAL_FIRST_SEARCH` 与 `AUTO_EFFECT_ACTIVE`；seed `2230/2231`；K4/K8；每个 cell `128` paired rows，共 8 cells/1024 rows。为启用 GPT-OSS MXFP4，approved `/opt/scape-projected-action` 环境安装了 Transformers 兼容 `kernels==0.15.2`。
+- 8 个 cell 均 `128/128`，GPT-OSS model provenance、Teacher Full、Student Reduced、trace/action count、`full_harness_takeover=0` 审计通过。正式汇总：`SCAPE/outputs/0822_auto_populate_gptoss_parallel/GPT_OSS_AUTO_ALWAYS_ON_OFF_SUMMARY.json`。
+- 两个 setting 的 K4/K8 结果完全相同：首动作不一致率 `0.00%`，tool-cost Δ=`0.0000`，utility Δ=`0.0000%`（均 Teacher−Student）。结论：本 GPT-OSS-20B frozen cohort 上未观察到 auto-populate always-on/off 的动作、成本或 utility 分离；`增益.md` 已新增四行，Once 列标为不可测（`—`）。
+
+## 2026-08-22 token_budget_marker latest SR-OPD/CISPO OPD four-cell rerun
+
+Status: **BLOCKED before formal evaluation; metrics N/A.** The new runner `SCAPE/scripts/run_token_budget_marker_sr_opd_four_cell.py` is wired to canonical `sr_opd_ce`, CISPO, Student-realizable projection, frozen official 384-query pool, and official-test 76 split. Validation passed with the required `/mnt/songzijun/models/openai/gpt-oss-20b` wiring: `teacher_registered=true`, `projection_kind=direct`, no Teacher-prefix leak, evaluation pool `384/76`, and no train/eval query overlap.
+
+The supplied `/mnt/songzijun/o200k_base.tiktoken.tar.gz` was installed under `/opt/scape-easyopd-smoke7/share/{tiktoken,tiktoken_rs_cache,tiktoken_cache}`; with the three required `TIKTOKEN_*` environment variables exported, the `HarmonyGptOss` encoding probe passes. A Harness-1 smoke retry using the requested `/mnt/songzijun/models/pat-jj_harness-1-full/harness-1` completed all four diagnostic cells, but only for one query/turn and one train step (`SCAPE/outputs/0822_token_budget_marker_sr_opd_harness1_smoke_retry2/seed42/`), so its `1-query` values are not formal metrics. The 384-query formal run still stops during PURE_OPD backward with CUDA OOM (about 80 GiB single-card; multi-GPU auto mapping also exhausted backward activations). No auditable two-seed four-cell official result was promoted. Therefore the requested latest-loss Teacher / Student Before OPD / Student After PURE OPD / Student After RL+OPD `legal_action_rate`, `test_evidence_recall_at_5`, `mean_tool_calls_per_query`, and `tool_search_cost` remain `N/A`; smoke and legacy-loss values are not reused.
+
+Implementation additions are `SCAPE/scape/training/token_budget_marker_teacher.py`, the `TEACHER_REGISTRY` entry in `SCAPE/scape/training/four_cell_runtime.py`, and the runner above. Validation artifacts are under `SCAPE/outputs/0822_token_budget_marker_sr_opd_four_cell_validate*/`; the formal blocked attempt is `SCAPE/outputs/0822_token_budget_marker_sr_opd_harness1_formal/`; the diagnostic retry is `SCAPE/outputs/0822_token_budget_marker_sr_opd_harness1_smoke_retry2/`. The approved environment was only updated with the user-supplied offline vocabulary bundle.
+
 ## 2026-08-18 H20 clean-init AUTO OPD (`h20_clean_auto_0817`) — final
 
 Status: **已完成** GPU 主评测 + aggregate；`PHASE=DONE`. Machine `8×H20`. Repo `/data/ppnm/Capability_Evolution/SCAPE`. Spec: `todo/0817/H20_clean_init_AUTO_OPD_next_round_20260817.md`. Canonical outputs: `outputs/h20_clean_auto_0817/`. Handoff written `2026-08-18T14:17:06+0800`. This is the H20-only cross-initialization / cross-model line; it does **not** repeat H100-1/2/3/4 jobs.
@@ -4341,3 +4398,13 @@ Student after RL+OPD                      82.0313%              1.0929%         
 Relative to Student before OPD, Legal action rate changes are `Teacher +13.0208 pp`, `PURE_OPD +22.9167 pp`, and `RL+OPD +21.0938 pp`. Evidence Recall@100 changes are `Teacher +1.10997 pp`, `PURE_OPD +1.14180 pp`, and `RL+OPD +1.18479 pp`; Recall@1000 changes are `Teacher +2.60025 pp`, `PURE_OPD +3.49621 pp`, and `RL+OPD +3.39276 pp`. These are absolute paired-condition means, not terminal answer reward or K4/K8 closed-loop recall.
 
 Artifacts: `SCAPE-EasyOPD/outputs/0821_token_budget_marker_opd_384/SUMMARY.json`, `384_QUERY_MANIFEST.json`, `{TEACHER,STUDENT_BEFORE_OPD,STUDENT_AFTER_PURE_OPD,STUDENT_AFTER_RL_PLUS_OPD}/PER_QUERY.jsonl`, `scripts/eval_token_budget_marker_opd_384.py`, `scripts/rescore_token_budget_marker_opd_384.py`.
+
+## 2026-08-22 token_budget_marker latest SR-OPD/CISPO four-cell rerun
+
+Status: **BLOCKED before model generation; metrics N/A.**
+
+The latest canonical wiring now supports `token_budget_marker` in `SCAPE/scripts/run_token_budget_marker_sr_opd_four_cell.py`: manifest validation records `opd_loss=sr_opd_ce`, `rl_loss_fn=cispo`, `protocol_complete_rl_opd=true`, `legacy_tool_token_kl_hook_used=false`, and the component-specific Teacher branch keeps the marker hidden while projecting a Student-legal downstream action. Official pool validation passed for 384 queries and the 76-query official-test split with no train/eval overlap.
+
+A one-query approved-environment smoke loaded the Qwen3-30B base model but stopped before rollout because `/opt/scape-venv` lacks `openai_harmony`; adding the approved package path from `/opt/scape-easyopd-smoke7` then reached Harmony encoding initialization but failed because the Harmony vocab file could not be downloaded/loaded. No latest-loss model adapters or per-query traces were produced. Therefore Legal action rate, Test Evidence Recall@5, and mean tool-search cost/query remain `N/A`; the prior legacy-loss values are historical only and are not promoted.
+
+Artifacts: `SCAPE/outputs/0822_token_budget_marker_sr_opd_validate2/`, `SCAPE/outputs/0822_token_budget_marker_sr_opd_smoke/`, `SCAPE/outputs/0822_token_budget_marker_sr_opd_smoke2/`; runner `SCAPE/scripts/run_token_budget_marker_sr_opd_four_cell.py`; component Teacher `SCAPE/scape/training/token_budget_marker_teacher.py`.

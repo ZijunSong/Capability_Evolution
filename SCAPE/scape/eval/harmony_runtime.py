@@ -9,6 +9,7 @@ never on <|end|> (that would cut off analysis before the tool call).
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 from dataclasses import asdict, dataclass
@@ -29,6 +30,7 @@ SCHEMA_TOOLS = CANONICAL_TOOLS + ("multi_tool_use",)
 
 SCOPE = Path("/data/ppnm/Capability_Evolution/SCOPE")
 REPO = Path(__file__).resolve().parents[2]
+LOCAL_HARNESS = REPO / "external" / "harness-1"
 
 # Strict: recipient must be an identifier, not a prose blob.
 _TO_RE = re.compile(
@@ -45,8 +47,12 @@ _JSON_AFTER_TO_RE = re.compile(
 
 
 def _ensure_scope() -> None:
-    if str(SCOPE) not in sys.path:
-        sys.path.insert(0, str(SCOPE))
+    # Prefer this repository's pinned Harness-1. The historical /data path may
+    # not exist (or may contain a different Harness checkout) on formal hosts.
+    if LOCAL_HARNESS.is_dir() and str(LOCAL_HARNESS) not in sys.path:
+        sys.path.insert(0, str(LOCAL_HARNESS))
+    if SCOPE.is_dir() and str(SCOPE) not in sys.path:
+        sys.path.append(str(SCOPE))
     if str(REPO) not in sys.path:
         sys.path.insert(0, str(REPO))
 
@@ -58,9 +64,23 @@ CANONICAL_STOP_TOKEN_IDS = [200012, 200002]  # <|call|>, <|return|> — not <|en
 
 def load_harmony_enc():
     _ensure_scope()
-    from openai_harmony import HarmonyEncodingName, load_harmony_encoding
+    # Prefer the approved offline bundle when callers did not export paths.
+    bundle = Path("/opt/scape-projected-action/share/tiktoken-bundle")
+    if bundle.is_dir():
+        os.environ.setdefault("TIKTOKEN_ENCODINGS_BASE", str(bundle / "share/tiktoken"))
+        os.environ.setdefault("TIKTOKEN_RS_CACHE_DIR", str(bundle / "tiktoken_rs_cache"))
+        os.environ.setdefault("TIKTOKEN_CACHE_DIR", str(bundle / "tiktoken_cache"))
+    try:
+        from openai_harmony import HarmonyEncodingName, load_harmony_encoding
 
-    enc = load_harmony_encoding(HarmonyEncodingName.HARMONY_GPT_OSS)
+        enc = load_harmony_encoding(HarmonyEncodingName.HARMONY_GPT_OSS)
+    except Exception:
+        # The GPT-OSS tiktoken vocabulary is not always reachable in the
+        # approved offline runtime. Use the repository's deterministic local
+        # Harmony-compatible fallback rather than silently switching models.
+        from harness._local_harmony_fallback import _LocalHarmonyEncodingFallback
+
+        enc = _LocalHarmonyEncodingFallback()
     stops = [int(x) for x in enc.stop_tokens_for_assistant_actions()]
     if 200012 not in stops or 200002 not in stops:
         raise RuntimeError(
@@ -78,12 +98,15 @@ def stop_ids_for_tool_actions(enc=None) -> list[int]:
 
 def decode_ids(enc, ids: Sequence[int]) -> str:
     try:
-        return enc.decode_utf8(list(ids))
+        text = enc.decode_utf8(list(ids))
     except Exception:
         try:
-            return enc.decode(list(ids))
+            text = enc.decode(list(ids))
         except Exception:
-            return ""
+            text = ""
+    # Offline/fallback tokenizers can yield isolated UTF-16 surrogates for
+    # unknown byte sequences; traces must remain valid UTF-8 JSON.
+    return str(text).encode("utf-8", "replace").decode("utf-8")
 
 
 @dataclass

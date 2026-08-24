@@ -111,10 +111,19 @@ def assert_gptoss_tokenizer(tokenizer: Any, *, source: str) -> dict[str, Any]:
                 f"{O200K_HARMONY} / gpt-oss tokenizer is required"
             )
     vocab_size = int(getattr(tokenizer, "vocab_size", 0) or 0)
-    if vocab_size and vocab_size < GPTOSS_VOCAB_SIZE:
+    try:
+        tokenizer_len = int(len(tokenizer) or 0)
+    except (TypeError, AttributeError):
+        tokenizer_len = 0
+    effective_vocab_size = max(vocab_size, tokenizer_len)
+    # Hugging Face reports the base BPE size (199998) for the official
+    # gpt-oss tokenizer while Harmony control tokens are added above it.
+    # Validate the effective vocabulary and canonical control-token IDs;
+    # requiring config.vocab_size=201088 rejects valid Harness-1 checkpoints.
+    if effective_vocab_size <= max(REQUIRED_SPECIAL_TOKEN_IDS.values()):
         raise RuntimeError(
-            f"tokenizer vocab_size={vocab_size} is too small for gpt-oss "
-            f"(expected {GPTOSS_VOCAB_SIZE}). cl100k_base fallback is forbidden."
+            f"tokenizer effective_vocab_size={effective_vocab_size} cannot represent "
+            "the canonical gpt-oss Harmony control tokens. cl100k_base fallback is forbidden."
         )
     resolved: dict[str, int] = {}
     for tok, expected in REQUIRED_SPECIAL_TOKEN_IDS.items():
@@ -129,6 +138,7 @@ def assert_gptoss_tokenizer(tokenizer: Any, *, source: str) -> dict[str, Any]:
         "encoding": O200K_HARMONY,
         "source": source,
         "vocab_size": vocab_size,
+        "effective_vocab_size": effective_vocab_size,
         "special_token_ids": resolved,
         "stop_token_ids": list(CANONICAL_STOP_TOKEN_IDS),
     }

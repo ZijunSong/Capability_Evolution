@@ -93,19 +93,45 @@ class LocalJsonlBackend(RetrievalBackend):
         return None
 
 
-def open_retrieval(bcp_root: Path | None = None) -> RetrievalBackend:
+def _configure_java_runtime() -> None:
+    """Make the approved JDK visible before Pyserini imports jnius."""
+    import os
+
+    if os.environ.get("JAVA_HOME"):
+        return
+    for candidate in ("/opt/scape-jdk21", "/opt/jdk21"):
+        java = Path(candidate) / "usr/lib/jvm/java-21-openjdk-amd64/bin/java"
+        if java.is_file():
+            os.environ["JAVA_HOME"] = str(java.parent.parent)
+            os.environ["PATH"] = f"{java.parent}:{os.environ.get('PATH', '')}"
+            return
+
+
+def open_retrieval(
+    bcp_root: Path | None = None, *, formal: bool = False
+) -> RetrievalBackend:
     root = bcp_root or default_bcp_root()
     if root is None:
+        if formal:
+            raise RuntimeError("formal retrieval requires a BrowseComp-Plus root")
         return RetrievalBackend()
     index = root / "indexes" / "bm25"
     if index.is_dir():
         try:
+            _configure_java_runtime()
             return PyseriniBackend(index)
-        except Exception:
-            pass
+        except Exception as exc:
+            if formal:
+                raise RuntimeError(
+                    f"official Pyserini Lucene retrieval unavailable for {index}"
+                ) from exc
+    elif formal:
+        raise RuntimeError(f"official Pyserini Lucene index missing: {index}")
     corpus = root / "data" / "browsecomp_plus_decrypted.jsonl"
     if corpus.is_file():
         return LocalJsonlBackend(corpus)
+    if formal:
+        raise RuntimeError(f"BrowseComp-Plus corpus unavailable under {root}")
     return RetrievalBackend()
 
 

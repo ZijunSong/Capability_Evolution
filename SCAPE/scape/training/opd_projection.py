@@ -387,6 +387,27 @@ class StudentActionSpaceProjector:
         projector: "StudentActionSpaceProjector",
     ) -> ProjectionResult:
         del projector
+        last = min(len(events), start_index + self.max_anchor_scan_events)
+        for idx in range(start_index, last):
+            event = events[idx]
+            if (
+                event.kind == EventKind.MODEL_ACTION
+                and event.action_name == "search_corpus"
+                and bool((event.metadata or {}).get("auto_anchor"))
+            ):
+                action = ProjectedAction(
+                    name="search_corpus",
+                    arguments=dict(event.arguments or {}),
+                    source_event_ids=[event.event_id],
+                )
+                return self._ok(
+                    ProjectionKind.DIRECT,
+                    [action],
+                    events,
+                    start_index,
+                    idx,
+                    component_id="auto_populate_first_search",
+                )
         return self._handle_curated_delta(
             events, start_index, snapshot, mask, "auto_populate_first_search", skip_if_empty=False
         )
@@ -709,6 +730,23 @@ class StudentActionSpaceProjector:
             )
             needed = set(_as_ids(snapshot.metadata.get("teacher_needed_doc_ids") or teacher_hits))
             accessible = set(accessible_doc_ids_of(snapshot))
+            # A query-only rerank instruction has no hidden result transition;
+            # its ordinary search action is directly reproducible by Student.
+            if not needed and event.metadata.get("student_realizable"):
+                action = ProjectedAction(
+                    name=str(event.action_name),
+                    arguments={k: v for k, v in (event.arguments or {}).items() if k != "result_ids"},
+                    source_event_ids=[event.event_id],
+                )
+                return self._ok(
+                    ProjectionKind.DIRECT,
+                    [action],
+                    events,
+                    start_index,
+                    idx,
+                    skipped=skipped,
+                    component_id="adaptive_rerank_instruction",
+                )
             if needed and needed.issubset(student_hits | accessible):
                 action = ProjectedAction(
                     name=str(event.action_name),

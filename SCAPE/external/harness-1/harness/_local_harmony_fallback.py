@@ -175,6 +175,10 @@ class _LocalHarmonyEncodingFallback:
                 pass
         return [ord(ch) % 65535 for ch in text]
 
+    def render_conversation_for_completion(self, conversation: Any, role: Any = None) -> List[int]:
+        del role
+        return self.render_conversation(conversation)
+
     def decode_utf8(self, tokens: Iterable[int]) -> str:
         token_list = [int(t) for t in tokens]
         if self._enc is not None:

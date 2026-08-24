@@ -13,7 +13,7 @@ if str(_SCAPE) not in sys.path:
     sys.path.insert(0, str(_SCAPE))
 
 from scape.eval.adapter_reload_audit import audit_saved_adapter
-from scape.eval.official_query_pool import load_official_384
+from scape.eval.official_query_pool import load_official_384, official_test_subset
 from scape.eval.sr_opd_four_cell_eval import write_eval_outputs
 
 
@@ -79,7 +79,7 @@ def main() -> int:
         wait_gpus_quiet,
     )
 
-    rows = rows[: args.n_eval] if args.n_eval else rows
+    rows = rows[: args.n_eval] if args.n_eval else official_test_subset(rows)
     enc = load_harmony_enc()
     searcher = open_retrieval()
     summaries = []

@@ -92,6 +92,20 @@ def main() -> int:
 
     from transformers import AutoTokenizer
 
+    # vLLM 0.19 still reads the legacy Transformers tokenizer attribute,
+    # while Transformers 5's TokenizersBackend no longer exposes it.
+    # Restore the read-only compatibility view before vLLM initializes its
+    # tokenizer group; this does not alter token IDs or encoding semantics.
+    try:
+        from transformers import TokenizersBackend
+
+        if not hasattr(TokenizersBackend, "all_special_tokens_extended"):
+            TokenizersBackend.all_special_tokens_extended = property(
+                lambda self: list(self.all_special_tokens)
+            )
+    except ImportError:
+        pass
+
     model_path = str(cfg["model_path"])
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     audit = assert_gptoss_tokenizer(tokenizer, source=model_path)

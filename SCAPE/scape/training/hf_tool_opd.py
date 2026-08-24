@@ -144,6 +144,7 @@ def _offset_mapping(tokenizer, text: str) -> list[tuple[int, int]]:
 @dataclass
 class ScapeHFToolOPD:
     model_path: str
+    base_model_override: str | None = None
     device_map: str | dict[str, int] = "auto"
     torch_dtype: torch.dtype = torch.bfloat16
     learning_rate: float = 1e-5
@@ -164,9 +165,11 @@ class ScapeHFToolOPD:
         if adapter_cfg.is_file():
             try:
                 ac = json.loads(adapter_cfg.read_text(encoding="utf-8"))
-                base_src = ac.get("base_model_name_or_path") or "/data/ppnm/models/gpt-oss-20b"
+                base_src = ac.get("base_model_name_or_path") or self.base_model_override or "/data/ppnm/models/gpt-oss-20b"
+                if self.base_model_override:
+                    base_src = self.base_model_override
             except Exception:
-                base_src = "/data/ppnm/models/gpt-oss-20b"
+                base_src = self.base_model_override or "/data/ppnm/models/gpt-oss-20b"
             tok_src = base_src if not (model_dir / "tokenizer_config.json").is_file() else str(model_dir)
         from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -175,11 +178,20 @@ class ScapeHFToolOPD:
         )
         if self.tokenizer.pad_token_id is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
+        load_kwargs = {
+            "device_map": self.device_map,
+            "torch_dtype": self.torch_dtype,
+            "trust_remote_code": True,
+        }
+        if self.device_map == "auto":
+            # Keep headroom for LoRA activations/backward and spread GPT-OSS
+            # MoE layers across the available GPUs instead of filling one card.
+            n_gpus = torch.cuda.device_count()
+            if n_gpus > 1:
+                load_kwargs["max_memory"] = {i: "48GiB" for i in range(n_gpus)}
         self.model = AutoModelForCausalLM.from_pretrained(
             base_src if adapter_cfg.is_file() else self.model_path,
-            device_map=self.device_map,
-            torch_dtype=self.torch_dtype,
-            trust_remote_code=True,
+            **load_kwargs,
         )
         if hasattr(self.model, "config"):
             self.model.config.use_cache = False
@@ -188,7 +200,27 @@ class ScapeHFToolOPD:
             from peft import PeftModel as _PeftModel
 
             self._parent_adapter = str(model_dir)
-            self.model = _PeftModel.from_pretrained(self.model, str(model_dir))
+            try:
+                self.model = _PeftModel.from_pretrained(self.model, str(model_dir))
+            except (json.JSONDecodeError, ValueError):
+                # Some verl exports leave target_parameters truncated. Load the
+                # adapter tensors directly with the same target set used below.
+                from peft import LoraConfig, get_peft_model
+                fallback_cfg = LoraConfig(
+                    r=self.lora_r,
+                    lora_alpha=self.lora_alpha,
+                    target_modules=[m for m in ("q_proj", "k_proj", "v_proj", "o_proj") if m in {n.split(".")[-1] for n, _ in self.model.named_modules()}] or ["q_proj"],
+                    lora_dropout=0.05,
+                    bias="none",
+                    task_type="CAUSAL_LM",
+                )
+                self.model = get_peft_model(self.model, fallback_cfg)
+                from safetensors.torch import load_file
+                from scape.eval.adapter_reload_audit import remap_lora_state
+                weights = remap_lora_state(load_file(str(model_dir / "adapter_model.safetensors")))
+                missing, unexpected = self.model.load_state_dict(weights, strict=False)
+                if [x for x in missing if "lora_" in x] or [x for x in unexpected if "lora_" in x]:
+                    raise RuntimeError("malformed parent adapter manual reload mismatch")
             self.model = self.model.merge_and_unload()
         if self.use_lora:
             from peft import LoraConfig, get_peft_model

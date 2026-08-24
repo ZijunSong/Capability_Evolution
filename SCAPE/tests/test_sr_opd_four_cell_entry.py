@@ -9,6 +9,37 @@ def test_sentence_compress_teacher_registered():
     assert "sentence_compress" in TEACHER_REGISTRY
 
 
+def test_component_runners_default_to_vllm_scheme_a(monkeypatch):
+    import importlib.util
+    import sys
+
+    scripts = Path(__file__).parents[1] / "scripts"
+    runners = (
+        "run_sentence_compress_sr_opd_four_cell.py",
+        "run_adaptive_rerank_sr_opd_four_cell.py",
+        "run_auto_populate_sr_opd_four_cell.py",
+        "run_token_budget_marker_sr_opd_four_cell.py",
+        "run_verify_tool_sr_opd_four_cell.py",
+    )
+    for filename in runners:
+        name = filename[:-3]
+        spec = importlib.util.spec_from_file_location(name, scripts / filename)
+        module = importlib.util.module_from_spec(spec)
+        assert spec and spec.loader
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+        monkeypatch.setattr(sys, "argv", [name, "--out", "/tmp/runner-test", "--base-model", "model"])
+        args = module.parse_args()
+        assert args.rollout_backend == "vllm"
+        assert args.gpu_schedule == "scheme_a"
+        assert args.on_policy_refresh is True
+        assert args.enforce_eager is True
+
+
+def test_adaptive_rerank_teacher_registered():
+    assert "adaptive_rerank_instruction" in TEACHER_REGISTRY
+
+
 def test_official_384_pool_present():
     rows, meta = load_official_384()
     assert meta["official_384"]

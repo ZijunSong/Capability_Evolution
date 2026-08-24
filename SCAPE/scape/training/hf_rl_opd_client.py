@@ -73,9 +73,17 @@ class HFDebugTrainingClient:
                 torch.cuda.empty_cache()
         return {"loss": total / max(1, n)}
 
-    def _opd_loss(self, datums: Sequence[Any]) -> torch.Tensor:
+    def _opd_loss(self, datums: Sequence[Any]) -> dict[str, float]:
+        """Accumulate SR-OPD gradients without retaining every datum graph.
+
+        The datum weights already contain the global SR-OPD normalization and
+        lambda, so summing per-datum backward passes is mathematically
+        equivalent to one backward over the summed loss.  Keeping only one
+        teacher-forced graph alive at a time is important for large MoE models.
+        """
         device = self.backend._device
-        parts: list[torch.Tensor] = []
+        total = 0.0
+        n = 0
         for raw in datums:
             if isinstance(raw, TinkerOPDDatum):
                 prompt_ids = list(raw.prompt_token_ids)
@@ -96,10 +104,15 @@ class HFDebugTrainingClient:
             if w.numel() != logp.numel():
                 w = torch.ones_like(logp)
             # Tinker-style: sum(w * nll) so pre-normalized weights already carry λ.
-            parts.append(-(logp * w).sum())
-        if not parts:
-            return torch.zeros((), device=device, requires_grad=True)
-        return torch.stack(parts).sum()
+            row_loss = -(logp * w).sum()
+            if row_loss.requires_grad:
+                row_loss.backward()
+            total += float(row_loss.detach().item())
+            n += 1
+            del logp, w, row_loss
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        return {"loss": total / max(1, n)}
 
     async def forward_backward_async(
         self,
@@ -112,10 +125,7 @@ class HFDebugTrainingClient:
         self.backend.model.train()
         rows = list(data)
         if loss_fn == "cross_entropy":
-            loss = self._opd_loss(rows)
-            if loss.requires_grad:
-                loss.backward()
-            payload = {"loss": float(loss.detach().item())}
+            payload = self._opd_loss(rows)
         else:
             payload = self._cispo_backward(rows)
         self.calls.append(("fb", loss_fn, len(rows)))

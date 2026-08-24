@@ -126,6 +126,7 @@ def rollout_queries_batched(
     sample: bool,
     enc,
     searcher: RetrievalBackend | None = None,
+    teacher_mode: bool = False,
 ) -> list[HybridRolloutGroup]:
     """Batch across queries and group members; step the env between turns."""
     from scape.eval.local_search_env import curated_recall, new_state
@@ -157,25 +158,66 @@ def rollout_queries_batched(
         if not live:
             break
         reqs: list[GenerateRequest] = []
+        generated: list[GenerateResult | None] = [None] * len(live)
+        request_slots: list[int] = []
         for i, ep in enumerate(live):
             pids = _build_prompt_ids(ep, enc)
             pre = snap_from_state(str(ep.row["query_id"]), ep.st, component_id)
             ep.pending_pre = pre
             ep.pending_prefix = render_student_prompt(pre, component_id=component_id)
             ep.pending_pids = pids
-            reqs.append(
-                GenerateRequest(
-                    request_id=f"{ep.row['query_id']}:g{ep.rollout_idx}:t{turn}:{i}",
-                    prompt_token_ids=pids,
-                    max_new_tokens=max_new,
-                    temperature=temperature,
-                    seed=ep.seed + 31 * turn,
+            if teacher_mode:
+                from scape.training.action_codec import render_action
+                from scape.training.sentence_compress_teacher import teacher_events_from_point
+                from scape.training.rl_opd_types import StudentDecisionPoint
+
+                point = StudentDecisionPoint(
+                    episode_id=f"{ep.row['query_id']}_r{ep.rollout_idx}",
+                    query_id=str(ep.row["query_id"]),
+                    rollout_idx=ep.rollout_idx,
+                    turn_id=turn,
+                    policy_version=policy_version,
+                    pre_action_snapshot=pre,
+                    pre_action_snapshot_hash=pre.content_hash(),
+                    student_model_input=ep.pending_prefix,
+                    student_action_tokens=[],
+                    student_action_text="",
+                    action_tool_names=[],
+                    post_action_snapshot=pre,
+                    reward=None,
+                    structurally_valid=True,
                 )
-            )
-        gens = generate_batch(reqs)
-        if len(gens) != len(live):
-            raise RuntimeError(f"generate_batch returned {len(gens)} for {len(live)} live episodes")
-        for ep, gen in zip(live, gens):
+                action_event = next(e for e in teacher_events_from_point(point) if e.action_name)
+                text = render_action({"name": action_event.action_name, "arguments": action_event.arguments})
+                token_ids = list(enc.encode(text))
+                generated[i] = GenerateResult(
+                    request_id=f"{ep.row['query_id']}:g{ep.rollout_idx}:t{turn}:{i}",
+                    token_ids=token_ids,
+                    token_logprobs=[0.0] * len(token_ids),
+                    text=text,
+                    logprob_old=0.0,
+                    logprob_provenance="teacher_projected_action",
+                )
+            else:
+                request_slots.append(i)
+                reqs.append(
+                    GenerateRequest(
+                        request_id=f"{ep.row['query_id']}:g{ep.rollout_idx}:t{turn}:{i}",
+                        prompt_token_ids=pids,
+                        max_new_tokens=max_new,
+                        temperature=temperature,
+                        seed=ep.seed + 31 * turn,
+                    )
+                )
+        if reqs:
+            gens = generate_batch(reqs)
+            if len(gens) != len(reqs):
+                raise RuntimeError(f"generate_batch returned {len(gens)} for {len(reqs)} requests")
+            for slot, gen in zip(request_slots, gens):
+                generated[slot] = gen
+        for ep, gen in zip(live, generated):
+            if gen is None:
+                raise RuntimeError("missing generation for live episode")
             _apply_generation(ep, gen, enc=enc, searcher=searcher)
 
     by_q: dict[str, list[LiveEpisode]] = {}

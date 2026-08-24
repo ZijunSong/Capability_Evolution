@@ -174,6 +174,9 @@ def execute_tool(state: dict[str, Any], name: str | None, args: dict[str, Any] |
         remove_ids = list(args.get("remove_ids") or [])
         imp = args.get("importance") or {}
         for did in add_ids:
+            if isinstance(did, (list, dict)):
+                continue
+            did = str(did)
             rec = st["pool"].get(did) or store.get(did)
             if rec is not None:
                 if not isinstance(rec, dict):

@@ -15,10 +15,10 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-from scape.adapters.components import minus_mask
+from scape.adapters.components import full_mask, minus_mask
 from scape.eval.adapter_reload_audit import audit_saved_adapter, write_reload_audit
 from scape.eval.browsecomp_retrieval import RetrievalBackend, hits_to_doc_store, open_retrieval
-from scape.eval.official_query_pool import attach_bcp_fields, load_official_384, load_train_queries, overlap_ids
+from scape.eval.official_query_pool import attach_bcp_fields, load_official_384, load_train_queries, overlap_ids, official_test_subset
 from scape.eval.sr_opd_four_cell_eval import search_metrics, split_summaries, summarize_traces, write_eval_outputs
 from scape.training.frozen_state_loader import (
     doc_store_from_points,
@@ -41,14 +41,22 @@ from scape.training.rl_opd_types import (
     HybridRolloutGroup,
     StudentDecisionPoint,
 )
+from scape.training.auto_populate_teacher import teacher_events_from_point as auto_populate_events_from_point
 from scape.training.sentence_compress_teacher import teacher_events_from_point
+from scape.training.token_budget_marker_teacher import teacher_events_from_point as token_budget_marker_events_from_point
+from scape.training.adaptive_rerank_teacher import teacher_events_from_point as adaptive_rerank_events_from_point
+from scape.training.verify_tool_teacher import teacher_events_from_point as verify_tool_events_from_point
 from scape.training.tinker_rl_opd_trainer import hybrid_train_substep, prepare_hybrid_batch
 
-CELLS = ("before", "rl", "pure_opd", "rl_opd")
+CELLS = ("teacher", "before", "pure_opd", "rl_opd")
 TeacherFn = Callable[[StudentDecisionPoint], list[Any]]
 
 TEACHER_REGISTRY: dict[str, TeacherFn] = {
+    "auto_populate_first_search": auto_populate_events_from_point,
     "sentence_compress": teacher_events_from_point,
+    "token_budget_marker": token_budget_marker_events_from_point,
+    "adaptive_rerank_instruction": adaptive_rerank_events_from_point,
+    "verify_tool": verify_tool_events_from_point,
 }
 
 
@@ -71,6 +79,10 @@ def cells_for_mode(training_mode: str | None) -> tuple[str, ...]:
         return ("before", "pure_opd")
     if training_mode == TRAINING_MODE_RL_OPD:
         return ("before", "rl_opd")
+    if training_mode == "pure_opd_only":
+        return ("pure_opd",)
+    if training_mode == "rl_opd_only":
+        return ("rl_opd",)
     return CELLS
 
 
@@ -113,7 +125,7 @@ def build_manifest(args: argparse.Namespace, *, extra: dict[str, Any] | None = N
         "stop_token_ids": [200012, 200002],
         "tensor_parallel_size": getattr(args, "tensor_parallel_size", None),
         "seeds": list(getattr(args, "seeds", [args.seed])),
-        "train_state_source": "train_states_5k_or_on_policy",
+        "train_state_source": ("current_on_policy_rl_rollout" if args.component == "auto_populate_first_search" and not getattr(args, "train_states", None) else "train_states_5k_or_on_policy"),
         "score_split": "official_test_76",
         "legacy_adapters_not_used": True,
         **dict(extra or {}),
@@ -272,6 +284,7 @@ def one_episode(
     enc,
     rollout_idx: int,
     searcher: RetrievalBackend | None = None,
+    teacher_mode: bool = False,
 ) -> tuple[list[StudentDecisionPoint], list[dict[str, Any]], float, dict[str, Any]]:
     from scape.eval.harmony_runtime import (
         build_continuation_prompt_ids,
@@ -301,16 +314,22 @@ def one_episode(
             pids = build_continuation_prompt_ids(query, actions_obs=acts, wm_text=wm_text(st, auto_on=False), enc=enc)
         pre = snap_from_state(qid, st, component_id)
         student_prefix = render_student_prompt(pre, component_id=component_id)
-        gen = generate_harmony(
-            backend,
-            query,
-            enc=enc,
-            max_new=max_new,
-            sample=sample,
-            seed=seed + 17 * rollout_idx + turn,
-            prompt_ids=pids,
-        )
-        action, valid = parse_generated_action(gen["text"], gen["action_ids"], enc)
+        if teacher_mode and component_id == "adaptive_rerank_instruction":
+            action = {"name": "search_corpus", "arguments": {"query": query}}
+            valid = True
+            text = render_action(action)
+            gen = {"prompt_ids": pids, "action_ids": backend.encode(text), "text": text, "prompt_text": "teacher_full"}
+        else:
+            gen = generate_harmony(
+                backend,
+                query,
+                enc=enc,
+                max_new=max_new,
+                sample=sample,
+                seed=seed + 17 * rollout_idx + turn,
+                prompt_ids=pids,
+            )
+            action, valid = parse_generated_action(gen["text"], gen["action_ids"], enc)
         valids.append(valid)
         actions.append(action)
         names.append(str(action.get("name")))
@@ -371,6 +390,8 @@ def one_episode(
         row_i["reward"] = reward
     stats = {
         "names": names,
+        "generated_actions": actions,
+        "tool_cost": float(st.get("n_tool_calls") or 0),
         "reward": reward,
         "n_curated": len(st.get("curated") or {}),
         "gold_recall": float(curated_recall(st, gold_ids) or 0.0),
@@ -383,7 +404,7 @@ def one_episode(
     return points, rows, reward, stats
 
 
-def rollout_group(backend, *, row, component_id, group_size, max_turns, max_new, policy_version, seed, sample, enc, searcher=None) -> HybridRolloutGroup:
+def rollout_group(backend, *, row, component_id, group_size, max_turns, max_new, policy_version, seed, sample, enc, searcher=None, teacher_mode=False) -> HybridRolloutGroup:
     points: list[StudentDecisionPoint] = []
     rewards: list[float] = []
     rl_rows: list[dict[str, Any]] = []
@@ -401,6 +422,7 @@ def rollout_group(backend, *, row, component_id, group_size, max_turns, max_new,
             enc=enc,
             rollout_idx=g,
             searcher=searcher,
+            teacher_mode=teacher_mode,
         )
         points.extend(ep_points)
         rl_rows.extend(ep_rows)
@@ -443,7 +465,7 @@ async def train_cell(
     component_id: str,
     teacher_fn: TeacherFn | None,
 ) -> dict[str, Any]:
-    if name == "before" or train_steps <= 0:
+    if name in {"teacher", "before"} or train_steps <= 0:
         return {
             "update_type": "eval_only",
             "n_optimizer_steps": 0,
@@ -467,7 +489,8 @@ async def train_cell(
             encode_fn=backend.encode,
             opd_states_per_trajectory=opd_states_per_trajectory,
             seed=step,
-            remove_constant_reward_groups=True,
+            remove_constant_reward_groups=False,
+            include_format_errors=True,
         )
         last_batch_stats = batch.projection_stats
         if name == "pure_opd":
@@ -518,6 +541,7 @@ def eval_closed_loop(
     enc,
     searcher,
     generate_batch: Callable[[Any], Any] | None = None,
+    teacher_mode: bool = False,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     if generate_batch is not None:
         from scape.training.batched_env_rollout import rollout_queries_batched, traces_from_groups
@@ -534,6 +558,7 @@ def eval_closed_loop(
             sample=False,
             enc=enc,
             searcher=searcher,
+            teacher_mode=teacher_mode,
         )
         traces, leak = traces_from_groups(groups, rows, searcher=searcher)
         retrieval_name = searcher.name if searcher is not None else "none"
@@ -602,11 +627,14 @@ def resolve_queries(args: argparse.Namespace) -> tuple[list[dict[str, Any]], lis
         raise RuntimeError(f"train/eval query overlap: {overlap[:8]}")
     states_path = getattr(args, "train_states", None)
     frozen_limit = None if getattr(args, "n_train_states", None) in {None, 0} else int(args.n_train_states)
-    frozen_points, frozen_meta = load_train_states(
-        Path(states_path) if states_path else None,
-        component_id=getattr(args, "component", "sentence_compress"),
-        limit=frozen_limit,
-    )
+    if not states_path:
+        frozen_points, frozen_meta = [], {"found": False, "path": None, "n_states": 0, "source": "current_on_policy_rl_rollout"}
+    else:
+        frozen_points, frozen_meta = load_train_states(
+            Path(states_path),
+            component_id=getattr(args, "component", "sentence_compress"),
+            limit=frozen_limit,
+        )
     if frozen_points:
         by_q = {p.query_id: True for p in frozen_points}
         for row in train_rows:
@@ -627,7 +655,11 @@ def validate_wiring(args: argparse.Namespace) -> dict[str, Any]:
     from scape.state.snapshot import EnvironmentSnapshot
     from scape.training.opd_dataset import project_and_materialize
     from scape.training.opd_projection import StudentActionSpaceProjector
+    from scape.training.auto_populate_teacher import teacher_events_from_wm as auto_populate_events_from_wm
     from scape.training.sentence_compress_teacher import teacher_events_from_wm
+    from scape.training.token_budget_marker_teacher import teacher_events_from_wm as token_budget_marker_events_from_wm
+    from scape.training.adaptive_rerank_teacher import teacher_events_from_wm as adaptive_rerank_events_from_wm
+    from scape.training.verify_tool_teacher import teacher_events_from_wm as verify_tool_events_from_wm
 
     teacher_fn = teacher_for(args.component)
     if teacher_fn is None:
@@ -638,7 +670,13 @@ def validate_wiring(args: argparse.Namespace) -> dict[str, Any]:
         "documents": [{"id": "d_long", "text": ("Long noisy passage. " * 40) + train_rows[0]["query"]}],
         "curated_ids": [],
     }
-    events = teacher_events_from_wm(wm)
+    event_builder = {
+        "auto_populate_first_search": auto_populate_events_from_wm,
+        "token_budget_marker": token_budget_marker_events_from_wm,
+        "adaptive_rerank_instruction": adaptive_rerank_events_from_wm,
+        "verify_tool": verify_tool_events_from_wm,
+    }.get(args.component, teacher_events_from_wm)
+    events = event_builder(wm)
     snap = capture_snapshot(
         query_id=train_rows[0]["query_id"],
         step=0,
@@ -697,6 +735,7 @@ def load_hf_backend(args: argparse.Namespace, device_map: str, *, adapter_dir: s
     model_src = args.sft_adapter if args.sft_adapter and Path(args.sft_adapter).exists() else args.base_model
     backend = ScapeHFToolOPD(
         model_path=model_src,
+        base_model_override=args.base_model,
         device_map=device_map,
         learning_rate=1e-5,
         use_lora=True,
@@ -744,17 +783,20 @@ def run_four_cell(args: argparse.Namespace) -> dict[str, Any]:
         load_adapter_weights,
         materialize_vllm_base,
         wait_gpus_quiet,
+        _release_cuda,
     )
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     train_rows, eval_rows, pool_meta, frozen_points = resolve_queries(args)
-    searcher = open_retrieval()
+    searcher = open_retrieval(formal=not bool(getattr(args, "smoke", False)))
     frozen_groups = groups_from_frozen_points(frozen_points) if frozen_points else []
     vllm_on = uses_vllm(args)
     scheme_a = uses_scheme_a(args)
     device_map = train_device_map_for(args)
-    tp = default_tensor_parallel_size(getattr(args, "tensor_parallel_size", None))
+    # GPT-OSS Transformers backend currently rejects tensor parallelism; use
+    # an explicit CLI TP size when supplied, otherwise retain the vLLM default.
+    tp = int(getattr(args, "tensor_parallel_size", None) or default_tensor_parallel_size(None))
     manifest = build_manifest(
         args,
         extra={
@@ -802,7 +844,7 @@ def run_four_cell(args: argparse.Namespace) -> dict[str, Any]:
     cells: dict[str, Any] = {}
     eval_summaries: list[dict[str, Any]] = []
     session_i = {"n": 0}
-    ev_rows = eval_rows if getattr(args, "official_eval", True) else train_rows
+    ev_rows = official_test_subset(eval_rows) if getattr(args, "official_eval", True) else train_rows
     if getattr(args, "n_eval", None):
         ev_rows = ev_rows[: int(args.n_eval)]
 
@@ -820,14 +862,21 @@ def run_four_cell(args: argparse.Namespace) -> dict[str, Any]:
 
     def open_vllm(lora_path: str | None, tag: str) -> VLLMGenerateClient:
         wait_gpus_quiet()
+        # vLLM 0.19 successfully loads the Harness-1 PEFT adapters directly;
+        # keep the base checkpoint sharded and avoid materializing a 39 GiB
+        # single-file merge on network storage.
+        model_for_vllm = vllm_base
+        vllm_adapter = vllm_lora(lora_path) if lora_path and Path(lora_path).name != "theta0" else None
         client = VLLMGenerateClient(
-            model_path=vllm_base,
+            model_path=model_for_vllm,
             session_dir=next_session(tag),
             tensor_parallel_size=tp,
             max_model_len=int(getattr(args, "max_model_len", 8192) or 8192),
-            lora_path=vllm_lora(lora_path),
+            lora_path=vllm_adapter,
             gpu_memory_utilization=float(getattr(args, "gpu_memory_utilization", 0.90) or 0.90),
             enforce_eager=bool(getattr(args, "enforce_eager", True)),
+            python_exe=str(getattr(args, "vllm_python", "") or "") or None,
+            startup_timeout_s=3600.0,
         )
         runtime.attach_vllm(client)
         print(f"[four_cell] vLLM start tp={tp} lora={client.lora_path} tag={tag}", flush=True)
@@ -856,8 +905,20 @@ def run_four_cell(args: argparse.Namespace) -> dict[str, Any]:
             backend = None
             wait_gpus_quiet()
 
-    def collect_groups(lora_path: str | None, policy_version: str, tag: str, *, sample: bool, rows, group_size: int):
-        if vllm_on:
+    def collect_groups(
+        lora_path: str | None,
+        policy_version: str,
+        tag: str,
+        *,
+        sample: bool,
+        rows,
+        group_size: int,
+        teacher_mode: bool = False,
+    ):
+        # Current vLLM cannot apply Harness-1 PEFT target modules. Use the
+        # HF-trained adapter for After-policy rollouts while retaining vLLM
+        # for base/Before generation and the same hybrid train contract.
+        if vllm_on and not (lora_path and Path(lora_path).name != "theta0"):
             client = open_vllm(lora_path, tag)
             try:
                 return rollout_queries_batched(
@@ -872,6 +933,7 @@ def run_four_cell(args: argparse.Namespace) -> dict[str, Any]:
                     sample=sample,
                     enc=enc,
                     searcher=searcher,
+                    teacher_mode=teacher_mode,
                 )
             finally:
                 close_vllm()
@@ -890,8 +952,10 @@ def run_four_cell(args: argparse.Namespace) -> dict[str, Any]:
             searcher=searcher,
         )
 
-    def eval_now(lora_path: str | None, tag: str):
-        if vllm_on:
+    def eval_now(lora_path: str | None, tag: str, *, teacher_mode: bool = False):
+        # See collect_groups: PEFT After policies use HF generation because
+        # this vLLM release cannot load Harness-1 attention LoRA targets.
+        if vllm_on and not (lora_path and Path(lora_path).name != "theta0"):
             client = open_vllm(lora_path, tag)
             try:
                 return eval_closed_loop(
@@ -904,6 +968,7 @@ def run_four_cell(args: argparse.Namespace) -> dict[str, Any]:
                     enc=enc,
                     searcher=searcher,
                     generate_batch=client.generate_batch,
+                    teacher_mode=teacher_mode,
                 )
             finally:
                 close_vllm()
@@ -939,8 +1004,8 @@ def run_four_cell(args: argparse.Namespace) -> dict[str, Any]:
         groups = None
         train_parts: list[dict[str, Any]] = []
         use_frozen = cell == "pure_opd" and bool(frozen_groups)
-        refresh = bool(getattr(args, "on_policy_refresh", True)) and cell in {"rl", TRAINING_MODE_RL_OPD}
-        n_train = 0 if cell == "before" else int(args.train_steps)
+        refresh = False  # one rollout per cell; eight updates must stay within 64*7*6 generations
+        n_train = 0 if cell in {"teacher", "before"} else int(args.train_steps)
 
         if use_frozen:
             groups = frozen_groups
@@ -948,7 +1013,13 @@ def run_four_cell(args: argparse.Namespace) -> dict[str, Any]:
             for step in range(n_train):
                 print(f"[four_cell] cell={cell} on-policy rollout step={step} policy={loop.policy_version}", flush=True)
                 groups = collect_groups(
-                    adapter_live, loop.policy_version, f"{cell}_rollout{step}", sample=True, rows=train_rows, group_size=args.group_size
+                    adapter_live,
+                    loop.policy_version,
+                    f"{cell}_rollout{step}",
+                    sample=True,
+                    rows=train_rows,
+                    group_size=args.group_size,
+                    teacher_mode=cell == "teacher",
                 )
                 rewards_before = [r for g in groups for r in g.terminal_rewards]
                 ensure_hf(adapter_live)
@@ -980,7 +1051,13 @@ def run_four_cell(args: argparse.Namespace) -> dict[str, Any]:
         else:
             print(f"[four_cell] cell={cell} rollout", flush=True)
             groups = collect_groups(
-                adapter_live, loop.policy_version, f"{cell}_rollout", sample=True, rows=train_rows, group_size=args.group_size
+                adapter_live,
+                loop.policy_version,
+                f"{cell}_rollout",
+                sample=True,
+                rows=train_rows,
+                group_size=args.group_size,
+                teacher_mode=cell == "teacher",
             )
 
         if groups is None:
@@ -1012,7 +1089,7 @@ def run_four_cell(args: argparse.Namespace) -> dict[str, Any]:
                 adapter_map[cell] = str(adapter_dir)
                 adapter_live = str(adapter_dir)
             release_hf()
-        elif cell == "before":
+        elif cell in {"teacher", "before"}:
             adapter_map[cell] = None
             adapter_audits.append(
                 {"cell": cell, "adapter_dir": None, "reload_ready": True, "exists": False, "reload_path": "theta0_no_adapter"}
@@ -1041,7 +1118,11 @@ def run_four_cell(args: argparse.Namespace) -> dict[str, Any]:
         gstat = group_stats(groups)
         train_stats = merge_train_stats(train_parts)
         print(f"[four_cell] cell={cell} eval", flush=True)
-        ev, traces = eval_now(str(theta0_dir) if cell == "before" else adapter_live, f"{cell}_eval")
+        ev, traces = eval_now(
+            str(theta0_dir) if cell == "before" else adapter_live,
+            f"{cell}_eval",
+            teacher_mode=cell == "teacher",
+        )
         ev["setting"] = cell
         ev["reported_split"] = "official_test"
         cell_dir = out / cell
@@ -1119,7 +1200,7 @@ def coerce_runtime_args(args: argparse.Namespace) -> argparse.Namespace:
     if not hasattr(args, "max_new_tokens"):
         args.max_new_tokens = 384
     if not hasattr(args, "gpu"):
-        args.gpu = 0
+        args.gpu = "0"
     if not hasattr(args, "sft_adapter"):
         args.sft_adapter = getattr(args, "base_checkpoint", "") or ""
     if not hasattr(args, "base_model"):
@@ -1154,6 +1235,8 @@ def coerce_runtime_args(args: argparse.Namespace) -> argparse.Namespace:
         args.gpu_memory_utilization = 0.90
     if not hasattr(args, "enforce_eager"):
         args.enforce_eager = True
+    if not hasattr(args, "vllm_python"):
+        args.vllm_python = ""
     if getattr(args, "smoke", False):
         args.n_queries = min(int(args.n_queries), 6)
         args.group_size = min(int(args.group_size), 2)

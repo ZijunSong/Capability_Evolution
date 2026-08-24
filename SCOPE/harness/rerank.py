@@ -1,11 +1,15 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 import time
-from typing import Callable, List, Optional
+from typing import Any, Callable, List, Optional
 
 import requests
 import structlog
-from baseten_performance_client import ClassificationResponse, PerformanceClient
+try:
+    from baseten_performance_client import ClassificationResponse, PerformanceClient
+except ModuleNotFoundError:  # optional remote reranker dependency
+    ClassificationResponse = Any
+    PerformanceClient = Any
 
 from harness.config import get_config
 

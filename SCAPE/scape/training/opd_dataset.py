@@ -121,6 +121,12 @@ def render_student_prompt(snapshot: EnvironmentSnapshot, *, component_id: str = 
             student_view["working_memory"].pop("curated_importance", None)
     if not snapshot.harness_mask.get("verify_tool", False):
         student_view.pop("verify", None)
+    # Component context can remain in WorkingMemory snapshots; never expose
+    # adaptive rerank instructions when the reduced mask disables the feature.
+    if not snapshot.harness_mask.get("adaptive_rerank_instruction", False):
+        student_view.pop("rerank_instruction", None)
+        if isinstance(student_view.get("working_memory"), dict):
+            student_view["working_memory"].pop("rerank_instruction", None)
     return (
         f"System: Harness reduced view (minus {component_id or 'component'}).\n"
         f"Query: {snapshot.query_id}\n"
