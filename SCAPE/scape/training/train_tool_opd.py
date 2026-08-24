@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from scape.collection.same_state import coalition_label, resolve_component_ids
 from scape.common.manifest import build_run_manifest, finalize_run_manifest, write_run_manifest
 from scape.common.status import write_status_live
 from scape.training.harness_dropout import DropoutSchedule
@@ -21,7 +22,8 @@ from scape.training.tool_opd import learnability_score, tool_opd_loss
 def run_micro_distill(
     *,
     output_dir: Path,
-    component_id: str,
+    component_id: str | None = None,
+    component_ids: Sequence[str] | None = None,
     n_samples: int,
     seed: int,
     base_checkpoint: str,
@@ -47,25 +49,29 @@ def run_micro_distill(
     Never calls SCOPE train_opd.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
+    resolved_ids = resolve_component_ids(component_id=component_id, component_ids=component_ids)
+    coalition_name = coalition_label(resolved_ids)
     teacher = FullViewTeacher(
         config=TeacherConfig(strategy=teacher_strategy, strategy_lock_id="scape_teacher_v0_ema")
     )
     schedule = DropoutSchedule(
-        target_components=[component_id],
+        target_components=list(resolved_ids),
         total_steps=max(1, n_samples // 8),
-        mode="linear",
+        mode="coalition" if len(resolved_ids) > 1 else "linear",
         seed=seed,
     )
 
     repo = Path(__file__).resolve().parents[2]
     manifest = build_run_manifest(
-        run_id=f"L-{component_id}-n{n_samples}-s{seed}",
+        run_id=f"L-{coalition_name}-n{n_samples}-s{seed}",
         stage="L",
         command=["python", "-m", "scape.training.train_tool_opd"],
         repo_root=repo,
         output_dir=output_dir,
         extra={
-            "component_id": component_id,
+            "component_id": resolved_ids[0],
+            "component_ids": list(resolved_ids),
+            "coalition": list(resolved_ids),
             "n_samples": n_samples,
             "seed": seed,
             "base_checkpoint": base_checkpoint,
@@ -95,7 +101,7 @@ def run_micro_distill(
             rows = load_same_state_jsonl(Path(same_state_jsonl))[:n_samples]
         else:
             rows = collect_same_state_dataset(
-                n_states=n_samples, component_id=component_id, seed=seed
+                n_states=n_samples, component_ids=resolved_ids, seed=seed
             )
         eval_rows = rows[: max(1, min(32, len(rows) // 4))]
         backend = ScapeHFToolOPD(
@@ -107,7 +113,9 @@ def run_micro_distill(
             backend, rows, eval_rows, loss_path=loss_path, epochs=epochs
         )
         summary = {
-            "component_id": component_id,
+            "component_id": resolved_ids[0],
+            "component_ids": list(resolved_ids),
+            "coalition": list(resolved_ids),
             "n_samples": n_samples,
             "seed": seed,
             "base_checkpoint": base_checkpoint,
@@ -148,7 +156,9 @@ def run_micro_distill(
 
     d_post = float(synthetic_d_post if synthetic_d_post is not None else max(0.05, d_pre * 0.6))
     summary = {
-        "component_id": component_id,
+        "component_id": resolved_ids[0],
+        "component_ids": list(resolved_ids),
+        "coalition": list(resolved_ids),
         "n_samples": n_samples,
         "seed": seed,
         "base_checkpoint": base_checkpoint,
@@ -178,9 +188,19 @@ def run_micro_distill(
     return summary
 
 
+def _parse_component_args(args: argparse.Namespace) -> list[str]:
+    return resolve_component_ids(component_id=args.component_id, component_ids=args.component_ids)
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--component-id", required=True)
+    ap.add_argument("--component-id", default=None, help="Single-component coalition (legacy)")
+    ap.add_argument(
+        "--component-ids",
+        nargs="+",
+        default=None,
+        help="Multi-component coalition S for H_-S reduced view",
+    )
     ap.add_argument("--n-samples", type=int, required=True)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--base-checkpoint", required=True)
@@ -207,9 +227,10 @@ def main(argv: Sequence[str] | None = None) -> None:
         dry = False
     elif args.dry_run:
         dry = True
+    resolved_ids = _parse_component_args(args)
     summary = run_micro_distill(
         output_dir=args.out,
-        component_id=args.component_id,
+        component_ids=resolved_ids,
         n_samples=args.n_samples,
         seed=args.seed,
         base_checkpoint=args.base_checkpoint,

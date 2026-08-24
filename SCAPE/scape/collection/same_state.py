@@ -1,8 +1,9 @@
 """Same-environment-state collection for true SCAPE OPD.
 
-Produces structured `EnvironmentSnapshot` records under H_-m. For plumbing
-smoke we generate deterministic WM states with Harness-1-shaped tool calls.
-Production can swap in a Harness-1 agent loop without changing the schema.
+Produces structured `EnvironmentSnapshot` records under H_-S (coalition mask).
+For plumbing smoke we generate deterministic WM states with Harness-1-shaped
+tool calls. Production can swap in a Harness-1 agent loop without changing the
+schema.
 """
 
 from __future__ import annotations
@@ -12,10 +13,10 @@ import random
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from scape.adapters.components import minus_mask
+from scape.adapters.components import coalition_minus_mask, full_mask
 from scape.probes.rollout import FakeSearchEnv
 from scape.rendering.dual_view import DualViewRenderer
-from scape.state.snapshot import EnvironmentSnapshot, snapshot_roundtrip_ok
+from scape.state.snapshot import EnvironmentSnapshot, capture_snapshot, snapshot_roundtrip_ok
 from scape.training.action_codec import format_tool_call_text
 from scape.training.tool_mask import legal_tool_names
 
@@ -59,15 +60,64 @@ HARNESS1_TOOL_TEMPLATES: list[dict[str, Any]] = [
 ]
 
 
+def resolve_component_ids(
+    *,
+    component_id: str | None = None,
+    component_ids: Sequence[str] | None = None,
+) -> list[str]:
+    """Normalize single- or multi-component coalition targets."""
+    if component_ids is not None:
+        ids = [str(cid) for cid in component_ids]
+        if not ids:
+            raise ValueError("component_ids must be non-empty")
+        return ids
+    if component_id is not None:
+        return [str(component_id)]
+    raise ValueError("component_id or component_ids required")
+
+
+def coalition_label(component_ids: Sequence[str]) -> str:
+    return ",".join(component_ids)
+
+
+def _snapshot_with_mask(
+    snap: EnvironmentSnapshot,
+    student_mask: Mapping[str, bool],
+    *,
+    component_ids: Sequence[str],
+) -> EnvironmentSnapshot:
+    return capture_snapshot(
+        query_id=snap.query_id,
+        step=snap.step,
+        harness_mask=dict(student_mask),
+        working_memory=snap.working_memory,
+        tool_history=snap.tool_history,
+        observations=snap.observations,
+        metadata={
+            **dict(snap.metadata),
+            "component_ids": list(component_ids),
+            "owner": "student_reduced",
+        },
+    )
+
+
 def build_paired_state(
     *,
     query_id: str,
     step: int,
-    component_id: str,
+    component_id: str | None = None,
+    component_ids: Sequence[str] | None = None,
     rng: random.Random,
 ) -> dict[str, Any]:
     """One student-owned same-state record with full/reduced dual views + action text."""
-    env = FakeSearchEnv(query_id=query_id, component_id=component_id, max_steps=max(1, step + 1))
+    resolved_ids = resolve_component_ids(component_id=component_id, component_ids=component_ids)
+    student_mask = coalition_minus_mask(resolved_ids)
+    env = FakeSearchEnv(
+        query_id=query_id,
+        component_id=resolved_ids[0],
+        component_ids=resolved_ids,
+        max_steps=max(1, step + 1),
+    )
     snap0 = env.initial_snapshot()
     # Advance a few student steps so tool_history is non-empty
     snap = snap0
@@ -92,13 +142,16 @@ def build_paired_state(
             "end_search", {"reason": "sufficient evidence"}
         )
 
+    snap = _snapshot_with_mask(snap, student_mask, component_ids=resolved_ids)
+
     renderer = DualViewRenderer()
-    dual = renderer.render_pair(snap, component_id=component_id)
+    dual = renderer.render_pair(snap, student_mask=student_mask)
     assert dual.snapshot_hash == snap.content_hash()
     assert renderer.environment_steps == 0
 
+    minus_text = coalition_label(resolved_ids)
     prompt_reduced = (
-        f"System: Harness reduced view (minus {component_id}).\n"
+        f"System: Harness reduced view (minus {{{minus_text}}}).\n"
         f"Query: {query_id}\n"
         f"State:\n{json.dumps(dual.student_view, ensure_ascii=False)}\n"
         f"Assistant:"
@@ -113,7 +166,10 @@ def build_paired_state(
     return {
         "snapshot_schema_version": SNAPSHOT_SCHEMA_VERSION,
         "tool_mask_version": TOOL_MASK_VERSION,
-        "component_id": component_id,
+        "component_id": resolved_ids[0],
+        "component_ids": list(resolved_ids),
+        "student_mask": dict(student_mask),
+        "full_mask": dict(full_mask()),
         "query_id": query_id,
         "step": snap.step,
         "snapshot": snap.to_dict(),
@@ -137,18 +193,23 @@ def build_paired_state(
 def collect_same_state_dataset(
     *,
     n_states: int,
-    component_id: str = "evidence_graph",
+    component_id: str | None = "evidence_graph",
+    component_ids: Sequence[str] | None = None,
     seed: int = 42,
     out_path: Path | None = None,
     query_prefix: str = "smoke_q",
 ) -> list[dict[str, Any]]:
+    resolved_ids = resolve_component_ids(component_id=component_id, component_ids=component_ids)
     rng = random.Random(seed)
     rows: list[dict[str, Any]] = []
     for i in range(n_states):
         qid = f"{query_prefix}{i:04d}"
         step = 1 + (i % 3)
         row = build_paired_state(
-            query_id=qid, step=step, component_id=component_id, rng=rng
+            query_id=qid,
+            step=step,
+            component_ids=resolved_ids,
+            rng=rng,
         )
         assert snapshot_roundtrip_ok(EnvironmentSnapshot.from_dict(row["snapshot"]))
         rows.append(row)
@@ -162,7 +223,8 @@ def collect_same_state_dataset(
 
 def build_query_disjoint_splits(
     *,
-    component_id: str = "evidence_graph",
+    component_id: str | None = "evidence_graph",
+    component_ids: Sequence[str] | None = None,
     out_dir: Path,
     train_n: int = 8000,
     valid_n: int = 1000,
@@ -170,6 +232,7 @@ def build_query_disjoint_splits(
     seed: int = 42,
 ) -> dict[str, Any]:
     """Build EG_TRAIN / EG_VALID / EG_TEST with query-disjoint pools."""
+    resolved_ids = resolve_component_ids(component_id=component_id, component_ids=component_ids)
     out_dir.mkdir(parents=True, exist_ok=True)
     splits = {
         "EG_TRAIN_8K": ("train_q", train_n, seed),
@@ -177,7 +240,8 @@ def build_query_disjoint_splits(
         "EG_TEST_1K": ("test_q", test_n, seed + 2),
     }
     meta: dict[str, Any] = {
-        "component_id": component_id,
+        "component_id": resolved_ids[0],
+        "component_ids": list(resolved_ids),
         "query_disjoint": True,
         "splits": {},
     }
@@ -185,7 +249,7 @@ def build_query_disjoint_splits(
         path = out_dir / f"{name}.jsonl"
         rows = collect_same_state_dataset(
             n_states=n,
-            component_id=component_id,
+            component_ids=resolved_ids,
             seed=split_seed,
             out_path=path,
             query_prefix=prefix,
@@ -221,6 +285,8 @@ def audit_same_state(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     no_future = sum(1 for r in rows if r.get("no_future_observation"))
     views_differ = sum(1 for r in rows if r.get("views_differ_by_harness_only"))
     legacy = sum(1 for r in rows if r.get("legacy_scope_path_used"))
+    coalition_rows = sum(1 for r in rows if len(r.get("component_ids") or []) > 1)
+    has_student_mask = sum(1 for r in rows if isinstance(r.get("student_mask"), Mapping))
     return {
         "n_states": n,
         "same_snapshot_hash_rate": same / max(1, n),
@@ -228,5 +294,7 @@ def audit_same_state(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         "no_future_observation_rate": no_future / max(1, n),
         "full_reduced_differ_rate": views_differ / max(1, n),
         "legacy_scope_path_used": legacy > 0,
+        "coalition_rows": coalition_rows,
+        "student_mask_recorded_rate": has_student_mask / max(1, n),
         "pass": same == n and no_step == n and no_future == n and legacy == 0,
     }

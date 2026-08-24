@@ -1,18 +1,18 @@
 """Post-training component retirement gates (SCAPE, not SCOPE ModuleRetirementGate).
 
-Four-grid:
+Four-grid (single component H_-m or coalition H_-S):
   S0: theta0 + H_full
-  S1: theta0 + H_-m
-  S2: theta' + H_-m
+  S1: theta0 + H_-S
+  S2: theta' + H_-S
   S3: theta' + H_full
 
-Strong pass: J(theta', H_-m) > J(theta0, H_full) AND C(H_-m) < C(H_full)
+Strong pass: J(theta', H_-S) > J(theta0, H_full) AND C(H_-S) < C(H_full)
 Acceptable:  J non-inferior AND cost materially lower
 """
 
 from __future__ import annotations
 
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 
 def compute_ccr(
@@ -42,8 +42,9 @@ def evaluate_gate_s(
     cost_key: str = "cost",
     non_inferior_tol: float = 0.0,
     material_cost_reduction: float = 0.05,
+    component_ids: Sequence[str] | None = None,
 ) -> dict[str, Any]:
-    """Evaluate Stage S gate from four-grid metrics."""
+    """Evaluate Stage S gate from four-grid metrics under H_-S."""
     required = ("S0", "S1", "S2", "S3")
     for k in required:
         if k not in grid:
@@ -54,7 +55,12 @@ def evaluate_gate_s(
 
     ccr = compute_ccr(j["S2"], j["S0"], j["S1"])
     hrr = compute_hrr(j["S3"], j["S0"])
-    n_m_post = c["S2"]  # runtime cost after retirement under H_-m
+    n_m_post = c["S2"]  # runtime cost after retirement under H_-S
+    coalition = list(component_ids or grid.get("meta", {}).get("component_ids") or [])
+    if not coalition:
+        legacy = grid.get("meta", {}).get("component_id")
+        if legacy:
+            coalition = [str(legacy)]
 
     strong = j["S2"] > j["S0"] and c["S2"] < c["S0"]
     acceptable = (
@@ -81,5 +87,7 @@ def evaluate_gate_s(
         "CCR_m": ccr,
         "HRR": hrr,
         "N_m_post": n_m_post,
+        "component_ids": coalition,
+        "harness_condition": f"H_-{{{','.join(coalition)}}}" if coalition else "H_-S",
         "can_claim_retired": verdict in {"STRONG_PASS", "ACCEPTABLE_PASS"},
     }

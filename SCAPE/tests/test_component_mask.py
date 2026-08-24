@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 
-from scape.adapters.components import assert_mask_diff_only, full_mask, minus_mask
+from scape.adapters.components import assert_mask_diff_only, coalition_minus_mask, full_mask, minus_mask
 from scape.adapters.harness_mask import apply_component_mask, only_toggle
 
 
@@ -24,3 +24,13 @@ def test_component_mask_only_changes_target_flag():
 
     toggled = only_toggle("verify_tool", enabled=False, base=base)
     assert_mask_diff_only(base, toggled, expected_changed=["verify_tool"])
+
+
+def test_coalition_minus_mask_disables_all_targets():
+    base = full_mask()
+    coalition = ["sentence_compress", "importance_tagging"]
+    after = coalition_minus_mask(coalition, base)
+    assert_mask_diff_only(base, after, expected_changed=coalition)
+    assert after["sentence_compress"] is False
+    assert after["importance_tagging"] is False
+    assert after["evidence_graph"] is True

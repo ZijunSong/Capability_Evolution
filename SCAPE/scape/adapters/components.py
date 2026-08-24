@@ -158,6 +158,19 @@ def minus_mask(component_id: str, base: Mapping[str, bool] | None = None) -> dic
     return mask
 
 
+def coalition_minus_mask(
+    component_ids: Iterable[str],
+    base: Mapping[str, bool] | None = None,
+) -> dict[str, bool]:
+    """H_-S mask: disable every component in coalition S."""
+    mask = dict(base or full_mask())
+    for component_id in component_ids:
+        if component_id not in COMPONENT_TAXONOMY:
+            raise KeyError(f"unknown component_id: {component_id}")
+        mask[component_id] = False
+    return mask
+
+
 def mask_to_env(mask: Mapping[str, bool]) -> dict[str, str]:
     """Convert canonical mask -> upstream V8D_* env values ('0'/'1')."""
     env: dict[str, str] = {}

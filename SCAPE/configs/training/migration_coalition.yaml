@@ -1,0 +1,19 @@
+stage: S
+method_v0:
+  student_rollout_under: H_-S
+  teacher_view: full_same_state
+  losses: [tool_token_kl, anchor_kl]
+  curriculum: component_dropout_annealing
+  coalition: true
+four_grid:
+  - S0_theta0_Hfull
+  - S1_theta0_HminusS
+  - S2_theta_prime_HminusS
+  - S3_theta_prime_Hfull
+targets:
+  strong: "J(theta', H_-S) > J(theta0, H_full) AND cost lower"
+  acceptable: "non-inferior quality AND materially lower cost"
+rl:
+  enable_only_after_distill_positive_compensation: true
+notes:
+  coalition_semantics: "S = {m_1, ..., m_k}; student mask disables every component in S"

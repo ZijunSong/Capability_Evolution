@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping
 
-from scape.adapters.components import minus_mask
+from scape.adapters.components import coalition_minus_mask, minus_mask
 from scape.adapters.harness_mask import apply_component_mask
 from scape.rendering.dual_view import DualViewRenderer
 from scape.state.snapshot import EnvironmentSnapshot, capture_snapshot
@@ -26,6 +26,7 @@ class FakeSearchEnv:
 
     query_id: str
     component_id: str
+    component_ids: list[str] | None = None
     max_steps: int = 3
     docs: list[dict[str, Any]] = field(default_factory=list)
     step_count: int = 0
@@ -37,8 +38,13 @@ class FakeSearchEnv:
                 {"id": "d2", "text": "beta evidence about topic"},
             ]
 
+    def _student_mask(self) -> dict[str, bool]:
+        if self.component_ids:
+            return coalition_minus_mask(self.component_ids)
+        return minus_mask(self.component_id)
+
     def initial_snapshot(self) -> EnvironmentSnapshot:
-        mask = minus_mask(self.component_id)
+        mask = self._student_mask()
         return capture_snapshot(
             query_id=self.query_id,
             step=0,
