@@ -61,6 +61,7 @@ def _apply_generation(
     *,
     enc,
     searcher: RetrievalBackend | None,
+    search_k: int = 10,
 ) -> None:
     from scape.eval.harmony_runtime import decode_ids, make_action, make_observation
     from scape.eval.local_search_env import execute_tool
@@ -72,7 +73,13 @@ def _apply_generation(
     ep.actions.append(action)
     ep.names.append(str(action.get("name")))
     with timed_section(ep.timing, "harness"):
-        ep.st, obs, _ok = execute_tool(ep.st, action.get("name") if valid else None, action.get("arguments"))
+        ep.st, obs, _ok = execute_tool(
+            ep.st,
+            action.get("name") if valid else None,
+            action.get("arguments"),
+            searcher=searcher,
+            search_k=search_k,
+        )
         if valid:
             try:
                 ep.acts.append((make_action(action["name"], action.get("arguments") or {}), make_observation(obs)))
@@ -133,6 +140,9 @@ def rollout_queries_batched(
     searcher: RetrievalBackend | None = None,
     teacher_mode: bool = False,
     harness_mask: dict[str, bool] | None = None,
+    temperature: float | None = None,
+    search_k: int = 10,
+    doc_store_k: int = 12,
 ) -> list[HybridRolloutGroup]:
     """Batch across queries and group members; step the env between turns."""
     from scape.eval.local_search_env import curated_recall, new_state
@@ -145,7 +155,7 @@ def rollout_queries_batched(
 
     episodes: list[LiveEpisode] = []
     for row in rows:
-        store = doc_store_for_row(row, searcher)
+        store = doc_store_for_row(row, searcher, k=doc_store_k)
         for g in range(group_size):
             episodes.append(
                 LiveEpisode(
@@ -159,7 +169,7 @@ def rollout_queries_batched(
                 )
             )
 
-    temperature = 1.0 if sample else 0.0
+    temperature = 0.0 if not sample else float(temperature if temperature is not None else 1.0)
     for turn in range(max_turns):
         live = [ep for ep in episodes if not ep.st.get("ended")]
         if not live:
@@ -230,7 +240,7 @@ def rollout_queries_batched(
         for ep, gen in zip(live, generated):
             if gen is None:
                 raise RuntimeError("missing generation for live episode")
-            _apply_generation(ep, gen, enc=enc, searcher=searcher)
+            _apply_generation(ep, gen, enc=enc, searcher=searcher, search_k=search_k)
 
     by_q: dict[str, list[LiveEpisode]] = {}
     for ep in episodes:

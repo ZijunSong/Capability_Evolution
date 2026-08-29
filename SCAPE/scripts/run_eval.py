@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """One-click Harness-1 / BC+ closed-loop eval on the 166-query test split.
 
+Defaults match Harness-1 Table-2 eval: --max-turns 40, --max-new-tokens 2048,
+--temperature 1.0, --search-k 10, --max-model-len 32768. Training stay on a
+short horizon; do not copy those smoke values into eval.
+
 Without --run-dir / --adapter, listed --component flags are turned ON (harness eval).
 With a trained run directory, the student is scored under H_min (those flags OFF)
 plus the saved LoRA adapter.
@@ -8,8 +12,7 @@ plus the saved LoRA adapter.
 Example:
   python scripts/run_eval.py \\
     --harness Harness-1 --benchmark BC+ --model_name harness-1 \\
-    --component sentence_compress verify_tool \\
-    --run-dir outputs/train_harness1_bcplus_harness-1_rl_opd_sentence_compress+verify_tool
+    --component all
 """
 
 from __future__ import annotations
@@ -82,6 +85,11 @@ def main(argv: list[str] | None = None) -> int:
         "adapter_map": adapter_map,
         "score_split": "bcplus_test_166",
         "harness_mask": harness_mask,
+        "max_turns": 2 if args.smoke else int(args.max_turns),
+        "max_new_tokens": min(int(args.max_new_tokens), 256) if args.smoke else int(args.max_new_tokens),
+        "temperature": float(args.temperature),
+        "search_k": int(args.search_k),
+        "max_model_len": int(args.max_model_len),
         "out": str(spec.out),
     }
     (spec.out / "LAUNCH.json").write_text(json.dumps(launch, indent=2) + "\n", encoding="utf-8")
@@ -133,6 +141,9 @@ def main(argv: list[str] | None = None) -> int:
         rows = rows[:6]
     enc = load_harmony_enc()
     searcher = open_retrieval()
+    eval_max_turns = 2 if args.smoke else int(args.max_turns)
+    eval_max_new = min(int(args.max_new_tokens), 256) if args.smoke else int(args.max_new_tokens)
+    eval_temperature = float(args.temperature)
     summaries = []
     runtime = SchemeARuntime()
     if args.rollout_backend == "vllm":
@@ -155,13 +166,15 @@ def main(argv: list[str] | None = None) -> int:
                     None,
                     rows,
                     component_id=spec.coalition,
-                    max_new=384,
-                    max_turns=6 if not args.smoke else 2,
+                    max_new=eval_max_new,
+                    max_turns=eval_max_turns,
                     seed=int(args.seed),
                     enc=enc,
                     searcher=searcher,
                     generate_batch=client.generate_batch,
                     harness_mask=harness_mask,
+                    temperature=eval_temperature,
+                    search_k=int(args.search_k),
                 )
             finally:
                 runtime.detach_vllm()
@@ -196,13 +209,15 @@ def main(argv: list[str] | None = None) -> int:
                 backend,
                 rows,
                 component_id=spec.coalition,
-                max_new=384,
-                max_turns=6 if not args.smoke else 2,
+                max_new=eval_max_new,
+                max_turns=eval_max_turns,
                 seed=int(args.seed),
                 enc=enc,
                 searcher=searcher,
                 generate_batch=gen.generate_batch,
                 harness_mask=harness_mask,
+                temperature=eval_temperature,
+                search_k=int(args.search_k),
             )
             ev["setting"] = cell
             ev["eval_mode"] = mode

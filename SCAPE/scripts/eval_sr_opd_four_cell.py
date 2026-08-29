@@ -29,8 +29,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--audit-only", action="store_true")
     p.add_argument("--rollout-backend", choices=("vllm", "hf"), default="vllm")
     p.add_argument("--tensor-parallel-size", type=int, default=None)
-    p.add_argument("--max-model-len", type=int, default=8192)
+    p.add_argument("--max-model-len", type=int, default=32768)
     p.add_argument("--gpu-memory-utilization", type=float, default=0.90)
+    p.add_argument("--max-turns", type=int, default=40)
+    p.add_argument("--max-new-tokens", type=int, default=2048)
+    p.add_argument("--temperature", type=float, default=1.0)
+    p.add_argument("--search-k", type=int, default=10)
+    p.add_argument("--seed", type=int, default=42)
     return p.parse_args()
 
 
@@ -112,12 +117,14 @@ def main() -> int:
                     None,
                     rows,
                     component_id=args.component,
-                    max_new=384,
-                    max_turns=6,
-                    seed=42,
+                    max_new=int(args.max_new_tokens),
+                    max_turns=int(args.max_turns),
+                    seed=int(args.seed),
                     enc=enc,
                     searcher=searcher,
                     generate_batch=client.generate_batch,
+                    temperature=float(args.temperature),
+                    search_k=int(args.search_k),
                 )
             finally:
                 runtime.detach_vllm()
@@ -148,12 +155,14 @@ def main() -> int:
                 backend,
                 rows,
                 component_id=args.component,
-                max_new=384,
-                max_turns=6,
-                seed=42,
+                max_new=int(args.max_new_tokens),
+                max_turns=int(args.max_turns),
+                seed=int(args.seed),
                 enc=enc,
                 searcher=searcher,
                 generate_batch=gen.generate_batch,
+                temperature=float(args.temperature),
+                search_k=int(args.search_k),
             )
             ev["setting"] = cell
             cell_dir = args.out / str(cell)

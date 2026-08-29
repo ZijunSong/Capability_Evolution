@@ -102,6 +102,49 @@ def test_parse_eval_cli_space_separated_components():
     assert args.component == "sentence_compress,token_budget_marker"
     assert spec.harness == "Harness-1"
     assert spec.benchmark == "BC+"
+    assert args.max_turns == 40
+    assert args.max_new_tokens == 2048
+    assert args.temperature == 1.0
+    assert args.search_k == 10
+    assert args.max_model_len == 32768
+
+
+def test_parse_eval_cli_can_override_horizon():
+    args, _spec = parse_eval_args(
+        [
+            "--component",
+            "zero",
+            "--max-turns",
+            "12",
+            "--max-new-tokens",
+            "512",
+            "--temperature",
+            "0",
+            "--out",
+            "/tmp/scape-eval-override",
+        ]
+    )
+    assert args.max_turns == 12
+    assert args.max_new_tokens == 512
+    assert args.temperature == 0.0
+
+
+def test_train_horizon_stays_short():
+    args, _spec = parse_train_args(
+        [
+            "--train_method",
+            "rl",
+            "--component",
+            "zero",
+            "--out",
+            "/tmp/scape-train-horizon",
+        ]
+    )
+    assert args.max_turns == 6
+    assert args.max_new_tokens == 384
+    assert args.eval_max_turns == 40
+    assert args.eval_max_new_tokens == 2048
+    assert args.eval_temperature == 1.0
 
 
 def test_parse_component_zero():

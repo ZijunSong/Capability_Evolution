@@ -300,11 +300,16 @@ def labeled_doc_store(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def doc_store_for_row(row: dict[str, Any], searcher: RetrievalBackend | None) -> dict[str, Any]:
+def doc_store_for_row(
+    row: dict[str, Any],
+    searcher: RetrievalBackend | None,
+    *,
+    k: int = 12,
+) -> dict[str, Any]:
     if row.get("frozen_doc_store"):
         return dict(row["frozen_doc_store"])
     if searcher is not None and searcher.name != "none":
-        hits = searcher.search(str(row.get("query") or ""), 12)
+        hits = searcher.search(str(row.get("query") or ""), int(k))
         store = hits_to_doc_store(hits)
         if store:
             return store
@@ -439,6 +444,8 @@ def one_episode(
     searcher: RetrievalBackend | None = None,
     teacher_mode: bool = False,
     harness_mask: dict[str, bool] | None = None,
+    search_k: int = 10,
+    doc_store_k: int = 12,
 ) -> tuple[list[StudentDecisionPoint], list[dict[str, Any]], float, dict[str, Any]]:
     from scape.eval.harmony_runtime import (
         build_continuation_prompt_ids,
@@ -453,7 +460,7 @@ def one_episode(
     query = str(row["query"])
     qid = str(row["query_id"])
     gold_ids = [str(x) for x in (row.get("gold_docids") or row.get("evidence_docids") or [])]
-    st = new_state(query, doc_store_for_row(row, searcher))
+    st = new_state(query, doc_store_for_row(row, searcher, k=doc_store_k))
     acts: list[tuple[Any, Any]] = []
     points: list[StudentDecisionPoint] = []
     rows: list[dict[str, Any]] = []
@@ -493,7 +500,13 @@ def one_episode(
             valids.append(valid)
             actions.append(action)
             names.append(str(action.get("name")))
-            st, obs, _ok = execute_tool(st, action.get("name") if valid else None, action.get("arguments"))
+            st, obs, _ok = execute_tool(
+                st,
+                action.get("name") if valid else None,
+                action.get("arguments"),
+                searcher=searcher,
+                search_k=search_k,
+            )
             if valid:
                 try:
                     acts.append((make_action(action["name"], action.get("arguments") or {}), make_observation(obs)))
@@ -709,7 +722,20 @@ def eval_closed_loop(
     generate_batch: Callable[[Any], Any] | None = None,
     teacher_mode: bool = False,
     harness_mask: dict[str, bool] | None = None,
+    sample: bool | None = None,
+    temperature: float = 0.0,
+    search_k: int | None = None,
+    doc_store_k: int | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    from scape.eval.eval_defaults import (
+        HARNESS1_EVAL_DOC_STORE_K,
+        HARNESS1_EVAL_SEARCH_K,
+    )
+
+    if sample is None:
+        sample = float(temperature) > 0.0
+    search_k = HARNESS1_EVAL_SEARCH_K if search_k is None else int(search_k)
+    doc_store_k = HARNESS1_EVAL_DOC_STORE_K if doc_store_k is None else int(doc_store_k)
     if generate_batch is not None:
         from scape.training.batched_env_rollout import rollout_queries_batched, traces_from_groups
 
@@ -722,11 +748,14 @@ def eval_closed_loop(
             max_new=max_new,
             policy_version="eval",
             seed=seed,
-            sample=False,
+            sample=bool(sample),
             enc=enc,
             searcher=searcher,
             teacher_mode=teacher_mode,
             harness_mask=harness_mask,
+            temperature=float(temperature) if sample else 0.0,
+            search_k=search_k,
+            doc_store_k=doc_store_k,
         )
         traces, leak = traces_from_groups(groups, rows, searcher=searcher)
         retrieval_name = searcher.name if searcher is not None else "none"
@@ -737,6 +766,12 @@ def eval_closed_loop(
         official["primary_split"] = "official_test"
         official["n_all_pool"] = len(traces)
         official["n_official_test"] = official.get("n_queries")
+        official["max_turns"] = int(max_turns)
+        official["max_new_tokens"] = int(max_new)
+        official["temperature"] = float(temperature)
+        official["search_k"] = int(search_k)
+        official["doc_store_k"] = int(doc_store_k)
+        official["sample"] = bool(sample)
         return official, traces
     traces: list[dict[str, Any]] = []
     leak = 0
@@ -749,11 +784,13 @@ def eval_closed_loop(
             max_new=max_new,
             policy_version="eval",
             seed=seed + i,
-            sample=False,
+            sample=bool(sample),
             enc=enc,
             rollout_idx=0,
             searcher=searcher,
             harness_mask=harness_mask,
+            search_k=search_k,
+            doc_store_k=doc_store_k,
         )
         prefix = render_student_prompt(
             snap_from_state(
@@ -786,6 +823,12 @@ def eval_closed_loop(
     official["primary_split"] = "official_test"
     official["n_all_pool"] = len(traces)
     official["n_official_test"] = official.get("n_queries")
+    official["max_turns"] = int(max_turns)
+    official["max_new_tokens"] = int(max_new)
+    official["temperature"] = float(temperature)
+    official["search_k"] = int(search_k)
+    official["doc_store_k"] = int(doc_store_k)
+    official["sample"] = bool(sample)
     return official, traces
 
 
@@ -1163,13 +1206,14 @@ def run_four_cell(args: argparse.Namespace) -> dict[str, Any]:
                     None,
                     ev_rows,
                     component_id=args.component,
-                    max_new=args.max_new_tokens,
-                    max_turns=args.max_turns,
+                    max_new=int(getattr(args, "eval_max_new_tokens", args.max_new_tokens)),
+                    max_turns=int(getattr(args, "eval_max_turns", args.max_turns)),
                     seed=args.seed,
                     enc=enc,
                     searcher=searcher,
                     generate_batch=client.generate_batch,
                     teacher_mode=teacher_mode,
+                    temperature=float(getattr(args, "eval_temperature", 0.0)),
                 )
             finally:
                 close_vllm()
@@ -1178,12 +1222,13 @@ def run_four_cell(args: argparse.Namespace) -> dict[str, Any]:
             backend,
             ev_rows,
             component_id=args.component,
-            max_new=args.max_new_tokens,
-            max_turns=args.max_turns,
+            max_new=int(getattr(args, "eval_max_new_tokens", args.max_new_tokens)),
+            max_turns=int(getattr(args, "eval_max_turns", args.max_turns)),
             seed=args.seed,
             enc=enc,
             searcher=searcher,
             generate_batch=gen.generate_batch,
+            temperature=float(getattr(args, "eval_temperature", 0.0)),
         )
 
     def save_and_audit(cell: str, adapter_dir: Path) -> dict[str, Any]:
@@ -1448,6 +1493,18 @@ def coerce_runtime_args(args: argparse.Namespace) -> argparse.Namespace:
         args.tensor_parallel_size = None
     if not hasattr(args, "max_model_len"):
         args.max_model_len = 8192
+    if not hasattr(args, "eval_max_turns"):
+        from scape.eval.eval_defaults import HARNESS1_EVAL_MAX_TURNS
+
+        args.eval_max_turns = HARNESS1_EVAL_MAX_TURNS
+    if not hasattr(args, "eval_max_new_tokens"):
+        from scape.eval.eval_defaults import HARNESS1_EVAL_MAX_NEW_TOKENS
+
+        args.eval_max_new_tokens = HARNESS1_EVAL_MAX_NEW_TOKENS
+    if not hasattr(args, "eval_temperature"):
+        from scape.eval.eval_defaults import HARNESS1_EVAL_TEMPERATURE
+
+        args.eval_temperature = HARNESS1_EVAL_TEMPERATURE
     if not hasattr(args, "train_device_map"):
         args.train_device_map = ""
     if not hasattr(args, "gpu_memory_utilization"):
@@ -1462,6 +1519,8 @@ def coerce_runtime_args(args: argparse.Namespace) -> argparse.Namespace:
         args.max_turns = min(int(args.max_turns), 2)
         args.train_steps = min(int(args.train_steps), 1)
         args.max_new_tokens = min(int(args.max_new_tokens), 256)
+        args.eval_max_turns = min(int(getattr(args, "eval_max_turns", 2)), 2)
+        args.eval_max_new_tokens = min(int(getattr(args, "eval_max_new_tokens", 256)), 256)
         args.n_eval = 6 if args.n_eval is None else args.n_eval
     return args
 

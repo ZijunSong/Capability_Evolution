@@ -109,7 +109,14 @@ def wm_text(state: dict[str, Any], *, auto_on: bool) -> str:
     return "\n".join(lines)
 
 
-def execute_tool(state: dict[str, Any], name: str | None, args: dict[str, Any] | None) -> tuple[dict[str, Any], str, bool]:
+def execute_tool(
+    state: dict[str, Any],
+    name: str | None,
+    args: dict[str, Any] | None,
+    *,
+    searcher: Any | None = None,
+    search_k: int = 10,
+) -> tuple[dict[str, Any], str, bool]:
     st = dict(state)
     st["pool"] = dict(state.get("pool") or {})
     st["curated"] = dict(state.get("curated") or {})
@@ -134,7 +141,8 @@ def execute_tool(state: dict[str, Any], name: str | None, args: dict[str, Any] |
         st["tool_history"].append({"name": name, "legal": False})
         return st, obs, False
 
-    store = st.get("doc_store") or {}
+    st["doc_store"] = dict(state.get("doc_store") or {})
+    store = st["doc_store"]
     obs = ""
     if name in {"search_corpus", "grep_corpus", "fan_out_search"}:
         st["n_search_calls"] = int(state.get("n_search_calls") or 0) + 1
@@ -148,16 +156,32 @@ def execute_tool(state: dict[str, Any], name: str | None, args: dict[str, Any] |
         else:
             queries = [str(args.get("query") or "")]
         hits_all: dict[str, tuple[str, float]] = {}
+        live = searcher is not None and getattr(searcher, "name", "none") != "none"
         for q in queries:
-            for did, text, score in rank_docs(q, store, k=8):
-                prev = hits_all.get(did)
-                if prev is None or score > prev[1]:
-                    hits_all[did] = (text, score)
-        for did, (text, score) in hits_all.items():
-            st["pool"][did] = {"id": did, "text": text[:4000], "score": score}
-        obs = "Search results:\n" + format_hits(
-            [(d, t, s) for d, (t, s) in list(hits_all.items())[:12]]
-        )
+            if not str(q or "").strip():
+                continue
+            if live:
+                for hit in searcher.search(str(q), int(search_k)):
+                    did = str(getattr(hit, "docid", "") or "")
+                    text = str(getattr(hit, "text", "") or "")
+                    score = float(getattr(hit, "score", 0.0) or 0.0)
+                    if not did:
+                        continue
+                    prev = hits_all.get(did)
+                    if prev is None or score > prev[1]:
+                        hits_all[did] = (text, score)
+            else:
+                for did, text, score in rank_docs(q, store, k=int(search_k)):
+                    prev = hits_all.get(did)
+                    if prev is None or score > prev[1]:
+                        hits_all[did] = (text, score)
+        ranked = sorted(hits_all.items(), key=lambda item: -item[1][1])
+        for did, (text, score) in ranked:
+            rec = {"id": did, "text": text[:4000], "score": score}
+            st["pool"][did] = rec
+            store[did] = rec
+        shown = ranked[: int(search_k)]
+        obs = "Search results:\n" + format_hits([(d, t, s) for d, (t, s) in shown])
     elif name == "read_document":
         did = str(args.get("doc_id") or args.get("id") or "")
         rec = store.get(did) or st["pool"].get(did) or st["curated"].get(did)

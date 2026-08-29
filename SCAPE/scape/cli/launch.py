@@ -14,6 +14,13 @@ from pathlib import Path
 from typing import Iterable, Sequence
 
 from scape.adapters.components import all_component_ids, coalition_minus_mask, full_mask, zero_mask
+from scape.eval.eval_defaults import (
+    HARNESS1_EVAL_MAX_MODEL_LEN,
+    HARNESS1_EVAL_MAX_NEW_TOKENS,
+    HARNESS1_EVAL_MAX_TURNS,
+    HARNESS1_EVAL_SEARCH_K,
+    HARNESS1_EVAL_TEMPERATURE,
+)
 from scape.training.rl_opd_types import (
     TRAINING_MODE_PURE_OPD,
     TRAINING_MODE_RL,
@@ -349,6 +356,24 @@ def add_train_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     parser.add_argument("--group-size", type=int, default=8)
     parser.add_argument("--max-turns", type=int, default=6)
     parser.add_argument("--max-new-tokens", type=int, default=384)
+    parser.add_argument(
+        "--eval-max-turns",
+        type=int,
+        default=HARNESS1_EVAL_MAX_TURNS,
+        help="Closed-loop eval horizon. Training rollouts keep --max-turns; Harness-1 eval uses 40.",
+    )
+    parser.add_argument(
+        "--eval-max-new-tokens",
+        type=int,
+        default=HARNESS1_EVAL_MAX_NEW_TOKENS,
+        help="Eval generation tokens per turn. Training keeps --max-new-tokens.",
+    )
+    parser.add_argument(
+        "--eval-temperature",
+        type=float,
+        default=HARNESS1_EVAL_TEMPERATURE,
+        help="Eval sampling temperature. Training rollouts stay greedy unless the collector samples.",
+    )
     parser.add_argument("--sft-adapter", default="")
     parser.add_argument("--validate-only", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
@@ -357,6 +382,31 @@ def add_train_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
 
 def add_eval_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     add_common_args(parser)
+    parser.set_defaults(max_model_len=HARNESS1_EVAL_MAX_MODEL_LEN)
+    parser.add_argument(
+        "--max-turns",
+        type=int,
+        default=HARNESS1_EVAL_MAX_TURNS,
+        help="Max tool turns per query. Harness-1 Table-2 eval uses 40.",
+    )
+    parser.add_argument(
+        "--max-new-tokens",
+        type=int,
+        default=HARNESS1_EVAL_MAX_NEW_TOKENS,
+        help="Max generation tokens per turn. Harness-1 eval uses 2048.",
+    )
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        default=HARNESS1_EVAL_TEMPERATURE,
+        help="Sampling temperature. Harness-1 eval uses 1.0; 0 is greedy.",
+    )
+    parser.add_argument(
+        "--search-k",
+        type=int,
+        default=HARNESS1_EVAL_SEARCH_K,
+        help="Live BM25 hits per search call. Harness-1 SEARCH_DISPLAY_LIMIT is 10.",
+    )
     parser.add_argument(
         "--run-dir",
         type=Path,
