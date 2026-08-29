@@ -23,7 +23,7 @@ class SCAPELossHook:
     def compute_loss(self, student_logits: torch.Tensor, teacher_logits: torch.Tensor, mask: torch.Tensor, config: Config, **kwargs: Any):
         from .losses import alpha_jsd, forward_kl_exact, masked_action_ce, projected_action_ce, reverse_kl_exact
 
-        loss_name = config.get("distillation", {}).get("loss", "reverse_kl") if isinstance(config, dict) else getattr(getattr(config, "distillation", {}), "loss", "reverse_kl")
+        loss_name = config.get("distillation", {}).get("loss", "projected_action_ce") if isinstance(config, dict) else getattr(getattr(config, "distillation", {}), "loss", "projected_action_ce")
         if loss_name == "forward_kl":
             return forward_kl_exact(student_logits, teacher_logits, mask)
         if loss_name == "reverse_kl":
@@ -40,7 +40,10 @@ class SCAPELossHook:
             if target is None:
                 target = teacher_logits.argmax(dim=-1)
             return projected_action_ce(student_logits, target, mask)
-        return reverse_kl_exact(student_logits, teacher_logits, mask)
+        target = kwargs.get("target_token_ids")
+        if target is None:
+            target = teacher_logits.argmax(dim=-1)
+        return projected_action_ce(student_logits, target, mask)
 
     def compute_loss_with_context(self, context: LossContext):
         config = context.config or {}

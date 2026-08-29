@@ -14,6 +14,7 @@ from .core import SCAPEComponentOPD
 from .event_collection import collect_event_states, state_uid
 from .harness1_bridge import GptOssHarmonyAdapter, Harness1Bridge, Qwen3NativeChatAdapter
 from .scape_agent_loop import SCAPEAgentLoop
+from .skip_to_anchor import ALIGN, SKIP, project_bridge_steps, project_events
 
 __all__ = [
     "SCAPEAgentLoop",
@@ -22,10 +23,14 @@ __all__ = [
     "GptOssHarmonyAdapter",
     "Qwen3NativeChatAdapter",
     "Harness1Bridge",
+    "ALIGN",
+    "SKIP",
     "audit_component",
     "build_hooks",
     "get_component_spec",
     "list_component_specs",
+    "project_bridge_steps",
+    "project_events",
 ]
 
 

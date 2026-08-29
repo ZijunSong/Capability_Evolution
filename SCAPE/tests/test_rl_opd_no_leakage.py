@@ -51,17 +51,17 @@ def test_verify_secret_not_in_student_or_opd_prefix():
         student_snapshot=snap,
         student_mask=snap.harness_mask,
     )
-    assert result.kind == ProjectionKind.MACRO
+    assert result.kind == ProjectionKind.DIRECT
     steps = materialize(result, snap, component_id="verify_tool")
-    assert len(steps) == 2
-    blobs = [steps[0].prompt_reduced, steps[1].prompt_reduced, steps[0].target_text, steps[1].target_text]
+    assert len(steps) == 1
+    blobs = [steps[0].prompt_reduced, steps[0].target_text]
     assert all(SECRET not in text for text in blobs)
     datums = build_tinker_opd_datums(steps, lambda_opd=0.1, policy_version="v0")
     assert all(SECRET not in d.model_input for d in datums)
     assert all(SECRET not in d.target_action.get("name", "") for d in datums)
 
 
-def test_macro_second_prefix_is_student_review_not_teacher_verify():
+def test_aligned_curate_prefix_has_no_teacher_verify():
     snap = _verify_snap()
     _, steps = project_and_materialize(
         student_snapshot=snap,
@@ -69,11 +69,9 @@ def test_macro_second_prefix_is_student_review_not_teacher_verify():
         student_mask=snap.harness_mask,
         component_id="verify_tool",
     )
-    assert steps[0].target_action["name"] == "review_docs"
-    assert steps[1].target_action["name"] == "curate"
-    assert "review" in steps[1].prompt_reduced.lower() or steps[1].prompt_reduced != steps[0].prompt_reduced
-    assert SECRET not in steps[1].prompt_reduced
-    assert "verdict" not in steps[1].prompt_reduced
+    assert steps[0].target_action["name"] == "curate"
+    assert SECRET not in steps[0].prompt_reduced
+    assert "verdict" not in steps[0].prompt_reduced
 
 
 def test_on_policy_projection_uses_student_snapshot_only():

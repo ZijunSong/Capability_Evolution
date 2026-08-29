@@ -63,7 +63,7 @@ def build_tinker_opd_datums(
     encode_fn: EncodeFn | None = None,
     policy_version: str,
 ) -> list[TinkerOPDDatum]:
-    """One datum per materialized DIRECT/MACRO step. No component loss branch."""
+    """One datum per materialized ALIGN/DIRECT Student tool call."""
     encode = encode_fn or default_encode
     if float(lambda_opd) <= 0.0 or not steps:
         return []

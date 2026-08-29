@@ -1,12 +1,14 @@
 # SCAPE Component OPD
 
-`scape_component_opd` is a method-local EasyOPD extension for SCAPE / Beyond Textual Privilege experiments. It keeps SCAPE's Search Harness runtime as the source of truth and adds typed contracts for component-specific supervision.
+`scape_component_opd` is an EasyOPD method that **wraps Harness-1** rather than reimplementing the search runtime.
 
-The framework separates component realizability, event support, teacher-sidecar rescoring, projected action supervision, tool-span masking, controls, diagnostics, and closed-loop evaluation wrappers. It does not modify `verl/` in this first integration layer.
+- Harness-1 (`SCAPE/external/harness-1`) is source of truth for WorkingMemory, tools, and V8D components.
+- EasyOPD/verl owns distributed training.
+- `Harness1Bridge` forks the same Student state with the target component ON to read Teacher side effects.
+- Projection is **skip-to-anchor only**: after projection a Teacher event is either
+  - `align` — a Student-native tool call used as the OPD label, or
+  - `skip` / ε — Harness-only event, keep scanning for the next realizable Student action.
 
-Key hard gates:
+Privileged context (Evidence Graph, sentence compress, token-budget marker, rerank instruction) is never distilled as Teacher tokens. Graph capability is learned from the Student-realizable downstream `curate` (or other native tool), after a realizability check.
 
-- `verify_tool` defaults to `NON_REALIZABLE_ACTION_SPACE_MISMATCH` unless the Student action space explicitly includes the same tool.
-- `content_dedup` with zero active event support returns `STOP_NO_ACTIVE_EVENT_SUPPORT`.
-- Projected actions must use real state deltas and pass visibility legality checks.
-- Student inference privilege must remain false.
+Student inference privilege must remain false. `verify` is not a Student tool; it is skipped.

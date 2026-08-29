@@ -13,7 +13,7 @@ def test_scape_component_opd_registered_and_enabled():
         {
             "easyopd": {"method": {"name": "scape_component_opd"}},
             "component": {"name": "evidence_graph"},
-            "distillation": {"loss": "reverse_kl"},
+            "distillation": {"loss": "projected_action_ce"},
         }
     )
     assert dispatcher.enabled

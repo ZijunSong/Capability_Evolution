@@ -146,12 +146,11 @@ def materialize(
     *,
     component_id: str = "",
 ) -> list[ProjectedTrainingStep]:
-    """Turn DIRECT/MACRO into one training row per Student action.
+    """Turn an ALIGN/DIRECT Student tool call into training rows.
 
-    Multi-step macros are never concatenated into a single target string.
-    Each prefix comes from the Student shadow after the previous action.
+    SKIP/ε produces no rows. Recovery macros are not materialized.
     """
-    if projection.kind in {ProjectionKind.SKIP, ProjectionKind.REJECT}:
+    if projection.kind != ProjectionKind.DIRECT:
         return []
     cid = component_id or projection.component_id or ""
     mask = student_snapshot.harness_mask
@@ -226,8 +225,7 @@ def build_projected_row(
             "no_teacher_observation_in_student_prefix": all(
                 step.metadata.get("no_teacher_observation_in_student_prefix") for step in projected_steps
             ),
-            "all_targets_student_legal": projection.kind
-            in {ProjectionKind.DIRECT, ProjectionKind.MACRO}
+            "all_targets_student_legal": projection.kind == ProjectionKind.DIRECT
             and bool(projected_steps),
             "realizability_passed": bool(projected_steps)
             and all((step.metadata.get("realizability") or {}).get("passed") for step in projected_steps),
@@ -278,7 +276,7 @@ def project_and_materialize(
         student_mask=mask,
     )
     steps: list[ProjectedTrainingStep] = []
-    if projection.kind in {ProjectionKind.DIRECT, ProjectionKind.MACRO}:
+    if projection.kind == ProjectionKind.DIRECT:
         steps = materialize(projection, student_snapshot, component_id=component_id)
     if audit is not None:
         audit.n_teacher_segments += 1
@@ -286,31 +284,16 @@ def project_and_materialize(
         audit.n_skip_events += len(projection.skipped_event_ids)
         if projection.kind == ProjectionKind.DIRECT:
             audit.n_direct += 1
-        elif projection.kind == ProjectionKind.MACRO:
-            audit.n_macro += 1
-            audit.mean_macro_length += len(projection.actions)
-        elif projection.kind == ProjectionKind.REJECT:
-            audit.n_reject += 1
-            reason = projection.reject_reason or "UNKNOWN"
+        else:
+            reason = projection.reject_reason or "SKIP"
             audit.reject_reasons[reason] = audit.reject_reasons.get(reason, 0) + 1
         if projection.anchor_distance is not None:
             audit.mean_anchor_distance += float(projection.anchor_distance)
         audit.n_projected_training_steps += len(steps)
-        if audit.n_macro:
-            audit.mean_macro_length = audit.mean_macro_length  # filled incrementally; normalized by caller
     return projection, steps
 
 
 def finalize_audit(audit: ProjectionAudit) -> ProjectionAudit:
-    if audit.n_macro:
-        # mean_macro_length stored as running sum in project_and_materialize
-        pass
-    if audit.n_direct + audit.n_macro:
-        # mean_anchor_distance stored as running sum
-        n_ok = audit.n_direct + audit.n_macro
-        audit.mean_anchor_distance = audit.mean_anchor_distance / max(1, n_ok)
-        if audit.n_macro:
-            # We added lengths only on MACRO; convert sum -> mean.
-            total_len = audit.mean_macro_length
-            audit.mean_macro_length = total_len / max(1, audit.n_macro)
+    if audit.n_direct:
+        audit.mean_anchor_distance = audit.mean_anchor_distance / max(1, audit.n_direct)
     return audit

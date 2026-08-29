@@ -49,10 +49,9 @@ def test_all_ten_components_have_handlers():
         )
         assert result.kind in {
             ProjectionKind.DIRECT,
-            ProjectionKind.MACRO,
             ProjectionKind.SKIP,
-            ProjectionKind.REJECT,
         }
+        assert result.kind not in {ProjectionKind.MACRO, ProjectionKind.REJECT}
 
 
 def test_direct_legal_search():
@@ -81,7 +80,7 @@ def test_auto_populate_compiles_explicit_curate():
         )
     ]
     result, _snap = _project("auto_populate_first_search", events)
-    assert result.kind in {ProjectionKind.DIRECT, ProjectionKind.MACRO}
+    assert result.kind == ProjectionKind.DIRECT
     action = result.actions[0]
     assert action.name == "curate"
     assert action.arguments["add_ids"] == ["d2"]
@@ -128,7 +127,7 @@ def test_importance_delayed_eviction():
         curated_ids=["d1", "d9"],
         accessible_doc_ids=["d1", "d9", "d31"],
     )
-    assert result.kind in {ProjectionKind.DIRECT, ProjectionKind.MACRO}
+    assert result.kind == ProjectionKind.DIRECT
     action = result.actions[0]
     assert action.name == "curate"
     assert action.arguments["remove_ids"] == ["d9"]
@@ -139,7 +138,19 @@ def test_importance_delayed_eviction():
     assert "importance" not in steps[0].target_text
 
 
-def test_verify_macro_via_review_docs():
+def test_evidence_graph_skip_to_downstream_curate():
+    events = [
+        obs_transform("evidence_graph"),
+        model_action("curate", {"add_ids": ["d1"], "remove_ids": []}, component_id="evidence_graph"),
+    ]
+    result, _snap = _project("evidence_graph", events)
+    assert result.kind == ProjectionKind.DIRECT
+    assert result.skipped_event_ids
+    assert result.actions[0].name == "curate"
+    assert result.actions[0].arguments["add_ids"] == ["d1"]
+
+
+def test_verify_skip_then_align_curate():
     events = [
         model_action("verify", {"doc_id": "d1"}, component_id="verify_tool"),
         tool_observation(component_id="verify_tool", observation={"verdict": "YES"}, visible_to_student=False),
@@ -155,15 +166,13 @@ def test_verify_macro_via_review_docs():
         full_text_ids=[],
         full_text_min_chars=10_000,
     )
-    assert result.kind == ProjectionKind.MACRO
-    assert [a.name for a in result.actions] == ["review_docs", "curate"]
+    assert result.kind == ProjectionKind.DIRECT
+    assert [a.name for a in result.actions] == ["curate"]
     steps = materialize(result, snap, component_id="verify_tool")
-    assert len(steps) == 2
-    assert steps[0].target_action["name"] == "review_docs"
-    assert steps[1].target_action["name"] == "curate"
-    assert steps[0].prompt_reduced != steps[1].prompt_reduced
+    assert len(steps) == 1
+    assert steps[0].target_action["name"] == "curate"
     assert "verify" not in steps[0].target_text
-    assert "verdict" not in steps[1].prompt_reduced
+    assert "verdict" not in steps[0].prompt_reduced
 
 
 def test_verify_oracle_reject():
@@ -179,8 +188,8 @@ def test_verify_oracle_reject():
         curated_ids=[],
         accessible_doc_ids=["d2"],
     )
-    assert result.kind == ProjectionKind.REJECT
-    assert result.reject_reason == "TEACHER_ONLY_INFORMATION"
+    assert result.kind == ProjectionKind.SKIP
+    assert result.actions == []
     assert materialize(result, snap, component_id="verify_tool") == []
 
 
@@ -214,8 +223,7 @@ def test_adaptive_rerank_same_tool_different_transition_not_direct():
         accessible_doc_ids=["d1"],
         metadata={"student_search_results": ["d1"], "teacher_needed_doc_ids": ["d9"]},
     )
-    assert result.kind == ProjectionKind.REJECT
-    assert result.reject_reason == "TRANSITION_NOT_REPRODUCIBLE"
+    assert result.kind == ProjectionKind.SKIP
     assert result.actions == []
 
 

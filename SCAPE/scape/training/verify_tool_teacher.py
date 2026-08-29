@@ -1,8 +1,10 @@
 """Teacher side-branch for the Teacher-only ``verify`` tool.
 
-The verification result is hidden from the Student. The projected target is a
-normal Student-visible read of the same accessible evidence, which keeps the
-SR-OPD target executable when ``verify_tool`` is disabled.
+The verification result is hidden from the Student. ``verify`` itself is ε:
+skip-to-anchor keeps scanning until a Student-native tool call appears.
+This helper still emits a subsequent ``read_document`` only when the Teacher
+trace has no later recorded Student action; the projector never invents a
+recovery macro of its own.
 """
 
 from __future__ import annotations

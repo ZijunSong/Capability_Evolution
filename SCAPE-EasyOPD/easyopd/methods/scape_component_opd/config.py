@@ -6,7 +6,7 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class SCAPEComponentOPDConfig:
     component_name: str = "evidence_graph"
-    loss: str = "reverse_kl"
+    loss: str = "projected_action_ce"
     event_only: bool = True
     student_inference_privilege: bool = False
     teacher_mode: str = "same_weights_privileged_view"

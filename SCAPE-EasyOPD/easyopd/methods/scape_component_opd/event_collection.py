@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .harness1_bridge import Harness1Bridge, QWEN3_LOGICAL_MODEL_ID, QWEN3_STUDENT_BASE, tool_action_to_record
+from .skip_to_anchor import ALIGN, SKIP, project_bridge_steps, teacher_events_from_bridge_steps
 
 
 def _canonical(value: Any) -> str:
@@ -115,8 +116,69 @@ def _flatten_rollouts(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     return states
 
 
+def _align_step_rows(
+    runtime: Harness1Bridge,
+    steps: list[dict[str, Any]],
+    *,
+    rollout_id: str,
+    component: str,
+) -> list[dict[str, Any]]:
+    """Keep only skip-to-anchor ALIGN rows. Harness-only ε events are not loss rows."""
+    projections = project_bridge_steps(steps, component_id=component)
+    events = teacher_events_from_bridge_steps(steps)
+    event_by_id = {str(event.get("event_id")): event for event in events}
+    rows: list[dict[str, Any]] = []
+    for projection in projections:
+        if projection.kind != ALIGN or not projection.actions:
+            continue
+        action = projection.actions[0]
+        source = event_by_id.get(action.source_event_id) or {}
+        step_index = int(source.get("step_index") or 0)
+        step = steps[step_index] if step_index < len(steps) else (steps[-1] if steps else {})
+        row = runtime.event_row_from_step(step, rollout_id=rollout_id)
+        prefix_state = step.get("post_state") if source.get("kind") == "component_event" else step.get("pre_state")
+        prefix_state = prefix_state or step.get("pre_state") or {}
+        if row is None:
+            row = {
+                "component": component,
+                "query_id": prefix_state.get("query_id"),
+                "rollout_id": rollout_id,
+                "rollout_seed": prefix_state.get("rollout_seed"),
+                "step_id": prefix_state.get("step_id"),
+                "event_type": "skip_to_anchor",
+                "student_visible_prefix": prefix_state.get("student_visible_prefix"),
+                "tool_history": prefix_state.get("tool_history") or [],
+                "student_observable_env_state": prefix_state.get("student_observable_env_state") or {},
+                "event_payload_student_visible": {},
+                "teacher_privileged_view_ref": None,
+                "terminal_reward": None,
+                "state_uid": "",
+                "collector_mode": "real_harness1",
+                "visible_doc_ids": (prefix_state.get("student_observable_env_state") or {}).get("visible_doc_ids") or [],
+            }
+        elif prefix_state:
+            row["student_visible_prefix"] = prefix_state.get("student_visible_prefix") or row.get("student_visible_prefix")
+            row["student_observable_env_state"] = prefix_state.get("student_observable_env_state") or row.get("student_observable_env_state")
+            row["visible_doc_ids"] = (prefix_state.get("student_observable_env_state") or {}).get("visible_doc_ids") or row.get("visible_doc_ids")
+        row["projection_kind"] = ALIGN
+        row["projectable_target"] = {"name": action.name, "arguments": dict(action.arguments)}
+        row["projection_valid"] = True
+        row["valid_args"] = True
+        row["skipped_event_ids"] = list(projection.skipped_event_ids)
+        row["anchor_distance"] = projection.anchor_distance
+        row["event_active"] = True
+        rows.append(row)
+    return rows
+
+
 def _is_active(state: dict[str, Any]) -> bool:
-    return bool(state.get("event_active", state.get("component_event_active", state.get("event_type") or state.get("projectable_target"))))
+    if state.get("projection_kind") == SKIP:
+        return False
+    if state.get("projection_kind") == ALIGN:
+        return bool(state.get("projectable_target"))
+    if "event_active" in state or "component_event_active" in state:
+        return bool(state.get("event_active", state.get("component_event_active")))
+    return bool(state.get("projectable_target"))
 
 
 def _doc_ids_for_query(query_id: str, rollout_seed: int, *, n: int = 40) -> list[str]:
@@ -193,13 +255,25 @@ def _student_actions_for_component(component: str, query_record: dict[str, Any],
             tool_action_to_record("curate", {"add_ids": doc_ids[:30], "remove_ids": []}),
             tool_action_to_record("curate", {"add_ids": doc_ids[30:34], "remove_ids": doc_ids[:4]}),
         ]
-    if component in {"evidence_graph", "sentence_compress"}:
-        observation = "\n\n".join(f"# DOCUMENT ID: {doc_id}\n{texts[doc_id]}" for doc_id in doc_ids[:12])
-        return [tool_action_to_record("search_corpus", {"query": query}, observation=observation, returned_doc_ids=doc_ids[:12], doc_texts={k: texts[k] for k in doc_ids[:12]})]
+    if component in {"evidence_graph", "sentence_compress", "adaptive_rerank_instruction"}:
+        hit_ids = doc_ids[:12]
+        observation = "\n\n".join(f"# DOCUMENT ID: {doc_id}\n{texts[doc_id]}" for doc_id in hit_ids)
+        return [
+            tool_action_to_record(
+                "search_corpus",
+                {"query": query},
+                observation=observation,
+                returned_doc_ids=hit_ids,
+                doc_texts={k: texts[k] for k in hit_ids},
+            ),
+            tool_action_to_record("curate", {"add_ids": hit_ids[:3], "remove_ids": []}),
+        ]
     if component == "token_budget_marker":
         actions: list[dict[str, Any]] = []
+        last_ids: list[str] = []
         for turn in range(4):
             turn_doc_ids = [f"doc_{query_record.get('query_id')}_{rollout_seed}_budget_t{turn}_{idx:03d}" for idx in range(16)]
+            last_ids = turn_doc_ids
             turn_texts = _doc_texts(turn_doc_ids, query, long_context_turn=turn + 1)
             actions.append(
                 tool_action_to_record(
@@ -209,6 +283,7 @@ def _student_actions_for_component(component: str, query_record: dict[str, Any],
                     doc_texts=turn_texts,
                 )
             )
+        actions.append(tool_action_to_record("curate", {"add_ids": last_ids[:3], "remove_ids": []}))
         return actions
     return [tool_action_to_record("search_corpus", {"query": query}, returned_doc_ids=doc_ids[:8], doc_texts={k: texts[k] for k in doc_ids[:8]})]
 
@@ -238,13 +313,11 @@ def generate_real_harness_rollouts(
                 rollout_id = f"{component}_{query_record['query_id']}_r{rollout_index}"
                 runtime = Harness1Bridge(component=component, enabled=False)
                 runtime.reset(query_record, rollout_seed)
-                event_states: list[dict[str, Any]] = []
+                steps: list[dict[str, Any]] = []
                 action_seed = seed_base + q_index * max(1, rollouts_max) + rollout_index
                 for action in _student_actions_for_component(component, query_record, action_seed):
-                    step = runtime.step(action)
-                    row = runtime.event_row_from_step(step, rollout_id=rollout_id)
-                    if row:
-                        event_states.append(row)
+                    steps.append(runtime.step(action))
+                event_states = _align_step_rows(runtime, steps, rollout_id=rollout_id, component=component)
                 payload = {
                     "component": component,
                     "query_id": str(query_record["query_id"]),

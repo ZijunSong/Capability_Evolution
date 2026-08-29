@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from .action_projection import project_curated_delta
+from .skip_to_anchor import HARNESS_ONLY_EVENT_TYPES
 from .types import ToolAction
 
 SCAPE_ROOT = Path(os.environ.get("SCAPE_ROOT", "/mnt/songzijun/Capability_Evolution/SCAPE"))
@@ -241,8 +242,12 @@ class Harness1Event:
     projectable_target: dict[str, Any] | None = None
     projection_valid: bool = False
     valid_args: bool = False
+    harness_only: bool = False
 
     def to_dict(self) -> dict[str, Any]:
+        harness_only = self.harness_only or (
+            self.event_type in HARNESS_ONLY_EVENT_TYPES and self.projectable_target is None
+        )
         return {
             "component": self.component,
             "event_type": self.event_type,
@@ -251,6 +256,7 @@ class Harness1Event:
             "projectable_target": self.projectable_target,
             "projection_valid": self.projection_valid,
             "valid_args": self.valid_args,
+            "harness_only": harness_only,
         }
 
 
@@ -359,6 +365,7 @@ class Harness1Bridge:
                     projectable_target={"name": "curate", "arguments": {"add_ids": list(wm.pool_ids[-max(num_new, 0):]), "remove_ids": []}} if num_new > 0 else None,
                     projection_valid=num_new > 0,
                     valid_args=num_new > 0,
+                    harness_only=num_new <= 0,
                 )
 
             if self.component == "adaptive_rerank_instruction" and component_enabled and tool_name in _AUTO_SEARCH_TOOLS:
@@ -381,6 +388,7 @@ class Harness1Bridge:
                     projectable_target=None,
                     projection_valid=False,
                     valid_args=False,
+                    harness_only=True,
                 )
 
             if self.component == "chunk_neighbors" and component_enabled and tool_name in _SEARCH_TOOLS:
@@ -395,6 +403,7 @@ class Harness1Bridge:
                     projectable_target=None,
                     projection_valid=False,
                     valid_args=False,
+                    harness_only=True,
                 )
 
             if self.component == "verify_tool" and component_enabled and doc_ids:
@@ -411,6 +420,7 @@ class Harness1Bridge:
                     projectable_target=None,
                     projection_valid=False,
                     valid_args=True,
+                    harness_only=True,
                 )
             if self.component == "token_budget_marker" and component_enabled:
                 budget_proxy = int(os.environ.get("SCAPE_TOKEN_BUDGET_PROXY", "30720"))
@@ -444,6 +454,7 @@ class Harness1Bridge:
                     projectable_target=None,
                     projection_valid=False,
                     valid_args=True,
+                    harness_only=True,
                 )
             if self.component == "auto_populate_first_search" and component_enabled and tool_name in _AUTO_SEARCH_TOOLS and doc_ids:
                 from harness.ultra_core import auto_populate_from_first_search
@@ -487,6 +498,7 @@ class Harness1Bridge:
                     projectable_target=None,
                     projection_valid=False,
                     valid_args=True,
+                    harness_only=True,
                 )
             elif self.component == "sentence_compress" and component_enabled and observation:
                 from harness.ultra_core import compress_search_observation
@@ -507,6 +519,7 @@ class Harness1Bridge:
                     projectable_target=None,
                     projection_valid=False,
                     valid_args=True,
+                    harness_only=True,
                 )
         elif tool_name == "review_docs":
             ids = params.get("doc_ids") or []
@@ -568,9 +581,21 @@ class Harness1Bridge:
             self._apply_action_to_wm(self._wm, student_action, component_enabled=False)
         self._tool_history.append(copy.deepcopy(student_action))
         self._step_id += 1
-        self._last_event = Harness1Event(**teacher_view["event"]) if teacher_view.get("event") else None
+        event_payload = teacher_view.get("event")
+        if event_payload:
+            self._last_event = Harness1Event(
+                **{k: v for k, v in event_payload.items() if k in Harness1Event.__dataclass_fields__}
+            )
+        else:
+            self._last_event = None
         post = self.snapshot_student_visible_state()
-        return {"pre_state": pre, "post_state": post, "teacher_view": teacher_view, "event": self.get_component_event()}
+        return {
+            "pre_state": pre,
+            "post_state": post,
+            "teacher_view": teacher_view,
+            "event": self.get_component_event(),
+            "student_action": copy.deepcopy(student_action),
+        }
 
     def get_component_event(self) -> dict[str, Any] | None:
         return self._last_event.to_dict() if self._last_event else None

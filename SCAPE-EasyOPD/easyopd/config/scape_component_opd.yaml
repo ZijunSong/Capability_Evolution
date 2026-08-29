@@ -8,7 +8,7 @@ teacher:
 student:
   inference_privilege: false
 distillation:
-  loss: reverse_kl
+  loss: projected_action_ce
   token_mask: response
 reference:
   mode: frozen_init
