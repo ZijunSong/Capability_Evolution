@@ -8,8 +8,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Callable, Sequence
+import time
 
 from scape.eval.browsecomp_retrieval import RetrievalBackend
+from scape.eval.harness1_metrics import EpisodeTiming, episode_quality_metrics, timed_section, trace_fields
 from scape.training.opd_dataset import render_student_prompt
 from scape.training.rl_opd_types import HybridRolloutGroup, StudentDecisionPoint
 from scape.training.vllm_hybrid import GenerateRequest, GenerateResult, cispo_row_from_generation
@@ -35,6 +37,7 @@ class LiveEpisode:
     pending_prefix: str = ""
     pending_pids: list[int] = field(default_factory=list)
     harness_mask: dict[str, bool] | None = None
+    timing: EpisodeTiming = field(default_factory=EpisodeTiming)
 
 
 def _build_prompt_ids(ep: LiveEpisode, enc) -> list[int]:
@@ -68,22 +71,23 @@ def _apply_generation(
     ep.valids.append(valid)
     ep.actions.append(action)
     ep.names.append(str(action.get("name")))
-    ep.st, obs, _ok = execute_tool(ep.st, action.get("name") if valid else None, action.get("arguments"))
-    if valid:
-        try:
-            ep.acts.append((make_action(action["name"], action.get("arguments") or {}), make_observation(obs)))
-        except Exception:
-            pass
-    action_ids = list(gen.token_ids)
-    prompt_ids = list(ep.pending_pids)
-    prompt_text = ""
-    if enc is not None:
-        try:
-            prompt_text = decode_ids(enc, prompt_ids)
-        except Exception:
-            prompt_text = ""
-    prompt_text = prompt_text or ep.pending_prefix
-    post = snap_from_state(qid, ep.st, ep.component_id, harness_mask=ep.harness_mask)
+    with timed_section(ep.timing, "harness"):
+        ep.st, obs, _ok = execute_tool(ep.st, action.get("name") if valid else None, action.get("arguments"))
+        if valid:
+            try:
+                ep.acts.append((make_action(action["name"], action.get("arguments") or {}), make_observation(obs)))
+            except Exception:
+                pass
+        action_ids = list(gen.token_ids)
+        prompt_ids = list(ep.pending_pids)
+        prompt_text = ""
+        if enc is not None:
+            try:
+                prompt_text = decode_ids(enc, prompt_ids)
+            except Exception:
+                prompt_text = ""
+        prompt_text = prompt_text or ep.pending_prefix
+        post = snap_from_state(qid, ep.st, ep.component_id, harness_mask=ep.harness_mask)
     ep.points.append(
         StudentDecisionPoint(
             episode_id=f"{qid}_r{ep.rollout_idx}",
@@ -164,11 +168,12 @@ def rollout_queries_batched(
         generated: list[GenerateResult | None] = [None] * len(live)
         request_slots: list[int] = []
         for i, ep in enumerate(live):
-            pids = _build_prompt_ids(ep, enc)
-            pre = snap_from_state(str(ep.row["query_id"]), ep.st, component_id, harness_mask=ep.harness_mask)
-            ep.pending_pre = pre
-            ep.pending_prefix = render_student_prompt(pre, component_id=component_id)
-            ep.pending_pids = pids
+            with timed_section(ep.timing, "harness"):
+                pids = _build_prompt_ids(ep, enc)
+                pre = snap_from_state(str(ep.row["query_id"]), ep.st, component_id, harness_mask=ep.harness_mask)
+                ep.pending_pre = pre
+                ep.pending_prefix = render_student_prompt(pre, component_id=component_id)
+                ep.pending_pids = pids
             if teacher_mode:
                 from scape.training.action_codec import render_action
                 from scape.training.sentence_compress_teacher import teacher_events_from_point
@@ -213,11 +218,15 @@ def rollout_queries_batched(
                     )
                 )
         if reqs:
+            t_gen = time.perf_counter()
             gens = generate_batch(reqs)
+            gen_dt = time.perf_counter() - t_gen
+            share = gen_dt / max(1, len(reqs))
             if len(gens) != len(reqs):
                 raise RuntimeError(f"generate_batch returned {len(gens)} for {len(reqs)} requests")
             for slot, gen in zip(request_slots, gens):
                 generated[slot] = gen
+                live[slot].timing.add_model(share)
         for ep, gen in zip(live, generated):
             if gen is None:
                 raise RuntimeError("missing generation for live episode")
@@ -237,6 +246,7 @@ def rollout_queries_batched(
         tool_seqs: list[list[str]] = []
         gold_ids = [str(x) for x in (row.get("gold_docids") or row.get("evidence_docids") or [])]
         query = str(row["query"])
+        episode_stats: list[dict[str, Any]] = []
         for ep in members:
             reward = terminal_reward(
                 ep.st, query=query, gold_ids=gold_ids, valids=ep.valids, actions=ep.actions
@@ -250,6 +260,27 @@ def rollout_queries_batched(
             rewards.append(reward)
             tool_seqs.append(list(ep.names))
             ep.st["gold_recall"] = float(curated_recall(ep.st, gold_ids) or 0.0)
+            quality = episode_quality_metrics(
+                ep.st,
+                row,
+                tool_names=ep.names,
+                valids=ep.valids,
+                reward=reward,
+                max_turns=max_turns,
+                timing=ep.timing.snapshot(),
+                actions=ep.actions,
+            )
+            quality.update(
+                {
+                    "names": list(ep.names),
+                    "ended": bool(ep.st.get("ended")),
+                    "n_turns": len(ep.names),
+                    "n_tool_calls": int(ep.st.get("n_tool_calls") or 0),
+                    "n_search_calls": int(ep.st.get("n_search_calls") or 0),
+                    "search_query": quality.get("search_query") or query,
+                }
+            )
+            episode_stats.append(quality)
         adv = group_relative_advantages([r["reward"] for r in rl_rows], [r["query_id"] for r in rl_rows])
         for rec, a in zip(rl_rows, adv):
             rec["advantage"] = a
@@ -261,23 +292,7 @@ def rollout_queries_batched(
                     "rl_rows": rl_rows,
                     "query": row.get("query"),
                     "tool_seqs": tool_seqs,
-                    "episode_stats": [
-                        {
-                            "names": list(ep.names),
-                            "reward": ep.points[0].reward if ep.points else 0.0,
-                            "n_curated": len(ep.st.get("curated") or {}),
-                            "gold_recall": float(ep.st.get("gold_recall") or 0.0),
-                            "ended": bool(ep.st.get("ended")),
-                            "n_turns": len(ep.names),
-                            "n_tool_calls": int(ep.st.get("n_tool_calls") or 0),
-                            "n_search_calls": int(ep.st.get("n_search_calls") or 0),
-                            "search_query": next(
-                                (a.get("arguments", {}).get("query") for a in ep.actions if a.get("name") == "search_corpus"),
-                                query,
-                            ),
-                        }
-                        for ep in members
-                    ],
+                    "episode_stats": episode_stats,
                 },
                 decision_points=points,
                 terminal_rewards=rewards,
@@ -324,10 +339,7 @@ def traces_from_groups(
             {
                 "query_id": row["query_id"],
                 "tool_names": list(stats.get("names") or []),
-                "reward": reward,
-                "gold_recall": stats.get("gold_recall"),
-                "n_tool_calls": stats.get("n_tool_calls"),
-                "n_search_calls": stats.get("n_search_calls"),
+                **trace_fields(stats),
                 **sm,
             }
         )

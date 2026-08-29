@@ -12,6 +12,7 @@ from typing import Any
 
 from scape.eval.adapter_reload_audit import audit_saved_adapter, write_reload_audit
 from scape.eval.browsecomp_retrieval import RetrievalBackend, evidence_recall, open_retrieval
+from scape.eval.harness1_metrics import format_summary_table, summarize_quality_and_timing
 from scape.eval.official_query_pool import load_bcplus_830_split, load_official_384
 from scape.training.action_codec import STUDENT_NATIVE_TOOLS
 
@@ -24,12 +25,12 @@ def legal_rate(tool_names: list[str]) -> float:
 
 def summarize_traces(traces: list[dict[str, Any]], *, setting: str, retrieval_name: str) -> dict[str, Any]:
     n = max(1, len(traces))
-    legal = [legal_rate(t.get("tool_names") or []) for t in traces]
+    legal = [legal_rate(t.get("tool_names") or t.get("names") or []) for t in traces]
     rec5 = [float(t.get("evidence_recall_at_5") or 0.0) for t in traces]
     rec100 = [float(t.get("evidence_recall_at_100") or 0.0) for t in traces]
     tools = [float(t.get("n_tool_calls") or 0.0) for t in traces]
     searches = [float(t.get("n_search_calls") or 0.0) for t in traces]
-    return {
+    payload = {
         "setting": setting,
         "n_queries": len(traces),
         "legal_action_rate": sum(legal) / n,
@@ -43,7 +44,10 @@ def summarize_traces(traces: list[dict[str, Any]], *, setting: str, retrieval_na
         "legacy_tool_token_kl_used": False,
         "opd_loss": "sr_opd_ce",
         "rl_loss": "cispo",
+        **summarize_quality_and_timing(traces),
     }
+    payload["n_queries"] = len(traces)
+    return payload
 
 
 def search_metrics(searcher: RetrievalBackend, query: str, evidence: list[str]) -> dict[str, Any]:
@@ -95,6 +99,8 @@ def write_eval_outputs(
         json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
+    for summary in summaries:
+        print(format_summary_table(str(summary.get("setting") or component_id), summary), flush=True)
     return payload
 
 

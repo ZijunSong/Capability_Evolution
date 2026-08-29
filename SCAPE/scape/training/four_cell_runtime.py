@@ -446,7 +446,8 @@ def one_episode(
         make_action,
         make_observation,
     )
-    from scape.eval.local_search_env import curated_recall, execute_tool, new_state, wm_text
+    from scape.eval.harness1_metrics import EpisodeTiming, episode_quality_metrics, timed_section
+    from scape.eval.local_search_env import execute_tool, new_state, wm_text
     import torch
 
     query = str(row["query"])
@@ -459,67 +460,74 @@ def one_episode(
     valids: list[bool] = []
     actions: list[dict[str, Any]] = []
     names: list[str] = []
+    timing = EpisodeTiming()
     for turn in range(max_turns):
         if st.get("ended"):
             break
-        if turn == 0:
-            pids = build_first_turn_prompt_ids(query, enc=enc)
-        else:
-            pids = build_continuation_prompt_ids(query, actions_obs=acts, wm_text=wm_text(st, auto_on=False), enc=enc)
-        pre = snap_from_state(qid, st, component_id, harness_mask=harness_mask)
-        student_prefix = render_student_prompt(pre, component_id=component_id)
+        with timed_section(timing, "harness"):
+            if turn == 0:
+                pids = build_first_turn_prompt_ids(query, enc=enc)
+            else:
+                pids = build_continuation_prompt_ids(query, actions_obs=acts, wm_text=wm_text(st, auto_on=False), enc=enc)
+            pre = snap_from_state(qid, st, component_id, harness_mask=harness_mask)
+            student_prefix = render_student_prompt(pre, component_id=component_id)
         if teacher_mode and component_id == "adaptive_rerank_instruction":
             action = {"name": "search_corpus", "arguments": {"query": query}}
             valid = True
             text = render_action(action)
             gen = {"prompt_ids": pids, "action_ids": backend.encode(text), "text": text, "prompt_text": "teacher_full"}
         else:
-            gen = generate_harmony(
-                backend,
-                query,
-                enc=enc,
-                max_new=max_new,
-                sample=sample,
-                seed=seed + 17 * rollout_idx + turn,
-                prompt_ids=pids,
-            )
-            action, valid = parse_generated_action(gen["text"], gen["action_ids"], enc)
-        valids.append(valid)
-        actions.append(action)
-        names.append(str(action.get("name")))
-        st, obs, _ok = execute_tool(st, action.get("name") if valid else None, action.get("arguments"))
-        if valid:
-            try:
-                acts.append((make_action(action["name"], action.get("arguments") or {}), make_observation(obs)))
-            except Exception:
-                pass
+            with timed_section(timing, "model"):
+                gen = generate_harmony(
+                    backend,
+                    query,
+                    enc=enc,
+                    max_new=max_new,
+                    sample=sample,
+                    seed=seed + 17 * rollout_idx + turn,
+                    prompt_ids=pids,
+                )
+            with timed_section(timing, "harness"):
+                action, valid = parse_generated_action(gen["text"], gen["action_ids"], enc)
+        with timed_section(timing, "harness"):
+            valids.append(valid)
+            actions.append(action)
+            names.append(str(action.get("name")))
+            st, obs, _ok = execute_tool(st, action.get("name") if valid else None, action.get("arguments"))
+            if valid:
+                try:
+                    acts.append((make_action(action["name"], action.get("arguments") or {}), make_observation(obs)))
+                except Exception:
+                    pass
         action_ids = list(gen["action_ids"]) or backend.encode(render_action(action) if valid else "to=unknown\n{}\n")
         prompt_ids = list(gen["prompt_ids"])
-        with torch.no_grad():
-            old_prompt = prompt_ids[-384:] if len(prompt_ids) > 384 else prompt_ids
-            old_act = action_ids[:128]
-            old_lp = backend._teacher_forced_logprobs(old_prompt, old_act, require_grad=False)
+        with timed_section(timing, "model"):
+            with torch.no_grad():
+                old_prompt = prompt_ids[-384:] if len(prompt_ids) > 384 else prompt_ids
+                old_act = action_ids[:128]
+                old_lp = backend._teacher_forced_logprobs(old_prompt, old_act, require_grad=False)
         token_logprobs = [float(x) for x in old_lp.detach().cpu().tolist()] if old_lp.numel() else []
         old_mean = float(old_lp.mean().item()) if old_lp.numel() else 0.0
-        post = snap_from_state(qid, st, component_id, harness_mask=harness_mask)
-        points.append(
-            StudentDecisionPoint(
-                episode_id=f"{qid}_r{rollout_idx}",
-                query_id=qid,
-                rollout_idx=rollout_idx,
-                turn_id=turn,
-                policy_version=policy_version,
-                pre_action_snapshot=pre,
-                pre_action_snapshot_hash=pre.content_hash(),
-                student_model_input=student_prefix,
-                student_action_tokens=action_ids,
-                student_action_text=gen["text"],
-                action_tool_names=[action.get("name") or ""],
-                post_action_snapshot=post,
-                reward=None,
-                structurally_valid=valid,
+        with timed_section(timing, "harness"):
+            post = snap_from_state(qid, st, component_id, harness_mask=harness_mask)
+            points.append(
+                StudentDecisionPoint(
+                    episode_id=f"{qid}_r{rollout_idx}",
+                    query_id=qid,
+                    rollout_idx=rollout_idx,
+                    turn_id=turn,
+                    policy_version=policy_version,
+                    pre_action_snapshot=pre,
+                    pre_action_snapshot_hash=pre.content_hash(),
+                    student_model_input=student_prefix,
+                    student_action_tokens=action_ids,
+                    student_action_text=gen["text"],
+                    action_tool_names=[action.get("name") or ""],
+                    post_action_snapshot=post,
+                    reward=None,
+                    structurally_valid=valid,
+                )
             )
-        )
         rows.append(
             {
                 "query_id": qid,
@@ -542,19 +550,23 @@ def one_episode(
         point.reward = reward
     for row_i in rows:
         row_i["reward"] = reward
-    stats = {
-        "names": names,
-        "generated_actions": actions,
-        "tool_cost": float(st.get("n_tool_calls") or 0),
-        "reward": reward,
-        "n_curated": len(st.get("curated") or {}),
-        "gold_recall": float(curated_recall(st, gold_ids) or 0.0),
-        "ended": bool(st.get("ended")),
-        "n_turns": len(names),
-        "n_tool_calls": int(st.get("n_tool_calls") or 0),
-        "n_search_calls": int(st.get("n_search_calls") or 0),
-        "search_query": next((a.get("arguments", {}).get("query") for a in actions if a.get("name") == "search_corpus"), query),
-    }
+    stats = episode_quality_metrics(
+        st,
+        row,
+        tool_names=names,
+        valids=valids,
+        reward=reward,
+        max_turns=max_turns,
+        timing=timing.snapshot(),
+        actions=actions,
+    )
+    stats.update(
+        {
+            "names": names,
+            "generated_actions": actions,
+            "tool_cost": float(st.get("n_tool_calls") or 0),
+        }
+    )
     return points, rows, reward, stats
 
 
@@ -756,14 +768,13 @@ def eval_closed_loop(
             leak += 1
         search_q = str(stats.get("search_query") or row["query"])
         sm = search_metrics(searcher, search_q, list(row.get("evidence_docids") or [])) if searcher is not None else {}
+        from scape.eval.harness1_metrics import trace_fields
+
         traces.append(
             {
                 "query_id": row["query_id"],
                 "tool_names": list(stats["names"]),
-                "reward": reward,
-                "gold_recall": stats["gold_recall"],
-                "n_tool_calls": stats["n_tool_calls"],
-                "n_search_calls": stats["n_search_calls"],
+                **trace_fields(stats),
                 **sm,
             }
         )
@@ -1338,7 +1349,25 @@ def run_four_cell(args: argparse.Namespace) -> dict[str, Any]:
                 {
                     "cell": cell,
                     "split": "official_test",
-                    **{k: ev.get(k) for k in ("n_queries", "legal_action_rate", "test_evidence_recall_at_5", "mean_tool_calls_per_query", "tool_search_cost")},
+                    **{
+                        k: ev.get(k)
+                        for k in (
+                            "n_queries",
+                            "legal_action_rate",
+                            "recall",
+                            "trajectory_recall",
+                            "final_answer_recall",
+                            "precision",
+                            "f1",
+                            "reward",
+                            "test_evidence_recall_at_5",
+                            "mean_tool_calls_per_query",
+                            "tool_search_cost",
+                            "mean_e2e_sec",
+                            "mean_model_sec",
+                            "mean_harness_sec",
+                        )
+                    },
                 },
                 ensure_ascii=False,
             ),
