@@ -1,9 +1,19 @@
 #!/usr/bin/env python3
-"""Evaluate saved sr_opd_ce + CISPO adapters on the BC+ 166-query test split."""
+"""One-click Harness-1 / BC+ closed-loop eval on the 166-query test split.
+
+Without --run-dir / --adapter, listed --component flags are turned ON (harness eval).
+With a trained run directory, the student is scored under H_min (those flags OFF)
+plus the saved LoRA adapter.
+
+Example:
+  python scripts/run_eval.py \\
+    --harness Harness-1 --benchmark BC+ --model_name harness-1 \\
+    --component sentence_compress verify_tool \\
+    --run-dir outputs/train_harness1_bcplus_harness-1_rl_opd_sentence_compress+verify_tool
+"""
 
 from __future__ import annotations
 
-import argparse
 import json
 import sys
 from pathlib import Path
@@ -12,42 +22,72 @@ _SCAPE = Path(__file__).resolve().parents[1]
 if str(_SCAPE) not in sys.path:
     sys.path.insert(0, str(_SCAPE))
 
+from scape.cli.launch import (
+    LaunchError,
+    discover_adapter_map,
+    parse_eval_args,
+    student_mask_for_ids,
+    teacher_mask_for_ids,
+)
 from scape.eval.adapter_reload_audit import audit_saved_adapter
 from scape.eval.official_query_pool import load_bcplus_830_split, official_test_subset
 from scape.eval.sr_opd_four_cell_eval import write_eval_outputs
 
 
-def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser()
-    p.add_argument("--out", type=Path, required=True)
-    p.add_argument("--component", default="sentence_compress")
-    p.add_argument("--adapter-map", type=Path, help="JSON {cell: adapter_dir}")
-    p.add_argument("--eval-manifest", type=Path, default=None)
-    p.add_argument("--base-model", default="")
-    p.add_argument("--gpu", type=int, default=0)
-    p.add_argument("--n-eval", type=int, default=None)
-    p.add_argument("--audit-only", action="store_true")
-    p.add_argument("--rollout-backend", choices=("vllm", "hf"), default="vllm")
-    p.add_argument("--tensor-parallel-size", type=int, default=None)
-    p.add_argument("--max-model-len", type=int, default=8192)
-    p.add_argument("--gpu-memory-utilization", type=float, default=0.90)
-    return p.parse_args()
-
-
-def main() -> int:
-    args = parse_args()
-    _train, rows, pool_meta = load_bcplus_830_split()
-    if args.eval_manifest:
-        from scape.eval.official_query_pool import attach_bcp_fields, load_query_manifest, official_test_ids
-
-        rows = attach_bcp_fields(load_query_manifest(args.eval_manifest))
-        test_ids = official_test_ids()
-        rows = [r for r in rows if r["query_id"] in test_ids]
-        for rec in rows:
-            rec["official_split"] = "test"
-    adapter_map = {}
+def _adapter_map(args) -> dict[str, str | None]:
     if args.adapter_map:
-        adapter_map = json.loads(Path(args.adapter_map).read_text(encoding="utf-8"))
+        payload = json.loads(Path(args.adapter_map).read_text(encoding="utf-8"))
+        return {str(k): (str(v) if v else None) for k, v in payload.items()}
+    if args.adapter:
+        return {"eval": str(args.adapter)}
+    if args.run_dir:
+        found = discover_adapter_map(args.run_dir)
+        if found:
+            return found
+    return {}
+
+
+def resolve_eval_mode(args) -> tuple[str, dict[str, str | None]]:
+    mapping = _adapter_map(args)
+    mode = args.eval_mode
+    if mode == "auto":
+        mode = "adapter" if any(mapping.values()) else "harness"
+    if mode == "harness":
+        return "harness", mapping or {"harness": None}
+    return "adapter", mapping or {"before": None}
+
+
+def main(argv: list[str] | None = None) -> int:
+    try:
+        args, spec = parse_eval_args(argv)
+    except LaunchError as exc:
+        raise SystemExit(str(exc)) from exc
+
+    mode, adapter_map = resolve_eval_mode(args)
+    harness_mask = (
+        teacher_mask_for_ids(spec.components)
+        if mode == "harness"
+        else student_mask_for_ids(spec.components)
+    )
+
+    spec.out.mkdir(parents=True, exist_ok=True)
+    launch = {
+        "harness": spec.harness,
+        "benchmark": spec.benchmark,
+        "model_name": spec.model_name,
+        "component": spec.coalition,
+        "component_ids": list(spec.components),
+        "eval_mode": mode,
+        "base_model": str(spec.base_model),
+        "adapter_map": adapter_map,
+        "score_split": "bcplus_test_166",
+        "harness_mask": harness_mask,
+        "out": str(spec.out),
+    }
+    (spec.out / "LAUNCH.json").write_text(json.dumps(launch, indent=2) + "\n", encoding="utf-8")
+    print(json.dumps({k: v for k, v in launch.items() if k != "harness_mask"} | {"eval_mode": mode}, indent=2), flush=True)
+
+    _train, rows, pool_meta = load_bcplus_830_split()
     audits = []
     for cell, path in adapter_map.items():
         if path:
@@ -56,8 +96,8 @@ def main() -> int:
             audits.append({"cell": cell, "adapter_dir": None, "reload_ready": True})
     if args.audit_only:
         payload = write_eval_outputs(
-            args.out,
-            component_id=args.component,
+            spec.out,
+            component_id=spec.coalition,
             summaries=[
                 {
                     "setting": "audit_only",
@@ -66,7 +106,7 @@ def main() -> int:
                     "test_evidence_recall_at_5": None,
                     "mean_tool_calls_per_query": None,
                     "tool_search_cost": None,
-                    "note": "Adapter audit only; closed-loop numbers require --adapter-map plus a live model eval via run_sr_opd_four_cell.py",
+                    "note": "Adapter audit only; live eval needs --base-model and a reachable checkpoint.",
                 }
             ],
             adapter_audits=audits,
@@ -74,8 +114,9 @@ def main() -> int:
         )
         print(json.dumps(payload, indent=2), flush=True)
         return 0
-    if not args.base_model:
-        raise SystemExit("pass --base-model for live 166-query test eval, or --audit-only")
+    if not spec.base_model:
+        raise SystemExit("pass --base-model or use the default harness-1 checkpoint for live eval")
+
     from scape.eval.browsecomp_retrieval import open_retrieval
     from scape.eval.harmony_runtime import load_harmony_enc
     from scape.training.four_cell_runtime import eval_closed_loop
@@ -88,17 +129,19 @@ def main() -> int:
     )
 
     rows = rows[: args.n_eval] if args.n_eval else official_test_subset(rows)
+    if args.smoke:
+        rows = rows[:6]
     enc = load_harmony_enc()
     searcher = open_retrieval()
     summaries = []
     runtime = SchemeARuntime()
     if args.rollout_backend == "vllm":
         tp = default_tensor_parallel_size(args.tensor_parallel_size)
-        for i, (cell, path) in enumerate((adapter_map or {"before": None}).items()):
+        for i, (cell, path) in enumerate(adapter_map.items()):
             wait_gpus_quiet()
-            session = args.out / "vllm_sessions" / f"eval_{i}_{cell}"
+            session = spec.out / "vllm_sessions" / f"eval_{i}_{cell}"
             client = VLLMGenerateClient(
-                model_path=args.base_model,
+                model_path=str(spec.base_model),
                 session_dir=session,
                 tensor_parallel_size=tp,
                 max_model_len=int(args.max_model_len),
@@ -111,33 +154,38 @@ def main() -> int:
                 ev, traces = eval_closed_loop(
                     None,
                     rows,
-                    component_id=args.component,
+                    component_id=spec.coalition,
                     max_new=384,
-                    max_turns=6,
-                    seed=42,
+                    max_turns=6 if not args.smoke else 2,
+                    seed=int(args.seed),
                     enc=enc,
                     searcher=searcher,
                     generate_batch=client.generate_batch,
+                    harness_mask=harness_mask,
                 )
             finally:
                 runtime.detach_vllm()
             ev["setting"] = cell
-            cell_dir = args.out / str(cell)
+            ev["eval_mode"] = mode
+            cell_dir = spec.out / str(cell)
             cell_dir.mkdir(parents=True, exist_ok=True)
             with (cell_dir / "PER_QUERY.jsonl").open("w", encoding="utf-8") as handle:
                 for tr in traces:
                     handle.write(json.dumps(tr, ensure_ascii=False) + "\n")
             summaries.append(ev)
     else:
+        from safetensors.torch import load_file
+
+        from scape.eval.adapter_reload_audit import remap_lora_state
         from scape.training.hf_rl_opd_client import restore_trainable, snapshot_trainable
         from scape.training.hf_tool_opd import ScapeHFToolOPD
-        from safetensors.torch import load_file
-        from scape.eval.adapter_reload_audit import remap_lora_state
 
-        backend = ScapeHFToolOPD(model_path=args.base_model, device_map=f"cuda:{int(args.gpu)}", use_lora=True)
+        gpu = str(args.gpu)
+        device_map = f"cuda:{gpu}" if gpu.isdigit() else "auto"
+        backend = ScapeHFToolOPD(model_path=str(spec.base_model), device_map=device_map, use_lora=True)
         theta0 = snapshot_trainable(backend.model)
         gen = HFGenerateClient(backend, enc=enc)
-        for cell, path in (adapter_map or {"before": None}).items():
+        for cell, path in adapter_map.items():
             restore_trainable(backend.model, theta0)
             if path:
                 weights = remap_lora_state(load_file(str(Path(path) / "adapter_model.safetensors")))
@@ -147,24 +195,27 @@ def main() -> int:
             ev, traces = eval_closed_loop(
                 backend,
                 rows,
-                component_id=args.component,
+                component_id=spec.coalition,
                 max_new=384,
-                max_turns=6,
-                seed=42,
+                max_turns=6 if not args.smoke else 2,
+                seed=int(args.seed),
                 enc=enc,
                 searcher=searcher,
                 generate_batch=gen.generate_batch,
+                harness_mask=harness_mask,
             )
             ev["setting"] = cell
-            cell_dir = args.out / str(cell)
+            ev["eval_mode"] = mode
+            cell_dir = spec.out / str(cell)
             cell_dir.mkdir(parents=True, exist_ok=True)
             with (cell_dir / "PER_QUERY.jsonl").open("w", encoding="utf-8") as handle:
                 for tr in traces:
                     handle.write(json.dumps(tr, ensure_ascii=False) + "\n")
             summaries.append(ev)
+
     payload = write_eval_outputs(
-        args.out,
-        component_id=args.component,
+        spec.out,
+        component_id=spec.coalition,
         summaries=summaries,
         adapter_audits=audits,
         pool_meta=pool_meta,

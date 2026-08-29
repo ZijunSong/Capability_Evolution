@@ -39,7 +39,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--sft-adapter", default="")
     p.add_argument("--query-manifest", type=Path, default=None)
     p.add_argument("--eval-manifest", type=Path, default=None)
-    p.add_argument("--n-queries", type=int, default=64)
+    p.add_argument("--n-queries", type=int, default=664)
     p.add_argument("--max-new-tokens", type=int, default=384)
     p.add_argument("--n-eval", type=int, default=None)
     p.add_argument("--validate-only", action="store_true")
@@ -123,6 +123,9 @@ def write_manifest(args: argparse.Namespace, path: Path) -> dict:
         "teacher_shadow_max_turns": args.teacher_shadow_max_turns,
         "max_turns": args.max_turns,
         "scale": "smoke" if args.smoke else "full",
+        "n_queries": args.n_queries,
+        "score_split": "bcplus_test_166",
+        "bcplus_split": "830 = 664 train + 166 test",
         "joint_update_contract": "rl_fb+opd_fb+single_optim",
         "legacy_tool_token_kl_hook_used": False,
         "protocol_complete_rl_opd": args.training_mode == TRAINING_MODE_RL_OPD and lam > 0,

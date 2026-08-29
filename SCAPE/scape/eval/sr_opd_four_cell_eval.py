@@ -12,7 +12,7 @@ from typing import Any
 
 from scape.eval.adapter_reload_audit import audit_saved_adapter, write_reload_audit
 from scape.eval.browsecomp_retrieval import RetrievalBackend, evidence_recall, open_retrieval
-from scape.eval.official_query_pool import load_official_384
+from scape.eval.official_query_pool import load_bcplus_830_split, load_official_384
 from scape.training.action_codec import STUDENT_NATIVE_TOOLS
 
 
@@ -66,7 +66,7 @@ def split_summaries(traces: list[dict[str, Any]], *, setting: str, retrieval_nam
     test_traces = [t for t in traces if t.get("official_split") == "test"]
     official = summarize_traces(test_traces, setting=setting, retrieval_name=retrieval_name)
     official["split"] = "official_test"
-    official["n_expected"] = 76
+    official["n_expected"] = 166
     return {"setting": setting, "all_pool": all_pool, "official_test": official, "primary_split": "official_test"}
 
 
@@ -99,7 +99,10 @@ def write_eval_outputs(
 
 
 def load_eval_pool(manifest: Path | None = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    return load_official_384(manifest=manifest)
+    if manifest is not None:
+        return load_official_384(manifest=manifest)
+    _train, test_rows, meta = load_bcplus_830_split()
+    return test_rows, meta
 
 
 def audit_adapter_map(adapter_map: dict[str, str]) -> list[dict[str, Any]]:

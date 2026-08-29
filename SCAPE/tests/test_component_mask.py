@@ -2,7 +2,14 @@ from __future__ import annotations
 
 import os
 
-from scape.adapters.components import assert_mask_diff_only, coalition_minus_mask, full_mask, minus_mask
+from scape.adapters.components import (
+    all_component_ids,
+    assert_mask_diff_only,
+    coalition_minus_mask,
+    full_mask,
+    minus_mask,
+    zero_mask,
+)
 from scape.adapters.harness_mask import apply_component_mask, only_toggle
 
 
@@ -34,3 +41,9 @@ def test_coalition_minus_mask_disables_all_targets():
     assert after["sentence_compress"] is False
     assert after["importance_tagging"] is False
     assert after["evidence_graph"] is True
+
+
+def test_zero_mask_disables_every_component():
+    mask = zero_mask()
+    assert set(mask) == set(all_component_ids())
+    assert all(enabled is False for enabled in mask.values())

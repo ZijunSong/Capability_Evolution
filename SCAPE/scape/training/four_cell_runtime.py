@@ -15,10 +15,19 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-from scape.adapters.components import full_mask, minus_mask
+from scape.adapters.components import all_component_ids, coalition_minus_mask, full_mask, minus_mask, zero_mask
 from scape.eval.adapter_reload_audit import audit_saved_adapter, write_reload_audit
 from scape.eval.browsecomp_retrieval import RetrievalBackend, hits_to_doc_store, open_retrieval
-from scape.eval.official_query_pool import attach_bcp_fields, load_official_384, load_train_queries, overlap_ids, official_test_subset
+from scape.eval.official_query_pool import (
+    BCPLUS_TEST,
+    BCPLUS_TRAIN,
+    SCORE_SPLIT_166,
+    attach_bcp_fields,
+    load_bcplus_830_split,
+    load_train_queries,
+    official_test_subset,
+    overlap_ids,
+)
 from scape.eval.sr_opd_four_cell_eval import search_metrics, split_summaries, summarize_traces, write_eval_outputs
 from scape.training.frozen_state_loader import (
     doc_store_from_points,
@@ -60,8 +69,149 @@ TEACHER_REGISTRY: dict[str, TeacherFn] = {
 }
 
 
+def component_ids_of(value: Any) -> list[str]:
+    """Parse a single id, comma-separated coalition, or `zero` (no V8D components)."""
+    if isinstance(value, (list, tuple)):
+        parts = [str(x).strip() for x in value if str(x).strip()]
+    else:
+        text = str(value or "").replace(";", ",")
+        parts = [p.strip() for p in text.split(",") if p.strip()]
+    if any(p.lower() == "zero" for p in parts):
+        if len(parts) != 1 or parts[0].lower() != "zero":
+            raise SystemExit("component zero cannot be mixed with other ids")
+        return []
+    known = set(all_component_ids())
+    unknown = [p for p in parts if p not in known]
+    if unknown:
+        raise SystemExit(
+            f"unknown component id(s) {unknown}; allowed: zero or {list(all_component_ids())}"
+        )
+    if not parts:
+        raise SystemExit("component id is empty; pass zero to disable all V8D components")
+    return parts
+
+
+def student_mask_for(component_id: Any) -> dict[str, bool]:
+    ids = component_ids_of(component_id)
+    if not ids:
+        return zero_mask()
+    if len(ids) == 1:
+        return minus_mask(ids[0])
+    return coalition_minus_mask(ids)
+
+
+def teacher_mask_for(component_id: Any) -> dict[str, bool]:
+    ids = component_ids_of(component_id)
+    if not ids:
+        return zero_mask()
+    mask = full_mask()
+    for cid in ids:
+        mask[cid] = True
+    return mask
+
+
+def generic_teacher_events_from_wm(
+    wm: dict[str, Any],
+    component_id: str,
+    *,
+    turn_id: int = 0,
+) -> list[Any]:
+    """Fallback Teacher for taxonomy ids that do not have a dedicated side-branch."""
+    from scape.training.opd_events import model_action, obs_transform
+    from scape.training.sentence_compress_teacher import documents_from_wm, score_doc
+
+    q = str(wm.get("query") or "")
+    docs = documents_from_wm(wm)
+    events = [
+        obs_transform(
+            component_id,
+            turn_id=turn_id,
+            observation={"owner": "teacher_full", "generic_teacher": True},
+            visible_to_student=False,
+            metadata={"owner": "teacher_full", "student_must_not_see": True},
+        )
+    ]
+    curated = {str(x) for x in (wm.get("curated_ids") or [])}
+    if not docs:
+        events.append(
+            model_action(
+                "search_corpus",
+                {"query": q},
+                turn_id=turn_id,
+                component_id=component_id,
+            )
+        )
+        return events
+    ranked = sorted(
+        ((did, text) for did, text in docs if did not in curated),
+        key=lambda it: (-score_doc(q, it[1]), it[0]),
+    )
+    add_ids = [did for did, _ in ranked[:2]] or [docs[0][0]]
+    events.append(
+        model_action(
+            "curate",
+            {"add_ids": add_ids, "remove_ids": []},
+            turn_id=turn_id,
+            component_id=component_id,
+        )
+    )
+    return events
+
+
+def _teacher_fn_for_one(component_id: str) -> TeacherFn:
+    registered = TEACHER_REGISTRY.get(component_id)
+    if registered is not None:
+        return registered
+
+    def _generic(point: StudentDecisionPoint) -> list[Any]:
+        wm = point.pre_action_snapshot.working_memory
+        return generic_teacher_events_from_wm(wm, component_id, turn_id=int(point.turn_id))
+
+    return _generic
+
+
 def teacher_for(component_id: str) -> TeacherFn | None:
-    return TEACHER_REGISTRY.get(component_id)
+    ids = component_ids_of(component_id)
+    if not ids:
+        return _teacher_fn_for_one("zero")
+    fns = [_teacher_fn_for_one(cid) for cid in ids]
+    if len(fns) == 1:
+        return fns[0]
+
+    def _combined(point: StudentDecisionPoint) -> list[Any]:
+        events: list[Any] = []
+        for fn in fns:
+            events.extend(fn(point))
+        return events
+
+    return _combined
+
+
+def teacher_events_from_wm_for(component_id: str, wm: dict[str, Any]) -> list[Any]:
+    from scape.training.adaptive_rerank_teacher import teacher_events_from_wm as adaptive_rerank_events_from_wm
+    from scape.training.auto_populate_teacher import teacher_events_from_wm as auto_populate_events_from_wm
+    from scape.training.sentence_compress_teacher import teacher_events_from_wm
+    from scape.training.token_budget_marker_teacher import teacher_events_from_wm as token_budget_marker_events_from_wm
+    from scape.training.verify_tool_teacher import teacher_events_from_wm as verify_tool_events_from_wm
+
+    builders = {
+        "auto_populate_first_search": auto_populate_events_from_wm,
+        "sentence_compress": teacher_events_from_wm,
+        "token_budget_marker": token_budget_marker_events_from_wm,
+        "adaptive_rerank_instruction": adaptive_rerank_events_from_wm,
+        "verify_tool": verify_tool_events_from_wm,
+    }
+    events: list[Any] = []
+    ids = component_ids_of(component_id)
+    if not ids:
+        return generic_teacher_events_from_wm(wm, "zero")
+    for cid in ids:
+        fn = builders.get(cid)
+        if fn is None:
+            events.extend(generic_teacher_events_from_wm(wm, cid))
+        else:
+            events.extend(fn(wm))
+    return events
 
 
 def cell_lambda(name: str, lambda_opd: float) -> float:
@@ -92,6 +242,7 @@ def build_manifest(args: argparse.Namespace, *, extra: dict[str, Any] | None = N
     return {
         "training_mode": mode,
         "component": args.component,
+        "component_ids": component_ids_of(args.component),
         "target_component": args.component,
         "rl_loss_fn": "cispo",
         "opd_loss": "sr_opd_ce",
@@ -126,7 +277,8 @@ def build_manifest(args: argparse.Namespace, *, extra: dict[str, Any] | None = N
         "tensor_parallel_size": getattr(args, "tensor_parallel_size", None),
         "seeds": list(getattr(args, "seeds", [args.seed])),
         "train_state_source": ("current_on_policy_rl_rollout" if args.component == "auto_populate_first_search" and not getattr(args, "train_states", None) else "train_states_5k_or_on_policy"),
-        "score_split": "official_test_76",
+        "score_split": SCORE_SPLIT_166,
+        "bcplus_split": f"{BCPLUS_TRAIN} train + {BCPLUS_TEST} test",
         "legacy_adapters_not_used": True,
         **dict(extra or {}),
     }
@@ -159,7 +311,7 @@ def doc_store_for_row(row: dict[str, Any], searcher: RetrievalBackend | None) ->
     return labeled_doc_store(row)
 
 
-def snap_from_state(qid: str, st: dict[str, Any], component_id: str):
+def snap_from_state(qid: str, st: dict[str, Any], component_id: str, *, harness_mask: dict[str, bool] | None = None):
     curated = [str(x) for x in (st.get("curated") or {})]
     pool = [str(x) for x in (st.get("pool") or {})]
     store = st.get("doc_store") or {}
@@ -169,10 +321,11 @@ def snap_from_state(qid: str, st: dict[str, Any], component_id: str):
             documents.append({"id": str(did), "text": str(rec.get("text") or "")[:2000]})
         else:
             documents.append({"id": str(did), "text": str(rec)[:2000]})
+    mask = harness_mask if harness_mask is not None else student_mask_for(component_id)
     return capture_snapshot(
         query_id=qid,
         step=int(st.get("step") or 0),
-        harness_mask=minus_mask(component_id),
+        harness_mask=mask,
         working_memory={
             "curated_ids": curated,
             "accessible_doc_ids": list(dict.fromkeys(pool + curated + list(store))),
@@ -285,6 +438,7 @@ def one_episode(
     rollout_idx: int,
     searcher: RetrievalBackend | None = None,
     teacher_mode: bool = False,
+    harness_mask: dict[str, bool] | None = None,
 ) -> tuple[list[StudentDecisionPoint], list[dict[str, Any]], float, dict[str, Any]]:
     from scape.eval.harmony_runtime import (
         build_continuation_prompt_ids,
@@ -312,7 +466,7 @@ def one_episode(
             pids = build_first_turn_prompt_ids(query, enc=enc)
         else:
             pids = build_continuation_prompt_ids(query, actions_obs=acts, wm_text=wm_text(st, auto_on=False), enc=enc)
-        pre = snap_from_state(qid, st, component_id)
+        pre = snap_from_state(qid, st, component_id, harness_mask=harness_mask)
         student_prefix = render_student_prompt(pre, component_id=component_id)
         if teacher_mode and component_id == "adaptive_rerank_instruction":
             action = {"name": "search_corpus", "arguments": {"query": query}}
@@ -347,7 +501,7 @@ def one_episode(
             old_lp = backend._teacher_forced_logprobs(old_prompt, old_act, require_grad=False)
         token_logprobs = [float(x) for x in old_lp.detach().cpu().tolist()] if old_lp.numel() else []
         old_mean = float(old_lp.mean().item()) if old_lp.numel() else 0.0
-        post = snap_from_state(qid, st, component_id)
+        post = snap_from_state(qid, st, component_id, harness_mask=harness_mask)
         points.append(
             StudentDecisionPoint(
                 episode_id=f"{qid}_r{rollout_idx}",
@@ -542,6 +696,7 @@ def eval_closed_loop(
     searcher,
     generate_batch: Callable[[Any], Any] | None = None,
     teacher_mode: bool = False,
+    harness_mask: dict[str, bool] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     if generate_batch is not None:
         from scape.training.batched_env_rollout import rollout_queries_batched, traces_from_groups
@@ -559,6 +714,7 @@ def eval_closed_loop(
             enc=enc,
             searcher=searcher,
             teacher_mode=teacher_mode,
+            harness_mask=harness_mask,
         )
         traces, leak = traces_from_groups(groups, rows, searcher=searcher)
         retrieval_name = searcher.name if searcher is not None else "none"
@@ -585,8 +741,17 @@ def eval_closed_loop(
             enc=enc,
             rollout_idx=0,
             searcher=searcher,
+            harness_mask=harness_mask,
         )
-        prefix = render_student_prompt(snap_from_state(row["query_id"], {"query": row["query"], "doc_store": {}, "curated": {}, "pool": {}}, component_id), component_id=component_id)
+        prefix = render_student_prompt(
+            snap_from_state(
+                row["query_id"],
+                {"query": row["query"], "doc_store": {}, "curated": {}, "pool": {}},
+                component_id,
+                harness_mask=harness_mask,
+            ),
+            component_id=component_id,
+        )
         if "compressed_teacher_view" in prefix or "VERIFY_RESULT_SECRET" in prefix:
             leak += 1
         search_q = str(stats.get("search_query") or row["query"])
@@ -614,17 +779,50 @@ def eval_closed_loop(
 
 
 def resolve_queries(args: argparse.Namespace) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
-    eval_rows, eval_meta = load_official_384(manifest=getattr(args, "eval_manifest", None))
-    train_path = getattr(args, "query_manifest", None)
-    train_rows, train_meta = load_train_queries(
-        manifest=Path(train_path) if train_path else None,
-        n_queries=args.n_queries,
-        exclude_eval_ids={r["query_id"] for r in eval_rows},
-    )
+    train_rows, test_rows, split_meta = load_bcplus_830_split(n_train=None)
+    test_ids = {r["query_id"] for r in test_rows}
+    custom_train = getattr(args, "query_manifest", None)
+    if custom_train:
+        extra, custom_meta = load_train_queries(
+            manifest=Path(custom_train),
+            n_queries=None,
+            exclude_eval_ids=test_ids,
+        )
+        allowed = {r["query_id"] for r in train_rows}
+        train_rows = [r for r in extra if r["query_id"] in allowed]
+        split_meta = dict(split_meta)
+        split_meta["custom_train_manifest"] = custom_meta
+    n_queries = getattr(args, "n_queries", None)
+    if n_queries not in {None, 0} and int(n_queries) < len(train_rows):
+        train_rows = train_rows[: int(n_queries)]
+    eval_manifest = getattr(args, "eval_manifest", None)
+    if eval_manifest:
+        from scape.eval.official_query_pool import load_query_manifest
+
+        eval_rows = attach_bcp_fields(load_query_manifest(Path(eval_manifest)))
+        eval_rows = [r for r in eval_rows if r["query_id"] in test_ids]
+        for rec in eval_rows:
+            rec["official_split"] = "test"
+        if not eval_rows:
+            eval_rows = test_rows
+    else:
+        eval_rows = test_rows
     train_rows = attach_bcp_fields(train_rows)
     overlap = overlap_ids(train_rows, eval_rows)
     if overlap:
         raise RuntimeError(f"train/eval query overlap: {overlap[:8]}")
+    eval_meta = {
+        **split_meta,
+        "query_count": len(eval_rows),
+        "official_test_count": len(eval_rows),
+        "official_test_expected": BCPLUS_TEST,
+        "score_split": SCORE_SPLIT_166,
+    }
+    train_meta = {
+        **split_meta,
+        "query_count": len(train_rows),
+        "using_full_train_split": len(train_rows) == BCPLUS_TRAIN,
+    }
     states_path = getattr(args, "train_states", None)
     frozen_limit = None if getattr(args, "n_train_states", None) in {None, 0} else int(args.n_train_states)
     if not states_path:
@@ -655,11 +853,6 @@ def validate_wiring(args: argparse.Namespace) -> dict[str, Any]:
     from scape.state.snapshot import EnvironmentSnapshot
     from scape.training.opd_dataset import project_and_materialize
     from scape.training.opd_projection import StudentActionSpaceProjector
-    from scape.training.auto_populate_teacher import teacher_events_from_wm as auto_populate_events_from_wm
-    from scape.training.sentence_compress_teacher import teacher_events_from_wm
-    from scape.training.token_budget_marker_teacher import teacher_events_from_wm as token_budget_marker_events_from_wm
-    from scape.training.adaptive_rerank_teacher import teacher_events_from_wm as adaptive_rerank_events_from_wm
-    from scape.training.verify_tool_teacher import teacher_events_from_wm as verify_tool_events_from_wm
 
     teacher_fn = teacher_for(args.component)
     if teacher_fn is None:
@@ -670,17 +863,11 @@ def validate_wiring(args: argparse.Namespace) -> dict[str, Any]:
         "documents": [{"id": "d_long", "text": ("Long noisy passage. " * 40) + train_rows[0]["query"]}],
         "curated_ids": [],
     }
-    event_builder = {
-        "auto_populate_first_search": auto_populate_events_from_wm,
-        "token_budget_marker": token_budget_marker_events_from_wm,
-        "adaptive_rerank_instruction": adaptive_rerank_events_from_wm,
-        "verify_tool": verify_tool_events_from_wm,
-    }.get(args.component, teacher_events_from_wm)
-    events = event_builder(wm)
+    events = teacher_events_from_wm_for(args.component, wm)
     snap = capture_snapshot(
         query_id=train_rows[0]["query_id"],
         step=0,
-        harness_mask=minus_mask(args.component),
+        harness_mask=student_mask_for(args.component),
         working_memory=wm,
     )
     projection, steps = project_and_materialize(
@@ -694,12 +881,15 @@ def validate_wiring(args: argparse.Namespace) -> dict[str, Any]:
     return {
         "ok": True,
         "component": args.component,
+        "component_ids": component_ids_of(args.component),
         "teacher_registered": True,
         "n_train_queries": len(train_rows),
         "n_eval_queries": len(eval_rows),
-        "eval_is_official_384": int(pool_meta["eval"]["query_count"]) == 384,
+        "eval_is_official_384": False,
+        "using_full_train_split": len(train_rows) == BCPLUS_TRAIN,
         "official_test_count": int(pool_meta["eval"].get("official_test_count") or 0),
-        "official_test_is_76": int(pool_meta["eval"].get("official_test_count") or 0) == 76,
+        "official_test_is_166": int(pool_meta["eval"].get("official_test_count") or 0) == BCPLUS_TEST,
+        "official_test_is_76": False,
         "train_states": pool_meta.get("frozen_states") or {},
         "n_frozen_states": len(frozen_points),
         "projection_kind": projection.kind.value,
@@ -1195,8 +1385,8 @@ def coerce_runtime_args(args: argparse.Namespace) -> argparse.Namespace:
         args.component = getattr(args, "target_component", "sentence_compress")
     if not hasattr(args, "train_steps"):
         args.train_steps = int(getattr(args, "max_steps", 64))
-    if not hasattr(args, "n_queries"):
-        args.n_queries = int(getattr(args, "batch_size", 32))
+    if not hasattr(args, "n_queries") or getattr(args, "n_queries", None) in {None, 0}:
+        args.n_queries = BCPLUS_TRAIN
     if not hasattr(args, "max_new_tokens"):
         args.max_new_tokens = 384
     if not hasattr(args, "gpu"):
@@ -1265,7 +1455,7 @@ def run_seeded_four_cell(args: argparse.Namespace) -> dict[str, Any]:
         "opd_loss": "sr_opd_ce",
         "rl_loss_fn": "cispo",
         "seeds": seeds,
-        "score_split": "official_test_76",
+        "score_split": SCORE_SPLIT_166,
         "legacy_adapters_not_used": True,
         "per_seed": {k: {"q1": v.get("q1_joint_one_optim"), "q2": v.get("q2_on_policy_projection"), "q3": v.get("q3_teacher_does_not_change_reward"), "out": str(root / f"seed{k}")} for k, v in per_seed.items()},
     }

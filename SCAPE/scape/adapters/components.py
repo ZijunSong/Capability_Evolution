@@ -150,6 +150,11 @@ def full_mask() -> dict[str, bool]:
     }
 
 
+def zero_mask() -> dict[str, bool]:
+    """Disable every V8D component (`--component zero`)."""
+    return {cid: False for cid in COMPONENT_TAXONOMY}
+
+
 def minus_mask(component_id: str, base: Mapping[str, bool] | None = None) -> dict[str, bool]:
     if component_id not in COMPONENT_TAXONOMY:
         raise KeyError(f"unknown component_id: {component_id}")

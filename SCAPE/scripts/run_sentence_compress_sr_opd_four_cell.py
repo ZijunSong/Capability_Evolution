@@ -14,8 +14,8 @@ Checklist:
   6. RL+OPD = CISPO FB + CE FB + one optim_step
   7. Per-seed adapter + RUN_MANIFEST (formal seed 42)
   8. Adapter reload audit (manual safetensors)
-  9. Generate actions on the official 384 pool
- 10. Report Legal / Recall@5 / tool cost only on official-test 76
+  9. Generate actions on the BC+ 166-query test split
+ 10. Report Legal / Recall@5 / tool cost on the official 166-query test set
 """
 
 from __future__ import annotations
@@ -41,12 +41,12 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="sentence_compress sr_opd_ce + CISPO four-cell")
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--component", default="sentence_compress")
-    p.add_argument("--training-mode", choices=("four_cell", "pure_opd_only", "rl_opd_only"), default="four_cell")
+    p.add_argument("--training-mode", choices=("four_cell", "rl", "rl_opd", "pure_opd_only", "rl_opd_only"), default="four_cell")
     p.add_argument("--base-model", default="")
     p.add_argument("--sft-adapter", default="")
     p.add_argument("--gpu", default="0", help="GPU index or auto for model-parallel loading across visible GPUs")
-    p.add_argument("--n-queries", type=int, default=64)
-    p.add_argument("--n-eval", type=int, default=None, help="Debug subset of the 384 pool. Formal run leaves this unset.")
+    p.add_argument("--n-queries", type=int, default=664, help="Train queries. Formal RL / RL+OPD uses the full BC+ train split (664).")
+    p.add_argument("--n-eval", type=int, default=None, help="Debug subset of the 166-query test split. Formal run leaves this unset.")
     p.add_argument("--group-size", type=int, default=8)
     p.add_argument("--max-turns", type=int, default=6)
     p.add_argument("--train-steps", type=int, default=8)
@@ -72,7 +72,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--enforce-eager", action="store_true", default=True)
     p.add_argument("--no-enforce-eager", action="store_false", dest="enforce_eager")
     p.add_argument("--no-on-policy-refresh", action="store_false", dest="on_policy_refresh")
-    p.add_argument("--on-policy-refresh", action="store_true", default=False)
+    p.add_argument("--on-policy-refresh", action="store_true", default=True)
     return p.parse_args()
 
 
@@ -90,8 +90,10 @@ def main() -> int:
         report = validate_wiring(args)
         (args.out / "VALIDATE.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
         print(json.dumps(report, indent=2), flush=True)
-        if not report.get("official_test_is_76"):
-            raise SystemExit(f"official test subset must be 76, got {report.get('official_test_count')}")
+        if not report.get("official_test_is_166"):
+            raise SystemExit(f"official test split must be 166, got {report.get('official_test_count')}")
+        if args.n_queries >= 664 and not report.get("using_full_train_split"):
+            raise SystemExit(f"full train split must be 664, got {report.get('n_train_queries')}")
         if report.get("teacher_leak_in_student_prefix"):
             raise SystemExit("Teacher compressed view leaked into Student prefix")
         return 0

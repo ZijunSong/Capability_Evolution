@@ -1,0 +1,12 @@
+{
+  "dataset": "browsecompplus",
+  "total_queries": 830,
+  "train_queries": 664,
+  "test_queries": 166,
+  "split": "830 = 664 train + 166 test",
+  "policy": "RL and RL+OPD train on the full 664-query train split and evaluate on the 166-query test split.",
+  "source_split_file": "SCAPE/external/harness-1/datagen/splits/browsecompplus_splits.json",
+  "train_ids_file": "train_query_ids.json",
+  "test_ids_file": "test_query_ids.json",
+  "train_construction": "sft_query_ids union rl_query_ids from official Harness-1 BrowseComp+ split"
+}

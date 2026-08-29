@@ -34,6 +34,7 @@ class LiveEpisode:
     pending_pre: Any = None
     pending_prefix: str = ""
     pending_pids: list[int] = field(default_factory=list)
+    harness_mask: dict[str, bool] | None = None
 
 
 def _build_prompt_ids(ep: LiveEpisode, enc) -> list[int]:
@@ -82,7 +83,7 @@ def _apply_generation(
         except Exception:
             prompt_text = ""
     prompt_text = prompt_text or ep.pending_prefix
-    post = snap_from_state(qid, ep.st, ep.component_id)
+    post = snap_from_state(qid, ep.st, ep.component_id, harness_mask=ep.harness_mask)
     ep.points.append(
         StudentDecisionPoint(
             episode_id=f"{qid}_r{ep.rollout_idx}",
@@ -127,6 +128,7 @@ def rollout_queries_batched(
     enc,
     searcher: RetrievalBackend | None = None,
     teacher_mode: bool = False,
+    harness_mask: dict[str, bool] | None = None,
 ) -> list[HybridRolloutGroup]:
     """Batch across queries and group members; step the env between turns."""
     from scape.eval.local_search_env import curated_recall, new_state
@@ -149,6 +151,7 @@ def rollout_queries_batched(
                     st=new_state(str(row["query"]), store),
                     component_id=component_id,
                     policy_version=policy_version,
+                    harness_mask=harness_mask,
                 )
             )
 
@@ -162,7 +165,7 @@ def rollout_queries_batched(
         request_slots: list[int] = []
         for i, ep in enumerate(live):
             pids = _build_prompt_ids(ep, enc)
-            pre = snap_from_state(str(ep.row["query_id"]), ep.st, component_id)
+            pre = snap_from_state(str(ep.row["query_id"]), ep.st, component_id, harness_mask=ep.harness_mask)
             ep.pending_pre = pre
             ep.pending_prefix = render_student_prompt(pre, component_id=component_id)
             ep.pending_pids = pids

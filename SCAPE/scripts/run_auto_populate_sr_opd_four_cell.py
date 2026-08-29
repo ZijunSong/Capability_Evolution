@@ -19,12 +19,12 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="auto_populate_first_search SR-OPD + CISPO four-cell")
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--component", default="auto_populate_first_search", choices=["auto_populate_first_search"])
-    p.add_argument("--training-mode", default="four_cell")
+    p.add_argument("--training-mode", default="four_cell", help="four_cell | rl | rl_opd | pure_opd_only | rl_opd_only")
     p.add_argument("--base-model", required=True)
     p.add_argument("--sft-adapter", default="")
     # Accept "auto" so CUDA_VISIBLE_DEVICES can provide a multi-GPU model-parallel group.
     p.add_argument("--gpu", default="0")
-    p.add_argument("--n-queries", type=int, default=64)
+    p.add_argument("--n-queries", type=int, default=664)
     p.add_argument("--n-eval", type=int, default=None)
     p.add_argument("--group-size", type=int, default=8)
     p.add_argument("--max-turns", type=int, default=6)
@@ -66,8 +66,10 @@ def main() -> int:
         report = validate_wiring(args)
         (args.out / "VALIDATE.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
         print(json.dumps(report, indent=2), flush=True)
-        if not report.get("official_test_is_76"):
-            raise SystemExit("official test subset must be 76")
+        if not report.get("official_test_is_166"):
+            raise SystemExit("official test split must be 166")
+        if args.n_queries >= 664 and not report.get("using_full_train_split"):
+            raise SystemExit(f"full train split must be 664, got {report.get('n_train_queries')}")
         if report.get("teacher_leak_in_student_prefix"):
             raise SystemExit("Teacher-only data leaked into Student prefix")
         return 0

@@ -1,4 +1,8 @@
-"""BrowseComp-Plus official 384-query pool and train-query resolution."""
+"""BrowseComp-Plus query pools.
+
+Canonical RL / RL+OPD split is the official BC+ 830 = 664 train + 166 test.
+The 384-query eval pool remains available for older four-cell artifacts.
+"""
 
 from __future__ import annotations
 
@@ -25,9 +29,13 @@ CANDIDATE_EVAL_384 = (
     Path("/mnt/songzijun/Capability_Evolution/SCAPE-EasyOPD/manifests/browsecomp_plus_eval_pool_384/query_manifest.json"),
 )
 CANDIDATE_SPLITS = (
+    REPO / "manifests" / "browsecomp_plus_830" / "SPLIT.json",
     SCOPE / "datagen" / "splits" / "browsecompplus_splits.json",
     REPO / "external" / "harness-1" / "datagen" / "splits" / "browsecompplus_splits.json",
     Path("/mnt/songzijun/Capability_Evolution/SCOPE/datagen/splits/browsecompplus_splits.json"),
+)
+CANDIDATE_BCPLUS_830 = (
+    REPO / "manifests" / "browsecomp_plus_830",
 )
 CANDIDATE_SENTENCE_STATES = (
     EASYOPD / "outputs" / "component_sweep_0818" / "h100_3_qwen3_faststart" / "sentence_compress" / "TRAIN_STATES_5K.jsonl",
@@ -37,6 +45,10 @@ CANDIDATE_SENTENCE_STATES = (
 )
 
 OFFICIAL_384_COUNT = 384
+BCPLUS_TOTAL = 830
+BCPLUS_TRAIN = 664
+BCPLUS_TEST = 166
+SCORE_SPLIT_166 = "bcplus_test_166"
 
 
 def first_existing(paths: tuple[Path, ...]) -> Path | None:
@@ -62,16 +74,58 @@ def default_split_file() -> Path | None:
     return first_existing(CANDIDATE_SPLITS)
 
 
+def default_bcplus_830_dir() -> Path | None:
+    return first_existing(CANDIDATE_BCPLUS_830)
+
+
 def default_sentence_train_states() -> Path | None:
     return first_existing(CANDIDATE_SENTENCE_STATES)
 
 
-def official_test_ids(split_file: Path | None = None) -> set[str]:
+def _unique_ids(values: list[Any]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        qid = str(value)
+        if not qid or qid in seen:
+            continue
+        seen.add(qid)
+        out.append(qid)
+    return out
+
+
+def _load_split_payload(split_file: Path | None = None) -> tuple[dict[str, Any], Path]:
     path = split_file or default_split_file()
     if path is None:
-        return set()
+        raise FileNotFoundError("BrowseComp+ split file not found")
     payload = json.loads(path.read_text(encoding="utf-8"))
-    return {str(x) for x in payload.get("test_query_ids") or []}
+    if path.name == "SPLIT.json":
+        parent = path.parent
+        train_path = parent / str(payload.get("train_ids_file") or "train_query_ids.json")
+        test_path = parent / str(payload.get("test_ids_file") or "test_query_ids.json")
+        payload = dict(payload)
+        if train_path.is_file():
+            payload["train_query_ids"] = json.loads(train_path.read_text(encoding="utf-8"))
+        if test_path.is_file():
+            payload["test_query_ids"] = json.loads(test_path.read_text(encoding="utf-8"))
+    return payload, path
+
+
+def official_train_ids(split_file: Path | None = None) -> list[str]:
+    payload, _path = _load_split_payload(split_file)
+    ids = payload.get("train_query_ids") or []
+    if not ids:
+        ids = list(payload.get("sft_query_ids") or []) + list(payload.get("rl_query_ids") or [])
+    return _unique_ids(ids)
+
+
+def official_test_id_list(split_file: Path | None = None) -> list[str]:
+    payload, _path = _load_split_payload(split_file)
+    return _unique_ids(payload.get("test_query_ids") or [])
+
+
+def official_test_ids(split_file: Path | None = None) -> set[str]:
+    return set(official_test_id_list(split_file))
 
 
 def tag_official_split(rows: list[dict[str, Any]], *, split_file: Path | None = None) -> list[dict[str, Any]]:
@@ -182,6 +236,59 @@ def attach_bcp_fields(rows: list[dict[str, Any]], *, bcp_root: Path | None = Non
             rec["gold_docids"] = golds.get(qid, [])
         attached.append(rec)
     return attached
+
+
+def _records_for_ids(ids: list[str], *, bcp_root: Path | None, official_split: str) -> list[dict[str, Any]]:
+    rows = [{"query_id": qid, "query": qid, "official_split": official_split} for qid in ids]
+    attached = attach_bcp_fields(rows, bcp_root=bcp_root)
+    for rec in attached:
+        rec["official_split"] = official_split
+    return attached
+
+
+def load_bcplus_830_split(
+    *,
+    split_file: Path | None = None,
+    bcp_root: Path | None = None,
+    n_train: int | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    """Load the canonical BC+ 830 = 664 train + 166 test split."""
+    payload, path = _load_split_payload(split_file)
+    train_ids = official_train_ids(path)
+    test_ids = official_test_id_list(path)
+    if len(train_ids) != BCPLUS_TRAIN or len(test_ids) != BCPLUS_TEST:
+        raise RuntimeError(
+            f"BC+ split must be {BCPLUS_TOTAL}={BCPLUS_TRAIN}+{BCPLUS_TEST}, "
+            f"got train={len(train_ids)} test={len(test_ids)} from {path}"
+        )
+    overlap = sorted(set(train_ids) & set(test_ids))
+    if overlap:
+        raise RuntimeError(f"BC+ train/test overlap: {overlap[:8]}")
+    train_rows = _records_for_ids(train_ids, bcp_root=bcp_root, official_split="train")
+    test_rows = _records_for_ids(test_ids, bcp_root=bcp_root, official_split="test")
+    used_train = list(train_rows)
+    if n_train not in {None, 0} and int(n_train) < len(used_train):
+        used_train = used_train[: int(n_train)]
+    meta = {
+        "path": str(path),
+        "pool_contract": "browsecomp_plus_830",
+        "split": f"{BCPLUS_TOTAL} = {BCPLUS_TRAIN} train + {BCPLUS_TEST} test",
+        "query_count_total": BCPLUS_TOTAL,
+        "train_available": BCPLUS_TRAIN,
+        "test_available": BCPLUS_TEST,
+        "query_count": len(used_train),
+        "official_test_count": len(test_rows),
+        "official_test_expected": BCPLUS_TEST,
+        "using_full_train_split": len(used_train) == BCPLUS_TRAIN,
+        "score_split": SCORE_SPLIT_166,
+        "sha256": sha256_file(path),
+        "source_counts": {
+            "total_queries": payload.get("total_queries", BCPLUS_TOTAL),
+            "train_queries": payload.get("train_queries", BCPLUS_TRAIN),
+            "test_queries": payload.get("test_queries", BCPLUS_TEST),
+        },
+    }
+    return used_train, test_rows, meta
 
 
 def load_official_384(*, manifest: Path | None = None, bcp_root: Path | None = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
