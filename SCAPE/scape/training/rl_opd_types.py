@@ -11,6 +11,12 @@ from scape.state.snapshot import EnvironmentSnapshot
 TRAINING_MODE_RL = "rl"
 TRAINING_MODE_PURE_OPD = "pure_opd"
 TRAINING_MODE_RL_OPD = "rl_opd"
+TRAINING_MODE_SCAPE_RL = "scape_rl"
+
+# k < 0 means every structurally valid action on the trajectory.
+OPD_STATES_ALL = -1
+OPD_LOSS_CE = "sr_opd_ce"
+OPD_LOSS_REVERSE_KL = "sr_opd_reverse_kl"
 
 UPDATE_RL_OPD_JOINT = "rl_opd_joint"
 UPDATE_RL_ONLY = "rl_only"
@@ -83,6 +89,7 @@ class HybridTrainingBatch:
     reward_stats: dict[str, Any] = field(default_factory=dict)
     skipped_teacher: bool = False
     update_type: str = UPDATE_RL_OPD_JOINT
+    opd_loss: str = "sr_opd_ce"
 
 
 @dataclass

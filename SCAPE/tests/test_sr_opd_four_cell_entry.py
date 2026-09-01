@@ -3,7 +3,7 @@ from pathlib import Path
 
 from scape.eval.official_query_pool import load_bcplus_830_split, load_official_384
 from scape.training.four_cell_runtime import TEACHER_REGISTRY, build_manifest, cells_for_mode, validate_wiring
-from scape.training.rl_opd_types import TRAINING_MODE_RL, TRAINING_MODE_RL_OPD
+from scape.training.rl_opd_types import TRAINING_MODE_RL, TRAINING_MODE_RL_OPD, TRAINING_MODE_SCAPE_RL
 
 
 def test_sentence_compress_teacher_registered():
@@ -59,6 +59,7 @@ def test_bcplus_830_split_is_664_train_166_test():
 def test_rl_and_rl_opd_cells():
     assert cells_for_mode(TRAINING_MODE_RL) == ("before", "rl")
     assert cells_for_mode(TRAINING_MODE_RL_OPD) == ("before", "rl_opd")
+    assert cells_for_mode(TRAINING_MODE_SCAPE_RL) == ("before", "scape_rl")
 
 
 def test_official_384_pool_present():
@@ -173,3 +174,26 @@ def test_manifest_marks_new_loss():
     assert man["harmony_encoding"] == "o200k_harmony"
     assert man["stop_token_ids"] == [200012, 200002]
     json.dumps(man)
+
+
+def test_manifest_scape_rl_uses_reverse_kl_and_all_actions():
+    class A:
+        training_mode = "scape_rl"
+        component = "sentence_compress"
+        lambda_opd = 0.1
+        group_size = 8
+        max_turns = 6
+        train_steps = 8
+        n_queries = 664
+        opd_states_per_trajectory = -1
+        opd_loss = "sr_opd_reverse_kl"
+        seed = 42
+        base_model = "x"
+        sft_adapter = ""
+        smoke = False
+
+    man = build_manifest(A())
+    assert man["opd_loss"] == "sr_opd_reverse_kl"
+    assert man["opd_states_per_trajectory"] == -1
+    assert man["protocol_complete_rl_opd"] is True
+    assert man["rl_loss_fn"] == "cispo"

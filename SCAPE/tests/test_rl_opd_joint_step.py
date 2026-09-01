@@ -85,6 +85,27 @@ def test_hybrid_substep_one_optimizer():
     assert metrics.update_type == UPDATE_RL_OPD_JOINT
 
 
+def test_scape_rl_substep_uses_reverse_kl_fb():
+    client = FakeTrainingClient()
+    metrics = _run(
+        training_client=client,
+        rl_datums=[{"n_tokens": 4}],
+        opd_datums=[_opd(2, 0.1)],
+        rl_loss_fn="cispo",
+        rl_loss_fn_config={"clip_high_threshold": 5},
+        lambda_opd=0.1,
+        adam_params={},
+        policy_version="v17",
+        opd_loss="sr_opd_reverse_kl",
+    )
+    assert client.calls == [
+        ("fb", "cispo", 1),
+        ("fb", "reverse_kl", 1),
+        ("opt",),
+    ]
+    assert metrics.n_opd_forward_backward == 1
+
+
 def test_lambda_zero_skips_opd_fb_when_no_opd_datums():
     client = FakeTrainingClient()
     metrics = _run(

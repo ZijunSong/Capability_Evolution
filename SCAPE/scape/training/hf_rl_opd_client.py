@@ -114,6 +114,58 @@ class HFDebugTrainingClient:
                 torch.cuda.empty_cache()
         return {"loss": total / max(1, n)}
 
+    def _opd_reverse_kl(self, datums: Sequence[Any]) -> dict[str, float]:
+        """KL(π_S(· | ξ^S) || π_T(· | ξ^T)) on the projected action span.
+
+        Teacher logits are a no-grad sidecar on the privileged prefix. Token
+        weights already carry λ / count, matching the CE OPD reduction.
+        """
+        from scape.training.sr_opd_loss import reverse_kl_per_token
+
+        device = self.backend._device
+        total = 0.0
+        n = 0
+        for raw in datums:
+            if isinstance(raw, TinkerOPDDatum):
+                prompt_ids = list(raw.prompt_token_ids)
+                n_p = len(prompt_ids)
+                resp_ids = list(raw.target_tokens[n_p:])
+                weights = list(raw.weights[n_p:])
+                teacher_ids = list(raw.teacher_prompt_token_ids or [])
+            else:
+                prompt_ids = list(raw.get("prompt_ids") or self.backend.encode(raw["prompt"]))
+                resp_ids = list(raw.get("target_ids") or self.backend.encode(raw["target_text"]))
+                weights = list(raw.get("weights") or [1.0] * len(resp_ids))
+                teacher_ids = list(raw.get("teacher_prompt_ids") or [])
+                if not teacher_ids and raw.get("prompt_full"):
+                    teacher_ids = list(self.backend.encode(str(raw["prompt_full"])))
+            if not resp_ids:
+                continue
+            prompt_ids, resp_ids = self._truncate_pair(prompt_ids, resp_ids)
+            if teacher_ids:
+                teacher_ids, _resp_t = self._truncate_pair(teacher_ids, resp_ids)
+            else:
+                teacher_ids = list(prompt_ids)
+            student_logits = self.backend._response_position_logits(
+                prompt_ids, resp_ids, require_grad=True
+            )
+            teacher_logits = self.backend._response_position_logits(
+                teacher_ids, resp_ids, require_grad=False
+            )
+            kl = reverse_kl_per_token(student_logits, teacher_logits)
+            w = torch.tensor(weights[: kl.numel()], device=device, dtype=kl.dtype)
+            if w.numel() != kl.numel():
+                w = torch.ones_like(kl)
+            row_loss = (kl * w).sum()
+            if row_loss.requires_grad:
+                row_loss.backward()
+            total += float(row_loss.detach().item())
+            n += 1
+            del student_logits, teacher_logits, kl, w, row_loss
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        return {"loss": total / max(1, n)}
+
     async def forward_backward_async(
         self,
         data: Sequence[Any],
@@ -126,6 +178,8 @@ class HFDebugTrainingClient:
         rows = list(data)
         if loss_fn == "cross_entropy":
             payload = self._opd_loss(rows)
+        elif loss_fn == "reverse_kl":
+            payload = self._opd_reverse_kl(rows)
         else:
             payload = self._cispo_backward(rows)
         self.calls.append(("fb", loss_fn, len(rows)))

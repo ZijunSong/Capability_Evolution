@@ -147,6 +147,22 @@ def test_valid_failures_allowed_format_errors_dropped():
     assert [p.turn_id for p in picked] == [0]
 
 
+def test_negative_k_keeps_every_action_on_the_trajectory():
+    points = [
+        _point(episode="e0", qid="q0", turn=t, reward=0.1, tools=["search_corpus"])
+        for t in range(6)
+    ]
+    picked = sample_decision_points(points, per_trajectory=-1, seed=0)
+    assert [p.turn_id for p in picked] == list(range(6))
+    subset = sample_decision_points(points, per_trajectory=3, seed=0)
+    assert len(subset) == 3
+
+
+def test_zero_k_samples_nothing():
+    points = [_point(episode="e0", qid="q0", turn=0, reward=0.1)]
+    assert sample_decision_points(points, per_trajectory=0, seed=0) == []
+
+
 def test_num_substeps_not_doubled():
     pairs = split_hybrid_substeps([1, 2, 3, 4], ["a", "b"], num_substeps=4)
     assert len(pairs) == 4

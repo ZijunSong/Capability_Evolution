@@ -126,7 +126,11 @@ def sample_decision_points(
     include_valid_failures: bool = True,
     include_format_errors: bool = False,
 ) -> list[StudentDecisionPoint]:
-    """Deterministic subset. Failures stay eligible; format errors do not."""
+    """Deterministic subset. Failures stay eligible; format errors do not.
+
+    ``per_trajectory < 0`` keeps every eligible action on the trajectory
+    (scape+rl). ``per_trajectory == 0`` samples nothing.
+    """
     eligible: list[StudentDecisionPoint] = []
     for point in points:
         if not point.structurally_valid:
@@ -136,7 +140,7 @@ def sample_decision_points(
         if (point.reward or 0.0) <= 0.0 and not include_valid_failures:
             continue
         eligible.append(point)
-    if per_trajectory <= 0 or not eligible:
+    if not eligible or per_trajectory == 0:
         return []
 
     by_ep: dict[str, list[StudentDecisionPoint]] = {}
@@ -144,6 +148,7 @@ def sample_decision_points(
         by_ep.setdefault(point.episode_id, []).append(point)
 
     picked: list[StudentDecisionPoint] = []
+    take_all = int(per_trajectory) < 0
     for episode_id, rows in sorted(by_ep.items()):
         rng = random.Random(int(hashlib.sha256(f"{seed}:{episode_id}".encode()).hexdigest(), 16) % (2**32))
 
@@ -153,7 +158,7 @@ def sample_decision_points(
             return (toolish, terminalish)
 
         ranked = sorted(rows, key=lambda p: (-score(p)[0], -score(p)[1], p.turn_id))
-        if len(ranked) <= per_trajectory:
+        if take_all or len(ranked) <= per_trajectory:
             chosen = ranked
         else:
             head = ranked[: max(1, per_trajectory // 2)]
@@ -221,6 +226,7 @@ def prepare_hybrid_batch(
     include_format_errors: bool = False,
     remove_constant_reward_groups: bool = True,
     projector: StudentActionSpaceProjector | None = None,
+    opd_loss: str = "sr_opd_ce",
 ) -> HybridTrainingBatch:
     """Extract OPD states before constant-reward RL filtering.
 
@@ -260,6 +266,7 @@ def prepare_hybrid_batch(
             lambda_opd=lambda_opd,
             encode_fn=encode_fn or default_encode,
             policy_version=policy_version,
+            opd_loss=opd_loss,
         )
         skipped_teacher = False
         projection_stats = {
@@ -284,6 +291,7 @@ def prepare_hybrid_batch(
         reward_stats=mean_reward(rewards),
         skipped_teacher=skipped_teacher,
         update_type=classify_update_type(n_rl=len(rl_datums), n_opd=len(opd_datums)),
+        opd_loss=str(opd_loss),
     )
 
 
@@ -313,6 +321,7 @@ async def hybrid_train_substep(
     projection_coverage: float = 0.0,
     reject_rate: float = 0.0,
     overlap_rate: float = 0.0,
+    opd_loss: str = "sr_opd_ce",
 ) -> HybridStepMetrics:
     """RL FB, then OPD FB, then exactly one optim_step.
 
@@ -347,9 +356,10 @@ async def hybrid_train_substep(
         n_rl_fb = 1
 
     if opd_list:
+        opd_fn = "reverse_kl" if str(opd_loss) == "sr_opd_reverse_kl" else "cross_entropy"
         maybe = training_client.forward_backward_async(
             opd_list,
-            loss_fn="cross_entropy",
+            loss_fn=opd_fn,
         )
         opd_result = await maybe if isinstance(maybe, Awaitable) else maybe
         n_opd_fb = 1
@@ -415,6 +425,7 @@ async def run_hybrid_training_step(
     opd_states_per_trajectory: int = 3,
     seed: int = 0,
     loop_state: HybridLoopState | None = None,
+    opd_loss: str = "sr_opd_ce",
 ) -> list[HybridStepMetrics]:
     """One rollout batch → matched hybrid substeps → policy version bump."""
     batch = prepare_hybrid_batch(
@@ -427,6 +438,7 @@ async def run_hybrid_training_step(
         encode_fn=encode_fn,
         opd_states_per_trajectory=opd_states_per_trajectory,
         seed=seed,
+        opd_loss=opd_loss,
     )
     metrics_out: list[HybridStepMetrics] = []
     pairs = split_hybrid_substeps(batch.rl_datums, batch.opd_datums, num_substeps=num_substeps)
@@ -445,6 +457,7 @@ async def run_hybrid_training_step(
             projection_coverage=float(batch.projection_stats.get("projection_coverage") or 0.0),
             reject_rate=float(batch.projection_stats.get("reject_rate") or 0.0),
             overlap_rate=float(batch.projection_stats.get("rl_opd_exact_target_overlap_rate") or 0.0),
+            opd_loss=opd_loss,
         )
         metrics_out.append(metrics)
         if loop_state is not None:

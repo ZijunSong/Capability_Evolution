@@ -47,6 +47,7 @@ from scape.training.rl_opd_types import (
     TRAINING_MODE_PURE_OPD,
     TRAINING_MODE_RL,
     TRAINING_MODE_RL_OPD,
+    TRAINING_MODE_SCAPE_RL,
     HybridRolloutGroup,
     StudentDecisionPoint,
 )
@@ -229,6 +230,8 @@ def cells_for_mode(training_mode: str | None) -> tuple[str, ...]:
         return ("before", "pure_opd")
     if training_mode == TRAINING_MODE_RL_OPD:
         return ("before", "rl_opd")
+    if training_mode == TRAINING_MODE_SCAPE_RL:
+        return ("before", "scape_rl")
     if training_mode == "pure_opd_only":
         return ("pure_opd",)
     if training_mode == "rl_opd_only":
@@ -239,20 +242,23 @@ def cells_for_mode(training_mode: str | None) -> tuple[str, ...]:
 def build_manifest(args: argparse.Namespace, *, extra: dict[str, Any] | None = None) -> dict[str, Any]:
     mode = getattr(args, "training_mode", "four_cell")
     lam = 0.0 if mode == TRAINING_MODE_RL else float(args.lambda_opd)
+    opd_loss = str(getattr(args, "opd_loss", None) or "sr_opd_ce")
+    if mode == TRAINING_MODE_SCAPE_RL:
+        opd_loss = str(getattr(args, "opd_loss", None) or "sr_opd_reverse_kl")
     return {
         "training_mode": mode,
         "component": args.component,
         "component_ids": component_ids_of(args.component),
         "target_component": args.component,
         "rl_loss_fn": "cispo",
-        "opd_loss": "sr_opd_ce",
+        "opd_loss": opd_loss,
         "lambda_opd": lam,
         "student_harness": "H_min",
         "teacher_harness": "H_full",
         "opd_state_source": "current_on_policy_rl_rollout",
         "joint_update_contract": "rl_fb+opd_fb+single_optim",
         "legacy_tool_token_kl_hook_used": False,
-        "protocol_complete_rl_opd": mode in {"four_cell", TRAINING_MODE_RL_OPD} and lam > 0,
+        "protocol_complete_rl_opd": mode in {"four_cell", TRAINING_MODE_RL_OPD, TRAINING_MODE_SCAPE_RL} and lam > 0,
         "protocol_name": PROTOCOL_COMPLETE_RL_OPD,
         "projection_schema_version": "scape_projection_v1",
         "group_size": args.group_size,
@@ -643,6 +649,7 @@ async def train_cell(
     opd_states_per_trajectory: int,
     component_id: str,
     teacher_fn: TeacherFn | None,
+    opd_loss: str = "sr_opd_ce",
 ) -> dict[str, Any]:
     if name in {"teacher", "before"} or train_steps <= 0:
         return {
@@ -670,6 +677,7 @@ async def train_cell(
             seed=step,
             remove_constant_reward_groups=False,
             include_format_errors=True,
+            opd_loss=opd_loss,
         )
         last_batch_stats = batch.projection_stats
         if name == "pure_opd":
@@ -689,6 +697,7 @@ async def train_cell(
             policy_version=policy_version,
             projection_coverage=float(batch.projection_stats.get("projection_coverage") or 0.0),
             reject_rate=float(batch.projection_stats.get("reject_rate") or 0.0),
+            opd_loss=opd_loss,
         )
         metrics_acc.append(m.to_dict())
     from scape.training.tinker_rl_opd_trainer import HybridLoopState
@@ -700,7 +709,9 @@ async def train_cell(
         "call_log": list(client.calls),
         "n_optimizer_steps": sum(1 for c in client.calls if c[0] == "opt"),
         "n_rl_forward_backward": sum(1 for c in client.calls if c[:2] == ("fb", "cispo")),
-        "n_opd_forward_backward": sum(1 for c in client.calls if c[:2] == ("fb", "cross_entropy")),
+        "n_opd_forward_backward": sum(
+            1 for c in client.calls if c[:2] in {("fb", "cross_entropy"), ("fb", "reverse_kl")}
+        ),
         "projection_stats": last_batch_stats,
         "substeps": metrics_acc,
         "backend": HFDebugTrainingClient.backend_name,
@@ -1280,6 +1291,7 @@ def run_four_cell(args: argparse.Namespace) -> dict[str, Any]:
                         opd_states_per_trajectory=args.opd_states_per_trajectory,
                         component_id=args.component,
                         teacher_fn=teacher_fn,
+                        opd_loss=str(getattr(args, "opd_loss", None) or "sr_opd_ce"),
                     )
                 )
                 rewards_after = [r for g in groups for r in g.terminal_rewards]
@@ -1323,6 +1335,7 @@ def run_four_cell(args: argparse.Namespace) -> dict[str, Any]:
                         opd_states_per_trajectory=args.opd_states_per_trajectory,
                         component_id=args.component,
                         teacher_fn=teacher_fn,
+                        opd_loss=str(getattr(args, "opd_loss", None) or "sr_opd_ce"),
                     )
                 )
             )
@@ -1430,6 +1443,9 @@ def run_four_cell(args: argparse.Namespace) -> dict[str, Any]:
         pool_meta=pool_meta["eval"],
     )
     rl_opd = cells.get("rl_opd", {}).get("train") or {}
+    scape_rl = cells.get("scape_rl", {}).get("train") or {}
+    joint = scape_rl or rl_opd
+    joint_cell_present = "scape_rl" in cells or "rl_opd" in cells
     summary = {
         "elapsed_sec": time.time() - t0,
         "manifest": manifest,
@@ -1440,9 +1456,9 @@ def run_four_cell(args: argparse.Namespace) -> dict[str, Any]:
         },
         "official_eval": official,
         "q1_joint_one_optim": (
-            int(rl_opd.get("n_rl_forward_backward") or 0) >= 1
-            and int(rl_opd.get("n_opd_forward_backward") or 0) >= 1
-            and int(rl_opd.get("n_optimizer_steps") or 0) == (0 if "rl_opd" not in cells else args.train_steps)
+            int(joint.get("n_rl_forward_backward") or 0) >= 1
+            and int(joint.get("n_opd_forward_backward") or 0) >= 1
+            and int(joint.get("n_optimizer_steps") or 0) == (0 if not joint_cell_present else args.train_steps)
         ),
         "q2_on_policy_projection": any(c.get("n_decision_points") for c in cells.values()),
         "q3_teacher_does_not_change_reward": all(c.get("reward_unchanged_by_teacher") for c in cells.values()),
@@ -1493,6 +1509,16 @@ def coerce_runtime_args(args: argparse.Namespace) -> argparse.Namespace:
         args.tensor_parallel_size = None
     if not hasattr(args, "max_model_len"):
         args.max_model_len = 8192
+    if getattr(args, "opd_states_per_trajectory", None) is None:
+        args.opd_states_per_trajectory = (
+            -1 if getattr(args, "training_mode", "") == TRAINING_MODE_SCAPE_RL else 3
+        )
+    if not getattr(args, "opd_loss", None):
+        args.opd_loss = (
+            "sr_opd_reverse_kl"
+            if getattr(args, "training_mode", "") == TRAINING_MODE_SCAPE_RL
+            else "sr_opd_ce"
+        )
     if not hasattr(args, "eval_max_turns"):
         from scape.eval.eval_defaults import HARNESS1_EVAL_MAX_TURNS
 
@@ -1540,7 +1566,7 @@ def run_seeded_four_cell(args: argparse.Namespace) -> dict[str, Any]:
         per_seed[str(seed)] = run_four_cell(child)
     payload = {
         "component": args.component,
-        "opd_loss": "sr_opd_ce",
+        "opd_loss": str(getattr(args, "opd_loss", None) or "sr_opd_ce"),
         "rl_loss_fn": "cispo",
         "seeds": seeds,
         "score_split": SCORE_SPLIT_166,

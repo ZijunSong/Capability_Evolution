@@ -135,6 +135,23 @@ def render_student_prompt(snapshot: EnvironmentSnapshot, *, component_id: str = 
     )
 
 
+def render_teacher_prompt(snapshot: EnvironmentSnapshot, *, component_id: str = "") -> str:
+    """Privileged prefix from the full harness. Used only as a no-grad sidecar."""
+    renderer = DualViewRenderer()
+    dual = renderer.render_pair(
+        snapshot,
+        component_id=component_id or None,
+        student_mask=snapshot.harness_mask,
+    )
+    full_view = dict(dual.full_view)
+    return (
+        f"System: Harness full view ({component_id or 'component'} ON).\n"
+        f"Query: {snapshot.query_id}\n"
+        f"State:\n{json.dumps(full_view, ensure_ascii=False)}\n"
+        f"Assistant:"
+    )
+
+
 def prompt_has_teacher_leak(prompt: str) -> bool:
     lowered = prompt.lower()
     return any(marker.lower() in lowered for marker in TEACHER_ONLY_PROMPT_MARKERS)
@@ -171,6 +188,7 @@ def materialize(
         prompt = render_student_prompt(shadow, component_id=cid)
         if prompt_has_teacher_leak(prompt):
             break
+        teacher_prompt = render_teacher_prompt(shadow, component_id=cid)
         target_text = render_action(action)
         target_action = {
             "name": action.name,
@@ -188,6 +206,7 @@ def materialize(
                     "realizability": report.to_dict(),
                     "legal_tools": legal_tool_names(harness_mask=mask),
                     "no_teacher_observation_in_student_prefix": True,
+                    "prompt_full": teacher_prompt,
                 },
                 student_snapshot=shadow.to_dict(),
                 source_event_ids=list(action.source_event_ids),

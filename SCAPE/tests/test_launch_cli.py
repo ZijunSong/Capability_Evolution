@@ -24,6 +24,7 @@ from scape.training.rl_opd_types import (
     TRAINING_MODE_PURE_OPD,
     TRAINING_MODE_RL,
     TRAINING_MODE_RL_OPD,
+    TRAINING_MODE_SCAPE_RL,
 )
 
 
@@ -57,6 +58,8 @@ def test_train_method_mapping():
     assert train_method_to_mode("rl+opd") == TRAINING_MODE_RL_OPD
     assert train_method_to_mode("rl") == TRAINING_MODE_RL
     assert train_method_to_mode("rl_opd") == TRAINING_MODE_RL_OPD
+    assert train_method_to_mode("scape+rl") == TRAINING_MODE_SCAPE_RL
+    assert train_method_to_mode("scape_rl") == TRAINING_MODE_SCAPE_RL
 
 
 def test_parse_train_cli():
@@ -86,6 +89,43 @@ def test_parse_train_cli():
     assert args.component == "sentence_compress,verify_tool"
     assert args.n_queries == 664
     assert args.validate_only is True
+    assert args.opd_states_per_trajectory == 3
+    assert args.opd_loss == "sr_opd_ce"
+
+
+def test_parse_scape_rl_defaults_all_actions_and_reverse_kl():
+    args, spec = parse_train_args(
+        [
+            "--train_method",
+            "scape+rl",
+            "--component",
+            "sentence_compress",
+            "--out",
+            "/tmp/scape-rl-test",
+        ]
+    )
+    assert spec.train_method == "scape+rl"
+    assert spec.training_mode == TRAINING_MODE_SCAPE_RL
+    assert args.opd_states_per_trajectory == -1
+    assert args.opd_loss == "sr_opd_reverse_kl"
+    assert args.lambda_opd == 0.1
+
+
+def test_parse_scape_rl_can_override_k():
+    args, _spec = parse_train_args(
+        [
+            "--train_method",
+            "scape+rl",
+            "--component",
+            "zero",
+            "--opd-states-per-trajectory",
+            "5",
+            "--out",
+            "/tmp/scape-rl-k",
+        ]
+    )
+    assert args.opd_states_per_trajectory == 5
+    assert args.opd_loss == "sr_opd_reverse_kl"
 
 
 def test_parse_eval_cli_space_separated_components():

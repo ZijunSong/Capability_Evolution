@@ -5,7 +5,12 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 
-from scape.training.sr_opd_loss import compute_sr_opd_ce, sr_opd_ce_from_logits
+from scape.training.sr_opd_loss import (
+    compute_sr_opd_ce,
+    compute_sr_opd_reverse_kl,
+    reverse_kl_per_token,
+    sr_opd_ce_from_logits,
+)
 
 
 def test_formal_loss_has_no_component_branch():
@@ -83,3 +88,29 @@ def test_deterministic_overfit_lowers_sr_opd_ce():
     assert losses[-1] < losses[0] * 0.5
     assert exact[-1] > exact[0]
     assert exact[-1] >= 0.8
+
+
+def test_reverse_kl_matches_manual_and_grads_student_only():
+    torch.manual_seed(0)
+    student = torch.randn(4, 8, requires_grad=True)
+    teacher = torch.randn(4, 8, requires_grad=True)
+    mask = torch.tensor([1.0, 1.0, 0.0, 1.0])
+    loss = compute_sr_opd_reverse_kl(student, teacher, mask)
+    loss.backward()
+    assert student.grad is not None
+    assert teacher.grad is None
+    assert float(student.grad[2].abs().sum()) == 0.0
+    assert float(student.grad[0].abs().sum()) > 0.0
+    s_logp = torch.nn.functional.log_softmax(student.detach(), dim=-1)
+    t_logp = torch.nn.functional.log_softmax(teacher.detach(), dim=-1)
+    expected = (s_logp.exp() * (s_logp - t_logp)).sum(dim=-1)
+    manual = (expected * mask).sum() / mask.sum()
+    assert abs(float(loss.detach()) - float(manual)) < 1e-5
+
+
+def test_reverse_kl_zero_when_distributions_match():
+    logits = torch.randn(3, 5)
+    mask = torch.ones(3)
+    loss = compute_sr_opd_reverse_kl(logits, logits.clone(), mask)
+    assert float(loss) < 1e-5
+    assert reverse_kl_per_token(logits, logits).abs().max() < 1e-5

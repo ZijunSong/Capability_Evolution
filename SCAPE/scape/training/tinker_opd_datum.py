@@ -29,6 +29,8 @@ class TinkerOPDDatum:
     projection_confidence: float = 1.0
     target_action: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
+    teacher_prompt_token_ids: list[int] = field(default_factory=list)
+    opd_loss: str = "sr_opd_ce"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -62,6 +64,7 @@ def build_tinker_opd_datums(
     lambda_opd: float,
     encode_fn: EncodeFn | None = None,
     policy_version: str,
+    opd_loss: str = "sr_opd_ce",
 ) -> list[TinkerOPDDatum]:
     """One datum per materialized ALIGN/DIRECT Student tool call."""
     encode = encode_fn or default_encode
@@ -84,6 +87,8 @@ def build_tinker_opd_datums(
     for step, n_tok in zip(steps, counts):
         prompt_ids = encode(step.prompt_reduced)
         target_ids = encode(step.target_text)
+        teacher_prompt = str((step.metadata or {}).get("prompt_full") or "")
+        teacher_ids = encode(teacher_prompt) if teacher_prompt else []
         conf = float(step.projection_confidence if step.projection_confidence else step.weight or 1.0)
         token_w = float(lambda_opd) * conf / denom
         mask = list(step.token_mask) if step.token_mask is not None else [True] * len(target_ids)
@@ -107,6 +112,8 @@ def build_tinker_opd_datums(
                 n_supervised_tokens=n_tok,
                 projection_confidence=conf,
                 target_action=parsed,
+                teacher_prompt_token_ids=teacher_ids,
+                opd_loss=str(opd_loss),
                 metadata={
                     "projection_kind": step.projection_kind,
                     "source_event_ids": list(step.source_event_ids),

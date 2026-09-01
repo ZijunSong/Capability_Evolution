@@ -4,7 +4,7 @@
 Example:
   python scripts/run_train.py \\
     --harness Harness-1 --benchmark BC+ --model_name harness-1 \\
-    --train_method rl+opd --component sentence_compress verify_tool
+    --train_method scape+rl --component sentence_compress verify_tool
 """
 
 from __future__ import annotations
@@ -31,7 +31,6 @@ def main(argv: list[str] | None = None) -> int:
     args.train_steps = int(args.train_steps)
     args.max_steps = args.train_steps
     args.seeds = [int(args.seed)]
-    args.opd_states_per_trajectory = 3
     args.on_policy_refresh = True
     args.gpu_schedule = "scheme_a"
     args.enforce_eager = True
@@ -44,6 +43,8 @@ def main(argv: list[str] | None = None) -> int:
         "model_name": spec.model_name,
         "train_method": spec.train_method,
         "training_mode": spec.training_mode,
+        "opd_loss": args.opd_loss,
+        "opd_states_per_trajectory": args.opd_states_per_trajectory,
         "component": spec.coalition,
         "component_ids": list(spec.components),
         "base_model": str(spec.base_model),
