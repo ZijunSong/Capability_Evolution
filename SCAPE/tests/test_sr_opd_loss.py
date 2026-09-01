@@ -8,6 +8,7 @@ import torch.nn as nn
 from scape.training.sr_opd_loss import (
     compute_sr_opd_ce,
     compute_sr_opd_reverse_kl,
+    compute_sr_opd_sampled_gap,
     reverse_kl_per_token,
     sr_opd_ce_from_logits,
 )
@@ -114,3 +115,27 @@ def test_reverse_kl_zero_when_distributions_match():
     loss = compute_sr_opd_reverse_kl(logits, logits.clone(), mask)
     assert float(loss) < 1e-5
     assert reverse_kl_per_token(logits, logits).abs().max() < 1e-5
+
+
+def test_sampled_gap_zero_when_logprobs_match():
+    lp = torch.tensor([-0.2, -1.1, -0.4], requires_grad=True)
+    loss = compute_sr_opd_sampled_gap(lp, lp.detach())
+    assert abs(float(loss.detach())) < 1e-6
+
+
+def test_sampled_gap_grads_student_only_and_token_mean():
+    torch.manual_seed(0)
+    student = torch.tensor([-1.0, -2.0, -0.5], requires_grad=True)
+    teacher = torch.tensor([-0.2, -0.3, -0.4])
+    mask = torch.tensor([1.0, 0.0, 1.0])
+    loss = compute_sr_opd_sampled_gap(student, teacher, mask, gate_beta=5.0)
+    loss.backward()
+    assert student.grad is not None
+    assert float(student.grad[1].abs()) == 0.0
+    assert float(student.grad[0].abs()) > 0.0
+    assert float(student.grad[2].abs()) > 0.0
+    delta = (teacher - student.detach())
+    gate = torch.sigmoid(5.0 * delta)
+    gap = teacher - student.detach()
+    expected = (gate * gap * mask).sum() / mask.sum()
+    assert abs(float(loss.detach()) - float(expected)) < 1e-5

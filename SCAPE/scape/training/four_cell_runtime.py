@@ -20,15 +20,32 @@ from scape.eval.adapter_reload_audit import audit_saved_adapter, write_reload_au
 from scape.eval.browsecomp_retrieval import RetrievalBackend, hits_to_doc_store, open_retrieval
 from scape.eval.official_query_pool import (
     BCPLUS_TEST,
+    BCPLUS_TOTAL,
     BCPLUS_TRAIN,
     SCORE_SPLIT_166,
+    SCORE_SPLIT_830,
     attach_bcp_fields,
+    load_bcplus_830_full,
     load_bcplus_830_split,
     load_train_queries,
     official_test_subset,
     overlap_ids,
 )
-from scape.eval.sr_opd_four_cell_eval import search_metrics, split_summaries, summarize_traces, write_eval_outputs
+from scape.eval.sec_corpus import (
+    SEC_TRAIN_POOL_NAME,
+    attach_sec_doc_stores,
+    default_sec_corpus_root,
+    default_sec_rl_data,
+    load_sec_rl_queries,
+    open_sec_retrieval,
+)
+from scape.eval.sr_opd_four_cell_eval import (
+    pack_closed_loop_summary,
+    search_metrics,
+    split_summaries,
+    summarize_traces,
+    write_eval_outputs,
+)
 from scape.training.frozen_state_loader import (
     doc_store_from_points,
     groups_from_frozen_points,
@@ -49,6 +66,9 @@ from scape.training.rl_opd_types import (
     TRAINING_MODE_RL_OPD,
     TRAINING_MODE_SCAPE_RL,
     HybridRolloutGroup,
+    OPD_LOSS_SAMPLED_GAP,
+    SCAPE_RL_LAMBDA_OPD,
+    SCAPE_RL_OPD_GATE_BETA,
     StudentDecisionPoint,
 )
 from scape.training.auto_populate_teacher import teacher_events_from_point as auto_populate_events_from_point
@@ -221,7 +241,20 @@ def cell_lambda(name: str, lambda_opd: float) -> float:
     return float(lambda_opd)
 
 
-def cells_for_mode(training_mode: str | None) -> tuple[str, ...]:
+def cells_for_mode(training_mode: str | None, *, train_only: bool = False) -> tuple[str, ...]:
+    """Four-cell protocol, or the single training cell used by ``run_train.py``."""
+    only = {
+        TRAINING_MODE_RL: ("rl",),
+        TRAINING_MODE_PURE_OPD: ("pure_opd",),
+        TRAINING_MODE_RL_OPD: ("rl_opd",),
+        TRAINING_MODE_SCAPE_RL: ("scape_rl",),
+        "rl_only": ("rl",),
+        "pure_opd_only": ("pure_opd",),
+        "rl_opd_only": ("rl_opd",),
+        "scape_rl_only": ("scape_rl",),
+    }
+    if train_only and training_mode in only:
+        return only[training_mode]
     if training_mode in {None, "", "four_cell"}:
         return CELLS
     if training_mode == TRAINING_MODE_RL:
@@ -232,11 +265,23 @@ def cells_for_mode(training_mode: str | None) -> tuple[str, ...]:
         return ("before", "rl_opd")
     if training_mode == TRAINING_MODE_SCAPE_RL:
         return ("before", "scape_rl")
-    if training_mode == "pure_opd_only":
-        return ("pure_opd",)
-    if training_mode == "rl_opd_only":
-        return ("rl_opd",)
+    if training_mode in only:
+        return only[training_mode]
     return CELLS
+
+
+def is_scape_rl_mode(args: argparse.Namespace | None = None, *, training_mode: str | None = None) -> bool:
+    mode = training_mode if training_mode is not None else str(getattr(args, "training_mode", "") or "")
+    return mode == TRAINING_MODE_SCAPE_RL
+
+
+def uses_bcplus_830_eval(args: argparse.Namespace) -> bool:
+    split = str(getattr(args, "score_split", "") or "")
+    if split == SCORE_SPLIT_830:
+        return True
+    if split == SCORE_SPLIT_166:
+        return False
+    return is_scape_rl_mode(args)
 
 
 def build_manifest(args: argparse.Namespace, *, extra: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -244,7 +289,7 @@ def build_manifest(args: argparse.Namespace, *, extra: dict[str, Any] | None = N
     lam = 0.0 if mode == TRAINING_MODE_RL else float(args.lambda_opd)
     opd_loss = str(getattr(args, "opd_loss", None) or "sr_opd_ce")
     if mode == TRAINING_MODE_SCAPE_RL:
-        opd_loss = str(getattr(args, "opd_loss", None) or "sr_opd_reverse_kl")
+        opd_loss = str(getattr(args, "opd_loss", None) or OPD_LOSS_SAMPLED_GAP)
     return {
         "training_mode": mode,
         "component": args.component,
@@ -253,6 +298,7 @@ def build_manifest(args: argparse.Namespace, *, extra: dict[str, Any] | None = N
         "rl_loss_fn": "cispo",
         "opd_loss": opd_loss,
         "lambda_opd": lam,
+        "opd_gate_beta": float(getattr(args, "opd_gate_beta", SCAPE_RL_OPD_GATE_BETA) or SCAPE_RL_OPD_GATE_BETA),
         "student_harness": "H_min",
         "teacher_harness": "H_full",
         "opd_state_source": "current_on_policy_rl_rollout",
@@ -283,9 +329,25 @@ def build_manifest(args: argparse.Namespace, *, extra: dict[str, Any] | None = N
         "tensor_parallel_size": getattr(args, "tensor_parallel_size", None),
         "seeds": list(getattr(args, "seeds", [args.seed])),
         "train_state_source": ("current_on_policy_rl_rollout" if args.component == "auto_populate_first_search" and not getattr(args, "train_states", None) else "train_states_5k_or_on_policy"),
-        "score_split": SCORE_SPLIT_166,
-        "bcplus_split": f"{BCPLUS_TRAIN} train + {BCPLUS_TEST} test",
+        "score_split": SCORE_SPLIT_830 if is_scape_rl_mode(args, training_mode=mode) else SCORE_SPLIT_166,
+        "bcplus_split": (
+            f"{BCPLUS_TOTAL} = {BCPLUS_TRAIN}+{BCPLUS_TEST}"
+            if is_scape_rl_mode(args, training_mode=mode)
+            else f"{BCPLUS_TRAIN} train + {BCPLUS_TEST} test"
+        ),
+        "train_pool": (
+            SEC_TRAIN_POOL_NAME
+            if is_scape_rl_mode(args, training_mode=mode)
+            else "bcplus_train_664"
+        ),
+        "rl_data": str(getattr(args, "rl_data", None) or default_sec_rl_data())
+        if is_scape_rl_mode(args, training_mode=mode)
+        else None,
+        "sec_corpus_root": str(getattr(args, "sec_corpus_root", None) or default_sec_corpus_root())
+        if is_scape_rl_mode(args, training_mode=mode)
+        else None,
         "legacy_adapters_not_used": True,
+        "train_only": bool(getattr(args, "train_only", False)),
         **dict(extra or {}),
     }
 
@@ -317,8 +379,14 @@ def doc_store_for_row(
     if searcher is not None and searcher.name != "none":
         hits = searcher.search(str(row.get("query") or ""), int(k))
         store = hits_to_doc_store(hits)
+        if row.get("seed_doc_store"):
+            seeded = dict(row["seed_doc_store"])
+            seeded.update(store)
+            store = seeded
         if store:
             return store
+    if row.get("seed_doc_store"):
+        return dict(row["seed_doc_store"])
     return labeled_doc_store(row)
 
 
@@ -545,6 +613,7 @@ def one_episode(
                     post_action_snapshot=post,
                     reward=None,
                     structurally_valid=valid,
+                    student_prompt_token_ids=list(prompt_ids),
                 )
             )
         rows.append(
@@ -650,6 +719,7 @@ async def train_cell(
     component_id: str,
     teacher_fn: TeacherFn | None,
     opd_loss: str = "sr_opd_ce",
+    opd_gate_beta: float = SCAPE_RL_OPD_GATE_BETA,
 ) -> dict[str, Any]:
     if name in {"teacher", "before"} or train_steps <= 0:
         return {
@@ -678,6 +748,7 @@ async def train_cell(
             remove_constant_reward_groups=False,
             include_format_errors=True,
             opd_loss=opd_loss,
+            opd_gate_beta=opd_gate_beta,
         )
         last_batch_stats = batch.projection_stats
         if name == "pure_opd":
@@ -710,7 +781,9 @@ async def train_cell(
         "n_optimizer_steps": sum(1 for c in client.calls if c[0] == "opt"),
         "n_rl_forward_backward": sum(1 for c in client.calls if c[:2] == ("fb", "cispo")),
         "n_opd_forward_backward": sum(
-            1 for c in client.calls if c[:2] in {("fb", "cross_entropy"), ("fb", "reverse_kl")}
+            1
+            for c in client.calls
+            if c[:2] in {("fb", "cross_entropy"), ("fb", "sampled_gap"), ("fb", "reverse_kl")}
         ),
         "projection_stats": last_batch_stats,
         "substeps": metrics_acc,
@@ -737,6 +810,7 @@ def eval_closed_loop(
     temperature: float = 0.0,
     search_k: int | None = None,
     doc_store_k: int | None = None,
+    primary_split: str = "official_test",
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     from scape.eval.eval_defaults import (
         HARNESS1_EVAL_DOC_STORE_K,
@@ -771,18 +845,20 @@ def eval_closed_loop(
         traces, leak = traces_from_groups(groups, rows, searcher=searcher)
         retrieval_name = searcher.name if searcher is not None else "none"
         split = split_summaries(traces, setting="closed_loop", retrieval_name=retrieval_name, eval_rows=rows)
-        official = dict(split["official_test"])
-        official["teacher_leak_rate"] = leak / max(1, len(rows))
-        official["all_pool"] = split["all_pool"]
-        official["primary_split"] = "official_test"
-        official["n_all_pool"] = len(traces)
-        official["n_official_test"] = official.get("n_queries")
-        official["max_turns"] = int(max_turns)
-        official["max_new_tokens"] = int(max_new)
-        official["temperature"] = float(temperature)
-        official["search_k"] = int(search_k)
-        official["doc_store_k"] = int(doc_store_k)
-        official["sample"] = bool(sample)
+        official = pack_closed_loop_summary(
+            split,
+            leak=leak,
+            n_rows=len(rows),
+            primary_split=primary_split,
+            extra={
+                "max_turns": int(max_turns),
+                "max_new_tokens": int(max_new),
+                "temperature": float(temperature),
+                "search_k": int(search_k),
+                "doc_store_k": int(doc_store_k),
+                "sample": bool(sample),
+            },
+        )
         return official, traces
     traces: list[dict[str, Any]] = []
     leak = 0
@@ -828,22 +904,75 @@ def eval_closed_loop(
         )
     retrieval_name = searcher.name if searcher is not None else "none"
     split = split_summaries(traces, setting="closed_loop", retrieval_name=retrieval_name, eval_rows=rows)
-    official = dict(split["official_test"])
-    official["teacher_leak_rate"] = leak / max(1, len(rows))
-    official["all_pool"] = split["all_pool"]
-    official["primary_split"] = "official_test"
-    official["n_all_pool"] = len(traces)
-    official["n_official_test"] = official.get("n_queries")
-    official["max_turns"] = int(max_turns)
-    official["max_new_tokens"] = int(max_new)
-    official["temperature"] = float(temperature)
-    official["search_k"] = int(search_k)
-    official["doc_store_k"] = int(doc_store_k)
-    official["sample"] = bool(sample)
+    official = pack_closed_loop_summary(
+        split,
+        leak=leak,
+        n_rows=len(rows),
+        primary_split=primary_split,
+        extra={
+            "max_turns": int(max_turns),
+            "max_new_tokens": int(max_new),
+            "temperature": float(temperature),
+            "search_k": int(search_k),
+            "doc_store_k": int(doc_store_k),
+            "sample": bool(sample),
+        },
+    )
     return official, traces
 
 
 def resolve_queries(args: argparse.Namespace) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    custom_train = getattr(args, "query_manifest", None)
+    n_queries = getattr(args, "n_queries", None)
+    if is_scape_rl_mode(args):
+        train_rows, train_src = load_sec_rl_queries(
+            getattr(args, "rl_data", None) or default_sec_rl_data(),
+            n_queries=n_queries,
+            query_file=Path(custom_train) if custom_train else None,
+            corpus_root=getattr(args, "sec_corpus_root", None) or default_sec_corpus_root(),
+        )
+        if not getattr(args, "validate_only", False) and not getattr(args, "dry_run", False):
+            train_src["doc_store"] = attach_sec_doc_stores(
+                train_rows,
+                corpus_root=getattr(args, "sec_corpus_root", None) or default_sec_corpus_root(),
+            )
+        eval_rows, eval_src = load_bcplus_830_full()
+        overlap = overlap_ids(train_rows, eval_rows)
+        train_meta = {
+            **train_src,
+            "score_split": SCORE_SPLIT_830,
+        }
+        eval_meta = {
+            **eval_src,
+            "official_test_count": BCPLUS_TEST,
+            "official_test_expected": BCPLUS_TEST,
+            "eval_count": len(eval_rows),
+        }
+        states_path = getattr(args, "train_states", None)
+        frozen_limit = None if getattr(args, "n_train_states", None) in {None, 0} else int(args.n_train_states)
+        if not states_path:
+            frozen_points, frozen_meta = [], {"found": False, "path": None, "n_states": 0, "source": "current_on_policy_rl_rollout"}
+        else:
+            frozen_points, frozen_meta = load_train_states(
+                Path(states_path),
+                component_id=getattr(args, "component", "sentence_compress"),
+                limit=frozen_limit,
+            )
+        if frozen_points:
+            by_q = {p.query_id: True for p in frozen_points}
+            for row in train_rows:
+                store = doc_store_from_points(frozen_points, row["query_id"])
+                if store:
+                    row["frozen_doc_store"] = store
+            frozen_meta["n_train_rows_with_docs"] = sum(1 for r in train_rows if r.get("frozen_doc_store"))
+            frozen_meta["n_frozen_query_overlap_train"] = sum(1 for r in train_rows if r["query_id"] in by_q)
+        return (
+            train_rows,
+            eval_rows,
+            {"train": train_meta, "eval": eval_meta, "overlap": overlap, "frozen_states": frozen_meta},
+            frozen_points,
+        )
+
     train_rows, test_rows, split_meta = load_bcplus_830_split(n_train=None)
     test_ids = {r["query_id"] for r in test_rows}
     custom_train = getattr(args, "query_manifest", None)
@@ -951,9 +1080,14 @@ def validate_wiring(args: argparse.Namespace) -> dict[str, Any]:
         "n_train_queries": len(train_rows),
         "n_eval_queries": len(eval_rows),
         "eval_is_official_384": False,
-        "using_full_train_split": len(train_rows) == BCPLUS_TRAIN,
+        "using_full_train_split": bool((pool_meta.get("train") or {}).get("using_full_train_split", len(train_rows) == BCPLUS_TRAIN)),
         "official_test_count": int(pool_meta["eval"].get("official_test_count") or 0),
-        "official_test_is_166": int(pool_meta["eval"].get("official_test_count") or 0) == BCPLUS_TEST,
+        "official_test_is_166": int(pool_meta["eval"].get("official_test_count") or 0) == BCPLUS_TEST
+        and not uses_bcplus_830_eval(args),
+        "eval_is_bcplus_830": uses_bcplus_830_eval(args) and len(eval_rows) == BCPLUS_TOTAL,
+        "train_pool": (pool_meta.get("train") or {}).get("pool_contract")
+        or (SEC_TRAIN_POOL_NAME if is_scape_rl_mode(args) else "bcplus_train_664"),
+        "score_split": SCORE_SPLIT_830 if uses_bcplus_830_eval(args) else SCORE_SPLIT_166,
         "official_test_is_76": False,
         "train_states": pool_meta.get("frozen_states") or {},
         "n_frozen_states": len(frozen_points),
@@ -972,6 +1106,29 @@ def uses_vllm(args: argparse.Namespace) -> bool:
 
 def uses_scheme_a(args: argparse.Namespace) -> bool:
     return uses_vllm(args) and str(getattr(args, "gpu_schedule", "scheme_a") or "scheme_a") == "scheme_a"
+
+
+def open_train_retrieval(
+    args: argparse.Namespace,
+    train_rows: list[dict[str, Any]] | None = None,
+) -> RetrievalBackend:
+    """Train-time searcher. scape+rl uses the SEC parquet/BM25 corpus."""
+    if is_scape_rl_mode(args):
+        texts: dict[str, str] = {}
+        for row in train_rows or []:
+            for did, rec in (row.get("seed_doc_store") or {}).items():
+                if isinstance(rec, dict) and rec.get("text"):
+                    texts[str(did)] = str(rec["text"])
+        return open_sec_retrieval(
+            getattr(args, "sec_corpus_root", None) or default_sec_corpus_root(),
+            texts=texts or None,
+        )
+    return open_retrieval(formal=not bool(getattr(args, "smoke", False)))
+
+
+def open_eval_retrieval(args: argparse.Namespace) -> RetrievalBackend:
+    """Eval always searches BrowseComp-Plus, including scape+rl's BC+ 830 split."""
+    return open_retrieval(formal=not bool(getattr(args, "smoke", False)))
 
 
 def train_device_map_for(args: argparse.Namespace) -> str:
@@ -1043,8 +1200,11 @@ def run_four_cell(args: argparse.Namespace) -> dict[str, Any]:
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
+    train_only = bool(getattr(args, "train_only", False))
+    log_tag = "train" if train_only else "four_cell"
     train_rows, eval_rows, pool_meta, frozen_points = resolve_queries(args)
-    searcher = open_retrieval(formal=not bool(getattr(args, "smoke", False)))
+    train_searcher = open_train_retrieval(args, train_rows)
+    eval_searcher = None if train_only else open_eval_retrieval(args)
     frozen_groups = groups_from_frozen_points(frozen_points) if frozen_points else []
     vllm_on = uses_vllm(args)
     scheme_a = uses_scheme_a(args)
@@ -1056,8 +1216,14 @@ def run_four_cell(args: argparse.Namespace) -> dict[str, Any]:
         args,
         extra={
             "pool": pool_meta,
-            "retrieval": searcher.name,
-            "cells": list(cells_for_mode(getattr(args, "training_mode", "four_cell"))),
+            "retrieval": train_searcher.name,
+            "eval_retrieval": None if eval_searcher is None else eval_searcher.name,
+            "cells": list(
+                cells_for_mode(
+                    getattr(args, "training_mode", "four_cell"),
+                    train_only=train_only,
+                )
+            ),
             "tensor_parallel_size": tp,
             "train_device_map": device_map,
         },
@@ -1079,7 +1245,7 @@ def run_four_cell(args: argparse.Namespace) -> dict[str, Any]:
         )
         wait_gpus_quiet()
 
-    print("[four_cell] init theta0 HF LoRA", flush=True)
+    print(f"[{log_tag}] init theta0 HF LoRA", flush=True)
     backend = load_hf_backend(args, device_map)
     theta0_dir = out / "adapters" / "theta0"
     theta0_dir.mkdir(parents=True, exist_ok=True)
@@ -1093,13 +1259,20 @@ def run_four_cell(args: argparse.Namespace) -> dict[str, Any]:
         runtime.attach_hf(backend)
 
     enc = load_harmony_enc()
-    chosen_cells = cells_for_mode(getattr(args, "training_mode", "four_cell"))
+    chosen_cells = cells_for_mode(
+        getattr(args, "training_mode", "four_cell"),
+        train_only=train_only,
+    )
     adapter_map: dict[str, str | None] = {}
     adapter_audits: list[dict[str, Any]] = []
     cells: dict[str, Any] = {}
     eval_summaries: list[dict[str, Any]] = []
     session_i = {"n": 0}
-    ev_rows = official_test_subset(eval_rows) if getattr(args, "official_eval", True) else train_rows
+    eval_primary = SCORE_SPLIT_830 if uses_bcplus_830_eval(args) else "official_test"
+    if uses_bcplus_830_eval(args):
+        ev_rows = list(eval_rows)
+    else:
+        ev_rows = official_test_subset(eval_rows) if getattr(args, "official_eval", True) else train_rows
     if getattr(args, "n_eval", None):
         ev_rows = ev_rows[: int(args.n_eval)]
 
@@ -1134,7 +1307,7 @@ def run_four_cell(args: argparse.Namespace) -> dict[str, Any]:
             startup_timeout_s=3600.0,
         )
         runtime.attach_vllm(client)
-        print(f"[four_cell] vLLM start tp={tp} lora={client.lora_path} tag={tag}", flush=True)
+        print(f"[{log_tag}] vLLM start tp={tp} lora={client.lora_path} tag={tag}", flush=True)
         client.start()
         return client
 
@@ -1187,7 +1360,7 @@ def run_four_cell(args: argparse.Namespace) -> dict[str, Any]:
                     seed=args.seed + 100 * (abs(hash(tag)) % 1000),
                     sample=sample,
                     enc=enc,
-                    searcher=searcher,
+                    searcher=train_searcher,
                     teacher_mode=teacher_mode,
                 )
             finally:
@@ -1204,7 +1377,7 @@ def run_four_cell(args: argparse.Namespace) -> dict[str, Any]:
             seed=args.seed + 100 * (abs(hash(tag)) % 1000),
             sample=sample,
             enc=enc,
-            searcher=searcher,
+            searcher=train_searcher,
         )
 
     def eval_now(lora_path: str | None, tag: str, *, teacher_mode: bool = False):
@@ -1221,10 +1394,11 @@ def run_four_cell(args: argparse.Namespace) -> dict[str, Any]:
                     max_turns=int(getattr(args, "eval_max_turns", args.max_turns)),
                     seed=args.seed,
                     enc=enc,
-                    searcher=searcher,
+                    searcher=eval_searcher,
                     generate_batch=client.generate_batch,
                     teacher_mode=teacher_mode,
                     temperature=float(getattr(args, "eval_temperature", 0.0)),
+                    primary_split=eval_primary,
                 )
             finally:
                 close_vllm()
@@ -1237,9 +1411,10 @@ def run_four_cell(args: argparse.Namespace) -> dict[str, Any]:
             max_turns=int(getattr(args, "eval_max_turns", args.max_turns)),
             seed=args.seed,
             enc=enc,
-            searcher=searcher,
+            searcher=eval_searcher,
             generate_batch=gen.generate_batch,
             temperature=float(getattr(args, "eval_temperature", 0.0)),
+            primary_split=eval_primary,
         )
 
     def save_and_audit(cell: str, adapter_dir: Path) -> dict[str, Any]:
@@ -1257,7 +1432,7 @@ def run_four_cell(args: argparse.Namespace) -> dict[str, Any]:
     for cell in chosen_cells:
         adapter_live = str(theta0_dir)
         loop = HybridLoopState(policy_version="v0")
-        print(f"[four_cell] cell={cell} phases", flush=True)
+        print(f"[{log_tag}] cell={cell} phases", flush=True)
         groups = None
         train_parts: list[dict[str, Any]] = []
         use_frozen = cell == "pure_opd" and bool(frozen_groups)
@@ -1268,7 +1443,7 @@ def run_four_cell(args: argparse.Namespace) -> dict[str, Any]:
             groups = frozen_groups
         elif refresh:
             for step in range(n_train):
-                print(f"[four_cell] cell={cell} on-policy rollout step={step} policy={loop.policy_version}", flush=True)
+                print(f"[{log_tag}] cell={cell} on-policy rollout step={step} policy={loop.policy_version}", flush=True)
                 groups = collect_groups(
                     adapter_live,
                     loop.policy_version,
@@ -1292,6 +1467,10 @@ def run_four_cell(args: argparse.Namespace) -> dict[str, Any]:
                         component_id=args.component,
                         teacher_fn=teacher_fn,
                         opd_loss=str(getattr(args, "opd_loss", None) or "sr_opd_ce"),
+                        opd_gate_beta=float(
+                            getattr(args, "opd_gate_beta", SCAPE_RL_OPD_GATE_BETA)
+                            or SCAPE_RL_OPD_GATE_BETA
+                        ),
                     )
                 )
                 rewards_after = [r for g in groups for r in g.terminal_rewards]
@@ -1307,7 +1486,7 @@ def run_four_cell(args: argparse.Namespace) -> dict[str, Any]:
                 loop.bump_after_update()
                 release_hf()
         else:
-            print(f"[four_cell] cell={cell} rollout", flush=True)
+            print(f"[{log_tag}] cell={cell} rollout", flush=True)
             groups = collect_groups(
                 adapter_live,
                 loop.policy_version,
@@ -1336,6 +1515,10 @@ def run_four_cell(args: argparse.Namespace) -> dict[str, Any]:
                         component_id=args.component,
                         teacher_fn=teacher_fn,
                         opd_loss=str(getattr(args, "opd_loss", None) or "sr_opd_ce"),
+                        opd_gate_beta=float(
+                            getattr(args, "opd_gate_beta", SCAPE_RL_OPD_GATE_BETA)
+                            or SCAPE_RL_OPD_GATE_BETA
+                        ),
                     )
                 )
             )
@@ -1376,19 +1559,27 @@ def run_four_cell(args: argparse.Namespace) -> dict[str, Any]:
         )
         gstat = group_stats(groups)
         train_stats = merge_train_stats(train_parts)
-        print(f"[four_cell] cell={cell} eval", flush=True)
-        ev, traces = eval_now(
-            str(theta0_dir) if cell == "before" else adapter_live,
-            f"{cell}_eval",
-            teacher_mode=cell == "teacher",
-        )
-        ev["setting"] = cell
-        ev["reported_split"] = "official_test"
+        ev: dict[str, Any] = {
+            "setting": cell,
+            "skipped": True,
+            "note": "train_only",
+        }
+        traces: list[dict[str, Any]] = []
+        if not train_only:
+            print(f"[{log_tag}] cell={cell} eval", flush=True)
+            ev, traces = eval_now(
+                str(theta0_dir) if cell == "before" else adapter_live,
+                f"{cell}_eval",
+                teacher_mode=cell == "teacher",
+            )
+            ev["setting"] = cell
+            ev["reported_split"] = "official_test"
         cell_dir = out / cell
         cell_dir.mkdir(parents=True, exist_ok=True)
-        with (cell_dir / "PER_QUERY.jsonl").open("w", encoding="utf-8") as handle:
-            for tr in traces:
-                handle.write(json.dumps(tr, ensure_ascii=False) + "\n")
+        if traces:
+            with (cell_dir / "PER_QUERY.jsonl").open("w", encoding="utf-8") as handle:
+                for tr in traces:
+                    handle.write(json.dumps(tr, ensure_ascii=False) + "\n")
         cells[cell] = {
             "eval": ev,
             "train": train_stats,
@@ -1402,46 +1593,67 @@ def run_four_cell(args: argparse.Namespace) -> dict[str, Any]:
         }
         (cell_dir / "CELL.json").write_text(json.dumps(cells[cell], indent=2) + "\n", encoding="utf-8")
         eval_summaries.append(ev)
-        print(
-            json.dumps(
-                {
-                    "cell": cell,
-                    "split": "official_test",
-                    **{
-                        k: ev.get(k)
-                        for k in (
-                            "n_queries",
-                            "legal_action_rate",
-                            "recall",
-                            "trajectory_recall",
-                            "final_answer_recall",
-                            "precision",
-                            "f1",
-                            "reward",
-                            "test_evidence_recall_at_5",
-                            "mean_tool_calls_per_query",
-                            "tool_search_cost",
-                            "mean_e2e_sec",
-                            "mean_model_sec",
-                            "mean_harness_sec",
-                        )
+        if train_only:
+            print(
+                json.dumps(
+                    {
+                        "cell": cell,
+                        "train_only": True,
+                        "n_decision_points": gstat["n_decision_points"],
+                        "n_optimizer_steps": (train_stats or {}).get("n_optimizer_steps"),
+                        "adapter": adapter_map.get(cell),
                     },
-                },
-                ensure_ascii=False,
-            ),
-            flush=True,
-        )
+                    ensure_ascii=False,
+                ),
+                flush=True,
+            )
+        else:
+            print(
+                json.dumps(
+                    {
+                        "cell": cell,
+                        "split": "official_test",
+                        **{
+                            k: ev.get(k)
+                            for k in (
+                                "n_queries",
+                                "legal_action_rate",
+                                "recall",
+                                "trajectory_recall",
+                                "final_answer_recall",
+                                "precision",
+                                "f1",
+                                "reward",
+                                "test_evidence_recall_at_5",
+                                "mean_tool_calls_per_query",
+                                "tool_search_cost",
+                                "mean_e2e_sec",
+                                "mean_model_sec",
+                                "mean_harness_sec",
+                            )
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                flush=True,
+            )
         release_hf()
 
     write_reload_audit(out / "ADAPTER_RELOAD_AUDIT.json", adapter_audits)
     (out / "ADAPTER_MAP.json").write_text(json.dumps(adapter_map, indent=2) + "\n", encoding="utf-8")
-    official = write_eval_outputs(
-        out,
-        component_id=args.component,
-        summaries=eval_summaries,
-        adapter_audits=adapter_audits,
-        pool_meta=pool_meta["eval"],
-    )
+    if train_only:
+        official = {
+            "skipped": True,
+            "note": "train_only; score with scripts/run_eval.py",
+        }
+    else:
+        official = write_eval_outputs(
+            out,
+            component_id=args.component,
+            summaries=eval_summaries,
+            adapter_audits=adapter_audits,
+            pool_meta=pool_meta["eval"],
+        )
     rl_opd = cells.get("rl_opd", {}).get("train") or {}
     scape_rl = cells.get("scape_rl", {}).get("train") or {}
     joint = scape_rl or rl_opd
@@ -1464,8 +1676,12 @@ def run_four_cell(args: argparse.Namespace) -> dict[str, Any]:
         "q3_teacher_does_not_change_reward": all(c.get("reward_unchanged_by_teacher") for c in cells.values()),
         "on_policy_refresh": bool(getattr(args, "on_policy_refresh", True)),
         "rollout_backend": "vllm" if vllm_on else "hf",
+        "train_only": train_only,
     }
-    (out / "FOUR_CELL_SUMMARY.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+    summary_name = "TRAIN_SUMMARY.json" if train_only else "FOUR_CELL_SUMMARY.json"
+    (out / summary_name).write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+    if train_only:
+        (out / "FOUR_CELL_SUMMARY.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     return summary
 
 
@@ -1476,7 +1692,16 @@ def coerce_runtime_args(args: argparse.Namespace) -> argparse.Namespace:
     if not hasattr(args, "train_steps"):
         args.train_steps = int(getattr(args, "max_steps", 64))
     if not hasattr(args, "n_queries") or getattr(args, "n_queries", None) in {None, 0}:
-        args.n_queries = BCPLUS_TRAIN
+        if is_scape_rl_mode(args):
+            args.n_queries = None
+        else:
+            args.n_queries = BCPLUS_TRAIN
+    if not hasattr(args, "sec_corpus_root") or getattr(args, "sec_corpus_root", None) in {None, ""}:
+        args.sec_corpus_root = default_sec_corpus_root()
+    if not hasattr(args, "rl_data") or getattr(args, "rl_data", None) in {None, ""}:
+        args.rl_data = default_sec_rl_data()
+    if not getattr(args, "score_split", None):
+        args.score_split = SCORE_SPLIT_830 if is_scape_rl_mode(args) else SCORE_SPLIT_166
     if not hasattr(args, "max_new_tokens"):
         args.max_new_tokens = 384
     if not hasattr(args, "gpu"):
@@ -1487,6 +1712,8 @@ def coerce_runtime_args(args: argparse.Namespace) -> argparse.Namespace:
         args.base_model = getattr(args, "base_checkpoint", "") or ""
     if not hasattr(args, "official_eval"):
         args.official_eval = True
+    if not hasattr(args, "train_only"):
+        args.train_only = False
     if not hasattr(args, "query_manifest"):
         args.query_manifest = None
     if not hasattr(args, "eval_manifest"):
@@ -1515,10 +1742,18 @@ def coerce_runtime_args(args: argparse.Namespace) -> argparse.Namespace:
         )
     if not getattr(args, "opd_loss", None):
         args.opd_loss = (
-            "sr_opd_reverse_kl"
+            OPD_LOSS_SAMPLED_GAP
             if getattr(args, "training_mode", "") == TRAINING_MODE_SCAPE_RL
             else "sr_opd_ce"
         )
+    if getattr(args, "lambda_opd", None) is None:
+        args.lambda_opd = (
+            SCAPE_RL_LAMBDA_OPD
+            if getattr(args, "training_mode", "") == TRAINING_MODE_SCAPE_RL
+            else 0.1
+        )
+    if getattr(args, "opd_gate_beta", None) is None:
+        args.opd_gate_beta = SCAPE_RL_OPD_GATE_BETA
     if not hasattr(args, "eval_max_turns"):
         from scape.eval.eval_defaults import HARNESS1_EVAL_MAX_TURNS
 
@@ -1540,14 +1775,17 @@ def coerce_runtime_args(args: argparse.Namespace) -> argparse.Namespace:
     if not hasattr(args, "vllm_python"):
         args.vllm_python = ""
     if getattr(args, "smoke", False):
-        args.n_queries = min(int(args.n_queries), 6)
+        if getattr(args, "n_queries", None) in {None, 0}:
+            args.n_queries = 6
+        else:
+            args.n_queries = min(int(args.n_queries), 6)
         args.group_size = min(int(args.group_size), 2)
         args.max_turns = min(int(args.max_turns), 2)
         args.train_steps = min(int(args.train_steps), 1)
         args.max_new_tokens = min(int(args.max_new_tokens), 256)
         args.eval_max_turns = min(int(getattr(args, "eval_max_turns", 2)), 2)
         args.eval_max_new_tokens = min(int(getattr(args, "eval_max_new_tokens", 256)), 256)
-        args.n_eval = 6 if args.n_eval is None else args.n_eval
+        args.n_eval = 6 if args.n_eval is None else min(int(args.n_eval), 6)
     return args
 
 
@@ -1562,14 +1800,15 @@ def run_seeded_four_cell(args: argparse.Namespace) -> dict[str, Any]:
         child = argparse.Namespace(**vars(args))
         child.seed = seed
         child.out = root / f"seed{seed}"
-        print(f"[four_cell] seed={seed} out={child.out}", flush=True)
+        tag = "train" if bool(getattr(args, "train_only", False)) else "four_cell"
+        print(f"[{tag}] seed={seed} out={child.out}", flush=True)
         per_seed[str(seed)] = run_four_cell(child)
     payload = {
         "component": args.component,
         "opd_loss": str(getattr(args, "opd_loss", None) or "sr_opd_ce"),
         "rl_loss_fn": "cispo",
         "seeds": seeds,
-        "score_split": SCORE_SPLIT_166,
+        "score_split": SCORE_SPLIT_830 if uses_bcplus_830_eval(args) else SCORE_SPLIT_166,
         "legacy_adapters_not_used": True,
         "per_seed": {k: {"q1": v.get("q1_joint_one_optim"), "q2": v.get("q2_on_policy_projection"), "q3": v.get("q3_teacher_does_not_change_reward"), "out": str(root / f"seed{k}")} for k, v in per_seed.items()},
     }

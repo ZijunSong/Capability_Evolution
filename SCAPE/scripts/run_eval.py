@@ -1,18 +1,16 @@
 #!/usr/bin/env python3
-"""One-click Harness-1 / BC+ closed-loop eval on the 166-query test split.
+"""One-click Harness-1 / BC+ closed-loop eval.
 
 Defaults match Harness-1 Table-2 eval: --max-turns 40, --max-new-tokens 2048,
 --temperature 1.0, --search-k 10, --max-model-len 32768. Training stay on a
 short horizon; do not copy those smoke values into eval.
 
+Score split: ``bcplus_830`` (664 train + 166 test) by default.
+Pass ``--score-split bcplus_test_166`` for the 166-test subset.
+
 Without --run-dir / --adapter, listed --component flags are turned ON (harness eval).
 With a trained run directory, the student is scored under H_min (those flags OFF)
 plus the saved LoRA adapter.
-
-Example:
-  python scripts/run_eval.py \\
-    --harness Harness-1 --benchmark BC+ --model_name harness-1 \\
-    --component all
 """
 
 from __future__ import annotations
@@ -33,7 +31,11 @@ from scape.cli.launch import (
     teacher_mask_for_ids,
 )
 from scape.eval.adapter_reload_audit import audit_saved_adapter
-from scape.eval.official_query_pool import load_bcplus_830_split, official_test_subset
+from scape.eval.official_query_pool import (
+    SCORE_SPLIT_830,
+    load_bcplus_830_full,
+    load_bcplus_830_split,
+)
 from scape.eval.sr_opd_four_cell_eval import write_eval_outputs
 
 
@@ -60,6 +62,13 @@ def resolve_eval_mode(args) -> tuple[str, dict[str, str | None]]:
     return "adapter", mapping or {"before": None}
 
 
+def detect_score_split(args) -> str:
+    explicit = getattr(args, "score_split", None)
+    if explicit:
+        return str(explicit)
+    return SCORE_SPLIT_830
+
+
 def main(argv: list[str] | None = None) -> int:
     try:
         args, spec = parse_eval_args(argv)
@@ -67,6 +76,8 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(str(exc)) from exc
 
     mode, adapter_map = resolve_eval_mode(args)
+    score_split = detect_score_split(args)
+    args.score_split = score_split
     harness_mask = (
         teacher_mask_for_ids(spec.components)
         if mode == "harness"
@@ -83,7 +94,7 @@ def main(argv: list[str] | None = None) -> int:
         "eval_mode": mode,
         "base_model": str(spec.base_model),
         "adapter_map": adapter_map,
-        "score_split": "bcplus_test_166",
+        "score_split": score_split,
         "harness_mask": harness_mask,
         "max_turns": 2 if args.smoke else int(args.max_turns),
         "max_new_tokens": min(int(args.max_new_tokens), 256) if args.smoke else int(args.max_new_tokens),
@@ -95,7 +106,10 @@ def main(argv: list[str] | None = None) -> int:
     (spec.out / "LAUNCH.json").write_text(json.dumps(launch, indent=2) + "\n", encoding="utf-8")
     print(json.dumps({k: v for k, v in launch.items() if k != "harness_mask"} | {"eval_mode": mode}, indent=2), flush=True)
 
-    _train, rows, pool_meta = load_bcplus_830_split()
+    if score_split == SCORE_SPLIT_830:
+        rows, pool_meta = load_bcplus_830_full()
+    else:
+        _train, rows, pool_meta = load_bcplus_830_split()
     audits = []
     for cell, path in adapter_map.items():
         if path:
@@ -136,7 +150,7 @@ def main(argv: list[str] | None = None) -> int:
         wait_gpus_quiet,
     )
 
-    rows = rows[: args.n_eval] if args.n_eval else official_test_subset(rows)
+    rows = rows[: args.n_eval] if args.n_eval else rows
     if args.smoke:
         rows = rows[:6]
     enc = load_harmony_enc()
@@ -175,6 +189,7 @@ def main(argv: list[str] | None = None) -> int:
                     harness_mask=harness_mask,
                     temperature=eval_temperature,
                     search_k=int(args.search_k),
+                    primary_split=score_split,
                 )
             finally:
                 runtime.detach_vllm()
@@ -218,6 +233,7 @@ def main(argv: list[str] | None = None) -> int:
                 harness_mask=harness_mask,
                 temperature=eval_temperature,
                 search_k=int(args.search_k),
+                primary_split=score_split,
             )
             ev["setting"] = cell
             ev["eval_mode"] = mode

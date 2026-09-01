@@ -16,7 +16,17 @@ TRAINING_MODE_SCAPE_RL = "scape_rl"
 # k < 0 means every structurally valid action on the trajectory.
 OPD_STATES_ALL = -1
 OPD_LOSS_CE = "sr_opd_ce"
+# Legacy name kept as an alias of the SEED sampled-gap contract.
 OPD_LOSS_REVERSE_KL = "sr_opd_reverse_kl"
+OPD_LOSS_SAMPLED_GAP = "sr_opd_sampled_gap"
+SAMPLED_OPD_LOSSES = frozenset({OPD_LOSS_SAMPLED_GAP, OPD_LOSS_REVERSE_KL})
+SCAPE_RL_LAMBDA_OPD = 0.01
+SCAPE_RL_OPD_GATE_BETA = 5.0
+
+
+def uses_sampled_opd(opd_loss: str) -> bool:
+    """True for scape+rl SEED-style OPD (sampled-token gated gap)."""
+    return str(opd_loss) in SAMPLED_OPD_LOSSES
 
 UPDATE_RL_OPD_JOINT = "rl_opd_joint"
 UPDATE_RL_ONLY = "rl_only"
@@ -46,6 +56,7 @@ class StudentDecisionPoint:
     reward: float | None = None
     structurally_valid: bool = True
     decision_point_id: str = ""
+    student_prompt_token_ids: list[int] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if not self.decision_point_id:

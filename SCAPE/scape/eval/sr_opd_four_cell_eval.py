@@ -13,7 +13,7 @@ from typing import Any
 from scape.eval.adapter_reload_audit import audit_saved_adapter, write_reload_audit
 from scape.eval.browsecomp_retrieval import RetrievalBackend, evidence_recall, open_retrieval
 from scape.eval.harness1_metrics import format_summary_table, summarize_quality_and_timing
-from scape.eval.official_query_pool import load_bcplus_830_split, load_official_384
+from scape.eval.official_query_pool import load_bcplus_830_split, load_official_384, SCORE_SPLIT_830
 from scape.training.action_codec import STUDENT_NATIVE_TOOLS
 
 
@@ -72,6 +72,31 @@ def split_summaries(traces: list[dict[str, Any]], *, setting: str, retrieval_nam
     official["split"] = "official_test"
     official["n_expected"] = 166
     return {"setting": setting, "all_pool": all_pool, "official_test": official, "primary_split": "official_test"}
+
+
+def pack_closed_loop_summary(
+    split: dict[str, Any],
+    *,
+    leak: float,
+    n_rows: int,
+    primary_split: str = "official_test",
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Pick the primary eval surface: 166-test or full BC+ 830."""
+    all_pool = dict(split["all_pool"])
+    official_test = dict(split["official_test"])
+    use_full = str(primary_split) in {SCORE_SPLIT_830, "bcplus_830", "all_pool"}
+    payload = dict(all_pool if use_full else official_test)
+    payload["primary_split"] = SCORE_SPLIT_830 if use_full else "official_test"
+    payload["n_expected"] = int(n_rows) if use_full else 166
+    payload["teacher_leak_rate"] = float(leak) / max(1, n_rows)
+    payload["all_pool"] = all_pool
+    payload["official_test"] = official_test
+    payload["n_all_pool"] = all_pool.get("n_queries")
+    payload["n_official_test"] = official_test.get("n_queries")
+    if extra:
+        payload.update(extra)
+    return payload
 
 
 def write_eval_outputs(

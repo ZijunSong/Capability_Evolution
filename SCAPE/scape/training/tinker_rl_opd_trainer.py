@@ -3,7 +3,8 @@
 Does not rewrite CISPO. Two Tinker forward_backward calls accumulate
 gradients; a single optim_step applies them.
 
-    L_hybrid = L_CISPO + lambda_opd * L_SR-OPD
+    L_hybrid = L_CISPO + λ L_OPD
+    scape+rl uses SEED gated sampled-token OPD, not projected CE / full-vocab KL.
 """
 
 from __future__ import annotations
@@ -23,6 +24,13 @@ from scape.training.opd_events import HarnessEvent
 from scape.training.opd_projection import StudentActionSpaceProjector
 from scape.training.rl_opd_metrics import empty_hybrid_metrics, mean_reward
 from scape.training.rl_opd_policy_version import assert_policy_versions_match
+from scape.training.tinker_opd_datum import (
+    EncodeFn,
+    TinkerOPDDatum,
+    build_sampled_opd_datums,
+    build_tinker_opd_datums,
+    default_encode,
+)
 from scape.training.rl_opd_types import (
     UPDATE_OPD_ONLY_ZERO_RL,
     UPDATE_RL_ONLY,
@@ -31,13 +39,9 @@ from scape.training.rl_opd_types import (
     HybridRolloutGroup,
     HybridStepMetrics,
     HybridTrainingBatch,
+    SCAPE_RL_OPD_GATE_BETA,
     StudentDecisionPoint,
-)
-from scape.training.tinker_opd_datum import (
-    EncodeFn,
-    TinkerOPDDatum,
-    build_tinker_opd_datums,
-    default_encode,
+    uses_sampled_opd,
 )
 
 
@@ -227,10 +231,12 @@ def prepare_hybrid_batch(
     remove_constant_reward_groups: bool = True,
     projector: StudentActionSpaceProjector | None = None,
     opd_loss: str = "sr_opd_ce",
+    opd_gate_beta: float = SCAPE_RL_OPD_GATE_BETA,
 ) -> HybridTrainingBatch:
     """Extract OPD states before constant-reward RL filtering.
 
     ``lambda_opd <= 0`` skips Teacher / projector / OPD datums entirely.
+    scape+rl (sampled-gap) scores CISPO sampled actions and does not project.
     """
     all_points: list[StudentDecisionPoint] = []
     for group in groups:
@@ -246,8 +252,6 @@ def prepare_hybrid_batch(
     skipped_teacher = True
 
     if float(lambda_opd) > 0.0:
-        if teacher_event_fn is None:
-            raise ValueError("teacher_event_fn is required when lambda_opd > 0")
         sampled = sample_decision_points(
             all_points,
             per_trajectory=opd_states_per_trajectory,
@@ -255,30 +259,59 @@ def prepare_hybrid_batch(
             include_valid_failures=include_valid_failures,
             include_format_errors=include_format_errors,
         )
-        steps, audit, extras = project_on_policy_decisions(
-            sampled,
-            teacher_event_fn=teacher_event_fn,
-            component_id=component_id,
-            projector=projector,
-        )
-        opd_datums = build_tinker_opd_datums(
-            steps,
-            lambda_opd=lambda_opd,
-            encode_fn=encode_fn or default_encode,
-            policy_version=policy_version,
-            opd_loss=opd_loss,
-        )
-        skipped_teacher = False
-        projection_stats = {
-            "skipped_teacher": False,
-            "projection_coverage": audit.projection_coverage,
-            "reject_rate": audit.n_reject / max(1, audit.n_teacher_segments),
-            "n_direct": audit.n_direct,
-            "n_macro": audit.n_macro,
-            "n_reject": audit.n_reject,
-            "n_projected_training_steps": audit.n_projected_training_steps,
-            **extras,
-        }
+        if uses_sampled_opd(opd_loss):
+            opd_datums = build_sampled_opd_datums(
+                sampled,
+                lambda_opd=lambda_opd,
+                encode_fn=encode_fn or default_encode,
+                policy_version=policy_version,
+                component_id=component_id,
+                gate_beta=opd_gate_beta,
+                opd_loss=opd_loss,
+            )
+            skipped_teacher = False
+            projection_stats = {
+                "skipped_teacher": False,
+                "projector_used": False,
+                "sampled_action_opd": True,
+                "projection_coverage": 0.0,
+                "reject_rate": 0.0,
+                "n_direct": 0,
+                "n_macro": 0,
+                "n_reject": 0,
+                "n_projected_training_steps": 0,
+                "n_sampled_decision_points": len(sampled),
+                "n_sampled_opd_datums": len(opd_datums),
+                "rl_opd_exact_target_overlap_rate": 1.0,
+            }
+        else:
+            if teacher_event_fn is None:
+                raise ValueError("teacher_event_fn is required when lambda_opd > 0")
+            steps, audit, extras = project_on_policy_decisions(
+                sampled,
+                teacher_event_fn=teacher_event_fn,
+                component_id=component_id,
+                projector=projector,
+            )
+            opd_datums = build_tinker_opd_datums(
+                steps,
+                lambda_opd=lambda_opd,
+                encode_fn=encode_fn or default_encode,
+                policy_version=policy_version,
+                opd_loss=opd_loss,
+            )
+            skipped_teacher = False
+            projection_stats = {
+                "skipped_teacher": False,
+                "projector_used": True,
+                "projection_coverage": audit.projection_coverage,
+                "reject_rate": audit.n_reject / max(1, audit.n_teacher_segments),
+                "n_direct": audit.n_direct,
+                "n_macro": audit.n_macro,
+                "n_reject": audit.n_reject,
+                "n_projected_training_steps": audit.n_projected_training_steps,
+                **extras,
+            }
 
     rewards = [r for g in groups for r in g.terminal_rewards]
     return HybridTrainingBatch(
@@ -325,8 +358,9 @@ async def hybrid_train_substep(
 ) -> HybridStepMetrics:
     """RL FB, then OPD FB, then exactly one optim_step.
 
-    ``lambda_opd`` is already baked into OPD token weights. The argument is
-    logged only; callers must not apply it a second time.
+    For CE OPD, ``lambda_opd`` is baked into token weights. For sampled-gap
+    OPD, ``lambda_opd`` lives in datum metadata and is applied as
+    ``λ × token-mean`` inside the OPD FB. Callers must not scale again.
     """
     assert_policy_versions_match(
         rollout_policy=rollout_policy or policy_version,
@@ -356,7 +390,7 @@ async def hybrid_train_substep(
         n_rl_fb = 1
 
     if opd_list:
-        opd_fn = "reverse_kl" if str(opd_loss) == "sr_opd_reverse_kl" else "cross_entropy"
+        opd_fn = "sampled_gap" if uses_sampled_opd(opd_loss) else "cross_entropy"
         maybe = training_client.forward_backward_async(
             opd_list,
             loss_fn=opd_fn,
@@ -426,6 +460,7 @@ async def run_hybrid_training_step(
     seed: int = 0,
     loop_state: HybridLoopState | None = None,
     opd_loss: str = "sr_opd_ce",
+    opd_gate_beta: float = SCAPE_RL_OPD_GATE_BETA,
 ) -> list[HybridStepMetrics]:
     """One rollout batch → matched hybrid substeps → policy version bump."""
     batch = prepare_hybrid_batch(
@@ -439,6 +474,7 @@ async def run_hybrid_training_step(
         opd_states_per_trajectory=opd_states_per_trajectory,
         seed=seed,
         opd_loss=opd_loss,
+        opd_gate_beta=opd_gate_beta,
     )
     metrics_out: list[HybridStepMetrics] = []
     pairs = split_hybrid_substeps(batch.rl_datums, batch.opd_datums, num_substeps=num_substeps)

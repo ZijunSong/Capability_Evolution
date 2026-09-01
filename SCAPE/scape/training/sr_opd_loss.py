@@ -1,8 +1,9 @@
 """Student-realizable OPD losses.
 
 ``sr_opd_ce`` is teacher-forced CE on the projected action given the reduced
-prefix (rl+opd / pure OPD). ``sr_opd_reverse_kl`` is KL(π_S || π_T) on that
-same aligned span (scape+rl). Component identity must not appear here.
+prefix (rl+opd / pure OPD). ``sr_opd_sampled_gap`` is the SEED gated gap on
+the same on-policy sampled tokens as CISPO (scape+rl). Component identity
+must not appear here.
 """
 
 from __future__ import annotations
@@ -17,6 +18,8 @@ from scape.training.canonical_metrics import kl_from_logits
 
 SR_OPD_LOSS_NAME = "sr_opd_ce"
 SR_OPD_REVERSE_KL_NAME = "sr_opd_reverse_kl"
+SR_OPD_SAMPLED_GAP_NAME = "sr_opd_sampled_gap"
+DEFAULT_OPD_GATE_BETA = 5.0
 
 
 def compute_sr_opd_ce(
@@ -79,6 +82,52 @@ def compute_sr_opd_reverse_kl(
         weight = mask * token_weight.to(device=kl.device, dtype=kl.dtype)
     denom = weight.sum().clamp_min(1e-8)
     return (kl * weight).sum() / denom
+
+
+def gated_sampled_gap_per_token(
+    student_logprobs: torch.Tensor,
+    teacher_logprobs: torch.Tensor,
+    *,
+    gate_beta: float = DEFAULT_OPD_GATE_BETA,
+) -> torch.Tensor:
+    """SEED per-token term ``g · (sg[ℓ^T] − ℓ^S)`` with ``ℓ = log π(a)``.
+
+    ``g = σ(β · sg[ℓ^T − ℓ^S])``. Teacher logprobs are detached; the gradient
+    is a gated NLL on the sampled action, not a full-vocab reverse KL.
+    """
+    teacher = teacher_logprobs.detach().to(
+        device=student_logprobs.device, dtype=student_logprobs.dtype
+    )
+    student = student_logprobs
+    n = min(teacher.numel(), student.numel())
+    teacher = teacher.reshape(-1)[:n]
+    student = student.reshape(-1)[:n]
+    delta = (teacher - student).detach()
+    gate = torch.sigmoid(delta * float(gate_beta))
+    return gate * (teacher - student)
+
+
+def compute_sr_opd_sampled_gap(
+    student_logprobs: torch.Tensor,
+    teacher_logprobs: torch.Tensor,
+    token_mask: torch.Tensor | None = None,
+    *,
+    gate_beta: float = DEFAULT_OPD_GATE_BETA,
+) -> torch.Tensor:
+    """Masked token-mean of the SEED gated sampled-token gap."""
+    if student_logprobs.numel() == 0:
+        return student_logprobs.sum() * 0.0
+    gap = gated_sampled_gap_per_token(
+        student_logprobs, teacher_logprobs, gate_beta=gate_beta
+    )
+    if token_mask is None:
+        weight = torch.ones_like(gap)
+    else:
+        weight = token_mask.to(device=gap.device, dtype=gap.dtype).reshape(-1)[: gap.numel()]
+        if weight.numel() != gap.numel():
+            weight = torch.ones_like(gap)
+    denom = weight.sum().clamp_min(1e-8)
+    return (gap * weight).sum() / denom
 
 
 def pack_sr_opd_metrics(loss: torch.Tensor, *, n_supervised: float, weight: float = 1.0) -> dict[str, Any]:

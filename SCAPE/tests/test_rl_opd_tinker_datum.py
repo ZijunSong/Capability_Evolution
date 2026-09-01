@@ -4,6 +4,7 @@ import pytest
 
 from scape.training.opd_dataset import ProjectedTrainingStep
 from scape.training.tinker_opd_datum import (
+    build_sampled_opd_datums,
     build_tinker_opd_datums,
     supervised_weight_sum,
 )
@@ -64,3 +65,49 @@ def test_teacher_marker_rejected_from_model_input():
             encode_fn=_encode,
             policy_version="v1",
         )
+
+
+def test_sampled_opd_datums_use_action_tokens_not_encoded_text():
+    from scape.adapters.components import minus_mask
+    from scape.state.snapshot import capture_snapshot
+    from scape.training.rl_opd_types import StudentDecisionPoint
+
+    snap = capture_snapshot(
+        query_id="q0",
+        step=0,
+        harness_mask=minus_mask("auto_populate_first_search"),
+        working_memory={"curated_ids": ["d1"], "accessible_doc_ids": ["d1"]},
+        metadata={"component_id": "auto_populate_first_search"},
+    )
+    point = StudentDecisionPoint(
+        episode_id="e0",
+        query_id="q0",
+        rollout_idx=0,
+        turn_id=0,
+        policy_version="v1",
+        pre_action_snapshot=snap,
+        pre_action_snapshot_hash=snap.content_hash(),
+        student_model_input="student-prefix",
+        student_action_tokens=[9, 10, 11],
+        student_action_text="ignored",
+        action_tool_names=["search_corpus"],
+        student_prompt_token_ids=[1, 2, 3],
+    )
+    datums = build_sampled_opd_datums(
+        [point],
+        lambda_opd=0.01,
+        encode_fn=_encode,
+        policy_version="v1",
+        component_id="auto_populate_first_search",
+        gate_beta=5.0,
+    )
+    assert len(datums) == 1
+    d = datums[0]
+    assert d.prompt_token_ids == [1, 2, 3]
+    assert d.target_tokens[-3:] == [9, 10, 11]
+    assert d.weights[:3] == [0.0, 0.0, 0.0]
+    assert d.weights[-3:] == [1.0, 1.0, 1.0]
+    assert d.n_supervised_tokens == 3
+    assert d.teacher_prompt_token_ids
+    assert d.metadata["lambda_opd"] == 0.01
+    assert abs(supervised_weight_sum(datums) - 3.0) < 1e-9

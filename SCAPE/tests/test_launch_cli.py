@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -91,9 +92,10 @@ def test_parse_train_cli():
     assert args.validate_only is True
     assert args.opd_states_per_trajectory == 3
     assert args.opd_loss == "sr_opd_ce"
+    assert args.lambda_opd == 0.1
 
 
-def test_parse_scape_rl_defaults_all_actions_and_reverse_kl():
+def test_parse_scape_rl_defaults_all_actions_and_sampled_gap():
     args, spec = parse_train_args(
         [
             "--train_method",
@@ -107,8 +109,13 @@ def test_parse_scape_rl_defaults_all_actions_and_reverse_kl():
     assert spec.train_method == "scape+rl"
     assert spec.training_mode == TRAINING_MODE_SCAPE_RL
     assert args.opd_states_per_trajectory == -1
-    assert args.opd_loss == "sr_opd_reverse_kl"
-    assert args.lambda_opd == 0.1
+    assert args.opd_loss == "sr_opd_sampled_gap"
+    assert args.lambda_opd == 0.01
+    assert args.opd_gate_beta == 5.0
+    assert args.n_queries is None
+    assert args.score_split == "bcplus_830"
+    assert "harness-1-rl-data" in str(args.rl_data)
+    assert "harness-1-sec-corpus" in str(args.sec_corpus_root)
 
 
 def test_parse_scape_rl_can_override_k():
@@ -125,7 +132,24 @@ def test_parse_scape_rl_can_override_k():
         ]
     )
     assert args.opd_states_per_trajectory == 5
-    assert args.opd_loss == "sr_opd_reverse_kl"
+    assert args.opd_loss == "sr_opd_sampled_gap"
+
+
+def test_parse_scape_rl_can_override_lambda():
+    args, _spec = parse_train_args(
+        [
+            "--train_method",
+            "scape+rl",
+            "--component",
+            "zero",
+            "--lambda-opd",
+            "0.2",
+            "--out",
+            "/tmp/scape-rl-lam",
+        ]
+    )
+    assert args.lambda_opd == 0.2
+    assert args.opd_loss == "sr_opd_sampled_gap"
 
 
 def test_parse_eval_cli_space_separated_components():
@@ -147,6 +171,65 @@ def test_parse_eval_cli_space_separated_components():
     assert args.temperature == 1.0
     assert args.search_k == 10
     assert args.max_model_len == 32768
+    assert args.score_split == "bcplus_830"
+
+
+def test_parse_eval_cli_score_split_830():
+    args, _spec = parse_eval_args(
+        [
+            "--component",
+            "zero",
+            "--score-split",
+            "bcplus_830",
+            "--out",
+            "/tmp/scape-eval-830",
+        ]
+    )
+    assert args.score_split == "bcplus_830"
+
+
+def test_parse_eval_cli_can_select_166():
+    args, _spec = parse_eval_args(
+        [
+            "--component",
+            "zero",
+            "--score-split",
+            "bcplus_test_166",
+            "--out",
+            "/tmp/scape-eval-166",
+        ]
+    )
+    assert args.score_split == "bcplus_test_166"
+
+
+def test_run_eval_detect_score_split_defaults_to_830():
+    import argparse
+    import importlib.util
+    import sys
+
+    path = Path(__file__).resolve().parents[1] / "scripts" / "run_eval.py"
+    spec = importlib.util.spec_from_file_location("run_eval_entry", path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    sys.modules["run_eval_entry"] = module
+    spec.loader.exec_module(module)
+    assert module.detect_score_split(argparse.Namespace()) == "bcplus_830"
+    assert module.detect_score_split(argparse.Namespace(score_split=None, run_dir=None)) == "bcplus_830"
+    assert module.detect_score_split(argparse.Namespace(score_split="bcplus_test_166")) == "bcplus_test_166"
+
+
+def test_parse_eval_cli_score_split_830():
+    args, _spec = parse_eval_args(
+        [
+            "--component",
+            "zero",
+            "--score-split",
+            "bcplus_830",
+            "--out",
+            "/tmp/scape-eval-830",
+        ]
+    )
+    assert args.score_split == "bcplus_830"
 
 
 def test_parse_eval_cli_can_override_horizon():
@@ -293,3 +376,51 @@ def test_discover_adapter_map(tmp_path: Path):
     assert found["rl_opd"].endswith("seed42/adapters/rl_opd")
     assert coalition_slug(["sentence_compress", "verify_tool"]) == "sentence_compress+verify_tool"
     assert coalition_slug([]) == "zero"
+
+
+def test_run_train_entry_is_train_only(monkeypatch, tmp_path: Path):
+    import importlib.util
+    import sys
+
+    captured: dict = {}
+
+    def fake_run(args):
+        captured["train_only"] = bool(args.train_only)
+        captured["official_eval"] = bool(args.official_eval)
+        captured["training_mode"] = args.training_mode
+        from scape.training.four_cell_runtime import cells_for_mode
+
+        captured["cells"] = cells_for_mode(args.training_mode, train_only=args.train_only)
+        return {"ok": True, "train_only": True}
+
+    monkeypatch.setattr("scape.training.four_cell_runtime.run_from_rl_opd_args", fake_run)
+    path = Path(__file__).resolve().parents[1] / "scripts" / "run_train.py"
+    spec = importlib.util.spec_from_file_location("run_train_entry", path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    sys.modules["run_train_entry"] = module
+    spec.loader.exec_module(module)
+    rc = module.main(
+        [
+            "--harness",
+            "Harness-1",
+            "--benchmark",
+            "BC+",
+            "--model_name",
+            "harness-1",
+            "--train_method",
+            "rl",
+            "--component",
+            "all",
+            "--out",
+            str(tmp_path),
+        ]
+    )
+    assert rc == 0
+    assert captured["train_only"] is True
+    assert captured["official_eval"] is False
+    assert captured["training_mode"] == TRAINING_MODE_RL
+    assert captured["cells"] == ("rl",)
+    launch = json.loads((tmp_path / "LAUNCH.json").read_text(encoding="utf-8"))
+    assert launch["train_only"] is True
+    assert launch["official_eval"] is False

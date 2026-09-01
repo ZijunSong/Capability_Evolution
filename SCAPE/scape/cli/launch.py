@@ -22,11 +22,16 @@ from scape.eval.eval_defaults import (
     HARNESS1_EVAL_TEMPERATURE,
 )
 from scape.training.rl_opd_types import (
+    OPD_LOSS_SAMPLED_GAP,
+    SCAPE_RL_LAMBDA_OPD,
+    SCAPE_RL_OPD_GATE_BETA,
     TRAINING_MODE_PURE_OPD,
     TRAINING_MODE_RL,
     TRAINING_MODE_RL_OPD,
     TRAINING_MODE_SCAPE_RL,
 )
+from scape.eval.official_query_pool import SCORE_SPLIT_166, SCORE_SPLIT_830
+from scape.eval.sec_corpus import default_sec_corpus_root, default_sec_rl_data
 
 SCAPE_ROOT = Path(__file__).resolve().parents[2]
 
@@ -308,7 +313,7 @@ def add_common_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     parser.add_argument(
         "--benchmark",
         default="BC+",
-        help="Evaluation benchmark. Currently only BC+ (664 train / 166 test).",
+        help="Evaluation benchmark. Currently only BC+. scape+rl eval uses the full 830 (664+166).",
     )
     parser.add_argument(
         "--model_name",
@@ -335,7 +340,7 @@ def add_common_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
         help="Override checkpoint path for --model_name harness-1.",
     )
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--n-eval", type=int, default=None, help="Optional subset of the 166-query test split.")
+    parser.add_argument("--n-eval", type=int, default=None, help="Optional eval subset. Default is the full score split.")
     parser.add_argument("--smoke", action="store_true")
     parser.add_argument("--gpu", default="0")
     parser.add_argument("--rollout-backend", choices=("vllm", "hf"), default="vllm")
@@ -353,11 +358,22 @@ def add_train_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
         dest="train_method",
         required=True,
         choices=ALLOWED_TRAIN_METHODS,
-        help="opd = PURE OPD (sr_opd_ce); rl+opd = CISPO + CE OPD; rl = CISPO only; scape+rl = CISPO + reverse-KL OPD on every action.",
+        help="opd = PURE OPD (sr_opd_ce); rl+opd = CISPO + CE OPD; rl = CISPO only; scape+rl = CISPO + SEED gated OPD on every sampled action.",
     )
-    parser.add_argument("--n-queries", type=int, default=664, help="Train queries. Formal RL / RL+OPD uses 664.")
+    parser.add_argument(
+        "--n-queries",
+        type=int,
+        default=None,
+        help="Train query cap. Default 664 for opd/rl+opd/rl; scape+rl uses every SEC RL query.",
+    )
     parser.add_argument("--train-steps", type=int, default=8)
-    parser.add_argument("--lambda-opd", type=float, default=0.1)
+    parser.add_argument("--lambda-opd", type=float, default=None, help="OPD coefficient. Default 0.1; scape+rl uses 0.01 (SEED).")
+    parser.add_argument(
+        "--opd-gate-beta",
+        type=float,
+        default=SCAPE_RL_OPD_GATE_BETA,
+        help="SEED OPD gate β in σ(βΔ). Only used by scape+rl.",
+    )
     parser.add_argument("--group-size", type=int, default=8)
     parser.add_argument("--max-turns", type=int, default=6)
     parser.add_argument("--max-new-tokens", type=int, default=384)
@@ -384,6 +400,30 @@ def add_train_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
         type=float,
         default=HARNESS1_EVAL_TEMPERATURE,
         help="Eval sampling temperature. Training rollouts stay greedy unless the collector samples.",
+    )
+    parser.add_argument(
+        "--rl-data",
+        type=Path,
+        default=None,
+        help="scape+rl query pack: tar.gz, extracted dir, or jsonl. Default /data/ppnm/harness-1-rl-data.tar.gz.",
+    )
+    parser.add_argument(
+        "--sec-corpus-root",
+        type=Path,
+        default=None,
+        help="scape+rl SEC retrieval corpus. Default /data/ppnm/harness-1-sec-corpus.",
+    )
+    parser.add_argument(
+        "--query-manifest",
+        type=Path,
+        default=None,
+        help="Optional query JSON/JSONL override. scape+rl still evaluates on BC+ 830.",
+    )
+    parser.add_argument(
+        "--score-split",
+        choices=(SCORE_SPLIT_166, SCORE_SPLIT_830),
+        default=None,
+        help="Eval query pool. Default bcplus_test_166; scape+rl uses bcplus_830.",
     )
     parser.add_argument("--sft-adapter", default="")
     parser.add_argument("--validate-only", action="store_true")
@@ -442,6 +482,12 @@ def add_eval_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
         default="auto",
         help="auto: adapter if --run-dir/--adapter is given, else harness-on.",
     )
+    parser.add_argument(
+        "--score-split",
+        choices=(SCORE_SPLIT_166, SCORE_SPLIT_830),
+        default=None,
+        help="Eval query pool. Default bcplus_830 (664+166). Pass bcplus_test_166 for the 166-test subset.",
+    )
     parser.add_argument("--audit-only", action="store_true")
     return parser
 
@@ -495,7 +541,19 @@ def parse_train_args(argv: Sequence[str] | None = None) -> tuple[argparse.Namesp
     args.training_mode = spec.training_mode
     if args.opd_states_per_trajectory is None:
         args.opd_states_per_trajectory = -1 if spec.train_method == "scape+rl" else 3
-    args.opd_loss = "sr_opd_reverse_kl" if spec.train_method == "scape+rl" else "sr_opd_ce"
+    args.opd_loss = OPD_LOSS_SAMPLED_GAP if spec.train_method == "scape+rl" else "sr_opd_ce"
+    if args.lambda_opd is None:
+        args.lambda_opd = SCAPE_RL_LAMBDA_OPD if spec.train_method == "scape+rl" else 0.1
+    if getattr(args, "opd_gate_beta", None) is None:
+        args.opd_gate_beta = SCAPE_RL_OPD_GATE_BETA
+    if args.n_queries is None and spec.train_method != "scape+rl":
+        args.n_queries = 664
+    if getattr(args, "score_split", None) is None:
+        args.score_split = SCORE_SPLIT_830 if spec.train_method == "scape+rl" else SCORE_SPLIT_166
+    if getattr(args, "sec_corpus_root", None) is None:
+        args.sec_corpus_root = default_sec_corpus_root()
+    if getattr(args, "rl_data", None) is None:
+        args.rl_data = default_sec_rl_data()
     args.base_model = str(spec.base_model)
     args.out = spec.out
     return args, spec
@@ -503,7 +561,7 @@ def parse_train_args(argv: Sequence[str] | None = None) -> tuple[argparse.Namesp
 
 def parse_eval_args(argv: Sequence[str] | None = None) -> tuple[argparse.Namespace, LaunchSpec]:
     parser = argparse.ArgumentParser(
-        description="One-click Harness-1 / BC+ closed-loop eval on the 166-query test split.",
+        description="One-click Harness-1 / BC+ closed-loop eval (default: full 830).",
     )
     add_eval_args(parser)
     args = parser.parse_args(argv)
@@ -515,4 +573,6 @@ def parse_eval_args(argv: Sequence[str] | None = None) -> tuple[argparse.Namespa
     args.component_ids = list(spec.components)
     args.base_model = str(spec.base_model)
     args.out = spec.out
+    if getattr(args, "score_split", None) is None:
+        args.score_split = SCORE_SPLIT_830
     return args, spec

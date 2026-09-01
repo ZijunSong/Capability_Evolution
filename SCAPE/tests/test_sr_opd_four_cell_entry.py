@@ -3,7 +3,12 @@ from pathlib import Path
 
 from scape.eval.official_query_pool import load_bcplus_830_split, load_official_384
 from scape.training.four_cell_runtime import TEACHER_REGISTRY, build_manifest, cells_for_mode, validate_wiring
-from scape.training.rl_opd_types import TRAINING_MODE_RL, TRAINING_MODE_RL_OPD, TRAINING_MODE_SCAPE_RL
+from scape.training.rl_opd_types import (
+    TRAINING_MODE_PURE_OPD,
+    TRAINING_MODE_RL,
+    TRAINING_MODE_RL_OPD,
+    TRAINING_MODE_SCAPE_RL,
+)
 
 
 def test_sentence_compress_teacher_registered():
@@ -60,6 +65,33 @@ def test_rl_and_rl_opd_cells():
     assert cells_for_mode(TRAINING_MODE_RL) == ("before", "rl")
     assert cells_for_mode(TRAINING_MODE_RL_OPD) == ("before", "rl_opd")
     assert cells_for_mode(TRAINING_MODE_SCAPE_RL) == ("before", "scape_rl")
+    assert cells_for_mode(TRAINING_MODE_PURE_OPD) == ("before", "pure_opd")
+
+
+def test_train_only_skips_before_and_eval_cells():
+    assert cells_for_mode(TRAINING_MODE_RL, train_only=True) == ("rl",)
+    assert cells_for_mode(TRAINING_MODE_RL_OPD, train_only=True) == ("rl_opd",)
+    assert cells_for_mode(TRAINING_MODE_SCAPE_RL, train_only=True) == ("scape_rl",)
+    assert cells_for_mode(TRAINING_MODE_PURE_OPD, train_only=True) == ("pure_opd",)
+    assert cells_for_mode("four_cell", train_only=True) == ("teacher", "before", "pure_opd", "rl_opd")
+
+
+def test_coerce_runtime_args_defaults_train_only_off():
+    import argparse
+
+    from scape.training.four_cell_runtime import coerce_runtime_args
+
+    args = argparse.Namespace(
+        seed=42,
+        training_mode="rl",
+        group_size=8,
+        max_turns=6,
+        lambda_opd=0.0,
+        component="sentence_compress",
+    )
+    out = coerce_runtime_args(args)
+    assert out.train_only is False
+    assert out.official_eval is True
 
 
 def test_official_384_pool_present():
@@ -176,24 +208,28 @@ def test_manifest_marks_new_loss():
     json.dumps(man)
 
 
-def test_manifest_scape_rl_uses_reverse_kl_and_all_actions():
+def test_manifest_scape_rl_uses_sampled_gap_and_all_actions():
     class A:
         training_mode = "scape_rl"
         component = "sentence_compress"
-        lambda_opd = 0.1
+        lambda_opd = 0.01
         group_size = 8
         max_turns = 6
         train_steps = 8
         n_queries = 664
         opd_states_per_trajectory = -1
-        opd_loss = "sr_opd_reverse_kl"
+        opd_loss = "sr_opd_sampled_gap"
         seed = 42
         base_model = "x"
         sft_adapter = ""
         smoke = False
 
     man = build_manifest(A())
-    assert man["opd_loss"] == "sr_opd_reverse_kl"
+    assert man["opd_loss"] == "sr_opd_sampled_gap"
     assert man["opd_states_per_trajectory"] == -1
+    assert man["lambda_opd"] == 0.01
+    assert man["opd_gate_beta"] == 5.0
     assert man["protocol_complete_rl_opd"] is True
     assert man["rl_loss_fn"] == "cispo"
+    assert man["score_split"] == "bcplus_830"
+    assert man["train_pool"] == "harness-1-rl-data"

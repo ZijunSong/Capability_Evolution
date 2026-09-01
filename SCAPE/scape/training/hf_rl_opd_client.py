@@ -115,30 +115,44 @@ class HFDebugTrainingClient:
         return {"loss": total / max(1, n)}
 
     def _opd_reverse_kl(self, datums: Sequence[Any]) -> dict[str, float]:
-        """KL(π_S(· | ξ^S) || π_T(· | ξ^T)) on the projected action span.
+        """Back-compat alias: scape+rl now uses the SEED sampled-gap contract."""
+        return self._opd_sampled_gap(datums)
 
-        Teacher logits are a no-grad sidecar on the privileged prefix. Token
-        weights already carry λ / count, matching the CE OPD reduction.
+    def _unpack_opd_row(self, raw: Any) -> tuple[list[int], list[int], list[int], dict[str, Any]]:
+        if isinstance(raw, TinkerOPDDatum):
+            prompt_ids = list(raw.prompt_token_ids)
+            n_p = len(prompt_ids)
+            resp_ids = list(raw.target_tokens[n_p:])
+            teacher_ids = list(raw.teacher_prompt_token_ids or [])
+            meta = dict(raw.metadata or {})
+            meta.setdefault("lambda_opd", 0.01)
+            meta.setdefault("gate_beta", 5.0)
+            return prompt_ids, resp_ids, teacher_ids, meta
+        prompt_ids = list(raw.get("prompt_ids") or self.backend.encode(raw["prompt"]))
+        resp_ids = list(raw.get("target_ids") or self.backend.encode(raw["target_text"]))
+        teacher_ids = list(raw.get("teacher_prompt_ids") or [])
+        if not teacher_ids and raw.get("prompt_full"):
+            teacher_ids = list(self.backend.encode(str(raw["prompt_full"])))
+        meta = dict(raw.get("metadata") or {})
+        if raw.get("lambda_opd") is not None:
+            meta["lambda_opd"] = float(raw["lambda_opd"])
+        if raw.get("gate_beta") is not None:
+            meta["gate_beta"] = float(raw["gate_beta"])
+        return prompt_ids, resp_ids, teacher_ids, meta
+
+    def _opd_sampled_gap(self, datums: Sequence[Any]) -> dict[str, float]:
+        """SEED: λ × token-mean[g · (sg[ℓ^T] − ℓ^S)] on CISPO sampled tokens.
+
+        Student prefix is the same Harmony ids CISPO used when present.
+        Teacher prefix is the privileged DualView sidecar. Gradients only
+        through student logprobs of the sampled action.
         """
-        from scape.training.sr_opd_loss import reverse_kl_per_token
+        from scape.training.sr_opd_loss import gated_sampled_gap_per_token
 
-        device = self.backend._device
-        total = 0.0
-        n = 0
+        prepared: list[tuple[list[int], list[int], list[int], float, float]] = []
+        n_total = 0
         for raw in datums:
-            if isinstance(raw, TinkerOPDDatum):
-                prompt_ids = list(raw.prompt_token_ids)
-                n_p = len(prompt_ids)
-                resp_ids = list(raw.target_tokens[n_p:])
-                weights = list(raw.weights[n_p:])
-                teacher_ids = list(raw.teacher_prompt_token_ids or [])
-            else:
-                prompt_ids = list(raw.get("prompt_ids") or self.backend.encode(raw["prompt"]))
-                resp_ids = list(raw.get("target_ids") or self.backend.encode(raw["target_text"]))
-                weights = list(raw.get("weights") or [1.0] * len(resp_ids))
-                teacher_ids = list(raw.get("teacher_prompt_ids") or [])
-                if not teacher_ids and raw.get("prompt_full"):
-                    teacher_ids = list(self.backend.encode(str(raw["prompt_full"])))
+            prompt_ids, resp_ids, teacher_ids, meta = self._unpack_opd_row(raw)
             if not resp_ids:
                 continue
             prompt_ids, resp_ids = self._truncate_pair(prompt_ids, resp_ids)
@@ -146,25 +160,33 @@ class HFDebugTrainingClient:
                 teacher_ids, _resp_t = self._truncate_pair(teacher_ids, resp_ids)
             else:
                 teacher_ids = list(prompt_ids)
-            student_logits = self.backend._response_position_logits(
+            if not resp_ids:
+                continue
+            lam = float(meta.get("lambda_opd") if meta.get("lambda_opd") is not None else 0.01)
+            beta = float(meta.get("gate_beta") if meta.get("gate_beta") is not None else 5.0)
+            prepared.append((prompt_ids, resp_ids, teacher_ids, lam, beta))
+            n_total += len(resp_ids)
+        if not prepared or n_total <= 0:
+            return {"loss": 0.0}
+
+        total = 0.0
+        denom = float(n_total)
+        for prompt_ids, resp_ids, teacher_ids, lam, beta in prepared:
+            student_lp = self.backend._teacher_forced_logprobs(
                 prompt_ids, resp_ids, require_grad=True
             )
-            teacher_logits = self.backend._response_position_logits(
+            teacher_lp = self.backend._teacher_forced_logprobs(
                 teacher_ids, resp_ids, require_grad=False
             )
-            kl = reverse_kl_per_token(student_logits, teacher_logits)
-            w = torch.tensor(weights[: kl.numel()], device=device, dtype=kl.dtype)
-            if w.numel() != kl.numel():
-                w = torch.ones_like(kl)
-            row_loss = (kl * w).sum()
+            gap = gated_sampled_gap_per_token(student_lp, teacher_lp, gate_beta=beta)
+            row_loss = gap.sum() * (float(lam) / denom)
             if row_loss.requires_grad:
                 row_loss.backward()
             total += float(row_loss.detach().item())
-            n += 1
-            del student_logits, teacher_logits, kl, w, row_loss
+            del student_lp, teacher_lp, gap, row_loss
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-        return {"loss": total / max(1, n)}
+        return {"loss": total}
 
     async def forward_backward_async(
         self,
@@ -178,8 +200,8 @@ class HFDebugTrainingClient:
         rows = list(data)
         if loss_fn == "cross_entropy":
             payload = self._opd_loss(rows)
-        elif loss_fn == "reverse_kl":
-            payload = self._opd_reverse_kl(rows)
+        elif loss_fn in {"sampled_gap", "reverse_kl"}:
+            payload = self._opd_sampled_gap(rows)
         else:
             payload = self._cispo_backward(rows)
         self.calls.append(("fb", loss_fn, len(rows)))

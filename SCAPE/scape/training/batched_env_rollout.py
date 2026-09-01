@@ -111,6 +111,7 @@ def _apply_generation(
             post_action_snapshot=post,
             reward=None,
             structurally_valid=valid,
+            student_prompt_token_ids=list(prompt_ids),
         )
     )
     rec = cispo_row_from_generation(

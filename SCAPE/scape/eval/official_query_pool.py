@@ -49,6 +49,7 @@ BCPLUS_TOTAL = 830
 BCPLUS_TRAIN = 664
 BCPLUS_TEST = 166
 SCORE_SPLIT_166 = "bcplus_test_166"
+SCORE_SPLIT_830 = "bcplus_830"
 
 
 def first_existing(paths: tuple[Path, ...]) -> Path | None:
@@ -183,9 +184,39 @@ def _as_record(raw: Any) -> dict[str, Any] | None:
     rec = dict(raw)
     rec["query_id"] = qid
     rec["query"] = query
-    rec["evidence_docids"] = [str(x) for x in (raw.get("evidence_docids") or raw.get("evidence") or [])]
-    rec["gold_docids"] = [str(x) for x in (raw.get("gold_docids") or raw.get("golds") or [])]
+    rec["evidence_docids"] = _as_id_list(
+        raw.get("evidence_docids")
+        or raw.get("evidence_document_ids")
+        or raw.get("evidence")
+        or []
+    )
+    rec["gold_docids"] = _as_id_list(
+        raw.get("gold_docids")
+        or raw.get("gold_document_ids")
+        or raw.get("golds")
+        or []
+    )
     return rec
+
+
+def _as_id_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        text = value.strip()
+        if text.startswith("[") and text.endswith("]"):
+            try:
+                import ast
+
+                parsed = ast.literal_eval(text)
+                if isinstance(parsed, (list, tuple, set)):
+                    return [str(x) for x in parsed if str(x)]
+            except Exception:
+                pass
+        return [text] if text else []
+    if isinstance(value, (list, tuple, set)):
+        return [str(x) for x in value if str(x)]
+    return [str(value)]
 
 
 def load_query_manifest(path: Path) -> list[dict[str, Any]]:
@@ -289,6 +320,28 @@ def load_bcplus_830_split(
         },
     }
     return used_train, test_rows, meta
+
+
+def load_bcplus_830_full(
+    *,
+    split_file: Path | None = None,
+    bcp_root: Path | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """BC+ train ∪ test (830). Primary eval split for scape+rl."""
+    train_rows, test_rows, split_meta = load_bcplus_830_split(
+        split_file=split_file, bcp_root=bcp_root, n_train=None
+    )
+    rows = list(train_rows) + list(test_rows)
+    meta = dict(split_meta)
+    meta.update(
+        {
+            "query_count": len(rows),
+            "score_split": SCORE_SPLIT_830,
+            "eval_count": len(rows),
+            "primary_eval": SCORE_SPLIT_830,
+        }
+    )
+    return rows, meta
 
 
 def load_official_384(*, manifest: Path | None = None, bcp_root: Path | None = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
