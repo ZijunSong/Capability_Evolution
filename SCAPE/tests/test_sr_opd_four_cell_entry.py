@@ -3,12 +3,7 @@ from pathlib import Path
 
 from scape.eval.official_query_pool import load_bcplus_830_split, load_official_384
 from scape.training.four_cell_runtime import TEACHER_REGISTRY, build_manifest, cells_for_mode, validate_wiring
-from scape.training.rl_opd_types import (
-    TRAINING_MODE_PURE_OPD,
-    TRAINING_MODE_RL,
-    TRAINING_MODE_RL_OPD,
-    TRAINING_MODE_SCAPE_RL,
-)
+from scape.training.rl_opd_types import TRAINING_MODE_RL, TRAINING_MODE_RL_OPD, TRAINING_MODE_SCAPE_RL, TRAINING_MODE_SCAPE_SEED, TRAINING_MODE_PURE_OPD
 
 
 def test_sentence_compress_teacher_registered():
@@ -65,6 +60,7 @@ def test_rl_and_rl_opd_cells():
     assert cells_for_mode(TRAINING_MODE_RL) == ("before", "rl")
     assert cells_for_mode(TRAINING_MODE_RL_OPD) == ("before", "rl_opd")
     assert cells_for_mode(TRAINING_MODE_SCAPE_RL) == ("before", "scape_rl")
+    assert cells_for_mode(TRAINING_MODE_SCAPE_SEED) == ("before", "scape_seed")
     assert cells_for_mode(TRAINING_MODE_PURE_OPD) == ("before", "pure_opd")
 
 
@@ -72,6 +68,7 @@ def test_train_only_skips_before_and_eval_cells():
     assert cells_for_mode(TRAINING_MODE_RL, train_only=True) == ("rl",)
     assert cells_for_mode(TRAINING_MODE_RL_OPD, train_only=True) == ("rl_opd",)
     assert cells_for_mode(TRAINING_MODE_SCAPE_RL, train_only=True) == ("scape_rl",)
+    assert cells_for_mode(TRAINING_MODE_SCAPE_SEED, train_only=True) == ("scape_seed",)
     assert cells_for_mode(TRAINING_MODE_PURE_OPD, train_only=True) == ("pure_opd",)
     assert cells_for_mode("four_cell", train_only=True) == ("teacher", "before", "pure_opd", "rl_opd")
 

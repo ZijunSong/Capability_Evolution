@@ -26,6 +26,7 @@ from scape.training.rl_opd_types import (
     TRAINING_MODE_RL,
     TRAINING_MODE_RL_OPD,
     TRAINING_MODE_SCAPE_RL,
+    TRAINING_MODE_SCAPE_SEED,
 )
 
 
@@ -61,6 +62,8 @@ def test_train_method_mapping():
     assert train_method_to_mode("rl_opd") == TRAINING_MODE_RL_OPD
     assert train_method_to_mode("scape+rl") == TRAINING_MODE_SCAPE_RL
     assert train_method_to_mode("scape_rl") == TRAINING_MODE_SCAPE_RL
+    assert train_method_to_mode("scape+seed") == TRAINING_MODE_SCAPE_SEED
+    assert train_method_to_mode("seed+opd") == TRAINING_MODE_SCAPE_SEED
 
 
 def test_parse_train_cli():
@@ -150,6 +153,42 @@ def test_parse_scape_rl_can_override_lambda():
     )
     assert args.lambda_opd == 0.2
     assert args.opd_loss == "sr_opd_sampled_gap"
+
+
+def test_parse_scape_seed_defaults_projection_and_seed_gap():
+    args, spec = parse_train_args(
+        [
+            "--train_method",
+            "scape+seed",
+            "--component",
+            "sentence_compress",
+            "--out",
+            "/tmp/scape-seed-test",
+        ]
+    )
+    assert spec.train_method == "scape+seed"
+    assert spec.training_mode == TRAINING_MODE_SCAPE_SEED
+    assert args.opd_states_per_trajectory == -1
+    assert args.opd_loss == "sr_opd_projected_gap"
+    assert args.lambda_opd == 0.01
+    assert args.opd_gate_beta == 5.0
+    assert args.n_queries == 664
+
+
+def test_parse_seed_opd_alias_is_scape_seed():
+    args, spec = parse_train_args(
+        [
+            "--train_method",
+            "seed+opd",
+            "--component",
+            "zero",
+            "--out",
+            "/tmp/seed-opd-alias",
+        ]
+    )
+    assert spec.train_method == "scape+seed"
+    assert spec.training_mode == TRAINING_MODE_SCAPE_SEED
+    assert args.opd_loss == "sr_opd_projected_gap"
 
 
 def test_parse_eval_cli_space_separated_components():

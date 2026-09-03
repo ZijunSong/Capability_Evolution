@@ -364,3 +364,42 @@ def test_scape_rl_sampled_gap_does_not_require_teacher_fn():
     )
     assert batch.opd_datums
     assert batch.rl_datums
+
+
+def test_scape_seed_projects_then_uses_seed_gap_weights():
+    called = []
+
+    def teacher(p):
+        called.append(p)
+        return _teacher_auto(p)
+
+    point = _point(episode="e0", qid="q0", turn=0, reward=1.0)
+    point.student_action_tokens = [11, 12, 13]
+    group = HybridRolloutGroup(
+        query_id="q0",
+        policy_version="v0",
+        trajectory_group=None,
+        decision_points=[point],
+        terminal_rewards=[1.0, 0.0],
+    )
+    batch = prepare_hybrid_batch(
+        groups=[group],
+        rl_datums_by_query={"q0": [{"n_tokens": 8}]},
+        policy_version="v0",
+        lambda_opd=0.01,
+        component_id="auto_populate_first_search",
+        teacher_event_fn=teacher,
+        remove_constant_reward_groups=False,
+        opd_loss="sr_opd_projected_gap",
+        opd_states_per_trajectory=-1,
+    )
+    assert called
+    assert batch.opd_datums
+    datum = batch.opd_datums[0]
+    assert datum.metadata["sampled_action"] is False
+    assert datum.metadata["projector_used"] is True
+    assert datum.metadata["lambda_opd"] == 0.01
+    assert datum.teacher_prompt_token_ids
+    assert all(w in {0.0, 1.0} for w in datum.weights)
+    assert batch.projection_stats.get("projector_used") is True
+    assert batch.projection_stats.get("sampled_action_opd") is False

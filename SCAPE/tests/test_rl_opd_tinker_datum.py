@@ -111,3 +111,22 @@ def test_sampled_opd_datums_use_action_tokens_not_encoded_text():
     assert d.teacher_prompt_token_ids
     assert d.metadata["lambda_opd"] == 0.01
     assert abs(supervised_weight_sum(datums) - 3.0) < 1e-9
+
+
+def test_projected_seed_datums_use_target_text_and_binary_weights():
+    from scape.training.tinker_opd_datum import build_projected_seed_datums
+
+    steps = [_step("PREFIX", "aa"), _step("PREFIX", "bbb")]
+    for s in steps:
+        s.metadata["prompt_full"] = "FULL"
+    datums = build_projected_seed_datums(
+        steps, lambda_opd=0.01, encode_fn=_encode, policy_version="v1", gate_beta=5.0
+    )
+    assert len(datums) == 2
+    assert datums[0].target_tokens[-2:] == [1, 1]
+    assert datums[1].n_supervised_tokens == 3
+    assert all(w in {0.0, 1.0} for d in datums for w in d.weights)
+    assert datums[0].metadata["projector_used"] is True
+    assert datums[0].metadata["sampled_action"] is False
+    assert datums[0].teacher_prompt_token_ids == _encode("FULL")
+    assert abs(supervised_weight_sum(datums) - 5.0) < 1e-9

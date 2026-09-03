@@ -3,6 +3,7 @@
 CE path: ProjectedTrainingStep with weights summing to lambda_opd.
 SEED sampled-gap path: on-policy action tokens; weights are a 0/1 mask
 and lambda_opd is applied at FB time as token-mean.
+Projected-seed path: same SEED token-mean on projector outputs a*.
 
 Teacher-only artifacts must never appear in model_input.
 Prompt tokens always have weight 0.
@@ -21,6 +22,7 @@ from scape.training.opd_dataset import (
     render_teacher_prompt,
 )
 from scape.training.rl_opd_types import (
+    OPD_LOSS_PROJECTED_GAP,
     OPD_LOSS_SAMPLED_GAP,
     OPD_WEIGHT_NORMALIZATION,
     SCAPE_RL_OPD_GATE_BETA,
@@ -131,6 +133,73 @@ def build_tinker_opd_datums(
                     "projection_kind": step.projection_kind,
                     "source_event_ids": list(step.source_event_ids),
                     "opd_weight_normalization": OPD_WEIGHT_NORMALIZATION,
+                    **dict(step.metadata or {}),
+                },
+            )
+        )
+    return datums
+
+
+def build_projected_seed_datums(
+    steps: Sequence[ProjectedTrainingStep],
+    *,
+    lambda_opd: float,
+    encode_fn: EncodeFn | None = None,
+    policy_version: str,
+    gate_beta: float = SCAPE_RL_OPD_GATE_BETA,
+    opd_loss: str = OPD_LOSS_PROJECTED_GAP,
+) -> list[TinkerOPDDatum]:
+    """SEED-scale OPD on projected student-legal actions.
+
+    Target tokens are the projected action ``a*``, not the CISPO sample.
+    Weights are a 0/1 mask; ``λ × token-mean(g · (sg[ℓ^T] − ℓ^S))`` is
+    applied at FB time. Student prefix is the reduced DualView; teacher
+    prefix is DualView ``H_full``.
+    """
+    encode = encode_fn or default_encode
+    if float(lambda_opd) <= 0.0 or not steps:
+        return []
+    lam = float(lambda_opd)
+    beta = float(gate_beta)
+    datums: list[TinkerOPDDatum] = []
+    for step in steps:
+        if prompt_has_teacher_leak(step.prompt_reduced):
+            raise ValueError("teacher-only observation leaked into Student prefix")
+        prompt_ids = encode(step.prompt_reduced)
+        target_ids = encode(step.target_text)
+        if not target_ids:
+            continue
+        teacher_prompt = str((step.metadata or {}).get("prompt_full") or "")
+        teacher_ids = encode(teacher_prompt) if teacher_prompt else []
+        if not teacher_ids:
+            continue
+        n_tok = len(target_ids)
+        try:
+            parsed = parse_action(step.target_text)
+        except Exception:
+            parsed = dict(step.target_action or {})
+        datums.append(
+            TinkerOPDDatum(
+                model_input=step.prompt_reduced,
+                prompt_token_ids=prompt_ids,
+                target_tokens=[0] * len(prompt_ids) + list(target_ids),
+                weights=[0.0] * len(prompt_ids) + [1.0] * n_tok,
+                policy_version=policy_version,
+                n_supervised_tokens=n_tok,
+                projection_confidence=float(
+                    step.projection_confidence if step.projection_confidence else step.weight or 1.0
+                ),
+                target_action=parsed,
+                teacher_prompt_token_ids=teacher_ids,
+                opd_loss=str(opd_loss),
+                metadata={
+                    "projection_kind": step.projection_kind,
+                    "source_event_ids": list(step.source_event_ids),
+                    "sampled_action": False,
+                    "projector_used": True,
+                    "lambda_opd": lam,
+                    "gate_beta": beta,
+                    "opd_weight_normalization": "seed_token_mean",
                     **dict(step.metadata or {}),
                 },
             )

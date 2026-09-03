@@ -5,6 +5,7 @@ gradients; a single optim_step applies them.
 
     L_hybrid = L_CISPO + λ L_OPD
     scape+rl uses SEED gated sampled-token OPD, not projected CE / full-vocab KL.
+    scape+seed keeps action projection and applies the same SEED-scale gap on a*.
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ from scape.training.rl_opd_policy_version import assert_policy_versions_match
 from scape.training.tinker_opd_datum import (
     EncodeFn,
     TinkerOPDDatum,
+    build_projected_seed_datums,
     build_sampled_opd_datums,
     build_tinker_opd_datums,
     default_encode,
@@ -42,6 +44,8 @@ from scape.training.rl_opd_types import (
     SCAPE_RL_OPD_GATE_BETA,
     StudentDecisionPoint,
     uses_sampled_opd,
+    uses_seed_gap,
+    uses_projected_seed,
 )
 
 
@@ -237,6 +241,8 @@ def prepare_hybrid_batch(
 
     ``lambda_opd <= 0`` skips Teacher / projector / OPD datums entirely.
     scape+rl (sampled-gap) scores CISPO sampled actions and does not project.
+    scape+seed projects teacher events to student-legal a*, then applies the
+    SEED gated token-mean on those projected tokens.
     """
     all_points: list[StudentDecisionPoint] = []
     for group in groups:
@@ -293,17 +299,28 @@ def prepare_hybrid_batch(
                 component_id=component_id,
                 projector=projector,
             )
-            opd_datums = build_tinker_opd_datums(
-                steps,
-                lambda_opd=lambda_opd,
-                encode_fn=encode_fn or default_encode,
-                policy_version=policy_version,
-                opd_loss=opd_loss,
-            )
+            if uses_projected_seed(opd_loss):
+                opd_datums = build_projected_seed_datums(
+                    steps,
+                    lambda_opd=lambda_opd,
+                    encode_fn=encode_fn or default_encode,
+                    policy_version=policy_version,
+                    gate_beta=opd_gate_beta,
+                    opd_loss=opd_loss,
+                )
+            else:
+                opd_datums = build_tinker_opd_datums(
+                    steps,
+                    lambda_opd=lambda_opd,
+                    encode_fn=encode_fn or default_encode,
+                    policy_version=policy_version,
+                    opd_loss=opd_loss,
+                )
             skipped_teacher = False
             projection_stats = {
                 "skipped_teacher": False,
                 "projector_used": True,
+                "sampled_action_opd": False,
                 "projection_coverage": audit.projection_coverage,
                 "reject_rate": audit.n_reject / max(1, audit.n_teacher_segments),
                 "n_direct": audit.n_direct,
@@ -390,7 +407,7 @@ async def hybrid_train_substep(
         n_rl_fb = 1
 
     if opd_list:
-        opd_fn = "sampled_gap" if uses_sampled_opd(opd_loss) else "cross_entropy"
+        opd_fn = "sampled_gap" if uses_seed_gap(opd_loss) else "cross_entropy"
         maybe = training_client.forward_backward_async(
             opd_list,
             loss_fn=opd_fn,

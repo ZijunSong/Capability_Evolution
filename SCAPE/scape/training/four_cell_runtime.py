@@ -65,7 +65,9 @@ from scape.training.rl_opd_types import (
     TRAINING_MODE_RL,
     TRAINING_MODE_RL_OPD,
     TRAINING_MODE_SCAPE_RL,
+    TRAINING_MODE_SCAPE_SEED,
     HybridRolloutGroup,
+    OPD_LOSS_PROJECTED_GAP,
     OPD_LOSS_SAMPLED_GAP,
     SCAPE_RL_LAMBDA_OPD,
     SCAPE_RL_OPD_GATE_BETA,
@@ -248,10 +250,12 @@ def cells_for_mode(training_mode: str | None, *, train_only: bool = False) -> tu
         TRAINING_MODE_PURE_OPD: ("pure_opd",),
         TRAINING_MODE_RL_OPD: ("rl_opd",),
         TRAINING_MODE_SCAPE_RL: ("scape_rl",),
+        TRAINING_MODE_SCAPE_SEED: ("scape_seed",),
         "rl_only": ("rl",),
         "pure_opd_only": ("pure_opd",),
         "rl_opd_only": ("rl_opd",),
         "scape_rl_only": ("scape_rl",),
+        "scape_seed_only": ("scape_seed",),
     }
     if train_only and training_mode in only:
         return only[training_mode]
@@ -265,6 +269,8 @@ def cells_for_mode(training_mode: str | None, *, train_only: bool = False) -> tu
         return ("before", "rl_opd")
     if training_mode == TRAINING_MODE_SCAPE_RL:
         return ("before", "scape_rl")
+    if training_mode == TRAINING_MODE_SCAPE_SEED:
+        return ("before", "scape_seed")
     if training_mode in only:
         return only[training_mode]
     return CELLS
@@ -273,6 +279,11 @@ def cells_for_mode(training_mode: str | None, *, train_only: bool = False) -> tu
 def is_scape_rl_mode(args: argparse.Namespace | None = None, *, training_mode: str | None = None) -> bool:
     mode = training_mode if training_mode is not None else str(getattr(args, "training_mode", "") or "")
     return mode == TRAINING_MODE_SCAPE_RL
+
+
+def is_seed_scale_mode(args: argparse.Namespace | None = None, *, training_mode: str | None = None) -> bool:
+    mode = training_mode if training_mode is not None else str(getattr(args, "training_mode", "") or "")
+    return mode in {TRAINING_MODE_SCAPE_RL, TRAINING_MODE_SCAPE_SEED}
 
 
 def uses_bcplus_830_eval(args: argparse.Namespace) -> bool:
@@ -290,6 +301,8 @@ def build_manifest(args: argparse.Namespace, *, extra: dict[str, Any] | None = N
     opd_loss = str(getattr(args, "opd_loss", None) or "sr_opd_ce")
     if mode == TRAINING_MODE_SCAPE_RL:
         opd_loss = str(getattr(args, "opd_loss", None) or OPD_LOSS_SAMPLED_GAP)
+    elif mode == TRAINING_MODE_SCAPE_SEED:
+        opd_loss = str(getattr(args, "opd_loss", None) or OPD_LOSS_PROJECTED_GAP)
     return {
         "training_mode": mode,
         "component": args.component,
@@ -304,7 +317,7 @@ def build_manifest(args: argparse.Namespace, *, extra: dict[str, Any] | None = N
         "opd_state_source": "current_on_policy_rl_rollout",
         "joint_update_contract": "rl_fb+opd_fb+single_optim",
         "legacy_tool_token_kl_hook_used": False,
-        "protocol_complete_rl_opd": mode in {"four_cell", TRAINING_MODE_RL_OPD, TRAINING_MODE_SCAPE_RL} and lam > 0,
+        "protocol_complete_rl_opd": mode in {"four_cell", TRAINING_MODE_RL_OPD, TRAINING_MODE_SCAPE_RL, TRAINING_MODE_SCAPE_SEED} and lam > 0,
         "protocol_name": PROTOCOL_COMPLETE_RL_OPD,
         "projection_schema_version": "scape_projection_v1",
         "group_size": args.group_size,
@@ -1656,8 +1669,9 @@ def run_four_cell(args: argparse.Namespace) -> dict[str, Any]:
         )
     rl_opd = cells.get("rl_opd", {}).get("train") or {}
     scape_rl = cells.get("scape_rl", {}).get("train") or {}
-    joint = scape_rl or rl_opd
-    joint_cell_present = "scape_rl" in cells or "rl_opd" in cells
+    scape_seed = cells.get("scape_seed", {}).get("train") or {}
+    joint = scape_seed or scape_rl or rl_opd
+    joint_cell_present = "scape_seed" in cells or "scape_rl" in cells or "rl_opd" in cells
     summary = {
         "elapsed_sec": time.time() - t0,
         "manifest": manifest,
@@ -1738,18 +1752,19 @@ def coerce_runtime_args(args: argparse.Namespace) -> argparse.Namespace:
         args.max_model_len = 8192
     if getattr(args, "opd_states_per_trajectory", None) is None:
         args.opd_states_per_trajectory = (
-            -1 if getattr(args, "training_mode", "") == TRAINING_MODE_SCAPE_RL else 3
+            -1 if is_seed_scale_mode(args) else 3
         )
     if not getattr(args, "opd_loss", None):
-        args.opd_loss = (
-            OPD_LOSS_SAMPLED_GAP
-            if getattr(args, "training_mode", "") == TRAINING_MODE_SCAPE_RL
-            else "sr_opd_ce"
-        )
+        if getattr(args, "training_mode", "") == TRAINING_MODE_SCAPE_RL:
+            args.opd_loss = OPD_LOSS_SAMPLED_GAP
+        elif getattr(args, "training_mode", "") == TRAINING_MODE_SCAPE_SEED:
+            args.opd_loss = OPD_LOSS_PROJECTED_GAP
+        else:
+            args.opd_loss = "sr_opd_ce"
     if getattr(args, "lambda_opd", None) is None:
         args.lambda_opd = (
             SCAPE_RL_LAMBDA_OPD
-            if getattr(args, "training_mode", "") == TRAINING_MODE_SCAPE_RL
+            if is_seed_scale_mode(args)
             else 0.1
         )
     if getattr(args, "opd_gate_beta", None) is None:

@@ -22,6 +22,7 @@ from scape.eval.eval_defaults import (
     HARNESS1_EVAL_TEMPERATURE,
 )
 from scape.training.rl_opd_types import (
+    OPD_LOSS_PROJECTED_GAP,
     OPD_LOSS_SAMPLED_GAP,
     SCAPE_RL_LAMBDA_OPD,
     SCAPE_RL_OPD_GATE_BETA,
@@ -29,6 +30,7 @@ from scape.training.rl_opd_types import (
     TRAINING_MODE_RL,
     TRAINING_MODE_RL_OPD,
     TRAINING_MODE_SCAPE_RL,
+    TRAINING_MODE_SCAPE_SEED,
 )
 from scape.eval.official_query_pool import SCORE_SPLIT_166, SCORE_SPLIT_830
 from scape.eval.sec_corpus import default_sec_corpus_root, default_sec_rl_data
@@ -38,7 +40,7 @@ SCAPE_ROOT = Path(__file__).resolve().parents[2]
 ALLOWED_HARNESSES = ("Harness-1",)
 ALLOWED_BENCHMARKS = ("BC+",)
 ALLOWED_MODEL_NAMES = ("harness-1",)
-ALLOWED_TRAIN_METHODS = ("opd", "rl+opd", "rl", "scape+rl")
+ALLOWED_TRAIN_METHODS = ("opd", "rl+opd", "rl", "scape+rl", "scape+seed", "seed+opd")
 CANONICAL_COMPONENTS = tuple(all_component_ids())
 
 _HARNESS_ALIASES = {
@@ -73,6 +75,12 @@ _TRAIN_METHOD_ALIASES = {
     "scape+rl": "scape+rl",
     "scape_rl": "scape+rl",
     "scape-rl": "scape+rl",
+    "scape+seed": "scape+seed",
+    "scape_seed": "scape+seed",
+    "scape-seed": "scape+seed",
+    "seed+opd": "scape+seed",
+    "seed_opd": "scape+seed",
+    "seed-opd": "scape+seed",
 }
 
 _COMPONENT_ALIASES = {
@@ -108,6 +116,7 @@ _TRAIN_METHOD_TO_MODE = {
     "rl": TRAINING_MODE_RL,
     "rl+opd": TRAINING_MODE_RL_OPD,
     "scape+rl": TRAINING_MODE_SCAPE_RL,
+    "scape+seed": TRAINING_MODE_SCAPE_SEED,
 }
 
 
@@ -278,7 +287,7 @@ def discover_adapter_map(run_dir: Path | None) -> dict[str, str]:
         if adapters not in candidates:
             candidates.append(adapters)
     mapping: dict[str, str] = {}
-    preferred = ("scape_rl", "rl_opd", "pure_opd", "rl", "before", "theta0")
+    preferred = ("scape_seed", "scape_rl", "rl_opd", "pure_opd", "rl", "before", "theta0")
     for adapters in candidates:
         if not adapters.is_dir():
             continue
@@ -358,7 +367,7 @@ def add_train_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
         dest="train_method",
         required=True,
         choices=ALLOWED_TRAIN_METHODS,
-        help="opd = PURE OPD (sr_opd_ce); rl+opd = CISPO + CE OPD; rl = CISPO only; scape+rl = CISPO + SEED gated OPD on every sampled action.",
+        help="opd = PURE OPD (sr_opd_ce); rl+opd = CISPO + CE OPD; rl = CISPO only; scape+rl = CISPO + SEED on sampled actions; scape+seed = CISPO + projected actions + SEED-scale gap.",
     )
     parser.add_argument(
         "--n-queries",
@@ -367,12 +376,12 @@ def add_train_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
         help="Train query cap. Default 664 for opd/rl+opd/rl; scape+rl uses every SEC RL query.",
     )
     parser.add_argument("--train-steps", type=int, default=8)
-    parser.add_argument("--lambda-opd", type=float, default=None, help="OPD coefficient. Default 0.1; scape+rl uses 0.01 (SEED).")
+    parser.add_argument("--lambda-opd", type=float, default=None, help="OPD coefficient. Default 0.1; scape+rl and scape+seed use 0.01 (SEED).")
     parser.add_argument(
         "--opd-gate-beta",
         type=float,
         default=SCAPE_RL_OPD_GATE_BETA,
-        help="SEED OPD gate β in σ(βΔ). Only used by scape+rl.",
+        help="SEED OPD gate β in σ(βΔ). Used by scape+rl and scape+seed.",
     )
     parser.add_argument("--group-size", type=int, default=8)
     parser.add_argument("--max-turns", type=int, default=6)
@@ -381,7 +390,7 @@ def add_train_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
         "--opd-states-per-trajectory",
         type=int,
         default=None,
-        help="k decision points per trajectory. Default 3 for opd/rl+opd; -1 (all actions) for scape+rl.",
+        help="k decision points per trajectory. Default 3 for opd/rl+opd; -1 (all actions) for scape+rl and scape+seed.",
     )
     parser.add_argument(
         "--eval-max-turns",
@@ -527,7 +536,7 @@ def _spec_from_ns(args: argparse.Namespace, *, train: bool) -> LaunchSpec:
 
 def parse_train_args(argv: Sequence[str] | None = None) -> tuple[argparse.Namespace, LaunchSpec]:
     parser = argparse.ArgumentParser(
-        description="One-click Harness-1 / BC+ training (opd | rl+opd | rl | scape+rl).",
+        description="One-click Harness-1 / BC+ training (opd | rl+opd | rl | scape+rl | scape+seed).",
     )
     add_train_args(parser)
     args = parser.parse_args(argv)
@@ -540,10 +549,19 @@ def parse_train_args(argv: Sequence[str] | None = None) -> tuple[argparse.Namesp
     args.train_method = spec.train_method
     args.training_mode = spec.training_mode
     if args.opd_states_per_trajectory is None:
-        args.opd_states_per_trajectory = -1 if spec.train_method == "scape+rl" else 3
-    args.opd_loss = OPD_LOSS_SAMPLED_GAP if spec.train_method == "scape+rl" else "sr_opd_ce"
+        args.opd_states_per_trajectory = (
+            -1 if spec.train_method in {"scape+rl", "scape+seed"} else 3
+        )
+    if spec.train_method == "scape+rl":
+        args.opd_loss = OPD_LOSS_SAMPLED_GAP
+    elif spec.train_method == "scape+seed":
+        args.opd_loss = OPD_LOSS_PROJECTED_GAP
+    else:
+        args.opd_loss = "sr_opd_ce"
     if args.lambda_opd is None:
-        args.lambda_opd = SCAPE_RL_LAMBDA_OPD if spec.train_method == "scape+rl" else 0.1
+        args.lambda_opd = (
+            SCAPE_RL_LAMBDA_OPD if spec.train_method in {"scape+rl", "scape+seed"} else 0.1
+        )
     if getattr(args, "opd_gate_beta", None) is None:
         args.opd_gate_beta = SCAPE_RL_OPD_GATE_BETA
     if args.n_queries is None and spec.train_method != "scape+rl":
