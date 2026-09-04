@@ -2,10 +2,16 @@
 
 All live episodes of a query×group batch share one generate_batch call
 per turn so vLLM continuous batching sees hundreds of prompts at once.
+
+Document stores are prepared in query micro-batches (default: enough
+queries to fill ~256 live episodes). The first generate_batch is submitted
+as soon as the first micro-batch is ready, and the next batch is prepared
+on a background thread while the GPU is busy.
 """
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any, Callable, Sequence
 import time
@@ -17,6 +23,29 @@ from trim.training.rl_opd_types import HybridRolloutGroup, StudentDecisionPoint
 from trim.training.vllm_hybrid import GenerateRequest, GenerateResult, cispo_row_from_generation
 
 GenerateBatch = Callable[[Sequence[GenerateRequest]], list[GenerateResult]]
+
+# Keep about this many live episodes in one vLLM generate_batch.
+# With --group-size 8 that is 32 queries; eval (group_size=1) gets 256.
+DEFAULT_TARGET_LIVE_EPISODES = 256
+DEFAULT_DOC_STORE_WORKERS = 8
+
+
+def resolved_query_batch_size(
+    n_rows: int,
+    group_size: int,
+    query_batch_size: int | None,
+) -> int:
+    """How many queries to prepare before the first generate_batch call."""
+    n_rows = max(0, int(n_rows))
+    if query_batch_size is not None:
+        n = int(query_batch_size)
+        if n <= 0:
+            return max(1, n_rows) if n_rows else 1
+        return max(1, n)
+    target = max(1, int(DEFAULT_TARGET_LIVE_EPISODES) // max(1, int(group_size)))
+    if n_rows:
+        return max(1, min(n_rows, target))
+    return target
 
 
 @dataclass
@@ -126,51 +155,61 @@ def _apply_generation(
     ep.rl_rows.append(rec)
 
 
-def rollout_queries_batched(
-    generate_batch: GenerateBatch,
-    rows: Sequence[dict[str, Any]],
+def _prepare_chunk_episodes(
+    chunk: Sequence[dict[str, Any]],
     *,
     component_id: str,
     group_size: int,
-    max_turns: int,
-    max_new: int,
     policy_version: str,
     seed: int,
-    sample: bool,
-    enc,
-    searcher: RetrievalBackend | None = None,
-    teacher_mode: bool = False,
-    harness_mask: dict[str, bool] | None = None,
-    temperature: float | None = None,
-    search_k: int = 10,
-    doc_store_k: int = 12,
-) -> list[HybridRolloutGroup]:
-    """Batch across queries and group members; step the env between turns."""
-    from trim.eval.local_search_env import curated_recall, new_state
-    from trim.training.four_cell_runtime import (
-        doc_store_for_row,
-        snap_from_state,
-        terminal_reward,
-    )
-    from trim.training.hf_rl_opd_client import group_relative_advantages
-
+    harness_mask: dict[str, bool] | None,
+    searcher: RetrievalBackend | None,
+    doc_store_k: int,
+    doc_store_workers: int,
+    new_state,
+    doc_store_for_row,
+) -> list[LiveEpisode]:
+    workers = max(1, int(doc_store_workers or 1))
+    if workers == 1 or len(chunk) <= 1:
+        stores = [doc_store_for_row(row, searcher, k=doc_store_k) for row in chunk]
+    else:
+        with ThreadPoolExecutor(max_workers=min(workers, len(chunk))) as pool:
+            stores = list(
+                pool.map(lambda row: doc_store_for_row(row, searcher, k=doc_store_k), chunk)
+            )
     episodes: list[LiveEpisode] = []
-    for row in rows:
-        store = doc_store_for_row(row, searcher, k=doc_store_k)
+    for row, store in zip(chunk, stores):
+        copied = dict(store)
         for g in range(group_size):
             episodes.append(
                 LiveEpisode(
                     row=row,
                     rollout_idx=g,
                     seed=int(seed) + 17 * g,
-                    st=new_state(str(row["query"]), store),
+                    st=new_state(str(row["query"]), dict(copied)),
                     component_id=component_id,
                     policy_version=policy_version,
                     harness_mask=harness_mask,
                 )
             )
+    return episodes
 
-    temperature = 0.0 if not sample else float(temperature if temperature is not None else 1.0)
+
+def _run_episode_turns(
+    episodes: list[LiveEpisode],
+    generate_batch: GenerateBatch,
+    *,
+    component_id: str,
+    max_turns: int,
+    max_new: int,
+    policy_version: str,
+    enc,
+    searcher: RetrievalBackend | None,
+    teacher_mode: bool,
+    temperature: float,
+    search_k: int,
+    snap_from_state,
+) -> None:
     for turn in range(max_turns):
         live = [ep for ep in episodes if not ep.st.get("ended")]
         if not live:
@@ -243,6 +282,17 @@ def rollout_queries_batched(
                 raise RuntimeError("missing generation for live episode")
             _apply_generation(ep, gen, enc=enc, searcher=searcher, search_k=search_k)
 
+
+def _groups_from_episodes(
+    episodes: list[LiveEpisode],
+    rows: Sequence[dict[str, Any]],
+    *,
+    policy_version: str,
+    max_turns: int,
+    terminal_reward,
+    curated_recall,
+    group_relative_advantages,
+) -> list[HybridRolloutGroup]:
     by_q: dict[str, list[LiveEpisode]] = {}
     for ep in episodes:
         by_q.setdefault(str(ep.row["query_id"]), []).append(ep)
@@ -314,6 +364,107 @@ def rollout_queries_batched(
                 },
             )
         )
+    return groups
+
+
+def rollout_queries_batched(
+    generate_batch: GenerateBatch,
+    rows: Sequence[dict[str, Any]],
+    *,
+    component_id: str,
+    group_size: int,
+    max_turns: int,
+    max_new: int,
+    policy_version: str,
+    seed: int,
+    sample: bool,
+    enc,
+    searcher: RetrievalBackend | None = None,
+    teacher_mode: bool = False,
+    harness_mask: dict[str, bool] | None = None,
+    temperature: float | None = None,
+    search_k: int = 10,
+    doc_store_k: int = 12,
+    query_batch_size: int | None = None,
+    doc_store_workers: int = DEFAULT_DOC_STORE_WORKERS,
+) -> list[HybridRolloutGroup]:
+    """Batch across queries and group members; step the env between turns.
+
+    Document-store prep is chunked so the first vLLM generate_batch runs as
+    soon as one micro-batch is ready. The next chunk is prepared on a
+    background thread while the GPU rolls out the current chunk.
+    """
+    from trim.eval.local_search_env import curated_recall, new_state
+    from trim.training.four_cell_runtime import (
+        doc_store_for_row,
+        snap_from_state,
+        terminal_reward,
+    )
+    from trim.training.hf_rl_opd_client import group_relative_advantages
+
+    rows = list(rows)
+    if not rows:
+        return []
+    batch = resolved_query_batch_size(len(rows), group_size, query_batch_size)
+    workers = max(1, int(doc_store_workers or 1))
+    chunks = [rows[i : i + batch] for i in range(0, len(rows), batch)]
+    temperature = 0.0 if not sample else float(temperature if temperature is not None else 1.0)
+
+    def prepare(chunk: Sequence[dict[str, Any]]) -> tuple[list[LiveEpisode], float]:
+        t0 = time.perf_counter()
+        episodes = _prepare_chunk_episodes(
+            chunk,
+            component_id=component_id,
+            group_size=group_size,
+            policy_version=policy_version,
+            seed=seed,
+            harness_mask=harness_mask,
+            searcher=searcher,
+            doc_store_k=doc_store_k,
+            doc_store_workers=workers,
+            new_state=new_state,
+            doc_store_for_row=doc_store_for_row,
+        )
+        return episodes, time.perf_counter() - t0
+
+    groups: list[HybridRolloutGroup] = []
+    with ThreadPoolExecutor(max_workers=1) as prefetch:
+        next_fut = prefetch.submit(prepare, chunks[0])
+        for i, chunk in enumerate(chunks):
+            episodes, prep_s = next_fut.result()
+            if i + 1 < len(chunks):
+                next_fut = prefetch.submit(prepare, chunks[i + 1])
+            if len(chunks) > 1:
+                print(
+                    f"[rollout] chunk {i + 1}/{len(chunks)} queries={len(chunk)} "
+                    f"episodes={len(episodes)} prep={prep_s:.1f}s -> vLLM",
+                    flush=True,
+                )
+            _run_episode_turns(
+                episodes,
+                generate_batch,
+                component_id=component_id,
+                max_turns=max_turns,
+                max_new=max_new,
+                policy_version=policy_version,
+                enc=enc,
+                searcher=searcher,
+                teacher_mode=teacher_mode,
+                temperature=temperature,
+                search_k=search_k,
+                snap_from_state=snap_from_state,
+            )
+            groups.extend(
+                _groups_from_episodes(
+                    episodes,
+                    chunk,
+                    policy_version=policy_version,
+                    max_turns=max_turns,
+                    terminal_reward=terminal_reward,
+                    curated_recall=curated_recall,
+                    group_relative_advantages=group_relative_advantages,
+                )
+            )
     return groups
 
 

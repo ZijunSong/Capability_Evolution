@@ -409,6 +409,23 @@ def add_train_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
         help="SEED OPD gate β in σ(βΔ). Used by scape+rl and scape+seed.",
     )
     parser.add_argument("--group-size", type=int, default=8)
+    parser.add_argument(
+        "--rollout-query-batch-size",
+        type=int,
+        default=None,
+        help=(
+            "Queries to prepare and submit to vLLM together. Default keeps about "
+            "256 live episodes (32 queries at --group-size 8) so GPU work starts "
+            "after the first micro-batch instead of after all 3453 SEC searches. "
+            "0 restores the legacy prepare-everything-first behavior."
+        ),
+    )
+    parser.add_argument(
+        "--doc-store-workers",
+        type=int,
+        default=8,
+        help="Threads used to build doc_store_for_row inside each query batch. 1 is serial.",
+    )
     parser.add_argument("--max-turns", type=int, default=6)
     parser.add_argument("--max-new-tokens", type=int, default=384)
     parser.add_argument(

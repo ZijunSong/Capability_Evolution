@@ -382,26 +382,47 @@ def labeled_doc_store(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+_DOC_STORE_CACHE_KEY = "_rollout_doc_store"
+_DOC_STORE_CACHE_K_KEY = "_rollout_doc_store_k"
+
+
 def doc_store_for_row(
     row: dict[str, Any],
     searcher: RetrievalBackend | None,
     *,
     k: int = 12,
 ) -> dict[str, Any]:
+    """Build the per-query document store, caching the result on the row.
+
+    Live BM25 / token-overlap search is expensive (seconds per SEC query).
+    Training reuses the same ``train_rows`` across on-policy refreshes, so
+    the first lookup is stored on the row and later steps skip retrieval.
+    """
+    k = int(k)
+    cached = row.get(_DOC_STORE_CACHE_KEY)
+    if isinstance(cached, dict) and int(row.get(_DOC_STORE_CACHE_K_KEY) or -1) == k:
+        return dict(cached)
+
+    def remember(store: dict[str, Any]) -> dict[str, Any]:
+        stored = dict(store)
+        row[_DOC_STORE_CACHE_KEY] = stored
+        row[_DOC_STORE_CACHE_K_KEY] = k
+        return dict(stored)
+
     if row.get("frozen_doc_store"):
-        return dict(row["frozen_doc_store"])
+        return remember(dict(row["frozen_doc_store"]))
     if searcher is not None and searcher.name != "none":
-        hits = searcher.search(str(row.get("query") or ""), int(k))
+        hits = searcher.search(str(row.get("query") or ""), k)
         store = hits_to_doc_store(hits)
         if row.get("seed_doc_store"):
             seeded = dict(row["seed_doc_store"])
             seeded.update(store)
             store = seeded
         if store:
-            return store
+            return remember(store)
     if row.get("seed_doc_store"):
-        return dict(row["seed_doc_store"])
-    return labeled_doc_store(row)
+        return remember(dict(row["seed_doc_store"]))
+    return remember(labeled_doc_store(row))
 
 
 def snap_from_state(qid: str, st: dict[str, Any], component_id: str, *, harness_mask: dict[str, bool] | None = None):
@@ -824,6 +845,8 @@ def eval_closed_loop(
     temperature: float = 0.0,
     search_k: int | None = None,
     doc_store_k: int | None = None,
+    query_batch_size: int | None = None,
+    doc_store_workers: int | None = None,
     primary_split: str = "official_test",
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     from trim.eval.eval_defaults import (
@@ -855,6 +878,8 @@ def eval_closed_loop(
             temperature=float(temperature) if sample else 0.0,
             search_k=search_k,
             doc_store_k=doc_store_k,
+            query_batch_size=query_batch_size,
+            doc_store_workers=8 if doc_store_workers is None else int(doc_store_workers),
         )
         traces, leak = traces_from_groups(groups, rows, searcher=searcher)
         retrieval_name = searcher.name if searcher is not None else "none"
@@ -1362,29 +1387,7 @@ def run_four_cell(args: argparse.Namespace) -> dict[str, Any]:
         # Current vLLM cannot apply Harness-1 PEFT target modules. Use the
         # HF-trained adapter for After-policy rollouts while retaining vLLM
         # for base/Before generation and the same hybrid train contract.
-        if vllm_on and not (lora_path and Path(lora_path).name != "theta0"):
-            client = open_vllm(lora_path, tag)
-            try:
-                return rollout_queries_batched(
-                    client.generate_batch,
-                    rows,
-                    component_id=args.component,
-                    group_size=group_size,
-                    max_turns=args.max_turns,
-                    max_new=args.max_new_tokens,
-                    policy_version=policy_version,
-                    seed=args.seed + 100 * (abs(hash(tag)) % 1000),
-                    sample=sample,
-                    enc=enc,
-                    searcher=train_searcher,
-                    teacher_mode=teacher_mode,
-                )
-            finally:
-                close_vllm()
-        gen = HFGenerateClient(ensure_hf(lora_path), enc=enc)
-        return rollout_queries_batched(
-            gen.generate_batch,
-            rows,
+        rollout_kw = dict(
             component_id=args.component,
             group_size=group_size,
             max_turns=args.max_turns,
@@ -1394,27 +1397,43 @@ def run_four_cell(args: argparse.Namespace) -> dict[str, Any]:
             sample=sample,
             enc=enc,
             searcher=train_searcher,
+            teacher_mode=teacher_mode,
+            query_batch_size=getattr(args, "rollout_query_batch_size", None),
+            doc_store_workers=int(getattr(args, "doc_store_workers", 8) or 8),
         )
+        if vllm_on and not (lora_path and Path(lora_path).name != "theta0"):
+            client = open_vllm(lora_path, tag)
+            try:
+                return rollout_queries_batched(client.generate_batch, rows, **rollout_kw)
+            finally:
+                close_vllm()
+        gen = HFGenerateClient(ensure_hf(lora_path), enc=enc)
+        return rollout_queries_batched(gen.generate_batch, rows, **rollout_kw)
 
     def eval_now(lora_path: str | None, tag: str, *, teacher_mode: bool = False):
         # See collect_groups: PEFT After policies use HF generation because
         # this vLLM release cannot load Harness-1 attention LoRA targets.
+        eval_kw = dict(
+            component_id=args.component,
+            max_new=int(getattr(args, "eval_max_new_tokens", args.max_new_tokens)),
+            max_turns=int(getattr(args, "eval_max_turns", args.max_turns)),
+            seed=args.seed,
+            enc=enc,
+            searcher=eval_searcher,
+            teacher_mode=teacher_mode,
+            temperature=float(getattr(args, "eval_temperature", 0.0)),
+            primary_split=eval_primary,
+            query_batch_size=getattr(args, "rollout_query_batch_size", None),
+            doc_store_workers=int(getattr(args, "doc_store_workers", 8) or 8),
+        )
         if vllm_on and not (lora_path and Path(lora_path).name != "theta0"):
             client = open_vllm(lora_path, tag)
             try:
                 return eval_closed_loop(
                     None,
                     ev_rows,
-                    component_id=args.component,
-                    max_new=int(getattr(args, "eval_max_new_tokens", args.max_new_tokens)),
-                    max_turns=int(getattr(args, "eval_max_turns", args.max_turns)),
-                    seed=args.seed,
-                    enc=enc,
-                    searcher=eval_searcher,
                     generate_batch=client.generate_batch,
-                    teacher_mode=teacher_mode,
-                    temperature=float(getattr(args, "eval_temperature", 0.0)),
-                    primary_split=eval_primary,
+                    **eval_kw,
                 )
             finally:
                 close_vllm()
@@ -1422,15 +1441,8 @@ def run_four_cell(args: argparse.Namespace) -> dict[str, Any]:
         return eval_closed_loop(
             backend,
             ev_rows,
-            component_id=args.component,
-            max_new=int(getattr(args, "eval_max_new_tokens", args.max_new_tokens)),
-            max_turns=int(getattr(args, "eval_max_turns", args.max_turns)),
-            seed=args.seed,
-            enc=enc,
-            searcher=eval_searcher,
             generate_batch=gen.generate_batch,
-            temperature=float(getattr(args, "eval_temperature", 0.0)),
-            primary_split=eval_primary,
+            **eval_kw,
         )
 
     def save_and_audit(cell: str, adapter_dir: Path) -> dict[str, Any]:

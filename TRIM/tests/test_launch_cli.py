@@ -116,6 +116,8 @@ def test_parse_scape_rl_defaults_all_actions_and_sampled_gap():
     assert args.lambda_opd == 0.01
     assert args.opd_gate_beta == 5.0
     assert args.n_queries is None
+    assert args.rollout_query_batch_size is None
+    assert args.doc_store_workers == 8
     assert args.score_split == "bcplus_830"
     assert "harness-1-rl-data" in str(args.rl_data)
     assert "harness-1-sec-corpus" in str(args.sec_corpus_root)
@@ -153,6 +155,25 @@ def test_parse_scape_rl_can_override_lambda():
     )
     assert args.lambda_opd == 0.2
     assert args.opd_loss == "sr_opd_sampled_gap"
+
+
+def test_parse_train_rollout_pipeline_flags():
+    args, _spec = parse_train_args(
+        [
+            "--train_method",
+            "scape+rl",
+            "--component",
+            "zero",
+            "--rollout-query-batch-size",
+            "16",
+            "--doc-store-workers",
+            "4",
+            "--out",
+            "/tmp/scape-rl-pipeline",
+        ]
+    )
+    assert args.rollout_query_batch_size == 16
+    assert args.doc_store_workers == 4
 
 
 def test_parse_scape_seed_defaults_projection_and_seed_gap():
