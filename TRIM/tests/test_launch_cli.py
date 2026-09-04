@@ -67,6 +67,22 @@ def test_train_method_mapping():
     assert train_method_to_mode("seed+opd") == TRAINING_MODE_SCAPE_SEED
 
 
+def test_unknown_train_data_rejected():
+    with pytest.raises(LaunchError, match="train-data"):
+        parse_train_args(
+            [
+                "--train_method",
+                "trim",
+                "--component",
+                "zero",
+                "--train-data",
+                "not-a-pool",
+                "--out",
+                "/tmp/bad-train-data",
+            ]
+        )
+
+
 def test_parse_train_cli():
     args, spec = parse_train_args(
         [
@@ -92,7 +108,8 @@ def test_parse_train_cli():
     assert spec.training_mode == TRAINING_MODE_RL_OPD
     assert spec.components == ("sentence_compress", "verify_tool")
     assert args.component == "sentence_compress,verify_tool"
-    assert args.n_queries == 664
+    assert args.train_data == "sec"
+    assert args.n_queries is None
     assert args.validate_only is True
     assert args.opd_states_per_trajectory == 3
     assert args.opd_loss == "sr_opd_ce"
@@ -117,6 +134,7 @@ def test_parse_scape_rl_defaults_all_actions_and_sampled_gap():
     assert args.lambda_opd == 0.01
     assert args.opd_gate_beta == 5.0
     assert args.n_queries is None
+    assert args.train_data == "sec"
     assert args.rollout_query_batch_size is None
     assert args.doc_store_workers == 8
     assert args.score_split == "bcplus_830"
@@ -194,7 +212,9 @@ def test_parse_trim_defaults_projection_and_seed_gap():
     assert args.opd_loss == "sr_opd_projected_gap"
     assert args.lambda_opd == 0.01
     assert args.opd_gate_beta == 5.0
-    assert args.n_queries == 664
+    assert args.n_queries is None
+    assert args.train_data == "sec"
+    assert args.score_split == "bcplus_830"
 
 
 def test_parse_scape_seed_alias_is_trim():
@@ -227,6 +247,42 @@ def test_parse_seed_opd_alias_is_trim():
     assert spec.train_method == "trim"
     assert spec.training_mode == TRAINING_MODE_SCAPE_SEED
     assert args.opd_loss == "sr_opd_projected_gap"
+
+
+def test_parse_train_data_bcplus_train_664():
+    args, spec = parse_train_args(
+        [
+            "--train_method",
+            "trim",
+            "--component",
+            "zero",
+            "--train-data",
+            "bcplus_train_664",
+            "--out",
+            "/tmp/trim-bcplus-664",
+        ]
+    )
+    assert spec.train_method == "trim"
+    assert args.train_data == "bcplus_train_664"
+    assert args.n_queries == 664
+    assert args.score_split == "bcplus_test_166"
+
+
+def test_parse_train_data_alias_664():
+    args, _spec = parse_train_args(
+        [
+            "--train_method",
+            "trim",
+            "--component",
+            "zero",
+            "--train-pool",
+            "664",
+            "--out",
+            "/tmp/trim-pool-alias",
+        ]
+    )
+    assert args.train_data == "bcplus_train_664"
+    assert args.n_queries == 664
 
 
 def test_parse_eval_cli_space_separated_components():

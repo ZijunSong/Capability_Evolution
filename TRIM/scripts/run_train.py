@@ -55,6 +55,7 @@ def main(argv: list[str] | None = None) -> int:
         "model_name": spec.model_name,
         "train_method": spec.train_method,
         "training_mode": spec.training_mode,
+        "train_data": args.train_data,
         "opd_loss": args.opd_loss,
         "opd_states_per_trajectory": args.opd_states_per_trajectory,
         "lambda_opd": args.lambda_opd,
@@ -66,15 +67,15 @@ def main(argv: list[str] | None = None) -> int:
         "score_split": str(getattr(args, "score_split", None) or SCORE_SPLIT_166),
         "bcplus_split": (
             "830 = 664+166"
-            if spec.train_method == "scape+rl"
+            if args.train_data == "sec"
             else "830 = 664 train + 166 test"
         ),
-        "train_pool": SEC_TRAIN_POOL_NAME if spec.train_method == "scape+rl" else "bcplus_train_664",
+        "train_pool": SEC_TRAIN_POOL_NAME if args.train_data == "sec" else "bcplus_train_664",
         "rl_data": str(getattr(args, "rl_data", None) or default_sec_rl_data())
-        if spec.train_method == "scape+rl"
+        if args.train_data == "sec"
         else None,
         "sec_corpus_root": str(getattr(args, "sec_corpus_root", None) or default_sec_corpus_root())
-        if spec.train_method == "scape+rl"
+        if args.train_data == "sec"
         else None,
         "student_mask": "H_zero (all V8D OFF)" if spec.zero_components else "H_min (listed components OFF)",
         "teacher_mask": "H_zero (all V8D OFF)" if spec.zero_components else "H_full (listed components ON)",

@@ -18,7 +18,7 @@ from trim.eval.sec_corpus import (
     normalize_sec_rl_record,
     open_sec_retrieval,
 )
-from trim.training.four_cell_runtime import resolve_queries, uses_bcplus_830_eval
+from trim.training.four_cell_runtime import resolve_queries, uses_bcplus_830_eval, uses_sec_train_data
 
 
 def _write_rl_tar(tmp: Path, rows: list[dict]) -> Path:
@@ -155,6 +155,61 @@ def test_resolve_queries_scape_rl_uses_sec_train_and_bcplus_830(tmp_path: Path):
     assert frozen == []
 
 
+def test_resolve_queries_train_data_sec_for_trim(tmp_path: Path):
+    archive = _write_rl_tar(
+        tmp_path,
+        [
+            {
+                "query_id": "0_0",
+                "query": "How many days?",
+                "answer": "45",
+                "document_ids": [{"chunk_ids": ["chunk_b"], "is_final_answer": True}],
+            }
+        ],
+    )
+    corpus = _write_corpus(tmp_path)
+    args = Namespace(
+        training_mode="scape_seed",
+        train_data="sec",
+        query_manifest=None,
+        n_queries=None,
+        rl_data=archive,
+        sec_corpus_root=corpus,
+        validate_only=False,
+        dry_run=False,
+        train_states=None,
+        n_train_states=None,
+        component="sentence_compress",
+        score_split="bcplus_830",
+    )
+    train_rows, eval_rows, meta, frozen = resolve_queries(args)
+    assert [r["query_id"] for r in train_rows] == ["0_0"]
+    assert train_rows[0]["seed_doc_store"]["chunk_b"]["text"]
+    assert len(eval_rows) == 830
+    assert meta["train"]["pool_contract"] == SEC_TRAIN_POOL_NAME
+    assert frozen == []
+
+
+def test_resolve_queries_train_data_bcplus_train_664():
+    args = Namespace(
+        training_mode="scape_rl",
+        train_data="bcplus_train_664",
+        query_manifest=None,
+        n_queries=None,
+        eval_manifest=None,
+        train_states=None,
+        n_train_states=None,
+        component="sentence_compress",
+        score_split="bcplus_test_166",
+    )
+    train_rows, eval_rows, meta, frozen = resolve_queries(args)
+    assert len(train_rows) == 664
+    assert len(eval_rows) == 166
+    assert all(r["official_split"] == "train" for r in train_rows)
+    assert frozen == []
+    assert uses_sec_train_data(args) is False
+
+
 def test_bcplus_830_full_is_664_plus_166():
     rows, meta = load_bcplus_830_full()
     assert len(rows) == 830
@@ -169,6 +224,10 @@ def test_uses_bcplus_830_eval_for_scape_rl():
     assert uses_bcplus_830_eval(Namespace(score_split="bcplus_full", training_mode="rl_opd")) is True
     assert uses_bcplus_830_eval(Namespace(score_split="bcplus_test_166", training_mode="scape_rl")) is False
     assert uses_bcplus_830_eval(Namespace(score_split=None, training_mode="scape_rl")) is True
+    assert uses_bcplus_830_eval(Namespace(score_split=None, train_data="sec", training_mode="scape_seed")) is True
+    assert uses_bcplus_830_eval(
+        Namespace(score_split=None, train_data="bcplus_train_664", training_mode="scape_rl")
+    ) is False
 
 
 def test_official_rl_tar_if_present():

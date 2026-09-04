@@ -42,6 +42,14 @@ PYTHONPATH=TRIM:SCAPE-EasyOPD python TRIM/scripts/run_eval.py \
 `trim` is CISPO + projected teacher actions + SEED-scale OPD (the method
 formerly launched as `scape+seed`; that flag remains an alias).
 
+`--train-data`:
+
+- `sec` (default) — Harness-1 SEC RL pool (~3453 queries)
+- `bcplus_train_664` — official BC+ train split
+
+`--n-queries` optionally caps the selected pool. SEC runs default the eval
+score split to `bcplus_830`; `bcplus_train_664` defaults to `bcplus_test_166`.
+
 `--tp` (eval only): data-parallel replica count. `--tp 8` starts 8 independent
 model servers (one GPU each unless `--tensor-parallel-size` is set), round-robin
 shards the eval set, then merges `PER_QUERY.jsonl` back into original order.

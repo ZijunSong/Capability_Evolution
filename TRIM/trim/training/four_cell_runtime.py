@@ -282,6 +282,23 @@ def is_scape_rl_mode(args: argparse.Namespace | None = None, *, training_mode: s
     return mode == TRAINING_MODE_SCAPE_RL
 
 
+def uses_sec_train_data(args: argparse.Namespace | None = None, *, training_mode: str | None = None) -> bool:
+    """True when the train query pool is Harness-1 SEC RL (~3453).
+
+    CLI ``--train-data sec`` (the default) selects this pool. If ``train_data``
+    is unset, keep the legacy rule: only scape+rl used SEC queries.
+    """
+    raw = getattr(args, "train_data", None) if args is not None else None
+    if raw not in {None, ""}:
+        key = str(raw).strip().lower().replace("-", "_").replace(" ", "")
+        if key in {"bcplus_train_664", "bcplus_664", "664", "bcplus", "bcplus_train"}:
+            return False
+        if key in {"sec", "sec_rl", "harness_1_rl_data", "harness1_rl_data", "harness_1_rl", "rl_data"}:
+            return True
+        raise ValueError(f"unknown train_data={raw!r}; use sec or bcplus_train_664")
+    return is_scape_rl_mode(args, training_mode=training_mode)
+
+
 def is_seed_scale_mode(args: argparse.Namespace | None = None, *, training_mode: str | None = None) -> bool:
     mode = training_mode if training_mode is not None else str(getattr(args, "training_mode", "") or "")
     return mode in {TRAINING_MODE_SCAPE_RL, TRAINING_MODE_SCAPE_SEED}
@@ -293,7 +310,7 @@ def uses_bcplus_830_eval(args: argparse.Namespace) -> bool:
         return True
     if split == SCORE_SPLIT_166:
         return False
-    return is_scape_rl_mode(args)
+    return uses_sec_train_data(args)
 
 
 def build_manifest(args: argparse.Namespace, *, extra: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -343,22 +360,23 @@ def build_manifest(args: argparse.Namespace, *, extra: dict[str, Any] | None = N
         "tensor_parallel_size": getattr(args, "tensor_parallel_size", None),
         "seeds": list(getattr(args, "seeds", [args.seed])),
         "train_state_source": ("current_on_policy_rl_rollout" if args.component == "auto_populate_first_search" and not getattr(args, "train_states", None) else "train_states_5k_or_on_policy"),
-        "score_split": SCORE_SPLIT_830 if is_scape_rl_mode(args, training_mode=mode) else SCORE_SPLIT_166,
+        "score_split": SCORE_SPLIT_830 if uses_sec_train_data(args, training_mode=mode) else SCORE_SPLIT_166,
         "bcplus_split": (
             f"{BCPLUS_TOTAL} = {BCPLUS_TRAIN}+{BCPLUS_TEST}"
-            if is_scape_rl_mode(args, training_mode=mode)
+            if uses_sec_train_data(args, training_mode=mode)
             else f"{BCPLUS_TRAIN} train + {BCPLUS_TEST} test"
         ),
         "train_pool": (
             SEC_TRAIN_POOL_NAME
-            if is_scape_rl_mode(args, training_mode=mode)
+            if uses_sec_train_data(args, training_mode=mode)
             else "bcplus_train_664"
         ),
+        "train_data": "sec" if uses_sec_train_data(args, training_mode=mode) else "bcplus_train_664",
         "rl_data": str(getattr(args, "rl_data", None) or default_sec_rl_data())
-        if is_scape_rl_mode(args, training_mode=mode)
+        if uses_sec_train_data(args, training_mode=mode)
         else None,
         "sec_corpus_root": str(getattr(args, "sec_corpus_root", None) or default_sec_corpus_root())
-        if is_scape_rl_mode(args, training_mode=mode)
+        if uses_sec_train_data(args, training_mode=mode)
         else None,
         "legacy_adapters_not_used": True,
         "train_only": bool(getattr(args, "train_only", False)),
@@ -965,7 +983,7 @@ def eval_closed_loop(
 def resolve_queries(args: argparse.Namespace) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
     custom_train = getattr(args, "query_manifest", None)
     n_queries = getattr(args, "n_queries", None)
-    if is_scape_rl_mode(args):
+    if uses_sec_train_data(args):
         train_rows, train_src = load_sec_rl_queries(
             getattr(args, "rl_data", None) or default_sec_rl_data(),
             n_queries=n_queries,
@@ -1127,7 +1145,7 @@ def validate_wiring(args: argparse.Namespace) -> dict[str, Any]:
         and not uses_bcplus_830_eval(args),
         "eval_is_bcplus_830": uses_bcplus_830_eval(args) and len(eval_rows) == BCPLUS_TOTAL,
         "train_pool": (pool_meta.get("train") or {}).get("pool_contract")
-        or (SEC_TRAIN_POOL_NAME if is_scape_rl_mode(args) else "bcplus_train_664"),
+        or (SEC_TRAIN_POOL_NAME if uses_sec_train_data(args) else "bcplus_train_664"),
         "score_split": SCORE_SPLIT_830 if uses_bcplus_830_eval(args) else SCORE_SPLIT_166,
         "official_test_is_76": False,
         "train_states": pool_meta.get("frozen_states") or {},
@@ -1153,8 +1171,8 @@ def open_train_retrieval(
     args: argparse.Namespace,
     train_rows: list[dict[str, Any]] | None = None,
 ) -> RetrievalBackend:
-    """Train-time searcher. scape+rl uses the SEC parquet/BM25 corpus."""
-    if is_scape_rl_mode(args):
+    """Train-time searcher. SEC train data uses the SEC parquet/BM25 corpus."""
+    if uses_sec_train_data(args):
         texts: dict[str, str] = {}
         for row in train_rows or []:
             for did, rec in (row.get("seed_doc_store") or {}).items():
@@ -1168,7 +1186,7 @@ def open_train_retrieval(
 
 
 def open_eval_retrieval(args: argparse.Namespace) -> RetrievalBackend:
-    """Eval always searches BrowseComp-Plus, including scape+rl's BC+ 830 split."""
+    """Eval always searches BrowseComp-Plus, including SEC-train runs scored on BC+ 830."""
     return open_retrieval(formal=not bool(getattr(args, "smoke", False)))
 
 
@@ -1721,7 +1739,7 @@ def coerce_runtime_args(args: argparse.Namespace) -> argparse.Namespace:
     if not hasattr(args, "train_steps"):
         args.train_steps = int(getattr(args, "max_steps", 64))
     if not hasattr(args, "n_queries") or getattr(args, "n_queries", None) in {None, 0}:
-        if is_scape_rl_mode(args):
+        if uses_sec_train_data(args):
             args.n_queries = None
         else:
             args.n_queries = BCPLUS_TRAIN
@@ -1730,7 +1748,7 @@ def coerce_runtime_args(args: argparse.Namespace) -> argparse.Namespace:
     if not hasattr(args, "rl_data") or getattr(args, "rl_data", None) in {None, ""}:
         args.rl_data = default_sec_rl_data()
     if not getattr(args, "score_split", None):
-        args.score_split = SCORE_SPLIT_830 if is_scape_rl_mode(args) else SCORE_SPLIT_166
+        args.score_split = SCORE_SPLIT_830 if uses_sec_train_data(args) else SCORE_SPLIT_166
     if not hasattr(args, "max_new_tokens"):
         args.max_new_tokens = 384
     if not hasattr(args, "gpu"):

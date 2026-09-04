@@ -47,6 +47,9 @@ ALLOWED_HARNESSES = ("Harness-1",)
 ALLOWED_BENCHMARKS = ("BC+", "bcplus_test_166", "bcplus_full")
 ALLOWED_MODEL_NAMES = ("harness-1",)
 ALLOWED_TRAIN_METHODS = ("opd", "rl+opd", "rl", "scape+rl", "trim", "scape+seed", "seed+opd")
+TRAIN_DATA_SEC = "sec"
+TRAIN_DATA_BCPLUS_664 = "bcplus_train_664"
+ALLOWED_TRAIN_DATA = (TRAIN_DATA_SEC, TRAIN_DATA_BCPLUS_664)
 CANONICAL_COMPONENTS = tuple(all_component_ids())
 
 _HARNESS_ALIASES = {
@@ -133,6 +136,21 @@ _TRAIN_METHOD_TO_MODE = {
     "rl+opd": TRAINING_MODE_RL_OPD,
     "scape+rl": TRAINING_MODE_SCAPE_RL,
     "trim": TRAINING_MODE_SCAPE_SEED,
+}
+
+_TRAIN_DATA_ALIASES = {
+    "sec": TRAIN_DATA_SEC,
+    "sec_rl": TRAIN_DATA_SEC,
+    "sec-rl": TRAIN_DATA_SEC,
+    "harness-1-rl-data": TRAIN_DATA_SEC,
+    "harness1-rl-data": TRAIN_DATA_SEC,
+    "harness-1-rl": TRAIN_DATA_SEC,
+    "rl-data": TRAIN_DATA_SEC,
+    "bcplus_train_664": TRAIN_DATA_BCPLUS_664,
+    "bcplus-train-664": TRAIN_DATA_BCPLUS_664,
+    "bcplus_664": TRAIN_DATA_BCPLUS_664,
+    "bcplus-664": TRAIN_DATA_BCPLUS_664,
+    "664": TRAIN_DATA_BCPLUS_664,
 }
 
 
@@ -241,6 +259,17 @@ def train_method_to_mode(method: str) -> str:
             f"--train_method={method!r} is not supported; use {list(ALLOWED_TRAIN_METHODS)}"
         )
     return _TRAIN_METHOD_TO_MODE[key]
+
+
+def canonical_train_data(value: str | None) -> str:
+    if value is None or str(value).strip() == "":
+        return TRAIN_DATA_SEC
+    resolved = _TRAIN_DATA_ALIASES.get(_norm(value))
+    if resolved is None:
+        raise LaunchError(
+            f"--train-data={value!r} is not supported; use {list(ALLOWED_TRAIN_DATA)}"
+        )
+    return resolved
 
 
 def _looks_like_path(value: str) -> bool:
@@ -404,10 +433,23 @@ def add_train_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--train-data",
+        "--train-pool",
+        dest="train_data",
+        default=TRAIN_DATA_SEC,
+        help=(
+            "Training query pool. Default sec = Harness-1 SEC RL (~3453 queries). "
+            "Pass bcplus_train_664 for the official BC+ train split."
+        ),
+    )
+    parser.add_argument(
         "--n-queries",
         type=int,
         default=None,
-        help="Train query cap. Default 664 for opd/rl+opd/rl; scape+rl uses every SEC RL query.",
+        help=(
+            "Train query cap. Default: all SEC queries for --train-data sec; "
+            "664 for bcplus_train_664."
+        ),
     )
     parser.add_argument("--train-steps", type=int, default=8)
     parser.add_argument("--lambda-opd", type=float, default=None, help="OPD coefficient. Default 0.1; scape+rl and trim use 0.01 (SEED).")
@@ -483,7 +525,7 @@ def add_train_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
         "--score-split",
         choices=(SCORE_SPLIT_166, SCORE_SPLIT_830, SCORE_SPLIT_FULL),
         default=None,
-        help="Eval query pool. Default bcplus_test_166; scape+rl uses bcplus_830. bcplus_full is an alias of bcplus_830.",
+        help="Eval query pool. Default follows --train-data: sec → bcplus_830, bcplus_train_664 → bcplus_test_166. bcplus_full is an alias of bcplus_830.",
     )
     parser.add_argument("--sft-adapter", default="")
     parser.add_argument("--validate-only", action="store_true")
@@ -659,6 +701,7 @@ def parse_train_args(argv: Sequence[str] | None = None) -> tuple[argparse.Namesp
     args.component_ids = list(spec.components)
     args.train_method = spec.train_method
     args.training_mode = spec.training_mode
+    args.train_data = canonical_train_data(getattr(args, "train_data", None))
     if args.opd_states_per_trajectory is None:
         args.opd_states_per_trajectory = (
             -1 if spec.train_method in {"scape+rl", "trim"} else 3
@@ -675,12 +718,12 @@ def parse_train_args(argv: Sequence[str] | None = None) -> tuple[argparse.Namesp
         )
     if getattr(args, "opd_gate_beta", None) is None:
         args.opd_gate_beta = SCAPE_RL_OPD_GATE_BETA
-    if args.n_queries is None and spec.train_method != "scape+rl":
+    if args.n_queries is None and args.train_data != TRAIN_DATA_SEC:
         args.n_queries = 664
     _apply_score_split(
         args,
         spec,
-        default=SCORE_SPLIT_830 if spec.train_method == "scape+rl" else SCORE_SPLIT_166,
+        default=SCORE_SPLIT_830 if args.train_data == TRAIN_DATA_SEC else SCORE_SPLIT_166,
     )
     if getattr(args, "sec_corpus_root", None) is None:
         args.sec_corpus_root = default_sec_corpus_root()
