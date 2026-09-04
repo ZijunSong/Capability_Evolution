@@ -103,7 +103,8 @@ def test_parse_train_cli():
     )
     assert spec.harness == "Harness-1"
     assert spec.benchmark == "BC+"
-    assert spec.model_name == "harness-1"
+    assert spec.model_name == str(spec.base_model)
+    assert Path(spec.model_name).name == "harness-1"
     assert spec.train_method == "rl+opd"
     assert spec.training_mode == TRAINING_MODE_RL_OPD
     assert spec.components == ("sentence_compress", "verify_tool")
@@ -114,6 +115,24 @@ def test_parse_train_cli():
     assert args.opd_states_per_trajectory == 3
     assert args.opd_loss == "sr_opd_ce"
     assert args.lambda_opd == 0.1
+
+
+def test_parse_train_cli_model_name_path():
+    args, spec = parse_train_args(
+        [
+            "--train_method",
+            "trim",
+            "--model_name",
+            "/mnt/songzijun/models/pat-jj_harness-1-full/harness-1",
+            "--component",
+            "all",
+            "--out",
+            "/tmp/trim-model-path",
+        ]
+    )
+    assert spec.model_name == "/mnt/songzijun/models/pat-jj_harness-1-full/harness-1"
+    assert str(spec.base_model) == spec.model_name
+    assert args.base_model == spec.model_name
 
 
 def test_parse_scape_rl_defaults_all_actions_and_sampled_gap():
@@ -449,8 +468,9 @@ def test_parse_eval_cli_model_name_path():
             "/tmp/scape-eval-model-path",
         ]
     )
-    assert spec.model_name == "harness-1"
+    assert spec.model_name == "/mnt/songzijun/models/pat-jj_harness-1-full/harness-1"
     assert str(spec.base_model) == "/mnt/songzijun/models/pat-jj_harness-1-full/harness-1"
+    assert args.model_name == spec.model_name
     assert args.score_split == "bcplus_test_166"
 
 

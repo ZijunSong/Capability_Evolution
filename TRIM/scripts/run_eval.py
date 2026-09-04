@@ -148,7 +148,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(payload, indent=2), flush=True)
         return 0
     if not spec.base_model:
-        raise SystemExit("pass --base-model or use the default harness-1 checkpoint for live eval")
+        raise SystemExit("pass --model_name /path/to/checkpoint for live eval")
 
     from trim.eval.browsecomp_retrieval import open_retrieval
     from trim.eval.eval_parallel import parse_gpu_ids, run_replicated_eval, write_jsonl

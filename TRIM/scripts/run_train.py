@@ -7,7 +7,7 @@ closed-loop eval). Score with ``scripts/run_eval.py``.
 
 Example:
   python scripts/run_train.py \\
-    --harness Harness-1 --benchmark BC+ --model_name harness-1 \\
+    --harness Harness-1 --benchmark BC+ --model_name /path/to/checkpoint \\
     --train_method trim --component all
 """
 

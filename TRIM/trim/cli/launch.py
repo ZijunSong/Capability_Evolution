@@ -279,6 +279,14 @@ def _looks_like_path(value: str) -> bool:
     return text.startswith("/") or text.startswith(".") or "/" in text or "\\" in text
 
 
+def _model_slug(model_name: str) -> str:
+    """Safe directory token for default --out paths."""
+    text = str(model_name or "").strip()
+    name = Path(text).name if _looks_like_path(text) else text
+    slug = _norm(name).replace("/", "_").replace("\\", "_")
+    return slug or "model"
+
+
 def resolve_model_path(model_name: str, explicit: str | Path | None = None) -> Path:
     if explicit:
         return Path(explicit)
@@ -319,7 +327,7 @@ def default_out_dir(
         kind,
         _norm(harness).replace("-", ""),
         _norm(benchmark).replace("+", "plus"),
-        _norm(model_name),
+        _model_slug(model_name),
     ]
     if train_method:
         parts.append(_norm(train_method).replace("+", "_"))
@@ -387,7 +395,10 @@ def add_common_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
         "--model-name",
         dest="model_name",
         default="harness-1",
-        help="Base model name (harness-1) or a checkpoint path.",
+        help=(
+            "Path to the model checkpoint being trained or evaluated. "
+            "The shorthand harness-1 maps to the default local Harness-1 checkpoint."
+        ),
     )
     parser.add_argument(
         "--component",
@@ -404,7 +415,7 @@ def add_common_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     parser.add_argument(
         "--base-model",
         default="",
-        help="Override checkpoint path for --model_name harness-1.",
+        help="Optional override of --model_name. Prefer passing the checkpoint path as --model_name.",
     )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--n-eval", type=int, default=None, help="Optional eval subset. Default is the full score split.")
@@ -652,19 +663,20 @@ def _apply_score_split(args: argparse.Namespace, spec: LaunchSpec, *, default: s
 def _spec_from_ns(args: argparse.Namespace, *, train: bool) -> LaunchSpec:
     harness = _pick(args.harness, _HARNESS_ALIASES, ALLOWED_HARNESSES, "--harness")
     benchmark = _pick(args.benchmark, _BENCHMARK_ALIASES, ALLOWED_BENCHMARKS, "--benchmark")
-    if _looks_like_path(args.model_name):
-        model_name = "harness-1"
-        if not args.base_model:
-            args.base_model = args.model_name
+    user_model = str(args.model_name or "").strip()
+    explicit = args.base_model or None
+    if _looks_like_path(user_model):
+        resolved = resolve_model_path(user_model, explicit)
     else:
-        model_name = _pick(args.model_name, _MODEL_ALIASES, ALLOWED_MODEL_NAMES, "--model_name")
+        alias = _pick(user_model, _MODEL_ALIASES, ALLOWED_MODEL_NAMES, "--model_name")
+        resolved = resolve_model_path(alias, explicit)
+    model_name = str(resolved)
     components = tuple(canonical_component_ids(args.component))
     method = None
     if train:
         method = _TRAIN_METHOD_ALIASES.get(_norm(args.train_method))
         if method is None:
             raise LaunchError(f"--train_method={args.train_method!r} is not supported")
-    base_model = resolve_model_path(model_name, args.base_model or None)
     out = args.out
     if out is None:
         out = default_out_dir(
@@ -681,7 +693,7 @@ def _spec_from_ns(args: argparse.Namespace, *, train: bool) -> LaunchSpec:
         model_name=model_name,
         components=components,
         train_method=method,
-        base_model=base_model,
+        base_model=resolved,
         out=Path(out),
         extra=dict(vars(args)),
     )

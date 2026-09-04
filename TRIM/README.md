@@ -22,8 +22,9 @@ From `Capability_Evolution/`:
 
 ```bash
 PYTHONPATH=TRIM:SCAPE-EasyOPD python TRIM/scripts/run_train.py \
-  --harness Harness-1 --benchmark BC+ --model_name harness-1 \
-  --train_method rl --component all
+  --harness Harness-1 --benchmark BC+ \
+  --model_name /mnt/songzijun/models/pat-jj_harness-1-full/harness-1 \
+  --train_method trim --component all
 
 PYTHONPATH=TRIM:SCAPE-EasyOPD python TRIM/scripts/run_eval.py \
   --harness Harness-1 --benchmark bcplus_test_166 \
@@ -36,6 +37,9 @@ PYTHONPATH=TRIM:SCAPE-EasyOPD python TRIM/scripts/run_eval.py \
 - `bcplus_test_166` — official 166-query test split
 - `bcplus_full` — 830-query pool (664 train + 166 test)
 - `BC+` — dataset family; eval still defaults to the 830 pool
+
+`--model_name`: path to the checkpoint being trained or evaluated.
+`harness-1` remains a shorthand for the default local Harness-1 checkpoint.
 
 `--train_method`: `opd` | `rl` | `rl+opd` | `scape+rl` | `trim`
 
