@@ -227,6 +227,8 @@ STUDENT_ALWAYS_LEGAL = [
     "grep",
 ]
 
+HARNESS_G_STUDENT_LEGAL = ["init", "select", "lookup", "answer"]
+
 CURATE_STUDENT_KEYS = frozenset({"add_ids", "remove_ids"})
 CURATE_PRIVILEGED_KEYS = frozenset({"importance"})
 
@@ -239,6 +241,11 @@ ACTION_ARG_SCHEMAS: dict[str, frozenset[str]] = {
     "curate": CURATE_STUDENT_KEYS,
     "end_search": frozenset({"reason"}),
     "verify": frozenset({"claim", "evidence_ids", "doc_ids", "doc_id"}),
+    "select": frozenset({"sid", "id"}),
+    "lookup": frozenset({"eid", "id"}),
+    "answer": frozenset({"reason", "reasoning"}),
+    "init": frozenset(),
+    "answer_with": frozenset({"sid", "sids"}),
 }
 
 
@@ -251,7 +258,23 @@ def legal_tool_names(
     When ``harness_mask`` is omitted, ``verify`` stays in the list for legacy
     fixtures. When the mask is provided, ``verify_tool=False`` removes verify.
     ``importance_tagging`` is never a Student tool.
+    Harness-G masks expose select / lookup / answer (and answer_with only if on).
     """
+    from trim.adapters.harness_profiles import is_harness_g
+
+    if is_harness_g(mask=harness_mask):
+        base = list(HARNESS_G_STUDENT_LEGAL)
+        if harness_mask is not None and harness_mask.get("answer_with"):
+            base.append("answer_with")
+        if extra:
+            base.extend(list(extra))
+        seen: set[str] = set()
+        out: list[str] = []
+        for n in base:
+            if n not in seen:
+                seen.add(n)
+                out.append(n)
+        return out
     base = list(STUDENT_ALWAYS_LEGAL)
     include_verify = harness_mask is None or bool(harness_mask.get("verify_tool", False))
     if include_verify:
@@ -282,6 +305,8 @@ def validate_action_arguments(
     if name == "importance_tagging":
         return False, "ILLEGAL_TOOL"
     if name == "verify" and harness_mask is not None and not harness_mask.get("verify_tool", False):
+        return False, "ILLEGAL_TOOL"
+    if name == "answer_with" and harness_mask is not None and not harness_mask.get("answer_with", False):
         return False, "ILLEGAL_TOOL"
     if name == "curate":
         if "importance" in args and (

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One-click Harness-1 / BC+ training.
+"""One-click Harness-1 / Harness-G training.
 
 Runs only the training cell for ``--train_method`` (rl / opd / rl+opd /
 scape+rl / trim). Does not run the four-cell protocol (no Before baseline, no
@@ -8,6 +8,10 @@ closed-loop eval). Score with ``scripts/run_eval.py``.
 Example:
   python scripts/run_train.py \\
     --harness Harness-1 --benchmark BC+ --model_name /path/to/checkpoint \\
+    --train_method trim --component all
+
+  python scripts/run_train.py \\
+    --harness Harness-G --benchmark BC+ --model_name /path/to/checkpoint \\
     --train_method trim --component all
 """
 
@@ -87,8 +91,16 @@ def _main(argv: list[str] | None = None) -> int:
         "sec_corpus_root": str(getattr(args, "sec_corpus_root", None) or default_sec_corpus_root())
         if args.train_data == "sec"
         else None,
-        "student_mask": "H_zero (all V8D OFF)" if spec.zero_components else "H_min (listed components OFF)",
-        "teacher_mask": "H_zero (all V8D OFF)" if spec.zero_components else "H_full (listed components ON)",
+        "student_mask": (
+            "H_zero (all advanced components OFF)"
+            if spec.zero_components
+            else "H_min (listed advanced components OFF)"
+        ),
+        "teacher_mask": (
+            "H_zero (all advanced components OFF)"
+            if spec.zero_components
+            else "H_full (listed advanced components ON)"
+        ),
         "out": str(spec.out),
         "train_only": True,
         "official_eval": False,

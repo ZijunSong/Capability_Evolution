@@ -1,15 +1,31 @@
 # TRIM
 
-Harness-1 / BrowseComp+ **train** and **eval** line.
+Harness-1 / Harness-G / BrowseComp+ **train** and **eval** line.
 
 This is the successor of the SCAPE `run_train.py` / `run_eval.py` launchers.
 SCAPE remains in the umbrella repo as the historical experiment tree; new
 closed-loop runs should start here.
 
+`--harness` selects the search runtime. Default is `Harness-1` (v8d tools).
+Pass `--harness Harness-G` for the graph-menu runtime (`init` / `select` /
+`lookup` / `answer`). In both cases `--component` lists **advanced** extras
+to internalize, not the always-on basic tools:
+
+- **Harness-1 basic:** `search_corpus`, `read_document`, `curate`, `end_search` + working memory.
+- **Harness-1 advanced (v8d):** `evidence_graph`, `verify_tool`, `sentence_compress`, `auto_populate_first_search`, …
+- **Harness-G basic:** `init`, `select`, `lookup`, `answer` + graph menu / working memory.
+- **Harness-G advanced:** `answer_with`, `bridge_entities`, `entity_synonyms`, `sentence_neighbors`, `hybrid_init_retrieve`, `snc_frontier`, …
+
+Student rollouts keep advanced flags **off**. Teacher DualView turns them on
+as a privileged side branch; OPD projects those events onto the basic tools
+(`answer_with` → `select`, unreachable bridge LOOKUP skipped, SNC previews
+skipped then ALIGN to `select` / `lookup`).
+
 ```text
 TRIM/
 ├── scripts/run_train.py    # training entry
 ├── scripts/run_eval.py     # closed-loop eval entry
+├── scripts/run_sft.py      # Harness-1 Tinker SFT entry
 ├── trim/                   # package (CLI, adapters, training, eval)
 ├── manifests/browsecomp_plus_830/
 ├── external/harness-1/     # pinned Harness-1 runtime
@@ -30,6 +46,11 @@ PYTHONPATH=TRIM:SCAPE-EasyOPD python TRIM/scripts/run_eval.py \
   --harness Harness-1 --benchmark bcplus_test_166 \
   --model_name /mnt/songzijun/models/pat-jj_harness-1-full/harness-1 \
   --component all
+
+PYTHONPATH=TRIM:SCAPE-EasyOPD python TRIM/scripts/run_train.py \
+  --harness Harness-G --benchmark BC+ \
+  --model_name /path/to/checkpoint \
+  --train_method trim --component all
 ```
 
 `--benchmark`:
@@ -45,6 +66,27 @@ PYTHONPATH=TRIM:SCAPE-EasyOPD python TRIM/scripts/run_eval.py \
 
 `trim` is CISPO + projected teacher actions + SEED-scale OPD (the method
 formerly launched as `scape+seed`; that flag remains an alias).
+
+## SFT (Harness-1 Tinker)
+
+SFT is a separate line from `run_train.py`. It uses the pinned Harness-1
+`training/train_sft.py` + Tinker cookbook, with the public 899 GPT-5.4 v8d
+trajectories from [`pat-jj/harness-1-train-data`](https://huggingface.co/datasets/pat-jj/harness-1-train-data)
+(`stage=sft` only). Defaults match `external/harness-1/training/launch_sft_training.sh`.
+
+```bash
+PYTHONPATH=TRIM python TRIM/scripts/run_sft.py
+PYTHONPATH=TRIM python TRIM/scripts/run_sft.py --model-name openai/gpt-oss-20b
+PYTHONPATH=TRIM python TRIM/scripts/run_sft.py --pack-only
+PYTHONPATH=TRIM python TRIM/scripts/run_sft.py --smoke --dry-run
+```
+
+- **Model:** `openai/gpt-oss-20b` (Tinker id; also accepts `gpt-oss-20b`)
+- **Data pack:** `/data/ppnm/harness-1-sft-data.tar.gz` (override `--sft-data` / `TRIM_SFT_DATA`)
+- **Recipe:** 3 epochs, batch 128, lr `5e-6`, LoRA rank 32, `max_length=32768`, `min_recall=0.1`, save/eval every 50
+- **v8d flags:** same as Harness-1 SFT generation / RL (`VERIFY_TOOL`, `EVIDENCE_GRAPH`, …)
+- Requires `TINKER_API_KEY` (in `external/harness-1/.env.local` or the environment) except for `--dry-run` / `--pack-only`
+- Interpreter: `TRIM_SFT_PYTHON` / `--python`, else a local env that can `import tinker`, else `uv run --project external/harness-1`
 
 `--train-data`:
 

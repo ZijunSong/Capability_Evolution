@@ -10,9 +10,19 @@ from trim.adapters.components import (
     minus_mask,
 )
 from trim.adapters.harness_mask import apply_component_mask, minus_component
+from trim.adapters.harness_profiles import (
+    ALLOWED_HARNESSES,
+    HARNESS_1,
+    HARNESS_G,
+    normalize_harness,
+    profile_for,
+)
 
 __all__ = [
+    "ALLOWED_HARNESSES",
     "COMPONENT_TAXONOMY",
+    "HARNESS_1",
+    "HARNESS_G",
     "RUNTIME_ANCHORS",
     "ComponentSpec",
     "all_component_ids",
@@ -23,4 +33,6 @@ __all__ = [
     "minus_mask",
     "apply_component_mask",
     "minus_component",
+    "normalize_harness",
+    "profile_for",
 ]

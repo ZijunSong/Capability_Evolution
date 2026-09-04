@@ -94,6 +94,9 @@ def accessible_doc_ids_of(snapshot: EnvironmentSnapshot | Mapping[str, Any]) -> 
     _add(wm.get("reviewed_ids"))
     _add(wm.get("full_text_ids"))
     _add(wm.get("pool"))
+    _add(wm.get("visible_sids"))
+    _add(wm.get("selected_sids"))
+    _add(wm.get("frontier_eids"))
     for key in ("documents", "curated_docs"):
         for doc in wm.get(key) or []:
             if isinstance(doc, Mapping):
@@ -111,6 +114,11 @@ def referenced_doc_ids(action: Mapping[str, Any] | Any) -> list[str]:
         ids.extend(_as_id_list(args.get(key)))
     if args.get("doc_id"):
         ids.append(str(args["doc_id"]))
+    if args.get("sid"):
+        ids.append(str(args["sid"]))
+    if args.get("eid"):
+        ids.append(str(args["eid"]))
+    ids.extend(_as_id_list(args.get("sids")))
     # stable unique
     out: list[str] = []
     for item in ids:
@@ -180,7 +188,15 @@ def check_action_realizability(
     refs = referenced_doc_ids(canon)
     accessible = set(accessible_doc_ids_of(student_snapshot))
     # Acquisition tools obtain docs; they do not require prior access.
-    acquisition_tools = {"read_document", "fan_out_search", "search_corpus", "grep_corpus"}
+    acquisition_tools = {
+        "read_document",
+        "fan_out_search",
+        "search_corpus",
+        "grep_corpus",
+        "init",
+        "lookup",
+        "answer",
+    }
     refs_needed = [
         did
         for did in refs
@@ -195,6 +211,9 @@ def check_action_realizability(
 
     info_ok = True
     if canon["name"] == "verify":
+        info_ok = False
+        reasons.append("TEACHER_ONLY_INFORMATION")
+    if canon["name"] == "answer_with" and not student_mask.get("answer_with", False):
         info_ok = False
         reasons.append("TEACHER_ONLY_INFORMATION")
     if "importance" in canon["arguments"] and not student_mask.get("importance_tagging", False):
@@ -268,6 +287,26 @@ def apply_student_action(
         wm["last_search_results"] = results
     elif name == "end_search":
         wm["terminated"] = True
+    elif name == "select":
+        sid = str(args.get("sid") or args.get("id") or "")
+        selected = _as_id_list(wm.get("selected_sids"))
+        if sid and sid not in selected:
+            selected.append(sid)
+        wm["selected_sids"] = selected
+        accessible = accessible_doc_ids_of(snapshot)
+        if sid and sid not in accessible:
+            accessible.append(sid)
+        wm["accessible_doc_ids"] = accessible
+    elif name == "lookup":
+        eid = str(args.get("eid") or args.get("id") or "")
+        visited = _as_id_list(wm.get("visited_eids"))
+        if eid and eid not in visited:
+            visited.append(eid)
+        wm["visited_eids"] = visited
+    elif name == "answer":
+        wm["terminated"] = True
+    elif name == "init":
+        wm["initialized"] = True
     elif name in TEACHER_ONLY_TOOLS:
         raise ValueError(f"refusing to execute teacher-only tool on student shadow: {name}")
 

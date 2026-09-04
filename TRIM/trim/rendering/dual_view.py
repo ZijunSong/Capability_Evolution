@@ -98,6 +98,27 @@ def default_render(snapshot: EnvironmentSnapshot, mask: Mapping[str, bool]) -> d
         payload["verify_available"] = False
     if mask.get("chunk_neighbors"):
         payload["chunk_neighbors"] = wm.get("chunk_neighbors") or []
+    if mask.get("answer_with"):
+        payload["answer_with_available"] = True
+    if mask.get("bridge_entities") and wm.get("frontier_eids") is not None:
+        payload["bridge_entities"] = list(wm.get("frontier_eids") or [])
+    if mask.get("snc_frontier") and wm.get("action_map"):
+        payload["snc_frontier"] = {
+            aid: action.get("snc_preview")
+            for aid, action in (wm.get("action_map") or {}).items()
+            if isinstance(action, dict)
+        }
+    if wm.get("visible_sids") is not None:
+        payload["visible_sids"] = list(wm.get("visible_sids") or [])
+        payload["selected_sids"] = list(wm.get("selected_sids") or [])
+        if mask.get("answer_with") or mask.get("bridge_entities") or mask.get("snc_frontier"):
+            payload["action_map"] = deepcopy(wm.get("action_map") or {})
+        else:
+            payload["action_map"] = {
+                aid: action
+                for aid, action in (wm.get("action_map") or {}).items()
+                if isinstance(action, dict) and action.get("type") in {"SELECT", "LOOKUP", "ANSWER"}
+            }
 
     payload["render_hash"] = stable_hash(payload)
     return payload
@@ -140,7 +161,9 @@ class DualViewRenderer:
             if component_id is None:
                 raise ValueError("component_id or student_mask required")
             student_mask = minus_mask(component_id)
-        fmask = full_mask()
+        from trim.adapters.harness_profiles import infer_harness_from_ids, full_mask_for
+
+        fmask = full_mask_for(infer_harness_from_ids(list(student_mask.keys()) or component_id))
         # Render without stepping environment
         before = self._env_steps
         student_view = self.render_fn(snapshot, student_mask)

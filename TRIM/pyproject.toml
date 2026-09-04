@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "trim"
 version = "0.1.0"
-description = "TRIM: Harness-1 / BC+ train and eval line (successor of SCAPE run_train / run_eval)"
+description = "TRIM: Harness-1 / Harness-G / BC+ train and eval line (successor of SCAPE run_train / run_eval)"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Apache-2.0" }

@@ -33,6 +33,8 @@ TEACHER_ONLY_PROMPT_MARKERS = (
     "teacher_only_observation",
     "compressed_teacher_view",
     "VERIFY_RESULT_SECRET",
+    "snc_frontier_privileged",
+    "bridge_entities_privileged_context",
 )
 
 
@@ -123,10 +125,12 @@ def render_student_prompt(snapshot: EnvironmentSnapshot, *, component_id: str = 
         student_view.pop("verify", None)
     # Component context can remain in WorkingMemory snapshots; never expose
     # adaptive rerank instructions when the reduced mask disables the feature.
-    if not snapshot.harness_mask.get("adaptive_rerank_instruction", False):
-        student_view.pop("rerank_instruction", None)
-        if isinstance(student_view.get("working_memory"), dict):
-            student_view["working_memory"].pop("rerank_instruction", None)
+    if not snapshot.harness_mask.get("snc_frontier", False):
+        student_view.pop("snc_frontier", None)
+    if not snapshot.harness_mask.get("bridge_entities", False):
+        student_view.pop("bridge_entities", None)
+    if not snapshot.harness_mask.get("answer_with", False):
+        student_view.pop("answer_with_available", None)
     return (
         f"System: Harness reduced view (minus {component_id or 'component'}).\n"
         f"Query: {snapshot.query_id}\n"

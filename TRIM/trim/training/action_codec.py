@@ -11,7 +11,7 @@ from typing import Any, Mapping
 
 
 ORDER_INSENSITIVE_KEYS = frozenset(
-    {"add_ids", "remove_ids", "doc_ids", "evidence_ids", "result_ids"}
+    {"add_ids", "remove_ids", "doc_ids", "evidence_ids", "result_ids", "sids"}
 )
 STUDENT_NATIVE_TOOLS = (
     "fan_out_search",
@@ -22,8 +22,14 @@ STUDENT_NATIVE_TOOLS = (
     "curate",
     "end_search",
 )
+HARNESS_G_STUDENT_NATIVE_TOOLS = (
+    "init",
+    "select",
+    "lookup",
+    "answer",
+)
 # Teacher-only; never a reduced-Student native tool.
-TEACHER_ONLY_TOOLS = frozenset({"verify", "importance_tagging"})
+TEACHER_ONLY_TOOLS = frozenset({"verify", "importance_tagging", "answer_with"})
 
 _CALL_RE = re.compile(
     r"to=(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*(?P<body>\{.*?\})?",

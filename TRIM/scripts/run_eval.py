@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
-"""One-click Harness-1 / BC+ closed-loop eval.
+"""One-click Harness-1 / Harness-G closed-loop eval.
 
 Defaults match Harness-1 Table-2 eval: --max-turns 40, --max-new-tokens 2048,
 --temperature 1.0, --search-k 10, --max-model-len 32768. Training stay on a
 short horizon; do not copy those smoke values into eval.
+
+Pass ``--harness Harness-G`` to score the graph-menu runtime. Advanced
+components (answer_with, bridge_entities, SNC frontier, …) are ON in harness
+eval and OFF when scoring a trained student adapter.
 
 Score split: ``--benchmark bcplus_full`` (or ``BC+``) uses the 830-query pool
 (664 train + 166 test). ``--benchmark bcplus_test_166`` uses the 166-test subset.
@@ -88,9 +92,9 @@ def main(argv: list[str] | None = None) -> int:
     score_split = detect_score_split(args)
     args.score_split = score_split
     harness_mask = (
-        teacher_mask_for_ids(spec.components)
+        teacher_mask_for_ids(spec.components, harness=spec.harness)
         if mode == "harness"
-        else student_mask_for_ids(spec.components)
+        else student_mask_for_ids(spec.components, harness=spec.harness)
     )
 
     from trim.training.gpu_keepalive import acquire_keepalive, release_keepalive

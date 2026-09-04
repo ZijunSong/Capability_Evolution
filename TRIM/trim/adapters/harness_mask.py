@@ -67,9 +67,12 @@ def current_mask_from_env() -> dict[str, bool]:
 
 def only_toggle(component_id: str, *, enabled: bool, base: Mapping[str, bool] | None = None) -> dict[str, bool]:
     """Return a mask equal to base except for one component."""
-    if component_id not in all_component_ids():
+    from trim.adapters.harness_profiles import infer_harness_from_ids
+
+    harness = infer_harness_from_ids([component_id])
+    if component_id not in all_component_ids(harness):
         raise KeyError(component_id)
-    mask = dict(base or full_mask())
+    mask = dict(base or full_mask(harness))
     mask[component_id] = enabled
     return mask
 

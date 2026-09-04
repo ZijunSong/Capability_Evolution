@@ -70,10 +70,17 @@ class LiveEpisode:
 
 
 def _build_prompt_ids(ep: LiveEpisode, enc) -> list[int]:
+    from trim.adapters.harness_profiles import is_harness_g
     from trim.eval.harmony_runtime import build_continuation_prompt_ids, build_first_turn_prompt_ids
-    from trim.eval.local_search_env import wm_text
 
     query = str(ep.row["query"])
+    if is_harness_g(mask=ep.harness_mask, component_ids=ep.component_id):
+        from trim.eval.harness_g_env import wm_text
+        from trim.eval.harness_g_runtime import build_prompt_ids as build_g_prompt_ids
+
+        return build_g_prompt_ids(query, wm_text(ep.st), enc)
+    from trim.eval.local_search_env import wm_text
+
     if not ep.acts:
         return build_first_turn_prompt_ids(query, enc=enc)
     return build_continuation_prompt_ids(
@@ -93,8 +100,13 @@ def _apply_generation(
     search_k: int = 10,
 ) -> None:
     from trim.eval.harmony_runtime import decode_ids, make_action, make_observation
-    from trim.eval.local_search_env import execute_tool
+    from trim.adapters.harness_profiles import is_harness_g
     from trim.training.four_cell_runtime import parse_generated_action, snap_from_state
+
+    if is_harness_g(mask=ep.harness_mask, component_ids=ep.component_id):
+        from trim.eval.harness_g_env import execute_tool
+    else:
+        from trim.eval.local_search_env import execute_tool
 
     qid = str(ep.row["query_id"])
     action, valid = parse_generated_action(gen.text, gen.token_ids, enc)
@@ -407,7 +419,8 @@ def rollout_queries_batched(
     soon as one micro-batch is ready. The next chunk is prepared on a
     background thread while the GPU rolls out the current chunk.
     """
-    from trim.eval.local_search_env import curated_recall, new_state
+    from trim.eval.local_search_env import curated_recall, new_state as h1_new_state
+    from trim.adapters.harness_profiles import is_harness_g
     from trim.training.four_cell_runtime import (
         doc_store_for_row,
         snap_from_state,
@@ -422,6 +435,15 @@ def rollout_queries_batched(
     workers = max(1, int(doc_store_workers or 1))
     chunks = [rows[i : i + batch] for i in range(0, len(rows), batch)]
     temperature = 0.0 if not sample else float(temperature if temperature is not None else 1.0)
+    g = is_harness_g(mask=harness_mask, component_ids=component_id)
+    if g:
+        from trim.eval.harness_g_env import new_state as g_new_state
+
+        def new_state(query: str, store: dict[str, Any]) -> dict[str, Any]:
+            return g_new_state(query, store, harness_mask=harness_mask)
+
+    else:
+        new_state = h1_new_state
 
     def prepare(chunk: Sequence[dict[str, Any]]) -> tuple[list[LiveEpisode], float]:
         t0 = time.perf_counter()

@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from trim.adapters.components import all_component_ids
+from trim.adapters.harness_profiles import is_harness_g
 from trim.state.snapshot import EnvironmentSnapshot
 from trim.training.action_codec import canonicalize_action
 from trim.training.opd_events import HarnessEvent
@@ -160,6 +161,9 @@ class StudentActionSpaceProjector:
         self.max_anchor_scan_events = int(max_anchor_scan_events)
         self.max_macro_actions = int(max_macro_actions)
         self.handlers = {cid: self.project_segment for cid in all_component_ids()}
+        self.handlers.update(
+            {cid: self.project_segment for cid in all_component_ids("Harness-G")}
+        )
 
     def project(
         self,
@@ -192,6 +196,19 @@ class StudentActionSpaceProjector:
                 component_id = str(event.component_id)
                 break
         component_id = component_id or str(student_snapshot.metadata.get("component_id") or "")
+        if is_harness_g(
+            student_snapshot.metadata.get("harness"),
+            component_ids=component_id,
+            mask=student_mask,
+        ):
+            from trim.training.harness_g_projection import project_harness_g_events
+
+            return project_harness_g_events(
+                events[start_index:],
+                student_snapshot=student_snapshot,
+                student_mask=student_mask,
+                component_id=component_id,
+            )
         if not events or start_index >= len(events):
             return ProjectionResult(
                 kind=ProjectionKind.SKIP,

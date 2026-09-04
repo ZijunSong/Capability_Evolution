@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from trim.adapters.components import all_component_ids, coalition_minus_mask, full_mask, minus_mask, zero_mask
+from trim.adapters.harness_profiles import infer_harness_from_ids, is_harness_g
 from trim.eval.adapter_reload_audit import audit_saved_adapter, write_reload_audit
 from trim.eval.browsecomp_retrieval import RetrievalBackend, hits_to_doc_store, open_retrieval
 from trim.eval.official_query_pool import (
@@ -53,7 +54,11 @@ from trim.training.frozen_state_loader import (
     load_train_states,
 )
 from trim.state.snapshot import capture_snapshot
-from trim.training.action_codec import STUDENT_NATIVE_TOOLS, render_action
+from trim.training.action_codec import (
+    HARNESS_G_STUDENT_NATIVE_TOOLS,
+    STUDENT_NATIVE_TOOLS,
+    render_action,
+)
 from trim.training.hf_rl_opd_client import (
     HFDebugTrainingClient,
     group_relative_advantages,
@@ -79,6 +84,7 @@ from trim.training.sentence_compress_teacher import teacher_events_from_point
 from trim.training.token_budget_marker_teacher import teacher_events_from_point as token_budget_marker_events_from_point
 from trim.training.adaptive_rerank_teacher import teacher_events_from_point as adaptive_rerank_events_from_point
 from trim.training.verify_tool_teacher import teacher_events_from_point as verify_tool_events_from_point
+from trim.training.harness_g_teacher import teacher_events_from_point_for as harness_g_events_from_point
 from trim.training.tinker_rl_opd_trainer import hybrid_train_substep, prepare_hybrid_batch
 
 CELLS = ("teacher", "before", "pure_opd", "rl_opd")
@@ -90,11 +96,19 @@ TEACHER_REGISTRY: dict[str, TeacherFn] = {
     "token_budget_marker": token_budget_marker_events_from_point,
     "adaptive_rerank_instruction": adaptive_rerank_events_from_point,
     "verify_tool": verify_tool_events_from_point,
+    "answer_with": lambda point: harness_g_events_from_point("answer_with", point),
+    "bridge_entities": lambda point: harness_g_events_from_point("bridge_entities", point),
+    "entity_synonyms": lambda point: harness_g_events_from_point("entity_synonyms", point),
+    "sentence_neighbors": lambda point: harness_g_events_from_point("sentence_neighbors", point),
+    "hybrid_init_retrieve": lambda point: harness_g_events_from_point("hybrid_init_retrieve", point),
+    "snc_frontier": lambda point: harness_g_events_from_point("snc_frontier", point),
+    "invalid_target_filter": lambda point: harness_g_events_from_point("invalid_target_filter", point),
+    "lookup_dedup": lambda point: harness_g_events_from_point("lookup_dedup", point),
 }
 
 
-def component_ids_of(value: Any) -> list[str]:
-    """Parse a single id, comma-separated coalition, or `zero` (no V8D components)."""
+def component_ids_of(value: Any, *, harness: str | None = None) -> list[str]:
+    """Parse a single id, comma-separated coalition, or `zero` (no advanced components)."""
     if isinstance(value, (list, tuple)):
         parts = [str(x).strip() for x in value if str(x).strip()]
     else:
@@ -104,31 +118,34 @@ def component_ids_of(value: Any) -> list[str]:
         if len(parts) != 1 or parts[0].lower() != "zero":
             raise SystemExit("component zero cannot be mixed with other ids")
         return []
-    known = set(all_component_ids())
+    resolved = harness or infer_harness_from_ids(parts)
+    known = set(all_component_ids(resolved))
     unknown = [p for p in parts if p not in known]
     if unknown:
         raise SystemExit(
-            f"unknown component id(s) {unknown}; allowed: zero or {list(all_component_ids())}"
+            f"unknown component id(s) {unknown}; allowed: zero or {list(all_component_ids(resolved))}"
         )
     if not parts:
-        raise SystemExit("component id is empty; pass zero to disable all V8D components")
+        raise SystemExit("component id is empty; pass zero to disable all advanced components")
     return parts
 
 
-def student_mask_for(component_id: Any) -> dict[str, bool]:
-    ids = component_ids_of(component_id)
+def student_mask_for(component_id: Any, *, harness: str | None = None) -> dict[str, bool]:
+    resolved = harness or infer_harness_from_ids(component_id)
+    ids = component_ids_of(component_id, harness=resolved)
     if not ids:
-        return zero_mask()
+        return zero_mask(resolved)
     if len(ids) == 1:
-        return minus_mask(ids[0])
-    return coalition_minus_mask(ids)
+        return minus_mask(ids[0], harness=resolved)
+    return coalition_minus_mask(ids, harness=resolved)
 
 
-def teacher_mask_for(component_id: Any) -> dict[str, bool]:
-    ids = component_ids_of(component_id)
+def teacher_mask_for(component_id: Any, *, harness: str | None = None) -> dict[str, bool]:
+    resolved = harness or infer_harness_from_ids(component_id)
+    ids = component_ids_of(component_id, harness=resolved)
     if not ids:
-        return zero_mask()
-    mask = full_mask()
+        return zero_mask(resolved)
+    mask = full_mask(resolved)
     for cid in ids:
         mask[cid] = True
     return mask
@@ -194,8 +211,8 @@ def _teacher_fn_for_one(component_id: str) -> TeacherFn:
     return _generic
 
 
-def teacher_for(component_id: str) -> TeacherFn | None:
-    ids = component_ids_of(component_id)
+def teacher_for(component_id: str, *, harness: str | None = None) -> TeacherFn | None:
+    ids = component_ids_of(component_id, harness=harness)
     if not ids:
         return _teacher_fn_for_one("zero")
     fns = [_teacher_fn_for_one(cid) for cid in ids]
@@ -216,6 +233,7 @@ def teacher_events_from_wm_for(component_id: str, wm: dict[str, Any]) -> list[An
     from trim.training.auto_populate_teacher import teacher_events_from_wm as auto_populate_events_from_wm
     from trim.training.sentence_compress_teacher import teacher_events_from_wm
     from trim.training.token_budget_marker_teacher import teacher_events_from_wm as token_budget_marker_events_from_wm
+    from trim.training.harness_g_teacher import teacher_events_from_wm as harness_g_events_from_wm
     from trim.training.verify_tool_teacher import teacher_events_from_wm as verify_tool_events_from_wm
 
     builders = {
@@ -224,9 +242,17 @@ def teacher_events_from_wm_for(component_id: str, wm: dict[str, Any]) -> list[An
         "token_budget_marker": token_budget_marker_events_from_wm,
         "adaptive_rerank_instruction": adaptive_rerank_events_from_wm,
         "verify_tool": verify_tool_events_from_wm,
+        "answer_with": lambda wm: harness_g_events_from_wm("answer_with", wm),
+        "bridge_entities": lambda wm: harness_g_events_from_wm("bridge_entities", wm),
+        "entity_synonyms": lambda wm: harness_g_events_from_wm("entity_synonyms", wm),
+        "sentence_neighbors": lambda wm: harness_g_events_from_wm("sentence_neighbors", wm),
+        "hybrid_init_retrieve": lambda wm: harness_g_events_from_wm("hybrid_init_retrieve", wm),
+        "snc_frontier": lambda wm: harness_g_events_from_wm("snc_frontier", wm),
+        "invalid_target_filter": lambda wm: harness_g_events_from_wm("invalid_target_filter", wm),
+        "lookup_dedup": lambda wm: harness_g_events_from_wm("lookup_dedup", wm),
     }
     events: list[Any] = []
-    ids = component_ids_of(component_id)
+    ids = component_ids_of(component_id, harness=infer_harness_from_ids(component_id))
     if not ids:
         return generic_teacher_events_from_wm(wm, "zero")
     for cid in ids:
@@ -324,7 +350,11 @@ def build_manifest(args: argparse.Namespace, *, extra: dict[str, Any] | None = N
     return {
         "training_mode": mode,
         "component": args.component,
-        "component_ids": component_ids_of(args.component),
+        "harness": getattr(args, "harness", None) or infer_harness_from_ids(args.component),
+        "component_ids": component_ids_of(
+            args.component,
+            harness=getattr(args, "harness", None),
+        ),
         "target_component": args.component,
         "rl_loss_fn": "cispo",
         "opd_loss": opd_loss,
@@ -454,21 +484,38 @@ def snap_from_state(qid: str, st: dict[str, Any], component_id: str, *, harness_
         else:
             documents.append({"id": str(did), "text": str(rec)[:2000]})
     mask = harness_mask if harness_mask is not None else student_mask_for(component_id)
+    g = is_harness_g(mask=mask, component_ids=component_id)
+    wm = {
+        "curated_ids": curated,
+        "accessible_doc_ids": list(dict.fromkeys(pool + curated + list(store))),
+        "pool": st.get("pool") or {},
+        "documents": documents,
+        "query": st.get("query"),
+        "doc_store": {did: {"id": did, "text": str((rec or {}).get("text") if isinstance(rec, dict) else rec)[:800]} for did, rec in list(store.items())[:12]},
+    }
+    if g:
+        wm.update(
+            {
+                "visible_sids": list(st.get("visible_sids") or []),
+                "selected_sids": list(st.get("selected_sids") or []),
+                "frontier_eids": list(st.get("frontier_eids") or []),
+                "visited_eids": list(st.get("visited_eids") or []),
+                "sentences": st.get("sentences") or {},
+                "entities": st.get("entities") or {},
+                "action_map": st.get("action_map") or {},
+                "initialized": bool(st.get("initialized")),
+            }
+        )
+        extra_ids = list(wm["visible_sids"]) + list(wm["selected_sids"]) + list(wm["frontier_eids"])
+        wm["accessible_doc_ids"] = list(dict.fromkeys(list(wm["accessible_doc_ids"]) + extra_ids))
     return capture_snapshot(
         query_id=qid,
         step=int(st.get("step") or 0),
         harness_mask=mask,
-        working_memory={
-            "curated_ids": curated,
-            "accessible_doc_ids": list(dict.fromkeys(pool + curated + list(store))),
-            "pool": st.get("pool") or {},
-            "documents": documents,
-            "query": st.get("query"),
-            "doc_store": {did: {"id": did, "text": str((rec or {}).get("text") if isinstance(rec, dict) else rec)[:800]} for did, rec in list(store.items())[:12]},
-        },
+        working_memory=wm,
         tool_history=list(st.get("tool_history") or []),
         observations=[],
-        metadata={"component_id": component_id, "owner": "student_reduced"},
+        metadata={"component_id": component_id, "owner": "student_reduced", "harness": "Harness-G" if g else "Harness-1"},
     )
 
 
@@ -507,9 +554,15 @@ def parse_generated_action(text: str, completion_ids: list[int] | None, enc) -> 
 
     parsed = parse_harmony_tool_call(text, completion_ids=completion_ids, enc=enc)
     name = parsed.tool_name
-    if parsed.legal and name in STUDENT_NATIVE_TOOLS:
+    legal = set(STUDENT_NATIVE_TOOLS) | set(HARNESS_G_STUDENT_NATIVE_TOOLS)
+    if parsed.legal and name in legal:
         return {"name": name, "arguments": dict(parsed.arguments or {})}, True
-    return {"name": name or "unknown", "arguments": dict(parsed.arguments or {})}, False
+    from trim.eval.harness_g_runtime import parse_harness_g_action
+
+    g_action, g_ok = parse_harness_g_action(text)
+    if g_ok:
+        return g_action, True
+    return {"name": name or g_action.get("name") or "unknown", "arguments": dict(parsed.arguments or {})}, False
 
 
 def _maybe_empty_cache() -> None:
@@ -581,13 +634,22 @@ def one_episode(
         make_observation,
     )
     from trim.eval.harness1_metrics import EpisodeTiming, episode_quality_metrics, timed_section
-    from trim.eval.local_search_env import execute_tool, new_state, wm_text
+    g = is_harness_g(mask=harness_mask, component_ids=component_id)
+    if g:
+        from trim.eval.harness_g_env import execute_tool, new_state, wm_text
+        from trim.eval.harness_g_runtime import build_prompt_ids as build_g_prompt_ids
+    else:
+        from trim.eval.local_search_env import execute_tool, new_state, wm_text
     import torch
 
     query = str(row["query"])
     qid = str(row["query_id"])
     gold_ids = [str(x) for x in (row.get("gold_docids") or row.get("evidence_docids") or [])]
-    st = new_state(query, doc_store_for_row(row, searcher, k=doc_store_k))
+    store = doc_store_for_row(row, searcher, k=doc_store_k)
+    if g:
+        st = new_state(query, store, harness_mask=harness_mask)
+    else:
+        st = new_state(query, store)
     acts: list[tuple[Any, Any]] = []
     points: list[StudentDecisionPoint] = []
     rows: list[dict[str, Any]] = []
@@ -599,7 +661,9 @@ def one_episode(
         if st.get("ended"):
             break
         with timed_section(timing, "harness"):
-            if turn == 0:
+            if g:
+                pids = build_g_prompt_ids(query, wm_text(st), enc)
+            elif turn == 0:
                 pids = build_first_turn_prompt_ids(query, enc=enc)
             else:
                 pids = build_continuation_prompt_ids(query, actions_obs=acts, wm_text=wm_text(st, auto_on=False), enc=enc)
@@ -1107,21 +1171,46 @@ def validate_wiring(args: argparse.Namespace) -> dict[str, Any]:
     from trim.training.opd_dataset import project_and_materialize
     from trim.training.opd_projection import StudentActionSpaceProjector
 
-    teacher_fn = teacher_for(args.component)
+    teacher_fn = teacher_for(args.component, harness=getattr(args, "harness", None))
     if teacher_fn is None:
         raise SystemExit(f"no teacher registered for component={args.component}")
     train_rows, eval_rows, pool_meta, frozen_points = resolve_queries(args)
+    harness = getattr(args, "harness", None) or infer_harness_from_ids(args.component)
+    mask = student_mask_for(args.component, harness=harness)
     wm = {
         "query": train_rows[0]["query"],
         "documents": [{"id": "d_long", "text": ("Long noisy passage. " * 40) + train_rows[0]["query"]}],
         "curated_ids": [],
     }
+    if is_harness_g(harness):
+        from trim.eval.harness_g_env import execute_tool as g_execute
+        from trim.eval.harness_g_env import new_state as g_new_state
+
+        g_st = g_new_state(
+            train_rows[0]["query"],
+            {"d_long": wm["documents"][0]},
+            harness_mask=mask,
+        )
+        g_st, _, _ = g_execute(g_st, "init", {})
+        wm.update(
+            {
+                "visible_sids": list(g_st.get("visible_sids") or []),
+                "selected_sids": list(g_st.get("selected_sids") or []),
+                "sentences": g_st.get("sentences") or {},
+                "entities": g_st.get("entities") or {},
+                "frontier_eids": list(g_st.get("frontier_eids") or []),
+                "action_map": g_st.get("action_map") or {},
+                "initialized": True,
+                "accessible_doc_ids": list(g_st.get("visible_sids") or []) + list((g_st.get("entities") or {}).keys()),
+            }
+        )
     events = teacher_events_from_wm_for(args.component, wm)
     snap = capture_snapshot(
         query_id=train_rows[0]["query_id"],
         step=0,
-        harness_mask=student_mask_for(args.component),
+        harness_mask=mask,
         working_memory=wm,
+        metadata={"component_id": args.component, "harness": "Harness-G" if is_harness_g(harness) else "Harness-1"},
     )
     projection, steps = project_and_materialize(
         student_snapshot=snap,
@@ -1134,7 +1223,8 @@ def validate_wiring(args: argparse.Namespace) -> dict[str, Any]:
     return {
         "ok": True,
         "component": args.component,
-        "component_ids": component_ids_of(args.component),
+        "harness": harness,
+        "component_ids": component_ids_of(args.component, harness=harness),
         "teacher_registered": True,
         "n_train_queries": len(train_rows),
         "n_eval_queries": len(eval_rows),
@@ -1298,7 +1388,7 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
         },
     )
     (out / "RUN_MANIFEST.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-    teacher_fn = teacher_for(args.component)
+    teacher_fn = teacher_for(args.component, harness=getattr(args, "harness", None))
     if teacher_fn is None:
         raise SystemExit(f"no teacher registered for {args.component}")
 
@@ -1443,6 +1533,10 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
             enc=enc,
             searcher=train_searcher,
             teacher_mode=teacher_mode,
+            harness_mask=student_mask_for(
+                args.component,
+                harness=getattr(args, "harness", None),
+            ),
             query_batch_size=getattr(args, "rollout_query_batch_size", None),
             doc_store_workers=int(getattr(args, "doc_store_workers", 8) or 8),
         )
@@ -1466,6 +1560,10 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
             enc=enc,
             searcher=eval_searcher,
             teacher_mode=teacher_mode,
+            harness_mask=student_mask_for(
+                args.component,
+                harness=getattr(args, "harness", None),
+            ),
             temperature=float(getattr(args, "eval_temperature", 0.0)),
             primary_split=eval_primary,
             query_batch_size=getattr(args, "rollout_query_batch_size", None),

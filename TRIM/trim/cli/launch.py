@@ -1,9 +1,10 @@
-"""Shared CLI for one-click Harness-1 / BC+ train and eval launchers.
+"""Shared CLI for one-click Harness-1 / Harness-G train and eval launchers.
 
-`--component` is a list of Harness-1 components to turn on for the experiment.
-Training uses Teacher H_full with those flags enabled and Student H_-S with
-them disabled. Eval without an adapter runs the base harness with those flags
-on; eval with `--run-dir` / `--adapter` scores the internalized student.
+`--component` lists *advanced* components (v8d on Harness-1, graph extras on
+Harness-G), not the always-on runtime tools. Training uses Teacher H_full with
+those flags enabled and Student H_-S with them disabled. Eval without an
+adapter runs the base harness with those flags on; eval with `--run-dir` /
+`--adapter` scores the internalized student.
 """
 
 from __future__ import annotations
@@ -14,6 +15,12 @@ from pathlib import Path
 from typing import Iterable, Sequence
 
 from trim.adapters.components import all_component_ids, coalition_minus_mask, full_mask, zero_mask
+from trim.adapters.harness_profiles import (
+    ALLOWED_HARNESSES as PROFILE_HARNESSES,
+    HARNESS_ALIASES as _PROFILE_HARNESS_ALIASES,
+    aliases_for,
+    infer_harness_from_ids,
+)
 from trim.eval.eval_defaults import (
     HARNESS1_EVAL_MAX_MODEL_LEN,
     HARNESS1_EVAL_MAX_NEW_TOKENS,
@@ -40,10 +47,25 @@ from trim.eval.official_query_pool import (
     score_split_for_benchmark,
 )
 from trim.eval.sec_corpus import default_sec_corpus_root, default_sec_rl_data
+from trim.training.sft_data import default_sft_pack
+from trim.training.sft_runtime import (
+    HARNESS1_SFT_BATCH_SIZE,
+    HARNESS1_SFT_EVAL_EVERY,
+    HARNESS1_SFT_LEARNING_RATE,
+    HARNESS1_SFT_LORA_RANK,
+    HARNESS1_SFT_MAX_LENGTH,
+    HARNESS1_SFT_MIN_RECALL,
+    HARNESS1_SFT_MODEL_NAME,
+    HARNESS1_SFT_NUM_EPOCHS,
+    HARNESS1_SFT_SAVE_EVERY,
+    SMOKE_BATCH_SIZE,
+    SMOKE_NUM_EPOCHS,
+    canonical_sft_model_name,
+)
 
 TRIM_ROOT = Path(__file__).resolve().parents[2]
 
-ALLOWED_HARNESSES = ("Harness-1",)
+ALLOWED_HARNESSES = PROFILE_HARNESSES
 ALLOWED_BENCHMARKS = ("BC+", "bcplus_test_166", "bcplus_full")
 ALLOWED_MODEL_NAMES = ("harness-1",)
 ALLOWED_TRAIN_METHODS = ("opd", "rl+opd", "rl", "scape+rl", "trim", "scape+seed", "seed+opd")
@@ -52,11 +74,7 @@ TRAIN_DATA_BCPLUS_664 = "bcplus_train_664"
 ALLOWED_TRAIN_DATA = (TRAIN_DATA_SEC, TRAIN_DATA_BCPLUS_664)
 CANONICAL_COMPONENTS = tuple(all_component_ids())
 
-_HARNESS_ALIASES = {
-    "harness-1": "Harness-1",
-    "harness1": "Harness-1",
-    "harness_1": "Harness-1",
-}
+_HARNESS_ALIASES = dict(_PROFILE_HARNESS_ALIASES)
 
 _BENCHMARK_ALIASES = {
     "bc+": "BC+",
@@ -102,31 +120,12 @@ _TRAIN_METHOD_ALIASES = {
     "seed-opd": "trim",
 }
 
-_COMPONENT_ALIASES = {
-    cid: cid for cid in CANONICAL_COMPONENTS
-} | {
-    "auto": "auto_populate_first_search",
-    "auto_populate": "auto_populate_first_search",
-    "graph": "evidence_graph",
-    "compress": "sentence_compress",
-    "sentence": "sentence_compress",
-    "neighbors": "chunk_neighbors",
-    "chunk": "chunk_neighbors",
-    "dedup": "content_dedup",
-    "verify": "verify_tool",
-    "budget": "token_budget_marker",
-    "token_budget": "token_budget_marker",
-    "rerank": "adaptive_rerank_instruction",
-    "adaptive_rerank": "adaptive_rerank_instruction",
-    "subtractive": "subtractive_curation",
-    "curation": "subtractive_curation",
-    "importance": "importance_tagging",
-    "tagging": "importance_tagging",
-}
+_COMPONENT_ALIASES = dict(aliases_for("Harness-1"))
 
 DEFAULT_BASE_MODEL_CANDIDATES = (
     Path("/mnt/songzijun/models/pat-jj_harness-1-full/harness-1"),
     Path("/data/ppnm/models/pat-jj_harness-1-full/harness-1"),
+    Path("/data/ppnm/models/harness-1"),
 )
 DEFAULT_BASE_MODEL = DEFAULT_BASE_MODEL_CANDIDATES[0]
 
@@ -214,24 +213,31 @@ def parse_component_tokens(raw: Iterable[str] | str | None) -> list[str]:
     return tokens
 
 
-def canonical_component_ids(raw: Iterable[str] | str | None) -> list[str]:
+def canonical_component_ids(
+    raw: Iterable[str] | str | None,
+    *,
+    harness: str | None = None,
+) -> list[str]:
     tokens = parse_component_tokens(raw)
+    resolved_harness = harness or infer_harness_from_ids(tokens)
+    known = tuple(all_component_ids(resolved_harness))
+    alias_map = aliases_for(resolved_harness)
     if not tokens:
         raise LaunchError(
             "--component is required; pass `zero`, `all`, or one or more of: "
-            + ", ".join(CANONICAL_COMPONENTS)
+            + ", ".join(known)
         )
     if any(_norm(tok) == "zero" for tok in tokens):
         if len(tokens) != 1 or _norm(tokens[0]) != "zero":
             raise LaunchError("--component zero cannot be combined with other component ids")
         return []
     if len(tokens) == 1 and _norm(tokens[0]) == "all":
-        return list(CANONICAL_COMPONENTS)
+        return list(known)
     seen: set[str] = set()
     ids: list[str] = []
     unknown: list[str] = []
     for tok in tokens:
-        cid = _COMPONENT_ALIASES.get(_norm(tok))
+        cid = alias_map.get(_norm(tok))
         if cid is None:
             unknown.append(tok)
             continue
@@ -243,7 +249,7 @@ def canonical_component_ids(raw: Iterable[str] | str | None) -> list[str]:
             "unknown --component value(s): "
             + ", ".join(unknown)
             + "; allowed: zero, all, "
-            + ", ".join(CANONICAL_COMPONENTS)
+            + ", ".join(known)
         )
     return ids
 
@@ -299,16 +305,26 @@ def resolve_model_path(model_name: str, explicit: str | Path | None = None) -> P
     return DEFAULT_BASE_MODEL
 
 
-def student_mask_for_ids(component_ids: Sequence[str]) -> dict[str, bool]:
+def student_mask_for_ids(
+    component_ids: Sequence[str],
+    *,
+    harness: str | None = None,
+) -> dict[str, bool]:
+    resolved = harness or infer_harness_from_ids(component_ids)
     if not component_ids:
-        return zero_mask()
-    return coalition_minus_mask(component_ids)
+        return zero_mask(resolved)
+    return coalition_minus_mask(component_ids, harness=resolved)
 
 
-def teacher_mask_for_ids(component_ids: Sequence[str]) -> dict[str, bool]:
+def teacher_mask_for_ids(
+    component_ids: Sequence[str],
+    *,
+    harness: str | None = None,
+) -> dict[str, bool]:
+    resolved = harness or infer_harness_from_ids(component_ids)
     if not component_ids:
-        return zero_mask()
-    mask = full_mask()
+        return zero_mask(resolved)
+    mask = full_mask(resolved)
     for cid in component_ids:
         mask[cid] = True
     return mask
@@ -379,7 +395,7 @@ def add_common_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     parser.add_argument(
         "--harness",
         default="Harness-1",
-        help="Search harness. Currently only Harness-1.",
+        help="Search harness. Harness-1 (v8d tools) or Harness-G (graph menu).",
     )
     parser.add_argument(
         "--benchmark",
@@ -406,9 +422,11 @@ def add_common_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
         required=True,
         metavar="ID",
         help=(
-            "Harness-1 components to enable. Space- or comma-separated list. "
-            "Allowed: " + ", ".join(CANONICAL_COMPONENTS) + ". "
-            "Pass `all` to enable every component, or `zero` to enable none."
+            "Advanced harness components to enable (not the basic runtime tools). "
+            "Harness-1: V8D flags such as evidence_graph, verify_tool. "
+            "Harness-G: answer_with, bridge_entities, entity_synonyms, "
+            "sentence_neighbors, hybrid_init_retrieve, snc_frontier, … "
+            "Pass `all` to enable every advanced component, or `zero` for none."
         ),
     )
     parser.add_argument("--out", type=Path, default=None, help="Output directory.")
@@ -674,7 +692,7 @@ def _spec_from_ns(args: argparse.Namespace, *, train: bool) -> LaunchSpec:
         alias = _pick(user_model, _MODEL_ALIASES, ALLOWED_MODEL_NAMES, "--model_name")
         resolved = resolve_model_path(alias, explicit)
     model_name = str(resolved)
-    components = tuple(canonical_component_ids(args.component))
+    components = tuple(canonical_component_ids(args.component, harness=harness))
     method = None
     if train:
         method = _TRAIN_METHOD_ALIASES.get(_norm(args.train_method))
@@ -704,7 +722,7 @@ def _spec_from_ns(args: argparse.Namespace, *, train: bool) -> LaunchSpec:
 
 def parse_train_args(argv: Sequence[str] | None = None) -> tuple[argparse.Namespace, LaunchSpec]:
     parser = argparse.ArgumentParser(
-        description="One-click Harness-1 / BC+ training (opd | rl+opd | rl | scape+rl | trim).",
+        description="One-click Harness-1 / Harness-G training (opd | rl+opd | rl | scape+rl | trim).",
     )
     add_train_args(parser)
     args = parser.parse_args(argv)
@@ -751,7 +769,7 @@ def parse_train_args(argv: Sequence[str] | None = None) -> tuple[argparse.Namesp
 
 def parse_eval_args(argv: Sequence[str] | None = None) -> tuple[argparse.Namespace, LaunchSpec]:
     parser = argparse.ArgumentParser(
-        description="One-click Harness-1 / BC+ closed-loop eval (default: full 830).",
+        description="One-click Harness-1 / Harness-G closed-loop eval (default: full 830).",
     )
     add_eval_args(parser)
     args = parser.parse_args(argv)
@@ -769,3 +787,95 @@ def parse_eval_args(argv: Sequence[str] | None = None) -> tuple[argparse.Namespa
         raise LaunchError("--tp must be >= 1")
     args.eval_replicas = int(replicas)
     return args, spec
+
+
+def add_sft_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    """Harness-1 Tinker SFT. Defaults match ``training/launch_sft_training.sh``."""
+    parser.add_argument(
+        "--model_name",
+        "--model-name",
+        dest="model_name",
+        default=HARNESS1_SFT_MODEL_NAME,
+        help=(
+            "Tinker base model id. Default openai/gpt-oss-20b (Harness-1 SFT). "
+            "Aliases: gpt-oss-20b, gpt-oss-120b."
+        ),
+    )
+    parser.add_argument(
+        "--sft-data",
+        "--data-dir",
+        "--data",
+        dest="sft_data",
+        type=Path,
+        default=None,
+        help=(
+            "Public SFT pack: tar.gz, extracted dir, jsonl, or trajectory JSON dir. "
+            "Default /data/ppnm/harness-1-sft-data.tar.gz (or HuggingFace "
+            "pat-jj/harness-1-train-data stage=sft)."
+        ),
+    )
+    parser.add_argument(
+        "--out",
+        "--log-path",
+        dest="out",
+        type=Path,
+        default=None,
+        help="Tinker checkpoint log directory. Default TRIM/outputs/sft_v8d_warmup.",
+    )
+    parser.add_argument("--num-epochs", type=int, default=HARNESS1_SFT_NUM_EPOCHS)
+    parser.add_argument("--batch-size", type=int, default=HARNESS1_SFT_BATCH_SIZE)
+    parser.add_argument("--learning-rate", type=float, default=HARNESS1_SFT_LEARNING_RATE)
+    parser.add_argument("--lora-rank", type=int, default=HARNESS1_SFT_LORA_RANK)
+    parser.add_argument("--max-length", type=int, default=HARNESS1_SFT_MAX_LENGTH)
+    parser.add_argument("--min-recall", type=float, default=HARNESS1_SFT_MIN_RECALL)
+    parser.add_argument("--save-every", type=int, default=HARNESS1_SFT_SAVE_EVERY)
+    parser.add_argument("--eval-every", type=int, default=HARNESS1_SFT_EVAL_EVERY)
+    parser.add_argument("--load-checkpoint-path", default=None)
+    parser.add_argument(
+        "--python",
+        default=None,
+        help="Python interpreter with tinker/chz. Default: TRIM_SFT_PYTHON, then a local env that imports tinker, then `uv run`.",
+    )
+    parser.add_argument(
+        "--n-trajectories",
+        type=int,
+        default=None,
+        help="Optional cap on public SFT trajectories. Default: all 899.",
+    )
+    parser.add_argument(
+        "--pack",
+        type=Path,
+        default=None,
+        help="Write harness-1-sft-data.tar.gz to this path while materializing.",
+    )
+    parser.add_argument(
+        "--pack-only",
+        action="store_true",
+        help="Download / unwrap / pack public SFT data and exit (no Tinker training).",
+    )
+    parser.add_argument("--smoke", action="store_true", help="1 epoch, batch size 4.")
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--validate-only", action="store_true")
+    return parser
+
+
+def parse_sft_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=(
+            "One-click Harness-1 SFT via Tinker (train_sft.py). "
+            "Default recipe: openai/gpt-oss-20b, 3 epochs, LoRA r=32, "
+            "lr=5e-6, batch=128, max_length=32768, min_recall=0.1."
+        ),
+    )
+    add_sft_args(parser)
+    args = parser.parse_args(argv)
+    args.model_name = canonical_sft_model_name(args.model_name)
+    if args.sft_data is None:
+        args.sft_data = default_sft_pack()
+    if args.out is None:
+        run_name = "sft_v8d_smoke" if args.smoke else "sft_v8d_warmup"
+        args.out = TRIM_ROOT / "outputs" / run_name
+    if args.smoke:
+        args.num_epochs = SMOKE_NUM_EPOCHS
+        args.batch_size = SMOKE_BATCH_SIZE
+    return args

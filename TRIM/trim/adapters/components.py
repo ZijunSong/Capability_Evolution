@@ -133,32 +133,50 @@ class ComponentSpec:
         return asdict(self)
 
 
-def all_component_ids() -> list[str]:
-    return list(COMPONENT_TAXONOMY.keys())
+def _taxonomy(harness: str | None = None) -> dict[str, dict[str, Any]]:
+    if harness is None or str(harness).strip() in {"", "Harness-1", "harness-1", "harness1", "harness_1"}:
+        return COMPONENT_TAXONOMY
+    from trim.adapters.harness_profiles import taxonomy_for
+
+    return taxonomy_for(harness)
 
 
-def flag_for(component_id: str) -> str:
-    if component_id not in COMPONENT_TAXONOMY:
+def all_component_ids(harness: str | None = None) -> list[str]:
+    return list(_taxonomy(harness).keys())
+
+
+def flag_for(component_id: str, *, harness: str | None = None) -> str:
+    tax = _taxonomy(harness)
+    if component_id not in tax:
         raise KeyError(f"unknown component_id: {component_id}")
-    return str(COMPONENT_TAXONOMY[component_id]["upstream_flag"])
+    return str(tax[component_id]["upstream_flag"])
 
 
-def full_mask() -> dict[str, bool]:
+def full_mask(harness: str | None = None) -> dict[str, bool]:
     """Official-ish full operating point used by SCAPE (canonical ids)."""
-    return {
-        cid: bool(meta["default_enabled"]) for cid, meta in COMPONENT_TAXONOMY.items()
-    }
+    tax = _taxonomy(harness)
+    return {cid: bool(meta["default_enabled"]) for cid, meta in tax.items()}
 
 
-def zero_mask() -> dict[str, bool]:
-    """Disable every V8D component (`--component zero`)."""
-    return {cid: False for cid in COMPONENT_TAXONOMY}
+def zero_mask(harness: str | None = None) -> dict[str, bool]:
+    """Disable every advanced component (`--component zero`)."""
+    return {cid: False for cid in _taxonomy(harness)}
 
 
-def minus_mask(component_id: str, base: Mapping[str, bool] | None = None) -> dict[str, bool]:
-    if component_id not in COMPONENT_TAXONOMY:
+def minus_mask(
+    component_id: str,
+    base: Mapping[str, bool] | None = None,
+    *,
+    harness: str | None = None,
+) -> dict[str, bool]:
+    if harness is None:
+        from trim.adapters.harness_profiles import infer_harness_from_ids
+
+        harness = infer_harness_from_ids([component_id])
+    tax = _taxonomy(harness)
+    if component_id not in tax:
         raise KeyError(f"unknown component_id: {component_id}")
-    mask = dict(base or full_mask())
+    mask = dict(base or full_mask(harness))
     mask[component_id] = False
     return mask
 
@@ -166,33 +184,38 @@ def minus_mask(component_id: str, base: Mapping[str, bool] | None = None) -> dic
 def coalition_minus_mask(
     component_ids: Iterable[str],
     base: Mapping[str, bool] | None = None,
+    *,
+    harness: str | None = None,
 ) -> dict[str, bool]:
     """H_-S mask: disable every component in coalition S."""
-    mask = dict(base or full_mask())
+    tax = _taxonomy(harness)
+    mask = dict(base or full_mask(harness))
     for component_id in component_ids:
-        if component_id not in COMPONENT_TAXONOMY:
+        if component_id not in tax:
             raise KeyError(f"unknown component_id: {component_id}")
         mask[component_id] = False
     return mask
 
 
-def mask_to_env(mask: Mapping[str, bool]) -> dict[str, str]:
-    """Convert canonical mask -> upstream V8D_* env values ('0'/'1')."""
+def mask_to_env(mask: Mapping[str, bool], *, harness: str | None = None) -> dict[str, str]:
+    """Convert canonical mask -> upstream env values ('0'/'1')."""
+    tax = _taxonomy(harness)
     env: dict[str, str] = {}
     for cid, enabled in mask.items():
-        if cid not in COMPONENT_TAXONOMY:
+        if cid not in tax:
             raise KeyError(f"unknown component_id in mask: {cid}")
-        env[flag_for(cid)] = "1" if enabled else "0"
-    # Ensure every known flag is present
-    for cid in COMPONENT_TAXONOMY:
-        flag = flag_for(cid)
-        env.setdefault(flag, "1" if full_mask()[cid] else "0")
+        env[flag_for(cid, harness=harness)] = "1" if enabled else "0"
+    full = full_mask(harness)
+    for cid in tax:
+        flag = flag_for(cid, harness=harness)
+        env.setdefault(flag, "1" if full[cid] else "0")
     return env
 
 
-def env_to_mask(env: Mapping[str, str]) -> dict[str, bool]:
+def env_to_mask(env: Mapping[str, str], *, harness: str | None = None) -> dict[str, bool]:
+    tax = _taxonomy(harness)
     mask: dict[str, bool] = {}
-    for cid, meta in COMPONENT_TAXONOMY.items():
+    for cid, meta in tax.items():
         flag = meta["upstream_flag"]
         raw = env.get(flag)
         if raw is None:
@@ -202,10 +225,15 @@ def env_to_mask(env: Mapping[str, str]) -> dict[str, bool]:
     return mask
 
 
-def component_specs(mask: Mapping[str, bool] | None = None) -> list[ComponentSpec]:
-    m = mask or full_mask()
+def component_specs(
+    mask: Mapping[str, bool] | None = None,
+    *,
+    harness: str | None = None,
+) -> list[ComponentSpec]:
+    tax = _taxonomy(harness)
+    m = mask or full_mask(harness)
     specs: list[ComponentSpec] = []
-    for cid, meta in COMPONENT_TAXONOMY.items():
+    for cid, meta in tax.items():
         specs.append(
             ComponentSpec(
                 component_id=cid,
