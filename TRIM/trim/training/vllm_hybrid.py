@@ -355,6 +355,7 @@ class VLLMGenerateClient:
         startup_timeout_s: float = 900.0,
         generate_timeout_s: float = 3600.0,
         extra_env: dict[str, str] | None = None,
+        max_num_seqs: int | None = None,
     ) -> None:
         self.model_path = str(Path(model_path).resolve())
         self.session_dir = Path(session_dir).resolve()
@@ -368,6 +369,7 @@ class VLLMGenerateClient:
         self.startup_timeout_s = float(startup_timeout_s)
         self.generate_timeout_s = float(generate_timeout_s)
         self.extra_env = dict(extra_env or {})
+        self.max_num_seqs = int(max_num_seqs) if max_num_seqs else None
         self.process: subprocess.Popen[bytes] | None = None
         self.tokenizer_audit: dict[str, Any] = {}
         self.n_generate_calls = 0
@@ -391,6 +393,7 @@ class VLLMGenerateClient:
             "enforce_eager": self.enforce_eager,
             "stop_token_ids": list(CANONICAL_STOP_TOKEN_IDS),
             "encoding": O200K_HARMONY,
+            "max_num_seqs": self.max_num_seqs,
         }
         (self.session_dir / "config.json").write_text(
             json.dumps(cfg, indent=2) + "\n", encoding="utf-8"

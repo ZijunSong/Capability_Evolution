@@ -125,6 +125,9 @@ def main() -> int:
         "dtype": "auto",
         "disable_log_stats": True,
     }
+    max_num_seqs = cfg.get("max_num_seqs")
+    if max_num_seqs:
+        llm_kwargs["max_num_seqs"] = int(max_num_seqs)
     if cfg.get("enforce_eager", True):
         llm_kwargs["enforce_eager"] = True
     lora_path = cfg.get("lora_path") or None

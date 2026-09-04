@@ -871,6 +871,7 @@ def eval_closed_loop(
                 "search_k": int(search_k),
                 "doc_store_k": int(doc_store_k),
                 "sample": bool(sample),
+                "teacher_leak_count": int(leak),
             },
         )
         return official, traces
@@ -930,6 +931,7 @@ def eval_closed_loop(
             "search_k": int(search_k),
             "doc_store_k": int(doc_store_k),
             "sample": bool(sample),
+            "teacher_leak_count": int(leak),
         },
     )
     return official, traces

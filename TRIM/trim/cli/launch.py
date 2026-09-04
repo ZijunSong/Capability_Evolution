@@ -526,6 +526,40 @@ def add_eval_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--audit-only", action="store_true")
+    parser.add_argument(
+        "--tp",
+        "--eval-replicas",
+        dest="eval_replicas",
+        type=int,
+        default=1,
+        help=(
+            "Data-parallel replica count. --tp 8 launches 8 independent model "
+            "servers (one per GPU by default), shards the eval set, then merges."
+        ),
+    )
+    parser.add_argument(
+        "--eval-gpus",
+        default=None,
+        help="Comma-separated GPU ids for replicas, e.g. 0,1,2,3,4,5,6,7. Default: all visible GPUs.",
+    )
+    parser.add_argument(
+        "--eval-chunk-size",
+        type=int,
+        default=None,
+        help="Optional per-replica query chunk size. Default: the whole shard in one batched rollout.",
+    )
+    parser.add_argument(
+        "--max-num-seqs",
+        type=int,
+        default=256,
+        help="vLLM max concurrent sequences per replica. Larger batches use the GPU better.",
+    )
+    parser.add_argument(
+        "--eval-stagger-s",
+        type=float,
+        default=2.0,
+        help="Seconds to wait between replica launches so model loads do not stampede the disk.",
+    )
     return parser
 
 
@@ -646,4 +680,8 @@ def parse_eval_args(argv: Sequence[str] | None = None) -> tuple[argparse.Namespa
     args.base_model = str(spec.base_model)
     args.out = spec.out
     _apply_score_split(args, spec, default=SCORE_SPLIT_830)
+    replicas = getattr(args, "eval_replicas", 1)
+    if replicas is None or int(replicas) < 1:
+        raise LaunchError("--tp must be >= 1")
+    args.eval_replicas = int(replicas)
     return args, spec
