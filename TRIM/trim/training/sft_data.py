@@ -17,16 +17,17 @@ import tarfile
 from pathlib import Path
 from typing import Any, Sequence
 
+TRIM_ROOT = Path(__file__).resolve().parents[2]
 HF_SFT_REPO = "pat-jj/harness-1-train-data"
 HF_SFT_SPLIT = "train"
 SFT_STAGE = "sft"
 SFT_PACK_NAME = "harness-1-sft-data"
 EXPECTED_N_TRAJECTORIES = 899
 
-DEFAULT_SFT_PACK = Path(
-    os.environ.get("TRIM_SFT_DATA", "/data/ppnm/harness-1-sft-data.tar.gz")
-)
-DEFAULT_SFT_EXTRACTED = Path("/data/ppnm/harness-1-sft-data")
+REPO_SFT_PACK = TRIM_ROOT / "data" / "harness-1-sft-data.tar.gz"
+MACHINE_SFT_PACK = Path("/data/ppnm/harness-1-sft-data.tar.gz")
+DEFAULT_SFT_PACK = Path(os.environ.get("TRIM_SFT_DATA", str(REPO_SFT_PACK)))
+DEFAULT_SFT_EXTRACTED = TRIM_ROOT / "data" / "harness-1-sft-data"
 _SAFE_TOKEN = re.compile(r"[^A-Za-z0-9._-]+")
 
 _LOCAL_JSONL_CANDIDATES = (
@@ -40,13 +41,10 @@ def default_sft_pack() -> Path:
     env = os.environ.get("TRIM_SFT_DATA")
     if env:
         return Path(env)
-    tar = Path("/data/ppnm/harness-1-sft-data.tar.gz")
-    extracted = DEFAULT_SFT_EXTRACTED
-    if tar.is_file():
-        return tar
-    if extracted.exists():
-        return extracted
-    return tar
+    for path in (REPO_SFT_PACK, MACHINE_SFT_PACK, DEFAULT_SFT_EXTRACTED):
+        if path.is_file() or path.is_dir():
+            return path
+    return REPO_SFT_PACK
 
 
 def _parse_jsonish(value: Any) -> Any:
@@ -368,7 +366,7 @@ def materialize_sft_data_dir(
     ready = _existing_trajectory_dir(origin)
     pack_path: Path | None = None
     if write_pack is True:
-        pack_path = Path("/data/ppnm/harness-1-sft-data.tar.gz")
+        pack_path = REPO_SFT_PACK
     elif isinstance(write_pack, Path):
         pack_path = write_pack
     if ready is not None and n_trajectories in {None, 0}:
@@ -417,7 +415,7 @@ def _existing_trajectory_dir(origin: Path) -> Path | None:
         if extracted.is_dir():
             return _existing_trajectory_dir(extracted)
         sibling = DEFAULT_SFT_EXTRACTED
-        if sibling.is_dir() and origin == Path("/data/ppnm/harness-1-sft-data.tar.gz"):
+        if sibling.is_dir() and origin in {REPO_SFT_PACK, MACHINE_SFT_PACK}:
             return _existing_trajectory_dir(sibling)
     return None
 

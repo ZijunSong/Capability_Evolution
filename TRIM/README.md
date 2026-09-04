@@ -82,7 +82,7 @@ PYTHONPATH=TRIM python TRIM/scripts/run_sft.py --smoke --dry-run
 ```
 
 - **Model:** `openai/gpt-oss-20b` (Tinker id; also accepts `gpt-oss-20b`)
-- **Data pack:** `/data/ppnm/harness-1-sft-data.tar.gz` (override `--sft-data` / `TRIM_SFT_DATA`)
+- **Data pack:** `TRIM/data/harness-1-sft-data.tar.gz` (in-repo 899 trajectories; override `--sft-data` / `TRIM_SFT_DATA`)
 - **Recipe:** 3 epochs, batch 128, lr `5e-6`, LoRA rank 32, `max_length=32768`, `min_recall=0.1`, save/eval every 50
 - **v8d flags:** same as Harness-1 SFT generation / RL (`VERIFY_TOOL`, `EVIDENCE_GRAPH`, …)
 - Requires `TINKER_API_KEY` (in `external/harness-1/.env.local` or the environment) except for `--dry-run` / `--pack-only`

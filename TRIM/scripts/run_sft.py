@@ -10,7 +10,7 @@ LoRA r=32, lr=5e-6, batch=128, max_length=32768, min_recall=0.1).
 Example:
   PYTHONPATH=TRIM python TRIM/scripts/run_sft.py
   PYTHONPATH=TRIM python TRIM/scripts/run_sft.py --model-name openai/gpt-oss-20b
-  PYTHONPATH=TRIM python TRIM/scripts/run_sft.py --pack-only --pack /data/ppnm/harness-1-sft-data.tar.gz
+  PYTHONPATH=TRIM python TRIM/scripts/run_sft.py --pack-only --pack TRIM/data/harness-1-sft-data.tar.gz
   PYTHONPATH=TRIM python TRIM/scripts/run_sft.py --smoke --dry-run
 """
 
@@ -27,6 +27,7 @@ if str(_TRIM) not in sys.path:
 from trim.cli.launch import LaunchError, parse_sft_args
 from trim.training.sft_data import (
     DEFAULT_SFT_EXTRACTED,
+    REPO_SFT_PACK,
     assert_train_sft_ready,
     materialize_sft_data_dir,
 )
@@ -51,7 +52,7 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(str(exc)) from exc
 
     args.out.mkdir(parents=True, exist_ok=True)
-    default_tar = Path("/data/ppnm/harness-1-sft-data.tar.gz")
+    default_tar = REPO_SFT_PACK
     write_pack = args.pack
     if write_pack is None and not args.n_trajectories and (args.pack_only or not default_tar.is_file()):
         write_pack = default_tar

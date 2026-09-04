@@ -810,7 +810,7 @@ def add_sft_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
         default=None,
         help=(
             "Public SFT pack: tar.gz, extracted dir, jsonl, or trajectory JSON dir. "
-            "Default /data/ppnm/harness-1-sft-data.tar.gz (or HuggingFace "
+            "Default TRIM/data/harness-1-sft-data.tar.gz (or HuggingFace "
             "pat-jj/harness-1-train-data stage=sft)."
         ),
     )

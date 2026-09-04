@@ -52,6 +52,9 @@ artifacts/raw/
 
 # --- data / corpora / indexes (too large; regenerate locally) ---
 data/
+!TRIM/data/
+TRIM/data/**
+!TRIM/data/harness-1-sft-data.tar.gz
 datasets/
 **/indexes/
 **/bm25/
@@ -118,6 +121,10 @@ CLAUDE.md
 *.tgz
 *.zip
 *.7z
+# In-repo Harness-1 public SFT trajectories (899 ultra_v3 JSON files).
+!TRIM/data/harness-1-sft-data.tar.gz
+# Extracted JSON next to the pack stays local.
+TRIM/data/harness-1-sft-data/
 
 # Keep frozen Phase-0 baseline metrics (small JSON summaries)
 !SCOPE/artifacts/baselines/
