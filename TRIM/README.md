@@ -37,7 +37,10 @@ PYTHONPATH=TRIM:SCAPE-EasyOPD python TRIM/scripts/run_eval.py \
 - `bcplus_full` — 830-query pool (664 train + 166 test)
 - `BC+` — dataset family; eval still defaults to the 830 pool
 
-`--train_method`: `opd` | `rl` | `rl+opd` | `scape+rl` | `scape+seed`
+`--train_method`: `opd` | `rl` | `rl+opd` | `scape+rl` | `trim`
+
+`trim` is CISPO + projected teacher actions + SEED-scale OPD (the method
+formerly launched as `scape+seed`; that flag remains an alias).
 
 `--tp` (eval only): data-parallel replica count. `--tp 8` starts 8 independent
 model servers (one GPU each unless `--tensor-parallel-size` is set), round-robin

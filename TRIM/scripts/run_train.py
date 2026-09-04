@@ -2,13 +2,13 @@
 """One-click Harness-1 / BC+ training.
 
 Runs only the training cell for ``--train_method`` (rl / opd / rl+opd /
-scape+rl). Does not run the four-cell protocol (no Before baseline, no
+scape+rl / trim). Does not run the four-cell protocol (no Before baseline, no
 closed-loop eval). Score with ``scripts/run_eval.py``.
 
 Example:
   python scripts/run_train.py \\
     --harness Harness-1 --benchmark BC+ --model_name harness-1 \\
-    --train_method rl --component all
+    --train_method trim --component all
 """
 
 from __future__ import annotations

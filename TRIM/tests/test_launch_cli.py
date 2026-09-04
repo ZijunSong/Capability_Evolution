@@ -62,6 +62,7 @@ def test_train_method_mapping():
     assert train_method_to_mode("rl_opd") == TRAINING_MODE_RL_OPD
     assert train_method_to_mode("scape+rl") == TRAINING_MODE_SCAPE_RL
     assert train_method_to_mode("scape_rl") == TRAINING_MODE_SCAPE_RL
+    assert train_method_to_mode("trim") == TRAINING_MODE_SCAPE_SEED
     assert train_method_to_mode("scape+seed") == TRAINING_MODE_SCAPE_SEED
     assert train_method_to_mode("seed+opd") == TRAINING_MODE_SCAPE_SEED
 
@@ -176,7 +177,27 @@ def test_parse_train_rollout_pipeline_flags():
     assert args.doc_store_workers == 4
 
 
-def test_parse_scape_seed_defaults_projection_and_seed_gap():
+def test_parse_trim_defaults_projection_and_seed_gap():
+    args, spec = parse_train_args(
+        [
+            "--train_method",
+            "trim",
+            "--component",
+            "sentence_compress",
+            "--out",
+            "/tmp/trim-test",
+        ]
+    )
+    assert spec.train_method == "trim"
+    assert spec.training_mode == TRAINING_MODE_SCAPE_SEED
+    assert args.opd_states_per_trajectory == -1
+    assert args.opd_loss == "sr_opd_projected_gap"
+    assert args.lambda_opd == 0.01
+    assert args.opd_gate_beta == 5.0
+    assert args.n_queries == 664
+
+
+def test_parse_scape_seed_alias_is_trim():
     args, spec = parse_train_args(
         [
             "--train_method",
@@ -187,16 +208,12 @@ def test_parse_scape_seed_defaults_projection_and_seed_gap():
             "/tmp/scape-seed-test",
         ]
     )
-    assert spec.train_method == "scape+seed"
+    assert spec.train_method == "trim"
     assert spec.training_mode == TRAINING_MODE_SCAPE_SEED
-    assert args.opd_states_per_trajectory == -1
     assert args.opd_loss == "sr_opd_projected_gap"
-    assert args.lambda_opd == 0.01
-    assert args.opd_gate_beta == 5.0
-    assert args.n_queries == 664
 
 
-def test_parse_seed_opd_alias_is_scape_seed():
+def test_parse_seed_opd_alias_is_trim():
     args, spec = parse_train_args(
         [
             "--train_method",
@@ -207,7 +224,7 @@ def test_parse_seed_opd_alias_is_scape_seed():
             "/tmp/seed-opd-alias",
         ]
     )
-    assert spec.train_method == "scape+seed"
+    assert spec.train_method == "trim"
     assert spec.training_mode == TRAINING_MODE_SCAPE_SEED
     assert args.opd_loss == "sr_opd_projected_gap"
 

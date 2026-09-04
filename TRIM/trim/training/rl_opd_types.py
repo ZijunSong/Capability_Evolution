@@ -13,6 +13,8 @@ TRAINING_MODE_PURE_OPD = "pure_opd"
 TRAINING_MODE_RL_OPD = "rl_opd"
 TRAINING_MODE_SCAPE_RL = "scape_rl"
 TRAINING_MODE_SCAPE_SEED = "scape_seed"
+# CLI name for scape+seed: --train_method trim. Internal cell stays scape_seed.
+TRAINING_MODE_TRIM = TRAINING_MODE_SCAPE_SEED
 
 # k < 0 means every structurally valid action on the trajectory.
 OPD_STATES_ALL = -1
@@ -20,7 +22,7 @@ OPD_LOSS_CE = "sr_opd_ce"
 # Legacy name kept as an alias of the SEED sampled-gap contract.
 OPD_LOSS_REVERSE_KL = "sr_opd_reverse_kl"
 OPD_LOSS_SAMPLED_GAP = "sr_opd_sampled_gap"
-# SEED gated gap on *projected* student-legal actions (scape+seed).
+# SEED gated gap on *projected* student-legal actions (trim / scape+seed).
 OPD_LOSS_PROJECTED_GAP = "sr_opd_projected_gap"
 SAMPLED_OPD_LOSSES = frozenset({OPD_LOSS_SAMPLED_GAP, OPD_LOSS_REVERSE_KL})
 SEED_GAP_LOSSES = frozenset({OPD_LOSS_SAMPLED_GAP, OPD_LOSS_REVERSE_KL, OPD_LOSS_PROJECTED_GAP})
@@ -39,7 +41,7 @@ def uses_seed_gap(opd_loss: str) -> bool:
 
 
 def uses_projected_seed(opd_loss: str) -> bool:
-    """True for scape+seed: projector + SEED-scale gap on a*."""
+    """True for trim (scape+seed): projector + SEED-scale gap on a*."""
     return str(opd_loss) == OPD_LOSS_PROJECTED_GAP
 
 UPDATE_RL_OPD_JOINT = "rl_opd_joint"

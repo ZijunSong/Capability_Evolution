@@ -3,7 +3,7 @@
 ``sr_opd_ce`` is teacher-forced CE on the projected action given the reduced
 prefix (rl+opd / pure OPD). ``sr_opd_sampled_gap`` is the SEED gated gap on
 the same on-policy sampled tokens as CISPO (scape+rl). ``sr_opd_projected_gap``
-is that same SEED gap on projector outputs a* (scape+seed). Component identity
+is that same SEED gap on projector outputs a* (trim / scape+seed). Component identity
 must not appear here.
 """
 

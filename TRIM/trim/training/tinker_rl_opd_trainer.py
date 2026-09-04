@@ -5,7 +5,7 @@ gradients; a single optim_step applies them.
 
     L_hybrid = L_CISPO + λ L_OPD
     scape+rl uses SEED gated sampled-token OPD, not projected CE / full-vocab KL.
-    scape+seed keeps action projection and applies the same SEED-scale gap on a*.
+    trim (scape+seed) keeps action projection and applies the same SEED-scale gap on a*.
 """
 
 from __future__ import annotations
@@ -241,7 +241,7 @@ def prepare_hybrid_batch(
 
     ``lambda_opd <= 0`` skips Teacher / projector / OPD datums entirely.
     scape+rl (sampled-gap) scores CISPO sampled actions and does not project.
-    scape+seed projects teacher events to student-legal a*, then applies the
+    trim (scape+seed) projects teacher events to student-legal a*, then applies the
     SEED gated token-mean on those projected tokens.
     """
     all_points: list[StudentDecisionPoint] = []
