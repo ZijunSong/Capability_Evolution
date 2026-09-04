@@ -5,8 +5,8 @@ Defaults match Harness-1 Table-2 eval: --max-turns 40, --max-new-tokens 2048,
 --temperature 1.0, --search-k 10, --max-model-len 32768. Training stay on a
 short horizon; do not copy those smoke values into eval.
 
-Score split: ``bcplus_830`` (664 train + 166 test) by default.
-Pass ``--score-split bcplus_test_166`` for the 166-test subset.
+Score split: ``--benchmark bcplus_full`` (or ``BC+``) uses the 830-query pool
+(664 train + 166 test). ``--benchmark bcplus_test_166`` uses the 166-test subset.
 
 Without --run-dir / --adapter, listed --component flags are turned ON (harness eval).
 With a trained run directory, the student is scored under H_min (those flags OFF)
@@ -33,8 +33,11 @@ from scape.cli.launch import (
 from scape.eval.adapter_reload_audit import audit_saved_adapter
 from scape.eval.official_query_pool import (
     SCORE_SPLIT_830,
+    canonical_score_split,
+    is_full_score_split,
     load_bcplus_830_full,
     load_bcplus_830_split,
+    score_split_for_benchmark,
 )
 from scape.eval.sr_opd_four_cell_eval import write_eval_outputs
 
@@ -65,7 +68,10 @@ def resolve_eval_mode(args) -> tuple[str, dict[str, str | None]]:
 def detect_score_split(args) -> str:
     explicit = getattr(args, "score_split", None)
     if explicit:
-        return str(explicit)
+        return canonical_score_split(str(explicit), default=SCORE_SPLIT_830) or SCORE_SPLIT_830
+    implied = score_split_for_benchmark(str(getattr(args, "benchmark", "") or ""))
+    if implied:
+        return implied
     return SCORE_SPLIT_830
 
 
@@ -106,7 +112,7 @@ def main(argv: list[str] | None = None) -> int:
     (spec.out / "LAUNCH.json").write_text(json.dumps(launch, indent=2) + "\n", encoding="utf-8")
     print(json.dumps({k: v for k, v in launch.items() if k != "harness_mask"} | {"eval_mode": mode}, indent=2), flush=True)
 
-    if score_split == SCORE_SPLIT_830:
+    if is_full_score_split(score_split):
         rows, pool_meta = load_bcplus_830_full()
     else:
         _train, rows, pool_meta = load_bcplus_830_split()

@@ -166,6 +166,7 @@ def test_bcplus_830_full_is_664_plus_166():
 
 def test_uses_bcplus_830_eval_for_scape_rl():
     assert uses_bcplus_830_eval(Namespace(score_split="bcplus_830", training_mode="rl_opd")) is True
+    assert uses_bcplus_830_eval(Namespace(score_split="bcplus_full", training_mode="rl_opd")) is True
     assert uses_bcplus_830_eval(Namespace(score_split="bcplus_test_166", training_mode="scape_rl")) is False
     assert uses_bcplus_830_eval(Namespace(score_split=None, training_mode="scape_rl")) is True
 

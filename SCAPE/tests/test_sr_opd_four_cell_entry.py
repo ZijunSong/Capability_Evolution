@@ -1,7 +1,13 @@
 import json
 from pathlib import Path
 
-from scape.eval.official_query_pool import load_bcplus_830_split, load_official_384
+from scape.eval.official_query_pool import (
+    canonical_score_split,
+    is_full_score_split,
+    load_bcplus_830_split,
+    load_official_384,
+    score_split_for_benchmark,
+)
 from scape.training.four_cell_runtime import TEACHER_REGISTRY, build_manifest, cells_for_mode, validate_wiring
 from scape.training.rl_opd_types import TRAINING_MODE_RL, TRAINING_MODE_RL_OPD, TRAINING_MODE_SCAPE_RL, TRAINING_MODE_SCAPE_SEED, TRAINING_MODE_PURE_OPD
 
@@ -54,6 +60,17 @@ def test_bcplus_830_split_is_664_train_166_test():
     assert all(r["official_split"] == "train" for r in train)
     assert all(r["official_split"] == "test" for r in test)
     assert all(r["query"] and r["query"] != r["query_id"] for r in train[:3] + test[:3])
+
+
+def test_score_split_aliases_map_166_and_full():
+    assert canonical_score_split("bcplus_test_166") == "bcplus_test_166"
+    assert canonical_score_split("bcplus_full") == "bcplus_830"
+    assert canonical_score_split("bcplus_830") == "bcplus_830"
+    assert is_full_score_split("bcplus_full") is True
+    assert is_full_score_split("bcplus_test_166") is False
+    assert score_split_for_benchmark("bcplus_test_166") == "bcplus_test_166"
+    assert score_split_for_benchmark("bcplus_full") == "bcplus_830"
+    assert score_split_for_benchmark("BC+") is None
 
 
 def test_rl_and_rl_opd_cells():

@@ -10,7 +10,8 @@
 ```text
 Capability_Evolution/
 ├── SCOPE/     # selective capability internalization (legacy / read-mostly)
-├── SCAPE/     # Harness-1 system-level capability migration (active)
+├── SCAPE/     # historical Harness-1 experiment tree
+├── TRIM/      # active Harness-1 / BC+ train + eval line
 ├── HATCH/     # placeholder
 ├── RECAST/    # placeholder
 └── .gitignore

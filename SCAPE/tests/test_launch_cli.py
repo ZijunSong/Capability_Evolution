@@ -255,6 +255,109 @@ def test_run_eval_detect_score_split_defaults_to_830():
     assert module.detect_score_split(argparse.Namespace()) == "bcplus_830"
     assert module.detect_score_split(argparse.Namespace(score_split=None, run_dir=None)) == "bcplus_830"
     assert module.detect_score_split(argparse.Namespace(score_split="bcplus_test_166")) == "bcplus_test_166"
+    assert module.detect_score_split(argparse.Namespace(score_split="bcplus_full")) == "bcplus_830"
+    assert (
+        module.detect_score_split(argparse.Namespace(score_split=None, benchmark="bcplus_test_166"))
+        == "bcplus_test_166"
+    )
+    assert (
+        module.detect_score_split(argparse.Namespace(score_split=None, benchmark="bcplus_full"))
+        == "bcplus_830"
+    )
+
+
+def test_parse_eval_cli_benchmark_test_166():
+    args, spec = parse_eval_args(
+        [
+            "--benchmark",
+            "bcplus_test_166",
+            "--component",
+            "all",
+            "--out",
+            "/tmp/scape-eval-166-bench",
+        ]
+    )
+    assert spec.benchmark == "bcplus_test_166"
+    assert args.score_split == "bcplus_test_166"
+
+
+def test_parse_eval_cli_benchmark_full():
+    args, spec = parse_eval_args(
+        [
+            "--benchmark",
+            "bcplus_full",
+            "--component",
+            "all",
+            "--out",
+            "/tmp/scape-eval-full-bench",
+        ]
+    )
+    assert spec.benchmark == "bcplus_full"
+    assert args.score_split == "bcplus_830"
+
+
+def test_parse_eval_cli_benchmark_830_alias_is_full():
+    args, spec = parse_eval_args(
+        [
+            "--benchmark",
+            "bcplus_830",
+            "--component",
+            "zero",
+            "--out",
+            "/tmp/scape-eval-830-alias",
+        ]
+    )
+    assert spec.benchmark == "bcplus_full"
+    assert args.score_split == "bcplus_830"
+
+
+def test_parse_eval_cli_score_split_full_alias():
+    args, spec = parse_eval_args(
+        [
+            "--component",
+            "zero",
+            "--score-split",
+            "bcplus_full",
+            "--out",
+            "/tmp/scape-eval-full-alias",
+        ]
+    )
+    assert spec.benchmark == "BC+"
+    assert args.score_split == "bcplus_830"
+
+
+def test_parse_eval_cli_benchmark_split_conflict():
+    with pytest.raises(LaunchError, match="implies score split"):
+        parse_eval_args(
+            [
+                "--benchmark",
+                "bcplus_test_166",
+                "--score-split",
+                "bcplus_830",
+                "--component",
+                "zero",
+                "--out",
+                "/tmp/scape-eval-conflict",
+            ]
+        )
+
+
+def test_parse_eval_cli_model_name_path():
+    args, spec = parse_eval_args(
+        [
+            "--benchmark",
+            "bcplus_test_166",
+            "--model_name",
+            "/mnt/songzijun/models/pat-jj_harness-1-full/harness-1",
+            "--component",
+            "all",
+            "--out",
+            "/tmp/scape-eval-model-path",
+        ]
+    )
+    assert spec.model_name == "harness-1"
+    assert str(spec.base_model) == "/mnt/songzijun/models/pat-jj_harness-1-full/harness-1"
+    assert args.score_split == "bcplus_test_166"
 
 
 def test_parse_eval_cli_score_split_830():

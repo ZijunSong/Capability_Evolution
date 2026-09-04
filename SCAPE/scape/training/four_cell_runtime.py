@@ -25,6 +25,7 @@ from scape.eval.official_query_pool import (
     SCORE_SPLIT_166,
     SCORE_SPLIT_830,
     attach_bcp_fields,
+    is_full_score_split,
     load_bcplus_830_full,
     load_bcplus_830_split,
     load_train_queries,
@@ -288,7 +289,7 @@ def is_seed_scale_mode(args: argparse.Namespace | None = None, *, training_mode:
 
 def uses_bcplus_830_eval(args: argparse.Namespace) -> bool:
     split = str(getattr(args, "score_split", "") or "")
-    if split == SCORE_SPLIT_830:
+    if is_full_score_split(split):
         return True
     if split == SCORE_SPLIT_166:
         return False

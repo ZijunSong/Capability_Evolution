@@ -50,6 +50,52 @@ BCPLUS_TRAIN = 664
 BCPLUS_TEST = 166
 SCORE_SPLIT_166 = "bcplus_test_166"
 SCORE_SPLIT_830 = "bcplus_830"
+SCORE_SPLIT_FULL = "bcplus_full"
+
+_SCORE_SPLIT_TEST_ALIASES = frozenset(
+    {
+        SCORE_SPLIT_166,
+        "bcplus_166",
+        "test_166",
+        "bcplus-test-166",
+    }
+)
+_SCORE_SPLIT_FULL_ALIASES = frozenset(
+    {
+        SCORE_SPLIT_830,
+        SCORE_SPLIT_FULL,
+        "bcplus830",
+        "all_pool",
+        "bcplus-full",
+        "bcplus-830",
+    }
+)
+
+
+def canonical_score_split(value: str | None, *, default: str | None = None) -> str | None:
+    """Map eval-pool aliases onto ``bcplus_test_166`` / ``bcplus_830``."""
+    if value is None or str(value).strip() == "":
+        return default
+    key = str(value).strip().lower().replace("-", "_").replace(" ", "")
+    if key in _SCORE_SPLIT_TEST_ALIASES:
+        return SCORE_SPLIT_166
+    if key in _SCORE_SPLIT_FULL_ALIASES:
+        return SCORE_SPLIT_830
+    return str(value)
+
+
+def is_full_score_split(value: str | None) -> bool:
+    return canonical_score_split(value) == SCORE_SPLIT_830
+
+
+def score_split_for_benchmark(benchmark: str) -> str | None:
+    """Split-specific ``--benchmark`` names imply an eval pool; ``BC+`` does not."""
+    key = str(benchmark or "").strip()
+    if key == SCORE_SPLIT_166:
+        return SCORE_SPLIT_166
+    if key in {SCORE_SPLIT_FULL, SCORE_SPLIT_830}:
+        return SCORE_SPLIT_830
+    return None
 
 
 def first_existing(paths: tuple[Path, ...]) -> Path | None:

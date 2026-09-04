@@ -32,13 +32,19 @@ from scape.training.rl_opd_types import (
     TRAINING_MODE_SCAPE_RL,
     TRAINING_MODE_SCAPE_SEED,
 )
-from scape.eval.official_query_pool import SCORE_SPLIT_166, SCORE_SPLIT_830
+from scape.eval.official_query_pool import (
+    SCORE_SPLIT_166,
+    SCORE_SPLIT_830,
+    SCORE_SPLIT_FULL,
+    canonical_score_split,
+    score_split_for_benchmark,
+)
 from scape.eval.sec_corpus import default_sec_corpus_root, default_sec_rl_data
 
 SCAPE_ROOT = Path(__file__).resolve().parents[2]
 
 ALLOWED_HARNESSES = ("Harness-1",)
-ALLOWED_BENCHMARKS = ("BC+",)
+ALLOWED_BENCHMARKS = ("BC+", "bcplus_test_166", "bcplus_full")
 ALLOWED_MODEL_NAMES = ("harness-1",)
 ALLOWED_TRAIN_METHODS = ("opd", "rl+opd", "rl", "scape+rl", "scape+seed", "seed+opd")
 CANONICAL_COMPONENTS = tuple(all_component_ids())
@@ -56,6 +62,12 @@ _BENCHMARK_ALIASES = {
     "browsecomp_plus": "BC+",
     "browsecomp-plus": "BC+",
     "browsecompplus": "BC+",
+    "bcplus_test_166": "bcplus_test_166",
+    "bcplus_166": "bcplus_test_166",
+    "test_166": "bcplus_test_166",
+    "bcplus_full": "bcplus_full",
+    "bcplus_830": "bcplus_full",
+    "bcplus830": "bcplus_full",
 }
 
 _MODEL_ALIASES = {
@@ -227,9 +239,18 @@ def train_method_to_mode(method: str) -> str:
     return _TRAIN_METHOD_TO_MODE[key]
 
 
+def _looks_like_path(value: str) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    return text.startswith("/") or text.startswith(".") or "/" in text or "\\" in text
+
+
 def resolve_model_path(model_name: str, explicit: str | Path | None = None) -> Path:
     if explicit:
         return Path(explicit)
+    if _looks_like_path(model_name):
+        return Path(model_name)
     _pick(model_name, _MODEL_ALIASES, ALLOWED_MODEL_NAMES, "--model_name")
     for candidate in DEFAULT_BASE_MODEL_CANDIDATES:
         if candidate.exists():
@@ -322,14 +343,18 @@ def add_common_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     parser.add_argument(
         "--benchmark",
         default="BC+",
-        help="Evaluation benchmark. Currently only BC+. scape+rl eval uses the full 830 (664+166).",
+        help=(
+            "Evaluation benchmark. BC+ is the dataset family. "
+            "Pass bcplus_test_166 for the 166-query test split, or bcplus_full "
+            "for the 830-query pool (664 train + 166 test)."
+        ),
     )
     parser.add_argument(
         "--model_name",
         "--model-name",
         dest="model_name",
         default="harness-1",
-        help="Base model name. Currently only harness-1.",
+        help="Base model name (harness-1) or a checkpoint path.",
     )
     parser.add_argument(
         "--component",
@@ -430,9 +455,9 @@ def add_train_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--score-split",
-        choices=(SCORE_SPLIT_166, SCORE_SPLIT_830),
+        choices=(SCORE_SPLIT_166, SCORE_SPLIT_830, SCORE_SPLIT_FULL),
         default=None,
-        help="Eval query pool. Default bcplus_test_166; scape+rl uses bcplus_830.",
+        help="Eval query pool. Default bcplus_test_166; scape+rl uses bcplus_830. bcplus_full is an alias of bcplus_830.",
     )
     parser.add_argument("--sft-adapter", default="")
     parser.add_argument("--validate-only", action="store_true")
@@ -493,18 +518,44 @@ def add_eval_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--score-split",
-        choices=(SCORE_SPLIT_166, SCORE_SPLIT_830),
+        choices=(SCORE_SPLIT_166, SCORE_SPLIT_830, SCORE_SPLIT_FULL),
         default=None,
-        help="Eval query pool. Default bcplus_830 (664+166). Pass bcplus_test_166 for the 166-test subset.",
+        help=(
+            "Eval query pool. Default follows --benchmark: bcplus_full / BC+ → 830, "
+            "bcplus_test_166 → 166. bcplus_full is an alias of bcplus_830."
+        ),
     )
     parser.add_argument("--audit-only", action="store_true")
     return parser
 
 
+def _apply_score_split(args: argparse.Namespace, spec: LaunchSpec, *, default: str) -> None:
+    implied = score_split_for_benchmark(spec.benchmark)
+    explicit = getattr(args, "score_split", None)
+    if explicit:
+        canonical = canonical_score_split(str(explicit), default=None)
+        if implied and canonical != implied:
+            raise LaunchError(
+                f"--benchmark={spec.benchmark} implies score split {implied}, "
+                f"but --score-split={explicit} was given"
+            )
+        args.score_split = canonical
+        return
+    if implied:
+        args.score_split = implied
+        return
+    args.score_split = default
+
+
 def _spec_from_ns(args: argparse.Namespace, *, train: bool) -> LaunchSpec:
     harness = _pick(args.harness, _HARNESS_ALIASES, ALLOWED_HARNESSES, "--harness")
     benchmark = _pick(args.benchmark, _BENCHMARK_ALIASES, ALLOWED_BENCHMARKS, "--benchmark")
-    model_name = _pick(args.model_name, _MODEL_ALIASES, ALLOWED_MODEL_NAMES, "--model_name")
+    if _looks_like_path(args.model_name):
+        model_name = "harness-1"
+        if not args.base_model:
+            args.base_model = args.model_name
+    else:
+        model_name = _pick(args.model_name, _MODEL_ALIASES, ALLOWED_MODEL_NAMES, "--model_name")
     components = tuple(canonical_component_ids(args.component))
     method = None
     if train:
@@ -566,8 +617,11 @@ def parse_train_args(argv: Sequence[str] | None = None) -> tuple[argparse.Namesp
         args.opd_gate_beta = SCAPE_RL_OPD_GATE_BETA
     if args.n_queries is None and spec.train_method != "scape+rl":
         args.n_queries = 664
-    if getattr(args, "score_split", None) is None:
-        args.score_split = SCORE_SPLIT_830 if spec.train_method == "scape+rl" else SCORE_SPLIT_166
+    _apply_score_split(
+        args,
+        spec,
+        default=SCORE_SPLIT_830 if spec.train_method == "scape+rl" else SCORE_SPLIT_166,
+    )
     if getattr(args, "sec_corpus_root", None) is None:
         args.sec_corpus_root = default_sec_corpus_root()
     if getattr(args, "rl_data", None) is None:
@@ -591,6 +645,5 @@ def parse_eval_args(argv: Sequence[str] | None = None) -> tuple[argparse.Namespa
     args.component_ids = list(spec.components)
     args.base_model = str(spec.base_model)
     args.out = spec.out
-    if getattr(args, "score_split", None) is None:
-        args.score_split = SCORE_SPLIT_830
+    _apply_score_split(args, spec, default=SCORE_SPLIT_830)
     return args, spec

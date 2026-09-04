@@ -89,6 +89,11 @@ SCAPE/external/harness-1/.venv/
 SCAPE/external/harness-1/outputs/
 SCAPE/external/harness-1/results/
 SCAPE/external/harness-1/runs/
+TRIM/external/harness-1/.git/
+TRIM/external/harness-1/.venv/
+TRIM/external/harness-1/outputs/
+TRIM/external/harness-1/results/
+TRIM/external/harness-1/runs/
 
 # --- OS / editor ---
 .DS_Store
@@ -119,7 +124,7 @@ CLAUDE.md
 !SCOPE/artifacts/baselines/**
 
 # --- Markdown: only README.md, result-record.md, method.md may be committed ---
-# SCAPE docs/plans are tracked (independent method line).
+# SCAPE / TRIM docs/plans are tracked (independent method line).
 **/*.md
 !README.md
 !**/README.md
@@ -128,3 +133,4 @@ CLAUDE.md
 !method.md
 !**/method.md
 !SCAPE/**/*.md
+!TRIM/**/*.md
