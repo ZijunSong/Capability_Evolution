@@ -15,12 +15,29 @@ from trim.eval.eval_parallel import load_json, write_json, write_jsonl
 
 
 def _run_vllm(cfg: dict, rows: list[dict], harness_mask: dict) -> tuple[dict, list[dict]]:
+    import threading
+
     from trim.eval.browsecomp_retrieval import open_retrieval
     from trim.eval.harmony_runtime import load_harmony_enc
+    from trim.training.gpu_keepalive import GpuKeepAlive
     from trim.training.vllm_hybrid import SchemeARuntime, VLLMGenerateClient
 
-    enc = load_harmony_enc()
-    searcher = open_retrieval()
+    holder: dict = {}
+    errors: list[BaseException] = []
+
+    def cpu_prep() -> None:
+        try:
+            holder["enc"] = load_harmony_enc()
+            holder["searcher"] = open_retrieval()
+        except BaseException as exc:
+            errors.append(exc)
+
+    keepalive = GpuKeepAlive()
+    keepalive.start()
+    # Overlap Lucene/Harmony load with vLLM startup so this GPU is not empty
+    # while the parent would otherwise wait on CPU-only retrieval.
+    prep = threading.Thread(target=cpu_prep, name="trim-eval-prep", daemon=True)
+    prep.start()
     out = Path(cfg["out"])
     session = out / "vllm_session"
     client = VLLMGenerateClient(
@@ -32,21 +49,27 @@ def _run_vllm(cfg: dict, rows: list[dict], harness_mask: dict) -> tuple[dict, li
         gpu_memory_utilization=float(cfg.get("gpu_memory_utilization") or 0.90),
         max_num_seqs=int(cfg.get("max_num_seqs") or 256),
     )
+    keepalive.pause()
     runtime = SchemeARuntime()
     runtime.attach_vllm(client)
     try:
         client.start()
+        prep.join()
+        if errors:
+            raise errors[0]
         return _eval_chunks(
             cfg,
             rows,
             harness_mask=harness_mask,
-            enc=enc,
-            searcher=searcher,
+            enc=holder["enc"],
+            searcher=holder["searcher"],
             generate_batch=client.generate_batch,
             backend=None,
         )
     finally:
+        prep.join(timeout=120.0)
         runtime.detach_vllm()
+        keepalive.stop()
 
 
 def _run_hf(cfg: dict, rows: list[dict], harness_mask: dict) -> tuple[dict, list[dict]]:
@@ -55,14 +78,20 @@ def _run_hf(cfg: dict, rows: list[dict], harness_mask: dict) -> tuple[dict, list
     from trim.eval.adapter_reload_audit import remap_lora_state
     from trim.eval.browsecomp_retrieval import open_retrieval
     from trim.eval.harmony_runtime import load_harmony_enc
-    from trim.training.four_cell_runtime import eval_closed_loop
+    from trim.training.gpu_keepalive import GpuKeepAlive
     from trim.training.hf_rl_opd_client import restore_trainable, snapshot_trainable
     from trim.training.hf_tool_opd import ScapeHFToolOPD
     from trim.training.vllm_hybrid import HFGenerateClient
 
-    enc = load_harmony_enc()
-    searcher = open_retrieval()
-    backend = ScapeHFToolOPD(model_path=str(cfg["model_path"]), device_map="cuda:0", use_lora=True)
+    keepalive = GpuKeepAlive()
+    keepalive.start()
+    try:
+        enc = load_harmony_enc()
+        searcher = open_retrieval()
+        keepalive.pause()
+        backend = ScapeHFToolOPD(model_path=str(cfg["model_path"]), device_map="cuda:0", use_lora=True)
+    finally:
+        keepalive.stop()
     theta0 = snapshot_trainable(backend.model)
     adapter = cfg.get("adapter_path")
     if adapter:

@@ -1242,6 +1242,16 @@ def merge_train_stats(parts: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def run_four_cell(args: argparse.Namespace) -> dict[str, Any]:
+    from trim.training.gpu_keepalive import acquire_keepalive, release_keepalive
+
+    keepalive = acquire_keepalive()
+    try:
+        return _run_four_cell_body(args, keepalive)
+    finally:
+        release_keepalive()
+
+
+def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
     import torch
     from trim.eval.harmony_runtime import load_harmony_enc
     from trim.training.batched_env_rollout import rollout_queries_batched
@@ -1296,6 +1306,7 @@ def run_four_cell(args: argparse.Namespace) -> dict[str, Any]:
     runtime = SchemeARuntime()
     vllm_base = args.base_model
     if vllm_on:
+        keepalive.pause()
         vllm_base = materialize_vllm_base(
             base_model=args.base_model,
             sft_adapter=str(args.sft_adapter or ""),
@@ -1303,18 +1314,21 @@ def run_four_cell(args: argparse.Namespace) -> dict[str, Any]:
             device_map=device_map,
         )
         wait_gpus_quiet()
+        keepalive.resume()
 
-    print(f"[{log_tag}] init theta0 HF LoRA", flush=True)
-    backend = load_hf_backend(args, device_map)
+    # Do not load a 20B HF LoRA before the first vLLM rollout. That extra load
+    # plus unload leaves SM-Util at 0% for minutes and trips cluster killers.
+    # First collect_groups(theta0) uses the vLLM base (no adapter file yet).
+    backend = None
     theta0_dir = out / "adapters" / "theta0"
-    theta0_dir.mkdir(parents=True, exist_ok=True)
-    backend.save_pretrained(str(theta0_dir))
-    if scheme_a:
-        runtime.attach_hf(backend)
-        runtime.detach_hf()
-        backend = None
-        wait_gpus_quiet()
-    else:
+    theta0_saved = {"n": False}
+    if not scheme_a:
+        print(f"[{log_tag}] init theta0 HF LoRA", flush=True)
+        keepalive.pause()
+        backend = load_hf_backend(args, device_map)
+        theta0_dir.mkdir(parents=True, exist_ok=True)
+        backend.save_pretrained(str(theta0_dir))
+        theta0_saved["n"] = True
         runtime.attach_hf(backend)
 
     enc = load_harmony_enc()
@@ -1348,6 +1362,7 @@ def run_four_cell(args: argparse.Namespace) -> dict[str, Any]:
         return path if weight.is_file() else None
 
     def open_vllm(lora_path: str | None, tag: str) -> VLLMGenerateClient:
+        keepalive.pause()
         wait_gpus_quiet()
         # vLLM 0.19 successfully loads the Harness-1 PEFT adapters directly;
         # keep the base checkpoint sharded and avoid materializing a 39 GiB
@@ -1373,11 +1388,22 @@ def run_four_cell(args: argparse.Namespace) -> dict[str, Any]:
     def close_vllm() -> None:
         runtime.detach_vllm()
         wait_gpus_quiet()
+        keepalive.resume()
 
     def ensure_hf(adapter_path: str | None):
         nonlocal backend
+        keepalive.pause()
         if backend is None:
-            backend = runtime.attach_hf(load_hf_backend(args, device_map, adapter_dir=adapter_path))
+            adapter_file = Path(adapter_path) / "adapter_model.safetensors" if adapter_path else None
+            adapter_ok = bool(adapter_file is not None and adapter_file.is_file())
+            backend = runtime.attach_hf(
+                load_hf_backend(args, device_map, adapter_dir=adapter_path if adapter_ok else None)
+            )
+            if not theta0_saved["n"]:
+                print(f"[{log_tag}] save theta0 HF LoRA after first attach", flush=True)
+                theta0_dir.mkdir(parents=True, exist_ok=True)
+                backend.save_pretrained(str(theta0_dir))
+                theta0_saved["n"] = True
             return backend
         load_adapter_weights(backend, adapter_path)
         backend.optimizer = torch.optim.AdamW(
@@ -1391,6 +1417,7 @@ def run_four_cell(args: argparse.Namespace) -> dict[str, Any]:
             runtime.detach_hf()
             backend = None
             wait_gpus_quiet()
+            keepalive.resume()
 
     def collect_groups(
         lora_path: str | None,

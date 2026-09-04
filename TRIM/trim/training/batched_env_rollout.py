@@ -209,6 +209,7 @@ def _run_episode_turns(
     temperature: float,
     search_k: int,
     snap_from_state,
+    env_workers: int = 1,
 ) -> None:
     for turn in range(max_turns):
         live = [ep for ep in episodes if not ep.st.get("ended")]
@@ -217,6 +218,7 @@ def _run_episode_turns(
         reqs: list[GenerateRequest] = []
         generated: list[GenerateResult | None] = [None] * len(live)
         request_slots: list[int] = []
+        apply_jobs: list[tuple[LiveEpisode, GenerateResult]] = []
         for i, ep in enumerate(live):
             with timed_section(ep.timing, "harness"):
                 pids = _build_prompt_ids(ep, enc)
@@ -280,7 +282,18 @@ def _run_episode_turns(
         for ep, gen in zip(live, generated):
             if gen is None:
                 raise RuntimeError("missing generation for live episode")
-            _apply_generation(ep, gen, enc=enc, searcher=searcher, search_k=search_k)
+            apply_jobs.append((ep, gen))
+        workers = max(1, int(env_workers or 1))
+        if workers == 1 or len(apply_jobs) <= 1:
+            for ep, gen in apply_jobs:
+                _apply_generation(ep, gen, enc=enc, searcher=searcher, search_k=search_k)
+        else:
+            def apply_one(job: tuple[LiveEpisode, GenerateResult]) -> None:
+                ep, gen = job
+                _apply_generation(ep, gen, enc=enc, searcher=searcher, search_k=search_k)
+
+            with ThreadPoolExecutor(max_workers=min(workers, len(apply_jobs))) as pool:
+                list(pool.map(apply_one, apply_jobs))
 
 
 def _groups_from_episodes(
@@ -453,6 +466,7 @@ def rollout_queries_batched(
                 temperature=temperature,
                 search_k=search_k,
                 snap_from_state=snap_from_state,
+                env_workers=workers,
             )
             groups.extend(
                 _groups_from_episodes(

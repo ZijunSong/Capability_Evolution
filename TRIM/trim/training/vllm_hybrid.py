@@ -311,8 +311,12 @@ def _release_cuda() -> None:
         pass
 
 
-def wait_gpus_quiet(*, timeout_s: float = 90.0, max_bytes: int = 256 * 1024 * 1024) -> None:
-    """Best-effort wait so the next engine can grab all cards."""
+def wait_gpus_quiet(*, timeout_s: float = 8.0, max_bytes: int = 256 * 1024 * 1024) -> None:
+    """Best-effort wait so the next engine can grab all cards.
+
+    Keep this short. A 90s poll with the GPUs empty is exactly the idle
+    window cluster watchdogs use to kill the job.
+    """
     _release_cuda()
     try:
         import torch
@@ -320,17 +324,19 @@ def wait_gpus_quiet(*, timeout_s: float = 90.0, max_bytes: int = 256 * 1024 * 10
         return
     if not torch.cuda.is_available():
         return
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
+    deadline = time.time() + max(0.0, float(timeout_s))
+    while True:
         used = []
         for i in range(torch.cuda.device_count()):
             try:
                 used.append(int(torch.cuda.memory_allocated(i)))
             except Exception:
                 used.append(0)
-        if all(u <= max_bytes for u in used):
+        if not used or all(u <= max_bytes for u in used):
             return
-        time.sleep(1.0)
+        if time.time() >= deadline:
+            return
+        time.sleep(0.2)
         _release_cuda()
 
 

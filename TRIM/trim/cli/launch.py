@@ -636,8 +636,11 @@ def add_eval_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     parser.add_argument(
         "--eval-stagger-s",
         type=float,
-        default=2.0,
-        help="Seconds to wait between replica launches so model loads do not stampede the disk.",
+        default=0.0,
+        help=(
+            "Seconds to wait between replica launches. Default 0 starts every "
+            "replica immediately so idle GPUs are not sitting empty."
+        ),
     )
     return parser
 

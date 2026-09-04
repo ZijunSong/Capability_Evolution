@@ -33,6 +33,7 @@ def test_parse_eval_cli_tp():
     assert args.eval_gpus == "0,1,2,3,4,5,6,7"
     assert args.max_num_seqs == 128
     assert args.eval_chunk_size == 32
+    assert args.eval_stagger_s == 0.0
 
 
 def test_parse_eval_cli_tp_alias():

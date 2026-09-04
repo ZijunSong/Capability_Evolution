@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+import threading
 
 from trim.eval.official_query_pool import default_bcp_root
 
@@ -35,26 +36,29 @@ class PyseriniBackend(RetrievalBackend):
         from pyserini.search.lucene import LuceneSearcher
 
         self._searcher = LuceneSearcher(str(index_dir))
+        self._lock = threading.Lock()
 
     def search(self, query: str, k: int = 5) -> list[SearchHit]:
         hits = []
-        for hit in self._searcher.search(query, k):
-            raw = ""
-            try:
-                raw = self._searcher.doc(hit.docid).raw()
-            except Exception:
-                raw = getattr(hit, "raw", "") or ""
-            hits.append(SearchHit(str(hit.docid), str(raw), float(getattr(hit, "score", 0.0) or 0.0)))
+        with self._lock:
+            for hit in self._searcher.search(query, k):
+                raw = ""
+                try:
+                    raw = self._searcher.doc(hit.docid).raw()
+                except Exception:
+                    raw = getattr(hit, "raw", "") or ""
+                hits.append(SearchHit(str(hit.docid), str(raw), float(getattr(hit, "score", 0.0) or 0.0)))
         return hits
 
     def get_doc(self, docid: str) -> str | None:
-        try:
-            doc = self._searcher.doc(str(docid))
-        except Exception:
-            return None
-        if doc is None:
-            return None
-        return str(doc.raw() or "")
+        with self._lock:
+            try:
+                doc = self._searcher.doc(str(docid))
+            except Exception:
+                return None
+            if doc is None:
+                return None
+            return str(doc.raw() or "")
 
 
 class LocalJsonlBackend(RetrievalBackend):

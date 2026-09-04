@@ -32,6 +32,16 @@ from trim.training.rl_opd_types import TRAINING_MODE_RL
 
 
 def main(argv: list[str] | None = None) -> int:
+    from trim.training.gpu_keepalive import acquire_keepalive, release_keepalive
+
+    acquire_keepalive()
+    try:
+        return _main(argv)
+    finally:
+        release_keepalive()
+
+
+def _main(argv: list[str] | None = None) -> int:
     try:
         args, spec = parse_train_args(argv)
     except LaunchError as exc:

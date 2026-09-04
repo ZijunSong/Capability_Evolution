@@ -93,6 +93,13 @@ def main(argv: list[str] | None = None) -> int:
         else student_mask_for_ids(spec.components)
     )
 
+    from trim.training.gpu_keepalive import acquire_keepalive, release_keepalive
+
+    held_outer = False
+    if not args.audit_only and int(getattr(args, "eval_replicas", 1)) <= 1:
+        acquire_keepalive()
+        held_outer = True
+
     spec.out.mkdir(parents=True, exist_ok=True)
     launch = {
         "harness": spec.harness,
@@ -148,12 +155,15 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(payload, indent=2), flush=True)
         return 0
     if not spec.base_model:
+        if held_outer:
+            release_keepalive()
         raise SystemExit("pass --model_name /path/to/checkpoint for live eval")
 
     from trim.eval.browsecomp_retrieval import open_retrieval
     from trim.eval.eval_parallel import parse_gpu_ids, run_replicated_eval, write_jsonl
     from trim.eval.harmony_runtime import load_harmony_enc
     from trim.training.four_cell_runtime import eval_closed_loop
+    from trim.training.gpu_keepalive import acquire_keepalive, release_keepalive
     from trim.training.vllm_hybrid import (
         HFGenerateClient,
         SchemeARuntime,
@@ -182,64 +192,119 @@ def main(argv: list[str] | None = None) -> int:
     print(json.dumps({k: v for k, v in launch.items() if k != "harness_mask"} | {"eval_mode": mode}, indent=2), flush=True)
 
     summaries = []
-    if eval_replicas > 1:
-        gpu_ids = parse_gpu_ids(args.eval_gpus)
-        worker_cfg = {
-            "model_path": str(spec.base_model),
-            "component": spec.coalition,
-            "harness_mask": harness_mask,
-            "rollout_backend": args.rollout_backend,
-            "max_turns": eval_max_turns,
-            "max_new_tokens": eval_max_new,
-            "temperature": eval_temperature,
-            "search_k": int(args.search_k),
-            "max_model_len": int(args.max_model_len),
-            "gpu_memory_utilization": float(args.gpu_memory_utilization),
-            "max_num_seqs": int(getattr(args, "max_num_seqs", 256) or 256),
-            "eval_chunk_size": getattr(args, "eval_chunk_size", None),
-            "seed": int(args.seed),
-            "primary_split": score_split,
-            "tensor_parallel_size": replica_tp,
-        }
-        for cell, path in adapter_map.items():
-            ev, traces = run_replicated_eval(
-                rows=rows,
-                out=spec.out,
-                cell=str(cell),
-                adapter_path=str(path) if path else None,
-                spec_out_env=worker_cfg,
-                eval_replicas=eval_replicas,
-                gpu_ids=gpu_ids,
-                tensor_parallel_size=replica_tp,
-                stagger_s=float(getattr(args, "eval_stagger_s", 2.0) or 0.0),
-            )
-            ev["setting"] = cell
-            ev["eval_mode"] = mode
-            cell_dir = spec.out / str(cell)
-            cell_dir.mkdir(parents=True, exist_ok=True)
-            write_jsonl(cell_dir / "PER_QUERY.jsonl", traces)
-            summaries.append(ev)
-    elif args.rollout_backend == "vllm":
-        enc = load_harmony_enc()
-        searcher = open_retrieval()
-        runtime = SchemeARuntime()
-        for i, (cell, path) in enumerate(adapter_map.items()):
-            wait_gpus_quiet()
-            session = spec.out / "vllm_sessions" / f"eval_{i}_{cell}"
-            client = VLLMGenerateClient(
-                model_path=str(spec.base_model),
-                session_dir=session,
-                tensor_parallel_size=replica_tp,
-                max_model_len=int(args.max_model_len),
-                lora_path=str(path) if path else None,
-                gpu_memory_utilization=float(args.gpu_memory_utilization),
-                max_num_seqs=int(getattr(args, "max_num_seqs", 256) or 256),
-            )
-            runtime.attach_vllm(client)
-            try:
-                client.start()
+    # Parent of --tp N must not occupy GPUs; children keep themselves busy.
+    keepalive = None if eval_replicas > 1 else acquire_keepalive()
+    try:
+        if eval_replicas > 1:
+            gpu_ids = parse_gpu_ids(args.eval_gpus)
+            worker_cfg = {
+                "model_path": str(spec.base_model),
+                "component": spec.coalition,
+                "harness_mask": harness_mask,
+                "rollout_backend": args.rollout_backend,
+                "max_turns": eval_max_turns,
+                "max_new_tokens": eval_max_new,
+                "temperature": eval_temperature,
+                "search_k": int(args.search_k),
+                "max_model_len": int(args.max_model_len),
+                "gpu_memory_utilization": float(args.gpu_memory_utilization),
+                "max_num_seqs": int(getattr(args, "max_num_seqs", 256) or 256),
+                "eval_chunk_size": getattr(args, "eval_chunk_size", None),
+                "seed": int(args.seed),
+                "primary_split": score_split,
+                "tensor_parallel_size": replica_tp,
+            }
+            for cell, path in adapter_map.items():
+                ev, traces = run_replicated_eval(
+                    rows=rows,
+                    out=spec.out,
+                    cell=str(cell),
+                    adapter_path=str(path) if path else None,
+                    spec_out_env=worker_cfg,
+                    eval_replicas=eval_replicas,
+                    gpu_ids=gpu_ids,
+                    tensor_parallel_size=replica_tp,
+                    stagger_s=float(getattr(args, "eval_stagger_s", 0.0) or 0.0),
+                )
+                ev["setting"] = cell
+                ev["eval_mode"] = mode
+                cell_dir = spec.out / str(cell)
+                cell_dir.mkdir(parents=True, exist_ok=True)
+                write_jsonl(cell_dir / "PER_QUERY.jsonl", traces)
+                summaries.append(ev)
+        elif args.rollout_backend == "vllm":
+            enc = load_harmony_enc()
+            searcher = open_retrieval()
+            runtime = SchemeARuntime()
+            for i, (cell, path) in enumerate(adapter_map.items()):
+                if keepalive is not None:
+                    keepalive.pause()
+                wait_gpus_quiet()
+                session = spec.out / "vllm_sessions" / f"eval_{i}_{cell}"
+                client = VLLMGenerateClient(
+                    model_path=str(spec.base_model),
+                    session_dir=session,
+                    tensor_parallel_size=replica_tp,
+                    max_model_len=int(args.max_model_len),
+                    lora_path=str(path) if path else None,
+                    gpu_memory_utilization=float(args.gpu_memory_utilization),
+                    max_num_seqs=int(getattr(args, "max_num_seqs", 256) or 256),
+                )
+                runtime.attach_vllm(client)
+                try:
+                    client.start()
+                    ev, traces = eval_closed_loop(
+                        None,
+                        rows,
+                        component_id=spec.coalition,
+                        max_new=eval_max_new,
+                        max_turns=eval_max_turns,
+                        seed=int(args.seed),
+                        enc=enc,
+                        searcher=searcher,
+                        generate_batch=client.generate_batch,
+                        harness_mask=harness_mask,
+                        temperature=eval_temperature,
+                        search_k=int(args.search_k),
+                        primary_split=score_split,
+                    )
+                finally:
+                    runtime.detach_vllm()
+                    if keepalive is not None:
+                        keepalive.resume()
+                ev["setting"] = cell
+                ev["eval_mode"] = mode
+                cell_dir = spec.out / str(cell)
+                cell_dir.mkdir(parents=True, exist_ok=True)
+                with (cell_dir / "PER_QUERY.jsonl").open("w", encoding="utf-8") as handle:
+                    for tr in traces:
+                        handle.write(json.dumps(tr, ensure_ascii=False) + "\n")
+                summaries.append(ev)
+        else:
+            from safetensors.torch import load_file
+
+            from trim.eval.adapter_reload_audit import remap_lora_state
+            from trim.training.hf_rl_opd_client import restore_trainable, snapshot_trainable
+            from trim.training.hf_tool_opd import ScapeHFToolOPD
+
+            enc = load_harmony_enc()
+            searcher = open_retrieval()
+            if keepalive is not None:
+                keepalive.pause()
+            gpu = str(args.gpu)
+            device_map = f"cuda:{gpu}" if gpu.isdigit() else "auto"
+            backend = ScapeHFToolOPD(model_path=str(spec.base_model), device_map=device_map, use_lora=True)
+            theta0 = snapshot_trainable(backend.model)
+            gen = HFGenerateClient(backend, enc=enc)
+            for cell, path in adapter_map.items():
+                restore_trainable(backend.model, theta0)
+                if path:
+                    weights = remap_lora_state(load_file(str(Path(path) / "adapter_model.safetensors")))
+                    missing, _un = backend.model.load_state_dict(weights, strict=False)
+                    if [x for x in missing if "lora_" in x]:
+                        raise RuntimeError(f"reload failed: {cell}")
                 ev, traces = eval_closed_loop(
-                    None,
+                    backend,
                     rows,
                     component_id=spec.coalition,
                     max_new=eval_max_new,
@@ -247,66 +312,23 @@ def main(argv: list[str] | None = None) -> int:
                     seed=int(args.seed),
                     enc=enc,
                     searcher=searcher,
-                    generate_batch=client.generate_batch,
+                    generate_batch=gen.generate_batch,
                     harness_mask=harness_mask,
                     temperature=eval_temperature,
                     search_k=int(args.search_k),
                     primary_split=score_split,
                 )
-            finally:
-                runtime.detach_vllm()
-            ev["setting"] = cell
-            ev["eval_mode"] = mode
-            cell_dir = spec.out / str(cell)
-            cell_dir.mkdir(parents=True, exist_ok=True)
-            with (cell_dir / "PER_QUERY.jsonl").open("w", encoding="utf-8") as handle:
-                for tr in traces:
-                    handle.write(json.dumps(tr, ensure_ascii=False) + "\n")
-            summaries.append(ev)
-    else:
-        from safetensors.torch import load_file
-
-        from trim.eval.adapter_reload_audit import remap_lora_state
-        from trim.training.hf_rl_opd_client import restore_trainable, snapshot_trainable
-        from trim.training.hf_tool_opd import ScapeHFToolOPD
-
-        enc = load_harmony_enc()
-        searcher = open_retrieval()
-        gpu = str(args.gpu)
-        device_map = f"cuda:{gpu}" if gpu.isdigit() else "auto"
-        backend = ScapeHFToolOPD(model_path=str(spec.base_model), device_map=device_map, use_lora=True)
-        theta0 = snapshot_trainable(backend.model)
-        gen = HFGenerateClient(backend, enc=enc)
-        for cell, path in adapter_map.items():
-            restore_trainable(backend.model, theta0)
-            if path:
-                weights = remap_lora_state(load_file(str(Path(path) / "adapter_model.safetensors")))
-                missing, _un = backend.model.load_state_dict(weights, strict=False)
-                if [x for x in missing if "lora_" in x]:
-                    raise RuntimeError(f"reload failed: {cell}")
-            ev, traces = eval_closed_loop(
-                backend,
-                rows,
-                component_id=spec.coalition,
-                max_new=eval_max_new,
-                max_turns=eval_max_turns,
-                seed=int(args.seed),
-                enc=enc,
-                searcher=searcher,
-                generate_batch=gen.generate_batch,
-                harness_mask=harness_mask,
-                temperature=eval_temperature,
-                search_k=int(args.search_k),
-                primary_split=score_split,
-            )
-            ev["setting"] = cell
-            ev["eval_mode"] = mode
-            cell_dir = spec.out / str(cell)
-            cell_dir.mkdir(parents=True, exist_ok=True)
-            with (cell_dir / "PER_QUERY.jsonl").open("w", encoding="utf-8") as handle:
-                for tr in traces:
-                    handle.write(json.dumps(tr, ensure_ascii=False) + "\n")
-            summaries.append(ev)
+                ev["setting"] = cell
+                ev["eval_mode"] = mode
+                cell_dir = spec.out / str(cell)
+                cell_dir.mkdir(parents=True, exist_ok=True)
+                with (cell_dir / "PER_QUERY.jsonl").open("w", encoding="utf-8") as handle:
+                    for tr in traces:
+                        handle.write(json.dumps(tr, ensure_ascii=False) + "\n")
+                summaries.append(ev)
+    finally:
+        if keepalive is not None:
+            release_keepalive()
 
     payload = write_eval_outputs(
         spec.out,
@@ -316,6 +338,8 @@ def main(argv: list[str] | None = None) -> int:
         pool_meta=pool_meta,
     )
     print(json.dumps(payload, indent=2), flush=True)
+    if held_outer:
+        release_keepalive()
     return 0
 
 
