@@ -36,6 +36,7 @@ from trim.eval.official_query_pool import (
 from trim.eval.sec_corpus import (
     SEC_TRAIN_POOL_NAME,
     attach_sec_doc_stores,
+    corpus_bm25_index,
     default_sec_corpus_root,
     default_sec_rl_data,
     load_sec_rl_queries,
@@ -1262,17 +1263,23 @@ def open_train_retrieval(
     train_rows: list[dict[str, Any]] | None = None,
 ) -> RetrievalBackend:
     """Train-time searcher. SEC train data uses the SEC parquet/BM25 corpus."""
+    smoke = bool(getattr(args, "smoke", False))
     if uses_sec_train_data(args):
         texts: dict[str, str] = {}
         for row in train_rows or []:
             for did, rec in (row.get("seed_doc_store") or {}).items():
                 if isinstance(rec, dict) and rec.get("text"):
                     texts[str(did)] = str(rec["text"])
-        return open_sec_retrieval(
-            getattr(args, "sec_corpus_root", None) or default_sec_corpus_root(),
-            texts=texts or None,
-        )
-    return open_retrieval(formal=not bool(getattr(args, "smoke", False)))
+        root = getattr(args, "sec_corpus_root", None) or default_sec_corpus_root()
+        backend = open_sec_retrieval(root, texts=texts or None)
+        if not smoke and backend.name != "sec_pyserini":
+            index = corpus_bm25_index(root)
+            raise RuntimeError(
+                f"SEC training requires a local Lucene BM25 index at {index}. "
+                "Build it with: PYTHONPATH=TRIM python TRIM/scripts/build_sec_bm25_index.py"
+            )
+        return backend
+    return open_retrieval(formal=not smoke)
 
 
 def open_eval_retrieval(args: argparse.Namespace) -> RetrievalBackend:

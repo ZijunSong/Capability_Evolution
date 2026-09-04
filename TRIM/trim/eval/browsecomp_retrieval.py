@@ -5,6 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+import json
+import os
+import shutil
+import sys
 import threading
 
 from trim.eval.official_query_pool import default_bcp_root
@@ -29,10 +33,32 @@ class RetrievalBackend:
         return None
 
 
+def lucene_stored_text(raw: Any) -> str:
+    """Unwrap Pyserini ``storeRaw`` JSON (``id`` / ``contents``) into document text."""
+    if raw is None:
+        return ""
+    if isinstance(raw, dict):
+        return str(raw.get("contents") or raw.get("text") or raw.get("document_text") or "")
+    text = str(raw)
+    stripped = text.strip()
+    if not stripped.startswith("{"):
+        return text
+    try:
+        payload = json.loads(stripped)
+    except json.JSONDecodeError:
+        return text
+    if isinstance(payload, dict):
+        return str(payload.get("contents") or payload.get("text") or payload.get("document_text") or text)
+    return text
+
+
 class PyseriniBackend(RetrievalBackend):
     name = "pyserini_lucene"
 
     def __init__(self, index_dir: Path):
+        _configure_java_runtime()
+        # pyserini.search.lucene imports the OpenAI encoder stack at module load.
+        os.environ.setdefault("OPENAI_API_KEY", "sk-pyserini-local")
         from pyserini.search.lucene import LuceneSearcher
 
         self._searcher = LuceneSearcher(str(index_dir))
@@ -47,7 +73,13 @@ class PyseriniBackend(RetrievalBackend):
                     raw = self._searcher.doc(hit.docid).raw()
                 except Exception:
                     raw = getattr(hit, "raw", "") or ""
-                hits.append(SearchHit(str(hit.docid), str(raw), float(getattr(hit, "score", 0.0) or 0.0)))
+                hits.append(
+                    SearchHit(
+                        str(hit.docid),
+                        lucene_stored_text(raw),
+                        float(getattr(hit, "score", 0.0) or 0.0),
+                    )
+                )
         return hits
 
     def get_doc(self, docid: str) -> str | None:
@@ -58,7 +90,7 @@ class PyseriniBackend(RetrievalBackend):
                 return None
             if doc is None:
                 return None
-            return str(doc.raw() or "")
+            return lucene_stored_text(doc.raw() or "")
 
 
 class LocalJsonlBackend(RetrievalBackend):
@@ -97,17 +129,35 @@ class LocalJsonlBackend(RetrievalBackend):
         return None
 
 
-def _configure_java_runtime() -> None:
-    """Make the approved JDK visible before Pyserini imports jnius."""
-    import os
+def _apply_java_bin(java_bin: Path) -> bool:
+    if not java_bin.is_file():
+        return False
+    home = java_bin.parent.parent
+    os.environ["JAVA_HOME"] = str(home)
+    os.environ["PATH"] = f"{java_bin.parent}:{os.environ.get('PATH', '')}"
+    return True
 
-    if os.environ.get("JAVA_HOME"):
-        return
-    for candidate in ("/opt/scape-jdk21", "/opt/jdk21"):
-        java = Path(candidate) / "usr/lib/jvm/java-21-openjdk-amd64/bin/java"
+
+def _configure_java_runtime() -> None:
+    """Make a JDK visible before Pyserini imports jnius."""
+    existing = os.environ.get("JAVA_HOME")
+    if existing:
+        java = Path(existing) / "bin" / "java"
         if java.is_file():
-            os.environ["JAVA_HOME"] = str(java.parent.parent)
             os.environ["PATH"] = f"{java.parent}:{os.environ.get('PATH', '')}"
+            return
+    candidates: list[Path] = []
+    for root in ("/opt/scape-jdk21", "/opt/jdk21"):
+        candidates.append(Path(root) / "usr/lib/jvm/java-21-openjdk-amd64/bin/java")
+    for prefix in (os.environ.get("CONDA_PREFIX"), sys.prefix, "/data/ppnm/miniconda3/envs/bishop"):
+        if prefix:
+            candidates.append(Path(prefix) / "lib/jvm/bin/java")
+            candidates.append(Path(prefix) / "bin/java")
+    which = shutil.which("java")
+    if which:
+        candidates.append(Path(which))
+    for java in candidates:
+        if _apply_java_bin(java):
             return
 
 

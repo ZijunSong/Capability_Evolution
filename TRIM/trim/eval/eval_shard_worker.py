@@ -28,7 +28,7 @@ def _run_vllm(cfg: dict, rows: list[dict], harness_mask: dict) -> tuple[dict, li
     def cpu_prep() -> None:
         try:
             holder["enc"] = load_harmony_enc()
-            holder["searcher"] = open_retrieval()
+            holder["searcher"] = open_retrieval(formal=True)
         except BaseException as exc:
             errors.append(exc)
 
@@ -87,7 +87,7 @@ def _run_hf(cfg: dict, rows: list[dict], harness_mask: dict) -> tuple[dict, list
     keepalive.start()
     try:
         enc = load_harmony_enc()
-        searcher = open_retrieval()
+        searcher = open_retrieval(formal=True)
         keepalive.pause()
         backend = ScapeHFToolOPD(model_path=str(cfg["model_path"]), device_map="cuda:0", use_lora=True)
     finally:

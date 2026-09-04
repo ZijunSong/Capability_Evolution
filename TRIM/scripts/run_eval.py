@@ -238,7 +238,7 @@ def main(argv: list[str] | None = None) -> int:
                 summaries.append(ev)
         elif args.rollout_backend == "vllm":
             enc = load_harmony_enc()
-            searcher = open_retrieval()
+            searcher = open_retrieval(formal=True)
             runtime = SchemeARuntime()
             for i, (cell, path) in enumerate(adapter_map.items()):
                 if keepalive is not None:
@@ -292,7 +292,7 @@ def main(argv: list[str] | None = None) -> int:
             from trim.training.hf_tool_opd import ScapeHFToolOPD
 
             enc = load_harmony_enc()
-            searcher = open_retrieval()
+            searcher = open_retrieval(formal=True)
             if keepalive is not None:
                 keepalive.pause()
             gpu = str(args.gpu)

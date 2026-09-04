@@ -9,6 +9,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
+from trim.eval.browsecomp_retrieval import lucene_stored_text
 from trim.eval.official_query_pool import load_bcplus_830_full
 from trim.eval.sec_corpus import (
     SEC_CORPUS_NAME,
@@ -18,7 +19,12 @@ from trim.eval.sec_corpus import (
     normalize_sec_rl_record,
     open_sec_retrieval,
 )
-from trim.training.four_cell_runtime import resolve_queries, uses_bcplus_830_eval, uses_sec_train_data
+from trim.training.four_cell_runtime import (
+    open_train_retrieval,
+    resolve_queries,
+    uses_bcplus_830_eval,
+    uses_sec_train_data,
+)
 
 
 def _write_rl_tar(tmp: Path, rows: list[dict]) -> Path:
@@ -155,6 +161,16 @@ def test_resolve_queries_scape_rl_uses_sec_train_and_bcplus_830(tmp_path: Path):
     assert frozen == []
 
 
+def test_open_train_retrieval_requires_sec_lucene(tmp_path: Path):
+    corpus = _write_corpus(tmp_path)
+    args = Namespace(train_data="sec", sec_corpus_root=corpus, smoke=False)
+    with pytest.raises(RuntimeError, match="Lucene BM25"):
+        open_train_retrieval(args, [])
+    smoke_args = Namespace(train_data="sec", sec_corpus_root=corpus, smoke=True)
+    backend = open_train_retrieval(smoke_args, [])
+    assert backend.name in {"sec_parquet", "none"}
+
+
 def test_resolve_queries_train_data_sec_for_trim(tmp_path: Path):
     archive = _write_rl_tar(
         tmp_path,
@@ -228,6 +244,12 @@ def test_uses_bcplus_830_eval_for_scape_rl():
     assert uses_bcplus_830_eval(
         Namespace(score_split=None, train_data="bcplus_train_664", training_mode="scape_rl")
     ) is False
+
+
+def test_lucene_stored_text_unwraps_pyserini_json():
+    assert lucene_stored_text('{"id": "a", "contents": "hello filing"}') == "hello filing"
+    assert lucene_stored_text("plain text") == "plain text"
+    assert lucene_stored_text(None) == ""
 
 
 def test_official_rl_tar_if_present():

@@ -93,6 +93,12 @@ PYTHONPATH=TRIM python TRIM/scripts/run_sft.py --smoke --dry-run
 - `sec` (default) — Harness-1 SEC RL pool (~3453 queries)
 - `bcplus_train_664` — official BC+ train split
 
+Local retrieval (no Chroma):
+
+- **Train (SEC):** Lucene BM25 at `/data/ppnm/harness-1-sec-corpus/indexes/bm25`, built from the parquet corpus. Rebuild with `PYTHONPATH=TRIM python TRIM/scripts/build_sec_bm25_index.py`. Non-smoke training fails closed if this index is missing.
+- **Eval (BC+):** Lucene BM25 at `SCOPE/external/BrowseComp-Plus/indexes/bm25`
+- **Query packs:** `/data/ppnm/harness-1-rl-data.tar.gz` (SEC train) and BrowseComp-Plus `topics-qrels/` (eval)
+
 `--n-queries` optionally caps the selected pool. SEC runs default the eval
 score split to `bcplus_830`; `bcplus_train_664` defaults to `bcplus_test_166`.
 
