@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Long-lived vLLM worker for Scheme A batched Harmony rollouts.
+"""Long-lived vLLM worker for Scheme A batched rollouts.
 
-Reads session_dir/config.json, loads the gpt-oss tokenizer (never cl100k),
-then waits for JOB / SHUTDOWN flags. Each JOB is a batch of prompt_token_ids.
-Returns sampled token IDs and per-token logprobs so CISPO can be constructed
-without a second HF generate() pass.
+Reads session_dir/config.json, loads the model tokenizer (gpt-oss Harmony or
+Qwen3 chat), then waits for JOB / SHUTDOWN flags. Each JOB is a batch of
+prompt_token_ids. Returns sampled token IDs, decoded text, and per-token
+logprobs so CISPO can be constructed without a second HF generate() pass.
 """
 
 from __future__ import annotations
@@ -75,40 +75,46 @@ def main() -> int:
     session.mkdir(parents=True, exist_ok=True)
     cfg = json.loads((session / "config.json").read_text(encoding="utf-8"))
 
-    from trim.eval.harmony_runtime import CANONICAL_STOP_TOKEN_IDS, O200K_HARMONY
-    from trim.training.vllm_hybrid import (
-        assert_gptoss_tokenizer,
-        extract_sampled_logprobs,
+    from trim.eval.harmony_runtime import (
+        CANONICAL_STOP_TOKEN_IDS,
+        O200K_HARMONY,
     )
+    from trim.eval.model_tokenizer import (
+        FAMILY_GPTOSS,
+        QWEN3_CHAT,
+        assert_model_tokenizer,
+        patch_transformers_tokenizer_compat,
+    )
+    from trim.training.vllm_hybrid import extract_sampled_logprobs
 
-    stop_token_ids = [int(x) for x in (cfg.get("stop_token_ids") or CANONICAL_STOP_TOKEN_IDS)]
-    if stop_token_ids != list(CANONICAL_STOP_TOKEN_IDS):
-        raise SystemExit(
-            f"worker stop_token_ids={stop_token_ids} != {CANONICAL_STOP_TOKEN_IDS}"
-        )
     encoding = str(cfg.get("encoding") or "")
-    if encoding and encoding != O200K_HARMONY:
-        raise SystemExit(f"worker encoding={encoding} != {O200K_HARMONY}")
+    family = str(cfg.get("family") or "")
+    allowed = {O200K_HARMONY, QWEN3_CHAT, ""}
+    if encoding and encoding not in allowed:
+        raise SystemExit(f"worker encoding={encoding} is not supported")
+    if family == FAMILY_GPTOSS or encoding == O200K_HARMONY:
+        stop_token_ids = [int(x) for x in (cfg.get("stop_token_ids") or CANONICAL_STOP_TOKEN_IDS)]
+        if stop_token_ids != list(CANONICAL_STOP_TOKEN_IDS):
+            raise SystemExit(
+                f"worker stop_token_ids={stop_token_ids} != {CANONICAL_STOP_TOKEN_IDS}"
+            )
+    else:
+        stop_token_ids = [int(x) for x in (cfg.get("stop_token_ids") or [])]
 
     from transformers import AutoTokenizer
 
-    # vLLM 0.19 still reads the legacy Transformers tokenizer attribute,
-    # while Transformers 5's TokenizersBackend no longer exposes it.
-    # Restore the read-only compatibility view before vLLM initializes its
-    # tokenizer group; this does not alter token IDs or encoding semantics.
-    try:
-        from transformers import TokenizersBackend
-
-        if not hasattr(TokenizersBackend, "all_special_tokens_extended"):
-            TokenizersBackend.all_special_tokens_extended = property(
-                lambda self: list(self.all_special_tokens)
-            )
-    except ImportError:
-        pass
+    patch_transformers_tokenizer_compat()
 
     model_path = str(cfg["model_path"])
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-    audit = assert_gptoss_tokenizer(tokenizer, source=model_path)
+    audit = assert_model_tokenizer(tokenizer, source=model_path)
+    audit_family = str(audit.get("family") or "")
+    if family and audit_family and family != audit_family:
+        raise SystemExit(
+            f"worker config family={family} != tokenizer family={audit_family}. "
+            "gpt-oss Harmony IDs and Qwen3 chat IDs are not interchangeable."
+        )
+    stop_token_ids = [int(x) for x in (audit.get("stop_token_ids") or stop_token_ids)]
     (session / "tokenizer_audit.json").write_text(
         json.dumps(audit, indent=2) + "\n", encoding="utf-8"
     )
@@ -177,12 +183,17 @@ def main() -> int:
                 token_ids = _completion_token_ids(output)
                 raw_lp = getattr(output.outputs[0], "logprobs", None)
                 token_logprobs = extract_sampled_logprobs(token_ids, raw_lp)
+                try:
+                    text = tokenizer.decode(token_ids, skip_special_tokens=False)
+                except Exception:
+                    text = ""
                 rows.append(
                     {
                         "request_id": req.get("request_id"),
                         "token_ids": token_ids,
                         "token_logprobs": token_logprobs,
                         "finish_reason": getattr(output.outputs[0], "finish_reason", None),
+                        "text": str(text),
                     }
                 )
             (session / "result.json").write_text(

@@ -98,6 +98,7 @@ def test_sampled_logprob_extractor_reads_vllm_dict():
 def test_tokenizer_audit_accepts_gptoss_and_rejects_cl100k():
     audit = assert_gptoss_tokenizer(_GptOssTok(), source="/data/ppnm/models/gpt-oss-20b")
     assert audit["encoding"] == O200K_HARMONY
+    assert audit["family"] == "gpt-oss"
     assert audit["special_token_ids"]["<|call|>"] == 200012
     with pytest.raises(RuntimeError, match="cl100k"):
         assert_gptoss_tokenizer(_Cl100kTok(), source="cl100k_base")

@@ -558,7 +558,10 @@ def terminal_reward(st: dict[str, Any], *, query: str, gold_ids: list[str], vali
 def parse_generated_action(text: str, completion_ids: list[int] | None, enc) -> tuple[dict[str, Any], bool]:
     from trim.eval.harmony_runtime import parse_harmony_tool_call
 
-    parsed = parse_harmony_tool_call(text, completion_ids=completion_ids, enc=enc)
+    if enc is not None and hasattr(enc, "parse_tool_call"):
+        parsed = enc.parse_tool_call(text, completion_ids=completion_ids)
+    else:
+        parsed = parse_harmony_tool_call(text, completion_ids=completion_ids, enc=enc)
     name = parsed.tool_name
     legal = set(STUDENT_NATIVE_TOOLS) | set(HARNESS_G_STUDENT_NATIVE_TOOLS)
     if parsed.legal and name in legal:
@@ -586,8 +589,13 @@ def generate_harmony(backend, query: str, *, enc, max_new: int, sample: bool, se
         stop_ids_for_tool_actions,
     )
 
-    ids = list(prompt_ids or build_first_turn_prompt_ids(query, enc=enc))
-    stop_ids = stop_ids_for_tool_actions(enc)
+    if prompt_ids:
+        ids = list(prompt_ids)
+    elif enc is not None and hasattr(enc, "build_first_turn_prompt_ids"):
+        ids = enc.build_first_turn_prompt_ids(query)
+    else:
+        ids = build_first_turn_prompt_ids(query, enc=enc)
+    stop_ids = list(getattr(enc, "stop_token_ids", None) or stop_ids_for_tool_actions(enc))
     inp = torch.tensor([ids], device=backend._device)
     attn = torch.ones_like(inp)
     cfg = getattr(backend.model, "config", None)
@@ -669,10 +677,24 @@ def one_episode(
         with timed_section(timing, "harness"):
             if g:
                 pids = build_g_prompt_ids(query, wm_text(st), enc)
+            elif enc is not None and hasattr(enc, "build_first_turn_prompt_ids"):
+                if turn == 0:
+                    pids = enc.build_first_turn_prompt_ids(query)
+                else:
+                    pids = enc.build_continuation_prompt_ids(
+                        query,
+                        actions_obs=acts,
+                        wm_text=wm_text(st, auto_on=False),
+                    )
             elif turn == 0:
                 pids = build_first_turn_prompt_ids(query, enc=enc)
             else:
-                pids = build_continuation_prompt_ids(query, actions_obs=acts, wm_text=wm_text(st, auto_on=False), enc=enc)
+                pids = build_continuation_prompt_ids(
+                    query,
+                    actions_obs=acts,
+                    wm_text=wm_text(st, auto_on=False),
+                    enc=enc,
+                )
             pre = snap_from_state(qid, st, component_id, harness_mask=harness_mask)
             student_prefix = render_student_prompt(pre, component_id=component_id)
         if teacher_mode and component_id == "adaptive_rerank_instruction":
@@ -1355,7 +1377,7 @@ def run_four_cell(args: argparse.Namespace) -> dict[str, Any]:
 
 def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
     import torch
-    from trim.eval.harmony_runtime import load_harmony_enc
+    from trim.eval.model_tokenizer import load_model_encoding
     from trim.training.batched_env_rollout import rollout_queries_batched
     from trim.training.tinker_rl_opd_trainer import HybridLoopState
     from trim.training.vllm_hybrid import (
@@ -1433,7 +1455,7 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
         theta0_saved["n"] = True
         runtime.attach_hf(backend)
 
-    enc = load_harmony_enc()
+    enc = load_model_encoding(str(getattr(args, "base_model", None) or getattr(args, "model_name", None) or ""))
     chosen_cells = cells_for_mode(
         getattr(args, "training_mode", "four_cell"),
         train_only=train_only,

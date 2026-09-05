@@ -133,34 +133,160 @@ def _ensure_scope() -> None:
 # gpt-oss / Harness-1 Harmony. Never cl100k_base.
 O200K_HARMONY = "o200k_harmony"
 CANONICAL_STOP_TOKEN_IDS = [200012, 200002]  # <|call|>, <|return|> — not <|end|>
+HARMONY_START_ID = 200006  # <|start|>
+
+_ASCII_FALLBACK_PREFIX = (91, 82, 111, 108, 101, 46)  # "[Role."
 
 
-def load_harmony_enc():
-    _ensure_scope()
-    # Prefer the approved offline bundle when callers did not export paths.
-    bundle = Path("/opt/scape-projected-action/share/tiktoken-bundle")
-    if bundle.is_dir():
-        os.environ.setdefault("TIKTOKEN_ENCODINGS_BASE", str(bundle / "share/tiktoken"))
-        os.environ.setdefault("TIKTOKEN_RS_CACHE_DIR", str(bundle / "tiktoken_rs_cache"))
-        os.environ.setdefault("TIKTOKEN_CACHE_DIR", str(bundle / "tiktoken_cache"))
-    try:
-        from openai_harmony import HarmonyEncodingName, load_harmony_encoding
+def _configure_tiktoken_offline_paths(model_path: str | None = None) -> None:
+    """Point tiktoken-rs at a local o200k vocab so HarmonyGptOss can load offline."""
+    existing = os.environ.get("TIKTOKEN_ENCODINGS_BASE")
+    if existing and (Path(existing) / "o200k_base.tiktoken").is_file():
+        return
+    candidates: list[Path] = []
+    if existing:
+        candidates.append(Path(existing))
+    candidates.extend(
+        [
+            Path("/opt/scape-projected-action/share/tiktoken-bundle"),
+            Path("/tmp/tiktoken-bundle"),
+            REPO / "share" / "tiktoken-bundle",
+            REPO / "share" / "tiktoken",
+            Path("/mnt/songzijun/o200k_base.tiktoken"),
+        ]
+    )
+    if model_path:
+        mp = Path(model_path)
+        candidates.extend(
+            [
+                mp / "tiktoken",
+                mp.parent / "tiktoken",
+                mp.parent / "share" / "tiktoken",
+                mp.parent / "tiktoken-bundle",
+            ]
+        )
+    for cand in candidates:
+        if cand.is_file() and cand.name.endswith(".tiktoken"):
+            encodings = cand.parent
+            bundle = encodings.parent
+        elif cand.is_dir():
+            if (cand / "o200k_base.tiktoken").is_file():
+                encodings = cand
+                bundle = cand.parent
+            elif (cand / "share" / "tiktoken" / "o200k_base.tiktoken").is_file():
+                encodings = cand / "share" / "tiktoken"
+                bundle = cand
+            else:
+                continue
+        else:
+            continue
+        os.environ.setdefault("TIKTOKEN_ENCODINGS_BASE", str(encodings))
+        rs_cache = bundle / "tiktoken_rs_cache"
+        py_cache = bundle / "tiktoken_cache"
+        if rs_cache.is_dir():
+            os.environ.setdefault("TIKTOKEN_RS_CACHE_DIR", str(rs_cache))
+        if py_cache.is_dir():
+            os.environ.setdefault("TIKTOKEN_CACHE_DIR", str(py_cache))
+        return
 
-        enc = load_harmony_encoding(HarmonyEncodingName.HARMONY_GPT_OSS)
-    except Exception:
-        # The GPT-OSS tiktoken vocabulary is not always reachable in the
-        # approved offline runtime. Use the repository's deterministic local
-        # Harmony-compatible fallback rather than silently switching models.
-        from harness._local_harmony_fallback import _LocalHarmonyEncodingFallback
 
-        enc = _LocalHarmonyEncodingFallback()
+def _is_local_harmony_fallback(enc: Any) -> bool:
+    name = type(enc).__name__
+    module = str(getattr(type(enc), "__module__", "") or "")
+    return name == "_LocalHarmonyEncodingFallback" or "local_harmony_fallback" in module
+
+
+def prompt_ids_are_character_fallback(ids: Sequence[int]) -> bool:
+    """True when IDs are ``ord('[Role.SYSTEM]...')`` rather than o200k Harmony."""
+    tokens = [int(x) for x in ids]
+    if not tokens:
+        return False
+    ascii_n = sum(1 for t in tokens if t < 128)
+    return tuple(tokens[: len(_ASCII_FALLBACK_PREFIX)]) == _ASCII_FALLBACK_PREFIX or (
+        ascii_n / len(tokens) >= 0.75 and max(tokens) < 256
+    )
+
+
+def assert_o200k_harmony_token_ids(ids: Sequence[int], *, what: str = "prompt") -> list[int]:
+    """Refuse character-ordinal / cl100k Harmony fallback IDs before they reach vLLM."""
+    tokens = [int(x) for x in ids]
+    if not tokens:
+        raise RuntimeError(f"{what} is empty; gpt-oss Harmony prompt IDs are required")
+    if prompt_ids_are_character_fallback(tokens):
+        ascii_n = sum(1 for t in tokens if t < 128)
+        preview = tokens[:20]
+        raise RuntimeError(
+            f"{what} looks like the local Harmony character fallback "
+            f"(ascii_frac={ascii_n / len(tokens):.2f}, first20={preview}). "
+            "Those IDs are ord('[Role.SYSTEM]...') and are not o200k Harmony. "
+            "gpt-oss vLLM will then emit unparsable text and every tool becomes unknown. "
+            "Install openai-harmony + o200k_base.tiktoken, or encode with the gpt-oss "
+            "checkpoint tokenizer."
+        )
+    if tokens[0] != HARMONY_START_ID and HARMONY_START_ID not in tokens[:8]:
+        raise RuntimeError(
+            f"{what} is not a gpt-oss Harmony prompt: first20={tokens[:20]}. "
+            f"Expected <|start|>={HARMONY_START_ID}."
+        )
+    return tokens
+
+
+def _validate_harmony_encoding(enc: Any) -> None:
+    if _is_local_harmony_fallback(enc):
+        raise RuntimeError(
+            "Refusing _LocalHarmonyEncodingFallback for gpt-oss. That encoder emits "
+            "ASCII character IDs ([Role.SYSTEM]...) which vLLM interprets as o200k "
+            "tokens, so legal_action_rate collapses to 0."
+        )
     stops = [int(x) for x in enc.stop_tokens_for_assistant_actions()]
     if 200012 not in stops or 200002 not in stops:
         raise RuntimeError(
             f"Harmony encoder is not gpt-oss/{O200K_HARMONY}: stop_tokens={stops}. "
             "cl100k_base fallback is forbidden."
         )
-    return enc
+
+
+def load_harmony_enc(model_path: str | None = None):
+    _ensure_scope()
+    _configure_tiktoken_offline_paths(model_path)
+    rust_error: Exception | None = None
+    try:
+        from openai_harmony import HarmonyEncodingName, load_harmony_encoding
+
+        enc = load_harmony_encoding(HarmonyEncodingName.HARMONY_GPT_OSS)
+        _validate_harmony_encoding(enc)
+        return enc
+    except Exception as exc:  # noqa: BLE001
+        rust_error = exc
+    tokenizer_path = (
+        os.environ.get("TRIM_HARMONY_TOKENIZER")
+        or os.environ.get("TRIM_GPTOSS_TOKENIZER")
+        or model_path
+        or ""
+    )
+    if tokenizer_path:
+        try:
+            from trim.eval.harmony_hf_encoding import TokenizerHarmonyEncoding
+
+            enc = TokenizerHarmonyEncoding.from_pretrained(str(tokenizer_path))
+            _validate_harmony_encoding(enc)
+            return enc
+        except Exception as tok_exc:  # noqa: BLE001
+            raise RuntimeError(
+                "Failed to load HarmonyGptOss, and the gpt-oss checkpoint tokenizer "
+                f"at {tokenizer_path!r} could not be used either. The local "
+                "character/cl100k Harmony fallback is forbidden because it sends ASCII "
+                "token IDs to gpt-oss vLLM (all tools become unknown). "
+                f"openai_harmony error: {rust_error}. tokenizer error: {tok_exc}"
+            ) from tok_exc
+    raise RuntimeError(
+        "Failed to load openai_harmony HarmonyGptOss encoding. "
+        "The local character/cl100k fallback is forbidden: it produced ASCII prompt "
+        "IDs ([Role.SYSTEM]...) and 100% unknown tools on gpt-oss eval. "
+        f"openai_harmony error: {rust_error}. "
+        "Pass the gpt-oss model path, set TRIM_HARMONY_TOKENIZER, or install "
+        "o200k_base.tiktoken (TIKTOKEN_ENCODINGS_BASE)."
+    ) from rust_error
 
 
 def stop_ids_for_tool_actions(enc=None) -> list[int]:
@@ -170,6 +296,8 @@ def stop_ids_for_tool_actions(enc=None) -> list[int]:
 
 
 def decode_ids(enc, ids: Sequence[int]) -> str:
+    if enc is not None and hasattr(enc, "decode_tokens"):
+        return enc.decode_tokens(ids)
     try:
         text = enc.decode_utf8(list(ids))
     except Exception:
@@ -384,7 +512,10 @@ def build_first_turn_prompt_ids(query: str, enc=None) -> list[int]:
 
     enc = enc or load_harmony_enc()
     conv = build_context(get_system_prompt(query), None, [], [])
-    return [int(x) for x in enc.render_conversation_for_completion(conv, Role.ASSISTANT)]
+    return assert_o200k_harmony_token_ids(
+        enc.render_conversation_for_completion(conv, Role.ASSISTANT),
+        what="first-turn Harmony prompt",
+    )
 
 
 def build_continuation_prompt_ids(
@@ -403,7 +534,10 @@ def build_continuation_prompt_ids(
     actions = [a for a, _ in actions_obs]
     obs = [o for _, o in actions_obs]
     conv = build_context(get_system_prompt(query), wm_text, actions, obs)
-    return [int(x) for x in enc.render_conversation_for_completion(conv, Role.ASSISTANT)]
+    return assert_o200k_harmony_token_ids(
+        enc.render_conversation_for_completion(conv, Role.ASSISTANT),
+        what="continuation Harmony prompt",
+    )
 
 
 def make_action(tool_name: str, params: dict[str, Any], reasoning: str | None = None):

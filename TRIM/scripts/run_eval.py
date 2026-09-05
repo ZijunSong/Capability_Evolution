@@ -174,7 +174,7 @@ def main(argv: list[str] | None = None) -> int:
 
     from trim.eval.browsecomp_retrieval import open_retrieval
     from trim.eval.eval_parallel import parse_gpu_ids, run_replicated_eval, write_jsonl
-    from trim.eval.harmony_runtime import load_harmony_enc
+    from trim.eval.model_tokenizer import load_model_encoding
     from trim.training.four_cell_runtime import eval_closed_loop
     from trim.training.gpu_keepalive import acquire_keepalive, release_keepalive
     from trim.training.vllm_hybrid import (
@@ -246,7 +246,7 @@ def main(argv: list[str] | None = None) -> int:
                 write_jsonl(cell_dir / "PER_QUERY.jsonl", traces)
                 summaries.append(ev)
         elif args.rollout_backend == "vllm":
-            enc = load_harmony_enc()
+            enc = load_model_encoding(str(spec.base_model))
             searcher = open_retrieval(formal=True)
             runtime = SchemeARuntime()
             for i, (cell, path) in enumerate(adapter_map.items()):
@@ -300,7 +300,7 @@ def main(argv: list[str] | None = None) -> int:
             from trim.training.hf_rl_opd_client import restore_trainable, snapshot_trainable
             from trim.training.hf_tool_opd import ScapeHFToolOPD
 
-            enc = load_harmony_enc()
+            enc = load_model_encoding(str(spec.base_model))
             searcher = open_retrieval(formal=True)
             if keepalive is not None:
                 keepalive.pause()

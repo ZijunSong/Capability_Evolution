@@ -88,6 +88,23 @@ def build_prompt_ids(query: str, wm_text: str, enc) -> list[int]:
     prompt = render_prompt(query, wm_text)
     if enc is None:
         return []
+    family = str(getattr(enc, "family", "") or "")
+    tokenizer = getattr(enc, "tokenizer", None)
+    if family == "qwen3" and tokenizer is not None:
+        try:
+            raw = tokenizer.apply_chat_template(
+                [{"role": "user", "content": prompt}],
+                add_generation_prompt=True,
+                tokenize=True,
+            )
+        except TypeError:
+            raw = tokenizer.apply_chat_template(
+                [{"role": "user", "content": prompt}],
+                add_generation_prompt=True,
+            )
+        from trim.eval.model_tokenizer import _to_token_ids, assert_qwen3_prompt_ids
+
+        return assert_qwen3_prompt_ids(_to_token_ids(raw), what="Harness-G Qwen3 prompt")
     encode = getattr(enc, "encode", None)
     if encode is None:
         return []

@@ -18,7 +18,7 @@ def _run_vllm(cfg: dict, rows: list[dict], harness_mask: dict) -> tuple[dict, li
     import threading
 
     from trim.eval.browsecomp_retrieval import open_retrieval
-    from trim.eval.harmony_runtime import load_harmony_enc
+    from trim.eval.model_tokenizer import load_model_encoding
     from trim.training.gpu_keepalive import GpuKeepAlive
     from trim.training.vllm_hybrid import SchemeARuntime, VLLMGenerateClient
 
@@ -26,10 +26,10 @@ def _run_vllm(cfg: dict, rows: list[dict], harness_mask: dict) -> tuple[dict, li
     errors: list[BaseException] = []
 
     def cpu_prep() -> None:
-        # Harmony only. Pyserini/JNI must not start on this short-lived thread:
+        # Tokenizer/Harmony only. Pyserini/JNI must not start on this short-lived thread:
         # LuceneSearcher.search() then silently returns empty hits.
         try:
-            holder["enc"] = load_harmony_enc()
+            holder["enc"] = load_model_encoding(str(cfg.get("model_path") or ""))
         except BaseException as exc:
             errors.append(exc)
 
@@ -79,7 +79,7 @@ def _run_hf(cfg: dict, rows: list[dict], harness_mask: dict) -> tuple[dict, list
 
     from trim.eval.adapter_reload_audit import remap_lora_state
     from trim.eval.browsecomp_retrieval import open_retrieval
-    from trim.eval.harmony_runtime import load_harmony_enc
+    from trim.eval.model_tokenizer import load_model_encoding
     from trim.training.gpu_keepalive import GpuKeepAlive
     from trim.training.hf_rl_opd_client import restore_trainable, snapshot_trainable
     from trim.training.hf_tool_opd import ScapeHFToolOPD
@@ -88,7 +88,7 @@ def _run_hf(cfg: dict, rows: list[dict], harness_mask: dict) -> tuple[dict, list
     keepalive = GpuKeepAlive()
     keepalive.start()
     try:
-        enc = load_harmony_enc()
+        enc = load_model_encoding(str(cfg.get("model_path") or ""))
         searcher = open_retrieval(formal=True)
         keepalive.pause()
         backend = ScapeHFToolOPD(model_path=str(cfg["model_path"]), device_map="cuda:0", use_lora=True)

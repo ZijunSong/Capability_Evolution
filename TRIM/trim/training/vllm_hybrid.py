@@ -141,6 +141,7 @@ def assert_gptoss_tokenizer(tokenizer: Any, *, source: str) -> dict[str, Any]:
             )
     return {
         "encoding": O200K_HARMONY,
+        "family": "gpt-oss",
         "source": source,
         "vocab_size": vocab_size,
         "effective_vocab_size": effective_vocab_size,
@@ -395,6 +396,9 @@ class VLLMGenerateClient:
         return self.session_dir / "vllm_worker.log"
 
     def start(self) -> None:
+        from trim.eval.model_tokenizer import encoding_config_for_model
+
+        enc_cfg = encoding_config_for_model(self.model_path)
         cfg = {
             "model_path": self.model_path,
             "lora_path": self.lora_path,
@@ -402,8 +406,9 @@ class VLLMGenerateClient:
             "max_model_len": self.max_model_len,
             "gpu_memory_utilization": self.gpu_memory_utilization,
             "enforce_eager": self.enforce_eager,
-            "stop_token_ids": list(CANONICAL_STOP_TOKEN_IDS),
-            "encoding": O200K_HARMONY,
+            "stop_token_ids": list(enc_cfg["stop_token_ids"]),
+            "encoding": enc_cfg["encoding"],
+            "family": enc_cfg["family"],
             "max_num_seqs": self.max_num_seqs,
         }
         (self.session_dir / "config.json").write_text(
@@ -441,25 +446,35 @@ class VLLMGenerateClient:
     def generate_batch(self, requests: Sequence[GenerateRequest]) -> list[GenerateResult]:
         if not self.alive:
             raise RuntimeError("vLLM worker is not running")
-        payload = {
-            "cmd": "generate",
-            "requests": [
+        from trim.eval.model_tokenizer import assert_family_prompt_ids, encoding_config_for_model
+
+        audit = self.tokenizer_audit or {}
+        enc_cfg = encoding_config_for_model(self.model_path)
+        family = str(audit.get("family") or enc_cfg["family"])
+        prompt_rows = []
+        for req in requests:
+            prompt_ids = fit_prompt_ids_to_context(
+                req.prompt_token_ids,
+                max_model_len=self.max_model_len,
+                max_new_tokens=req.max_new_tokens,
+            )
+            prompt_ids = assert_family_prompt_ids(
+                prompt_ids,
+                family=family,
+                what=f"vLLM prompt {req.request_id}",
+            )
+            prompt_rows.append(
                 asdict(
                     GenerateRequest(
                         request_id=req.request_id,
-                        prompt_token_ids=fit_prompt_ids_to_context(
-                            req.prompt_token_ids,
-                            max_model_len=self.max_model_len,
-                            max_new_tokens=req.max_new_tokens,
-                        ),
+                        prompt_token_ids=prompt_ids,
                         max_new_tokens=req.max_new_tokens,
                         temperature=req.temperature,
                         seed=req.seed,
                     )
                 )
-                for req in requests
-            ],
-        }
+            )
+        payload = {"cmd": "generate", "requests": prompt_rows}
         (self.session_dir / "job.json").write_text(
             json.dumps(payload) + "\n", encoding="utf-8"
         )
@@ -471,19 +486,29 @@ class VLLMGenerateClient:
         blob = json.loads((self.session_dir / "result.json").read_text(encoding="utf-8"))
         if blob.get("error"):
             raise RuntimeError(f"vLLM generate failed: {blob['error']}\n{_tail(self.log_path)}")
-        from trim.eval.harmony_runtime import load_harmony_enc
-
-        enc = load_harmony_enc()
+        decoder = self._decoder()
         by_id = {str(row["request_id"]): row for row in blob.get("outputs") or []}
         ordered: list[GenerateResult] = []
         for req in requests:
             row = by_id.get(req.request_id)
             if row is None:
                 raise RuntimeError(f"vLLM missing output for request_id={req.request_id}")
-            ordered.append(result_from_worker_row(row, enc=enc))
+            result = result_from_worker_row(row, enc=decoder)
+            if row.get("text"):
+                result.text = str(row["text"])
+            ordered.append(result)
         self.n_generate_calls += 1
         self.n_prompts += len(requests)
         return ordered
+
+    def _decoder(self):
+        enc = getattr(self, "_model_enc", None)
+        if enc is None:
+            from trim.eval.model_tokenizer import load_model_encoding
+
+            enc = load_model_encoding(self.model_path)
+            self._model_enc = enc
+        return enc
 
     def close(self) -> None:
         proc = self.process
@@ -535,10 +560,17 @@ class HFGenerateClient:
         self.logprob_provenance = "hf_teacher_forced" if logprob_from_hf else "none"
 
     def generate_batch(self, requests: Sequence[GenerateRequest]) -> list[GenerateResult]:
+        from trim.eval.model_tokenizer import assert_family_prompt_ids
         from trim.training.four_cell_runtime import generate_harmony
 
+        family = str(getattr(self.enc, "family", "") or "")
         out: list[GenerateResult] = []
         for req in requests:
+            prompt_ids = assert_family_prompt_ids(
+                req.prompt_token_ids,
+                family=family,
+                what=f"HF prompt {req.request_id}",
+            )
             gen = generate_harmony(
                 self.backend,
                 "",
@@ -546,7 +578,7 @@ class HFGenerateClient:
                 max_new=req.max_new_tokens,
                 sample=req.temperature > 0,
                 seed=req.seed,
-                prompt_ids=list(req.prompt_token_ids),
+                prompt_ids=list(prompt_ids),
             )
             token_ids = list(gen["action_ids"])
             logprobs: list[float] = []
@@ -554,7 +586,6 @@ class HFGenerateClient:
             if self.logprob_from_hf and token_ids:
                 import torch
 
-                prompt_ids = list(req.prompt_token_ids)
                 old_prompt = prompt_ids[-384:] if len(prompt_ids) > 384 else prompt_ids
                 old_act = token_ids[:CISPO_MAX_ACTION_TOKENS]
                 with torch.no_grad():

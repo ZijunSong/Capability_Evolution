@@ -81,12 +81,17 @@ def _build_prompt_ids(ep: LiveEpisode, enc) -> list[int]:
         return build_g_prompt_ids(query, wm_text(ep.st), enc)
     from trim.eval.local_search_env import wm_text
 
+    wm = wm_text(ep.st, auto_on=False)
+    if enc is not None and hasattr(enc, "build_first_turn_prompt_ids"):
+        if not ep.acts:
+            return enc.build_first_turn_prompt_ids(query)
+        return enc.build_continuation_prompt_ids(query, actions_obs=ep.acts, wm_text=wm)
     if not ep.acts:
         return build_first_turn_prompt_ids(query, enc=enc)
     return build_continuation_prompt_ids(
         query,
         actions_obs=ep.acts,
-        wm_text=wm_text(ep.st, auto_on=False),
+        wm_text=wm,
         enc=enc,
     )
 
