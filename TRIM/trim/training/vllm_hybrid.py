@@ -18,7 +18,12 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Sequence
 
-from trim.eval.harmony_runtime import CANONICAL_STOP_TOKEN_IDS, O200K_HARMONY, decode_ids
+from trim.eval.harmony_runtime import (
+    CANONICAL_STOP_TOKEN_IDS,
+    O200K_HARMONY,
+    decode_ids,
+    fit_prompt_ids_to_context,
+)
 from trim.training.hf_rl_opd_client import CISPO_MAX_ACTION_TOKENS
 
 WORKER_MODULE = "trim.training.vllm_rollout_worker"
@@ -438,7 +443,22 @@ class VLLMGenerateClient:
             raise RuntimeError("vLLM worker is not running")
         payload = {
             "cmd": "generate",
-            "requests": [asdict(r) for r in requests],
+            "requests": [
+                asdict(
+                    GenerateRequest(
+                        request_id=req.request_id,
+                        prompt_token_ids=fit_prompt_ids_to_context(
+                            req.prompt_token_ids,
+                            max_model_len=self.max_model_len,
+                            max_new_tokens=req.max_new_tokens,
+                        ),
+                        max_new_tokens=req.max_new_tokens,
+                        temperature=req.temperature,
+                        seed=req.seed,
+                    )
+                )
+                for req in requests
+            ],
         }
         (self.session_dir / "job.json").write_text(
             json.dumps(payload) + "\n", encoding="utf-8"

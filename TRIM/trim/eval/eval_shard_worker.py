@@ -26,16 +26,17 @@ def _run_vllm(cfg: dict, rows: list[dict], harness_mask: dict) -> tuple[dict, li
     errors: list[BaseException] = []
 
     def cpu_prep() -> None:
+        # Harmony only. Pyserini/JNI must not start on this short-lived thread:
+        # LuceneSearcher.search() then silently returns empty hits.
         try:
             holder["enc"] = load_harmony_enc()
-            holder["searcher"] = open_retrieval(formal=True)
         except BaseException as exc:
             errors.append(exc)
 
     keepalive = GpuKeepAlive()
     keepalive.start()
-    # Overlap Lucene/Harmony load with vLLM startup so this GPU is not empty
-    # while the parent would otherwise wait on CPU-only retrieval.
+    # Overlap Harmony load with vLLM startup. Lucene stays on the main thread
+    # after the vLLM worker process is spawned.
     prep = threading.Thread(target=cpu_prep, name="trim-eval-prep", daemon=True)
     prep.start()
     out = Path(cfg["out"])
@@ -54,6 +55,7 @@ def _run_vllm(cfg: dict, rows: list[dict], harness_mask: dict) -> tuple[dict, li
     runtime.attach_vllm(client)
     try:
         client.start()
+        searcher = open_retrieval(formal=True)
         prep.join()
         if errors:
             raise errors[0]
@@ -62,7 +64,7 @@ def _run_vllm(cfg: dict, rows: list[dict], harness_mask: dict) -> tuple[dict, li
             rows,
             harness_mask=harness_mask,
             enc=holder["enc"],
-            searcher=holder["searcher"],
+            searcher=searcher,
             generate_batch=client.generate_batch,
             backend=None,
         )

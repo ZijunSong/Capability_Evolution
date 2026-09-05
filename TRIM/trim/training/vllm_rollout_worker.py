@@ -156,7 +156,17 @@ def main() -> int:
             job_flag.unlink()
         try:
             requests = list(job.get("requests") or [])
-            prompts = [_tokens_prompt([int(x) for x in (r.get("prompt_token_ids") or [])]) for r in requests]
+            max_model_len = int(cfg.get("max_model_len") or 8192)
+            from trim.eval.harmony_runtime import fit_prompt_ids_to_context
+
+            prompts = []
+            for r in requests:
+                ids = fit_prompt_ids_to_context(
+                    [int(x) for x in (r.get("prompt_token_ids") or [])],
+                    max_model_len=max_model_len,
+                    max_new_tokens=int(r.get("max_new_tokens") or 1),
+                )
+                prompts.append(_tokens_prompt(ids))
             params = [_sampling_params(r, stop_token_ids) for r in requests]
             generate_kwargs: dict[str, Any] = {}
             if lora_request is not None:

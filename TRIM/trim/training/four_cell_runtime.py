@@ -469,6 +469,11 @@ def doc_store_for_row(
             store = seeded
         if store:
             return remember(store)
+        # Live Lucene with 0 hits is a retrieval failure, not a cue to inject
+        # synthetic gold/noise docs. Those never enter the episode pool and
+        # hide empty-search bugs in official eval.
+        if getattr(searcher, "name", "") == "pyserini_lucene":
+            return remember({})
     if row.get("seed_doc_store"):
         return remember(dict(row["seed_doc_store"]))
     return remember(labeled_doc_store(row))
@@ -1013,7 +1018,7 @@ def eval_closed_loop(
         )
         if "compressed_teacher_view" in prefix or "VERIFY_RESULT_SECRET" in prefix:
             leak += 1
-        search_q = str(stats.get("search_query") or row["query"])
+        search_q = str(row.get("query") or "")
         sm = search_metrics(searcher, search_q, list(row.get("evidence_docids") or [])) if searcher is not None else {}
         from trim.eval.harness1_metrics import trace_fields
 

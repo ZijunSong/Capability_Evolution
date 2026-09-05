@@ -193,3 +193,21 @@ def test_doc_store_for_row_unit_cache_and_k_invalidation():
     c = doc_store_for_row(row, searcher, k=24)
     assert searcher.n == 2
     assert "k=24" in c["d1"]["text"]
+
+
+def test_doc_store_for_row_live_lucene_empty_does_not_synthesize_gold():
+    from trim.training.four_cell_runtime import doc_store_for_row, labeled_doc_store
+
+    class EmptyLucene:
+        name = "pyserini_lucene"
+
+        def search(self, query, k=5):
+            del query, k
+            return []
+
+    row = {"query_id": "q", "query": "apple 10-k", "gold_docids": ["15367"]}
+    store = doc_store_for_row(row, EmptyLucene(), k=12)
+    assert store == {}
+    synthetic = labeled_doc_store(row)
+    assert "15367" in synthetic
+    assert "15367" not in store

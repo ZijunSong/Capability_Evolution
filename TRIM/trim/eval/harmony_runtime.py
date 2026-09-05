@@ -48,6 +48,75 @@ _JSON_AFTER_TO_RE = re.compile(
     r"to=(?:functions\.)?[A-Za-z_][A-Za-z0-9_]*[^\{]{0,200}(?P<body>\{.*\})",
     re.DOTALL,
 )
+_CTRL_TOKEN_RE = re.compile(r"<\|[^|>]+\|>")
+_IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_CHANNEL_LEAK_RE = re.compile(
+    r"(?:commentary|analysis|channel|constrain|json|assistant|functions|"
+    r"message|call|start|end|return)+",
+    re.I,
+)
+_TRAILING_CHANNEL_RE = re.compile(
+    r"(?:commentary|analysis|channel|constrain|json|assistant|functions|"
+    r"message|call|start|end|return)+$",
+    re.I,
+)
+
+
+def _edit_distance(a: str, b: str) -> int:
+    if a == b:
+        return 0
+    if abs(len(a) - len(b)) > 2:
+        return 99
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
+        prev = cur
+    return prev[-1]
+
+
+def _schema_tool_from_token(token: str) -> str | None:
+    if not token:
+        return None
+    if token in SCHEMA_TOOLS:
+        return token
+    lowered = token.lower()
+    if lowered in SCHEMA_TOOLS:
+        return lowered
+    for tool in sorted(SCHEMA_TOOLS, key=len, reverse=True):
+        if not lowered.startswith(tool.lower()):
+            continue
+        rest_norm = re.sub(r"[^A-Za-z0-9]+", "", token[len(tool) :]).lower()
+        if rest_norm == "" or _CHANNEL_LEAK_RE.fullmatch(rest_norm):
+            return tool
+    hits = [tool for tool in SCHEMA_TOOLS if _edit_distance(lowered, tool) <= 1]
+    if len(hits) == 1:
+        return hits[0]
+    return None
+
+
+def _canonicalize_tool_name(name: str | None) -> str | None:
+    """Recover a schema tool when Harmony channel tokens leak into the recipient.
+
+    gpt-oss often emits `to=functions.curate?commentary` instead of
+    `to=functions.curate<|channel|>commentary`. Keep true unknown names intact.
+    """
+    if name is None:
+        return None
+    raw = str(name).strip()
+    if not raw:
+        return None
+    raw = _CTRL_TOKEN_RE.sub("", raw).replace("functions.", "").strip()
+    ident_m = _IDENT_RE.match(raw)
+    ident = ident_m.group(0) if ident_m else ""
+    for token in (raw, ident, _TRAILING_CHANNEL_RE.sub("", ident or raw)):
+        hit = _schema_tool_from_token(token)
+        if hit:
+            return hit
+    if ident in ("functions", "None", "none"):
+        return None
+    return ident or raw
 
 
 def _ensure_scope() -> None:
@@ -201,6 +270,7 @@ def parse_harmony_tool_call(
                     m = _TO_RE.search(recipient)
                     if m:
                         name = m.group("name")
+                name = _canonicalize_tool_name(name)
                 if name in ("functions", "None", "none"):
                     name = None
                 if name and channel in ("commentary", "analysis", "") and (
@@ -225,7 +295,7 @@ def parse_harmony_tool_call(
         harmony_err = None
 
     m = _TO_RE.search(text)
-    name = m.group("name") if m else None
+    name = _canonicalize_tool_name(m.group("name") if m else None)
     if name in ("functions", "None", "none"):
         name = None
     body = None
@@ -281,6 +351,32 @@ def format_aware_char_mask(text: str) -> list[bool]:
     return mask
 
 
+def recent_actions_obs(actions_obs: list[tuple[Any, Any]], *, keep: int = 12) -> list[tuple[Any, Any]]:
+    """Keep the latest tool-call / observation pairs so prompts stay in context."""
+    if keep <= 0 or len(actions_obs) <= keep:
+        return list(actions_obs)
+    return list(actions_obs[-int(keep) :])
+
+
+def fit_prompt_ids_to_context(
+    ids: list[int] | tuple[int, ...],
+    *,
+    max_model_len: int,
+    max_new_tokens: int = 1,
+    keep_prefix: int = 4096,
+) -> list[int]:
+    """Drop the middle of an overlong Harmony prompt; keep system prefix + recent tail."""
+    tokens = [int(x) for x in ids]
+    budget = max(1, int(max_model_len) - max(1, int(max_new_tokens)))
+    if len(tokens) <= budget:
+        return tokens
+    prefix = min(max(0, int(keep_prefix)), budget // 3)
+    tail = budget - prefix
+    if prefix <= 0 or tail <= 0:
+        return tokens[-budget:]
+    return tokens[:prefix] + tokens[-tail:]
+
+
 def build_first_turn_prompt_ids(query: str, enc=None) -> list[int]:
     _ensure_scope()
     from openai_harmony import Role
@@ -303,6 +399,7 @@ def build_continuation_prompt_ids(
     from harness.ultra_core import build_context, get_system_prompt
 
     enc = enc or load_harmony_enc()
+    actions_obs = recent_actions_obs(actions_obs, keep=12)
     actions = [a for a, _ in actions_obs]
     obs = [o for _, o in actions_obs]
     conv = build_context(get_system_prompt(query), wm_text, actions, obs)

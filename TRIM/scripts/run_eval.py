@@ -132,6 +132,15 @@ def main(argv: list[str] | None = None) -> int:
         rows, pool_meta = load_bcplus_830_full()
     else:
         _train, rows, pool_meta = load_bcplus_830_split()
+        pool_meta = dict(pool_meta)
+        pool_meta.update(
+            {
+                "query_count": len(rows),
+                "eval_count": len(rows),
+                "primary_eval": score_split,
+                "score_split": score_split,
+            }
+        )
     audits = []
     for cell, path in adapter_map.items():
         if path:

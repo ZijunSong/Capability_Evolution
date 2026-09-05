@@ -114,13 +114,18 @@ def _apply_generation(
     ep.actions.append(action)
     ep.names.append(str(action.get("name")))
     with timed_section(ep.timing, "harness"):
-        ep.st, obs, _ok = execute_tool(
-            ep.st,
-            action.get("name") if valid else None,
-            action.get("arguments"),
-            searcher=searcher,
-            search_k=search_k,
-        )
+        try:
+            ep.st, obs, _ok = execute_tool(
+                ep.st,
+                action.get("name") if valid else None,
+                action.get("arguments"),
+                searcher=searcher,
+                search_k=search_k,
+            )
+        except Exception as exc:  # noqa: BLE001
+            ep.st["invalid_tools"] = int(ep.st.get("invalid_tools") or 0) + 1
+            obs = f"ERROR: tool failed ({type(exc).__name__})."
+            _ok = False
         if valid:
             try:
                 ep.acts.append((make_action(action["name"], action.get("arguments") or {}), make_observation(obs)))
@@ -531,7 +536,7 @@ def traces_from_groups(
                 leak += 1
             elif "compressed_teacher_view" in prefix or "VERIFY_RESULT_SECRET" in prefix:
                 leak += 1
-        search_q = str(stats.get("search_query") or row["query"])
+        search_q = str(row.get("query") or "")
         sm = search_metrics(searcher, search_q, list(row.get("evidence_docids") or [])) if searcher is not None else {}
         traces.append(
             {

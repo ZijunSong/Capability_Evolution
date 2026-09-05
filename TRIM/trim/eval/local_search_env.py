@@ -82,9 +82,15 @@ def apply_auto_populate(state: dict[str, Any], *, top_k: int = 8) -> dict[str, A
     return st
 
 
+POOL_DISPLAY_FULL = 50
+POOL_DISPLAY_COMPACT = 30
+
+
 def wm_text(state: dict[str, Any], *, auto_on: bool) -> str:
     curated = state.get("curated") or {}
     pool = state.get("pool") or {}
+    curated_set = set(curated)
+    uncurated = [did for did in pool if did not in curated_set]
     lines = [
         "[Working Memory]",
         f"step={state.get('step', 0)}",
@@ -96,17 +102,126 @@ def wm_text(state: dict[str, Any], *, auto_on: bool) -> str:
         f"n_curated={len(curated)} n_pool={len(pool)}",
         "curated:",
     ]
-    for did, rec in list(curated.items())[:12]:
-        snippet = re.sub(r"\s+", " ", _doc_text(rec))[:180]
-        imp = (state.get("importance") or {}).get(did)
-        lines.append(f"  - {did} importance={imp}: {snippet}")
-    lines.append("pool:")
-    for did, rec in list(pool.items())[:12]:
-        snippet = re.sub(r"\s+", " ", _doc_text(rec))[:120]
-        lines.append(f"  - {did}: {snippet}")
+    if curated:
+        for did, rec in list(curated.items())[:12]:
+            snippet = re.sub(r"\s+", " ", _doc_text(rec))[:180]
+            imp = (state.get("importance") or {}).get(did)
+            lines.append(f"  - {did} importance={imp}: {snippet}")
+    else:
+        lines.append("  (empty -- use curate tool to add relevant docs)")
+    lines.append(
+        f"Document Pool: {len(pool)} docs total, {len(uncurated)} uncurated"
+    )
+    if uncurated:
+        recent = list(reversed(uncurated[-POOL_DISPLAY_FULL:]))
+        for did in recent:
+            snippet = re.sub(r"\s+", " ", _doc_text(pool.get(did)))[:120]
+            lines.append(f"  [ ] {did}: {snippet}")
+        hidden = len(uncurated) - len(recent)
+        if hidden > 0:
+            older = uncurated[:hidden]
+            id_str = ", ".join(str(x) for x in older[:POOL_DISPLAY_COMPACT])
+            if hidden > POOL_DISPLAY_COMPACT:
+                id_str += f" (+{hidden - POOL_DISPLAY_COMPACT} more)"
+            lines.append(f"  Earlier uncurated ({hidden}): {id_str}")
     hist = state.get("tool_history") or []
     lines.append("tool_history: " + ", ".join(str(h.get("name")) for h in hist[-8:]))
     return "\n".join(lines)
+
+
+def _harness_status(state: dict[str, Any], name: str) -> str:
+    """Base Harness-1 observation footer (not a v8d component)."""
+    if name == "end_search":
+        return ""
+    names = [str(h.get("name")) for h in (state.get("tool_history") or [])] + [str(name)]
+    n_pool = len(state.get("pool") or {})
+    n_curated = len(state.get("curated") or {})
+    step = int(state.get("step") or 0)
+    turns_since_curate = 0
+    for item in reversed(names):
+        if item == "curate":
+            break
+        turns_since_curate += 1
+    is_search = name in {"search_corpus", "grep_corpus", "fan_out_search"}
+    lines: list[str] = []
+    if n_curated == 0:
+        lines.append(
+            f"[WARN] Curated set is EMPTY (0 docs). You have {n_pool} docs in your pool "
+            "— curate ALL promising ones now."
+        )
+    if is_search:
+        lines.append(
+            "[ACTION REQUIRED] You just searched — now curate ALL plausibly relevant "
+            "docs before your next search."
+        )
+    if turns_since_curate >= 2 and n_pool > 0:
+        lines.append(
+            f"[WARN] {turns_since_curate} consecutive non-curate turns. "
+            "You MUST curate before your next search."
+        )
+    if n_curated == 0 and n_pool >= 3:
+        lines.append("[NEXT] curate promising docs from your pool.")
+    elif is_search:
+        lines.append("[NEXT] curate ALL relevant docs from these results NOW.")
+    if n_curated > 0 and step >= 28:
+        lines.append(
+            "[TIP] If the curated set answers the question, call end_search."
+        )
+    return "\n".join(lines)
+
+
+_SEARCH_QUERY_KEYS = ("query", "q", "text", "search_query", "keywords")
+
+
+def _as_str_list(value: Any, *, limit: int | None = None) -> list[str]:
+    if value is None or isinstance(value, bool):
+        return []
+    if isinstance(value, (list, tuple, set)):
+        items = list(value)
+    elif isinstance(value, dict):
+        items = list(value.values())
+    else:
+        items = [value]
+    out: list[str] = []
+    for item in items:
+        if isinstance(item, (list, dict, bool)) or item is None:
+            continue
+        text = str(item).strip()
+        if not text:
+            continue
+        out.append(text)
+        if limit is not None and len(out) >= limit:
+            break
+    return out
+
+
+def _tool_search_queries(name: str, args: dict[str, Any], fallback: str) -> list[str]:
+    raw: list[str] = []
+    if name == "fan_out_search":
+        raw.extend(_as_str_list(args.get("queries"), limit=8))
+        extra = args.get("query") or args.get("q")
+        if extra:
+            raw.append(str(extra))
+    elif name == "grep_corpus":
+        raw.append(str(args.get("pattern") or args.get("query") or args.get("q") or ""))
+    else:
+        q = ""
+        for key in _SEARCH_QUERY_KEYS:
+            if args.get(key):
+                q = str(args.get(key))
+                break
+        raw.append(q)
+    cleaned = [item.strip() for item in raw if str(item or "").strip()]
+    fb = str(fallback or "").strip()
+    return cleaned or ([fb] if fb else [])
+
+
+def _merge_hit(hits_all: dict[str, tuple[str, float]], did: str, text: str, score: float) -> None:
+    if not did:
+        return
+    prev = hits_all.get(did)
+    if prev is None or score > prev[1]:
+        hits_all[did] = (text, score)
 
 
 def execute_tool(
@@ -148,18 +263,11 @@ def execute_tool(
         st["n_search_calls"] = int(state.get("n_search_calls") or 0) + 1
         st["search_count"] = int(state.get("search_count") or 0) + 1
         st["first_search_pending"] = False
-        queries = []
-        if name == "fan_out_search":
-            queries = list(args.get("queries") or [])[:8]
-        elif name == "grep_corpus":
-            queries = [str(args.get("pattern") or args.get("query") or "")]
-        else:
-            queries = [str(args.get("query") or "")]
+        queries = _tool_search_queries(name, args, str(state.get("query") or ""))
         hits_all: dict[str, tuple[str, float]] = {}
         live = searcher is not None and getattr(searcher, "name", "none") != "none"
         for q in queries:
-            if not str(q or "").strip():
-                continue
+            got_live = False
             if live:
                 for hit in searcher.search(str(q), int(search_k)):
                     did = str(getattr(hit, "docid", "") or "")
@@ -167,14 +275,11 @@ def execute_tool(
                     score = float(getattr(hit, "score", 0.0) or 0.0)
                     if not did:
                         continue
-                    prev = hits_all.get(did)
-                    if prev is None or score > prev[1]:
-                        hits_all[did] = (text, score)
-            else:
+                    _merge_hit(hits_all, did, text, score)
+                    got_live = True
+            if not got_live:
                 for did, text, score in rank_docs(q, store, k=int(search_k)):
-                    prev = hits_all.get(did)
-                    if prev is None or score > prev[1]:
-                        hits_all[did] = (text, score)
+                    _merge_hit(hits_all, str(did), text, float(score))
         ranked = sorted(hits_all.items(), key=lambda item: -item[1][1])
         for did, (text, score) in ranked:
             rec = {"id": did, "text": text[:4000], "score": score}
@@ -187,20 +292,17 @@ def execute_tool(
         rec = store.get(did) or st["pool"].get(did) or st["curated"].get(did)
         obs = f"Document {did}:\n{_doc_text(rec)[:4000]}" if rec is not None else f"Document {did} not found."
     elif name == "review_docs":
-        ids = list(args.get("doc_ids") or [])[:8]
+        ids = _as_str_list(args.get("doc_ids") or args.get("ids"), limit=8)
         parts = []
         for did in ids:
             rec = st["curated"].get(did) or st["pool"].get(did) or store.get(did)
             parts.append(f"{did}: {_doc_text(rec)[:800]}" if rec is not None else f"{did}: missing")
         obs = "Review:\n" + "\n".join(parts)
     elif name == "curate":
-        add_ids = list(args.get("add_ids") or [])
-        remove_ids = list(args.get("remove_ids") or [])
+        add_ids = _as_str_list(args.get("add_ids") or args.get("doc_ids") or args.get("ids"))
+        remove_ids = _as_str_list(args.get("remove_ids"))
         imp = args.get("importance") or {}
         for did in add_ids:
-            if isinstance(did, (list, dict)):
-                continue
-            did = str(did)
             rec = st["pool"].get(did) or store.get(did)
             if rec is not None:
                 if not isinstance(rec, dict):
@@ -212,7 +314,7 @@ def execute_tool(
             st["curated"].pop(str(did), None)
         obs = f"Curated n={len(st['curated'])} ids={list(st['curated'])[:12]}"
     elif name == "verify":
-        ids = list(args.get("doc_ids") or [])[:5]
+        ids = _as_str_list(args.get("doc_ids") or args.get("ids"), limit=5)
         claim = str(args.get("claim") or "")
         ctoks = _tokenize(claim)
         parts = []
@@ -226,6 +328,9 @@ def execute_tool(
         st["ended"] = True
         st["end_reason"] = str(args.get("reasoning") or args.get("reason") or "")
         obs = f"end_search accepted. curated={list(st['curated'])[:12]}"
+    footer = _harness_status(st, name)
+    if footer:
+        obs = f"{obs}\n{footer}".strip()
     st["tool_history"].append({"name": name, "legal": True, "args": args})
     return st, obs, True
 

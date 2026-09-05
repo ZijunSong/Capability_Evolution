@@ -4,14 +4,74 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 import json
 import os
+import queue
 import shutil
 import sys
 import threading
 
 from trim.eval.official_query_pool import default_bcp_root
+
+_PROBE_QUERIES = ("history", "company", "science", "government", "university")
+
+
+class _PyseriniThread:
+    """Serialize all Lucene/JNI work onto one long-lived thread.
+
+    Pyjnius + LuceneSearcher are not safe to construct on a short-lived
+    worker (eval used to init Pyserini in a daemon thread overlapping vLLM
+    start). After that thread exits, ``search()`` returns empty hits without
+    raising, so official recall and the episode pool both stay at 0.
+    """
+
+    _shared: "_PyseriniThread | None" = None
+    _shared_lock = threading.Lock()
+
+    def __init__(self) -> None:
+        self._jobs: queue.Queue[tuple[Callable[[], Any], list[Any], list[BaseException], threading.Event] | None] = queue.Queue()
+        self._thread = threading.Thread(target=self._loop, name="trim-pyserini-jni", daemon=True)
+        self._started = threading.Event()
+
+    @classmethod
+    def shared(cls) -> "_PyseriniThread":
+        with cls._shared_lock:
+            if cls._shared is None:
+                cls._shared = cls()
+                cls._shared.start()
+            return cls._shared
+
+    def start(self) -> None:
+        self._thread.start()
+        if not self._started.wait(timeout=30):
+            raise RuntimeError("Pyserini JNI thread failed to start")
+
+    def _loop(self) -> None:
+        self._started.set()
+        while True:
+            item = self._jobs.get()
+            if item is None:
+                return
+            fn, out, err, done = item
+            try:
+                out.append(fn())
+            except BaseException as exc:  # noqa: BLE001
+                err.append(exc)
+            done.set()
+
+    def call(self, fn: Callable[[], Any], *, timeout: float = 120.0) -> Any:
+        if not self._thread.is_alive():
+            raise RuntimeError("Pyserini JNI thread is not running")
+        out: list[Any] = []
+        err: list[BaseException] = []
+        done = threading.Event()
+        self._jobs.put((fn, out, err, done))
+        if not done.wait(timeout=timeout):
+            raise TimeoutError("Pyserini JNI call timed out")
+        if err:
+            raise err[0]
+        return out[0] if out else None
 
 
 @dataclass
@@ -59,15 +119,31 @@ class PyseriniBackend(RetrievalBackend):
         _configure_java_runtime()
         # pyserini.search.lucene imports the OpenAI encoder stack at module load.
         os.environ.setdefault("OPENAI_API_KEY", "sk-pyserini-local")
-        from pyserini.search.lucene import LuceneSearcher
+        index = str(index_dir)
+        self._jni = _PyseriniThread.shared()
 
-        self._searcher = LuceneSearcher(str(index_dir))
-        self._lock = threading.Lock()
+        def _construct():
+            _configure_java_runtime()
+            os.environ.setdefault("OPENAI_API_KEY", "sk-pyserini-local")
+            from pyserini.search.lucene import LuceneSearcher
+
+            return LuceneSearcher(index)
+
+        self._searcher = self._jni.call(_construct, timeout=300.0)
+
+    def num_docs(self) -> int:
+        def _n() -> int:
+            return int(getattr(self._searcher, "num_docs", 0) or 0)
+
+        return int(self._jni.call(_n) or 0)
 
     def search(self, query: str, k: int = 5) -> list[SearchHit]:
-        hits = []
-        with self._lock:
-            for hit in self._searcher.search(query, k):
+        q = str(query)
+        kk = int(k)
+
+        def _search() -> list[SearchHit]:
+            hits: list[SearchHit] = []
+            for hit in self._searcher.search(q, kk):
                 raw = ""
                 try:
                     raw = self._searcher.doc(hit.docid).raw()
@@ -80,17 +156,23 @@ class PyseriniBackend(RetrievalBackend):
                         float(getattr(hit, "score", 0.0) or 0.0),
                     )
                 )
-        return hits
+            return hits
+
+        return list(self._jni.call(_search, timeout=120.0) or [])
 
     def get_doc(self, docid: str) -> str | None:
-        with self._lock:
+        did = str(docid)
+
+        def _get() -> str | None:
             try:
-                doc = self._searcher.doc(str(docid))
+                doc = self._searcher.doc(did)
             except Exception:
                 return None
             if doc is None:
                 return None
             return lucene_stored_text(doc.raw() or "")
+
+        return self._jni.call(_get, timeout=60.0)
 
 
 class LocalJsonlBackend(RetrievalBackend):
@@ -161,6 +243,32 @@ def _configure_java_runtime() -> None:
             return
 
 
+def assert_retrieval_ready(searcher: RetrievalBackend, *, formal: bool = False) -> None:
+    """Fail fast if a live backend cannot actually retrieve documents."""
+    if searcher is None or searcher.name == "none":
+        if formal:
+            raise RuntimeError("formal retrieval backend is none")
+        return
+    if searcher.name != "pyserini_lucene":
+        return
+    n_docs = getattr(searcher, "num_docs", None)
+    if callable(n_docs):
+        n_docs = n_docs()
+    if n_docs is not None and int(n_docs) <= 0:
+        raise RuntimeError(f"{searcher.name} index reports {n_docs} documents")
+    hits: list[SearchHit] = []
+    for query in _PROBE_QUERIES:
+        hits = list(searcher.search(query, 3) or [])
+        if hits:
+            break
+    if not hits:
+        raise RuntimeError(
+            f"{searcher.name} probe search returned 0 hits. "
+            "Lucene/JNI is not usable; do not construct LuceneSearcher on a "
+            "short-lived thread (search() will silently return empty)."
+        )
+
+
 def open_retrieval(
     bcp_root: Path | None = None, *, formal: bool = False
 ) -> RetrievalBackend:
@@ -173,7 +281,9 @@ def open_retrieval(
     if index.is_dir():
         try:
             _configure_java_runtime()
-            return PyseriniBackend(index)
+            backend = PyseriniBackend(index)
+            assert_retrieval_ready(backend, formal=formal)
+            return backend
         except Exception as exc:
             if formal:
                 raise RuntimeError(
