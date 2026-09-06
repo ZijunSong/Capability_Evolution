@@ -58,11 +58,12 @@ def summarize_traces(traces: list[dict[str, Any]], *, setting: str, retrieval_na
 def search_metrics(searcher: RetrievalBackend, query: str, evidence: list[str]) -> dict[str, Any]:
     hits5 = searcher.search(query, 5)
     hits100 = searcher.search(query, 100) if searcher.name != "none" else []
+    normalize = getattr(searcher, "normalize_id", None)
     return {
         "retrieved_at_5": [h.docid for h in hits5],
         "retrieved_at_100": [h.docid for h in hits100],
-        "evidence_recall_at_5": evidence_recall([h.docid for h in hits5], evidence),
-        "evidence_recall_at_100": evidence_recall([h.docid for h in hits100], evidence),
+        "evidence_recall_at_5": evidence_recall([h.docid for h in hits5], evidence, normalize=normalize),
+        "evidence_recall_at_100": evidence_recall([h.docid for h in hits100], evidence, normalize=normalize),
     }
 
 
@@ -75,7 +76,7 @@ def split_summaries(traces: list[dict[str, Any]], *, setting: str, retrieval_nam
     test_traces = [t for t in traces if t.get("official_split") == "test"]
     official = summarize_traces(test_traces, setting=setting, retrieval_name=retrieval_name)
     official["split"] = "official_test"
-    official["n_expected"] = 166
+    official["n_expected"] = len(test_traces)
     return {"setting": setting, "all_pool": all_pool, "official_test": official, "primary_split": "official_test"}
 
 
@@ -92,8 +93,8 @@ def pack_closed_loop_summary(
     official_test = dict(split["official_test"])
     use_full = is_full_score_split(primary_split) or str(primary_split) in {"all_pool"}
     payload = dict(all_pool if use_full else official_test)
-    payload["primary_split"] = SCORE_SPLIT_830 if use_full else "official_test"
-    payload["n_expected"] = int(n_rows) if use_full else 166
+    payload["primary_split"] = SCORE_SPLIT_830 if use_full else str(primary_split or "official_test")
+    payload["n_expected"] = int(n_rows) if use_full else int(official_test.get("n_expected") or official_test.get("n_queries") or n_rows)
     payload["teacher_leak_rate"] = float(leak) / max(1, n_rows)
     payload["all_pool"] = all_pool
     payload["official_test"] = official_test

@@ -98,6 +98,14 @@ def score_split_for_benchmark(benchmark: str) -> str | None:
         return SCORE_SPLIT_166
     if key in {SCORE_SPLIT_FULL, SCORE_SPLIT_830}:
         return SCORE_SPLIT_830
+    try:
+        from trim.eval.transfer_benchmarks import score_split_for_eval_benchmark
+
+        implied = score_split_for_eval_benchmark(key)
+        if implied:
+            return implied
+    except Exception:
+        pass
     return None
 
 

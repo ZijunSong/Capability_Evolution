@@ -83,6 +83,7 @@ class SearchHit:
 
 class RetrievalBackend:
     name = "none"
+    id_style = "bcplus"
 
     def search(self, query: str, k: int = 5) -> list[SearchHit]:
         del query, k
@@ -91,6 +92,10 @@ class RetrievalBackend:
     def get_doc(self, docid: str) -> str | None:
         del docid
         return None
+
+    def normalize_id(self, docid: str) -> str:
+        """Map a hit/chunk id onto the gold-document key used by qrels."""
+        return norm_doc(docid)
 
 
 def lucene_stored_text(raw: Any) -> str:
@@ -303,11 +308,17 @@ def norm_doc(docid: str) -> str:
     return str(docid).split("_", 1)[0]
 
 
-def evidence_recall(retrieved: list[str], evidence_docids: list[str]) -> float:
-    gold = {norm_doc(x) for x in evidence_docids}
+def evidence_recall(
+    retrieved: list[str],
+    evidence_docids: list[str],
+    *,
+    normalize=None,
+) -> float:
+    fn = normalize or norm_doc
+    gold = {fn(x) for x in evidence_docids}
     if not gold:
         return 0.0
-    got = {norm_doc(x) for x in retrieved}
+    got = {fn(x) for x in retrieved}
     return len(got & gold) / len(gold)
 
 

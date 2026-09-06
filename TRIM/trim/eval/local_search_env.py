@@ -339,5 +339,10 @@ def curated_recall(state: dict[str, Any], gold_ids: list[str]) -> float | None:
     if not gold_ids:
         return None
     gold = {str(x) for x in gold_ids}
-    got = {str(x) for x in (state.get("curated") or {})}
+    got: set[str] = set()
+    for x in state.get("curated") or {}:
+        got.add(str(x))
+        text = str(x)
+        if "::c" in text:
+            got.add(text.rsplit("::c", 1)[0])
     return len(gold & got) / max(1, len(gold))

@@ -46,6 +46,7 @@ from trim.eval.official_query_pool import (
     canonical_score_split,
     score_split_for_benchmark,
 )
+from trim.eval.transfer_benchmarks import score_split_for_eval_benchmark
 from trim.eval.sec_corpus import default_sec_corpus_root, default_sec_rl_data
 from trim.training.sft_data import default_sft_pack
 from trim.training.sft_runtime import (
@@ -66,7 +67,16 @@ from trim.training.sft_runtime import (
 TRIM_ROOT = Path(__file__).resolve().parents[2]
 
 ALLOWED_HARNESSES = PROFILE_HARNESSES
-ALLOWED_BENCHMARKS = ("BC+", "bcplus_test_166", "bcplus_full")
+ALLOWED_BENCHMARKS = (
+    "BC+",
+    "bcplus_test_166",
+    "bcplus_full",
+    "longsealqa",
+    "frames",
+    "hotpotqa",
+    "web",
+    "patents",
+)
 ALLOWED_MODEL_NAMES = ("harness-1",)
 ALLOWED_TRAIN_METHODS = ("opd", "rl+opd", "rl", "scape+rl", "trim", "scape+seed", "seed+opd")
 TRAIN_DATA_SEC = "sec"
@@ -89,6 +99,21 @@ _BENCHMARK_ALIASES = {
     "bcplus_full": "bcplus_full",
     "bcplus_830": "bcplus_full",
     "bcplus830": "bcplus_full",
+    "longseal": "longsealqa",
+    "longsealqa": "longsealqa",
+    "longseal_qa": "longsealqa",
+    "long_seal": "longsealqa",
+    "frames": "frames",
+    "frames_benchmark": "frames",
+    "google_frames": "frames",
+    "hotpotqa": "hotpotqa",
+    "hotpot": "hotpotqa",
+    "hotpot_qa": "hotpotqa",
+    "hotpotqa_subset": "hotpotqa",
+    "web": "web",
+    "web_synthetic": "web",
+    "patents": "patents",
+    "uspto": "patents",
 }
 
 _MODEL_ALIASES = {
@@ -401,9 +426,9 @@ def add_common_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
         "--benchmark",
         default="BC+",
         help=(
-            "Evaluation benchmark. BC+ is the dataset family. "
-            "Pass bcplus_test_166 for the 166-query test split, or bcplus_full "
-            "for the 830-query pool (664 train + 166 test)."
+            "Evaluation benchmark. BC+ family: bcplus_test_166 / bcplus_full. "
+            "Local transfer: longsealqa, frames, hotpotqa. "
+            "web / patents require a rebuilt private corpus."
         ),
     )
     parser.add_argument(
@@ -664,7 +689,7 @@ def add_eval_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
 
 
 def _apply_score_split(args: argparse.Namespace, spec: LaunchSpec, *, default: str) -> None:
-    implied = score_split_for_benchmark(spec.benchmark)
+    implied = score_split_for_eval_benchmark(spec.benchmark) or score_split_for_benchmark(spec.benchmark)
     explicit = getattr(args, "score_split", None)
     if explicit:
         canonical = canonical_score_split(str(explicit), default=None)

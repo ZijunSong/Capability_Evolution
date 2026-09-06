@@ -17,7 +17,7 @@ from trim.eval.eval_parallel import load_json, write_json, write_jsonl
 def _run_vllm(cfg: dict, rows: list[dict], harness_mask: dict) -> tuple[dict, list[dict]]:
     import threading
 
-    from trim.eval.browsecomp_retrieval import open_retrieval
+    from trim.eval.transfer_benchmarks import open_eval_retrieval
     from trim.eval.model_tokenizer import load_model_encoding
     from trim.training.gpu_keepalive import GpuKeepAlive
     from trim.training.vllm_hybrid import SchemeARuntime, VLLMGenerateClient
@@ -55,7 +55,7 @@ def _run_vllm(cfg: dict, rows: list[dict], harness_mask: dict) -> tuple[dict, li
     runtime.attach_vllm(client)
     try:
         client.start()
-        searcher = open_retrieval(formal=True)
+        searcher = open_eval_retrieval(str(cfg.get("benchmark") or "BC+"), formal=True)
         prep.join()
         if errors:
             raise errors[0]
@@ -78,7 +78,7 @@ def _run_hf(cfg: dict, rows: list[dict], harness_mask: dict) -> tuple[dict, list
     from safetensors.torch import load_file
 
     from trim.eval.adapter_reload_audit import remap_lora_state
-    from trim.eval.browsecomp_retrieval import open_retrieval
+    from trim.eval.transfer_benchmarks import open_eval_retrieval
     from trim.eval.model_tokenizer import load_model_encoding
     from trim.training.gpu_keepalive import GpuKeepAlive
     from trim.training.hf_rl_opd_client import restore_trainable, snapshot_trainable
@@ -89,7 +89,7 @@ def _run_hf(cfg: dict, rows: list[dict], harness_mask: dict) -> tuple[dict, list
     keepalive.start()
     try:
         enc = load_model_encoding(str(cfg.get("model_path") or ""))
-        searcher = open_retrieval(formal=True)
+        searcher = open_eval_retrieval(str(cfg.get("benchmark") or "BC+"), formal=True)
         keepalive.pause()
         backend = ScapeHFToolOPD(model_path=str(cfg["model_path"]), device_map="cuda:0", use_lora=True)
     finally:

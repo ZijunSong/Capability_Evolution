@@ -58,6 +58,25 @@ PYTHONPATH=TRIM:SCAPE-EasyOPD python TRIM/scripts/run_train.py \
 - `bcplus_test_166` — official 166-query test split
 - `bcplus_full` — 830-query pool (664 train + 166 test)
 - `BC+` — dataset family; eval still defaults to the 830 pool
+- `longsealqa` / `frames` / `hotpotqa` — local transfer retrieval (build first)
+- `web` / `patents` — only if the private corpora were rebuilt
+
+Build transfer corpora once:
+
+```bash
+PYTHONPATH=TRIM python TRIM/scripts/build_transfer_local_corpus.py --benchmark longsealqa
+PYTHONPATH=TRIM python TRIM/scripts/build_transfer_local_corpus.py --benchmark frames
+PYTHONPATH=TRIM python TRIM/scripts/build_transfer_local_corpus.py --benchmark hotpotqa
+```
+
+Then evaluate:
+
+```bash
+PYTHONPATH=TRIM:SCAPE-EasyOPD python TRIM/scripts/run_eval.py \
+  --harness Harness-1 --benchmark longsealqa \
+  --model_name /data/ppnm/models/harness-1 \
+  --component all
+```
 
 `--model_name`: path to the checkpoint being trained or evaluated.
 `harness-1` remains a shorthand for the default local Harness-1 checkpoint.

@@ -11,6 +11,9 @@ eval and OFF when scoring a trained student adapter.
 
 Score split: ``--benchmark bcplus_full`` (or ``BC+``) uses the 830-query pool
 (664 train + 166 test). ``--benchmark bcplus_test_166`` uses the 166-test subset.
+Local transfer pools: ``longsealqa``, ``frames``, ``hotpotqa`` (build with
+``scripts/build_transfer_local_corpus.py``). ``web`` / ``patents`` only work if
+those private corpora were rebuilt.
 
 ``--tp N`` starts N replica model servers, shards the eval set, and merges
 per-query traces when every replica finishes.
@@ -41,12 +44,10 @@ from trim.eval.adapter_reload_audit import audit_saved_adapter
 from trim.eval.official_query_pool import (
     SCORE_SPLIT_830,
     canonical_score_split,
-    is_full_score_split,
-    load_bcplus_830_full,
-    load_bcplus_830_split,
     score_split_for_benchmark,
 )
 from trim.eval.sr_opd_four_cell_eval import write_eval_outputs
+from trim.eval.transfer_benchmarks import load_eval_benchmark, score_split_for_eval_benchmark
 
 
 def _adapter_map(args) -> dict[str, str | None]:
@@ -76,7 +77,9 @@ def detect_score_split(args) -> str:
     explicit = getattr(args, "score_split", None)
     if explicit:
         return canonical_score_split(str(explicit), default=SCORE_SPLIT_830) or SCORE_SPLIT_830
-    implied = score_split_for_benchmark(str(getattr(args, "benchmark", "") or ""))
+    implied = score_split_for_eval_benchmark(str(getattr(args, "benchmark", "") or "")) or score_split_for_benchmark(
+        str(getattr(args, "benchmark", "") or "")
+    )
     if implied:
         return implied
     return SCORE_SPLIT_830
@@ -128,19 +131,7 @@ def main(argv: list[str] | None = None) -> int:
     (spec.out / "LAUNCH.json").write_text(json.dumps(launch, indent=2) + "\n", encoding="utf-8")
     print(json.dumps({k: v for k, v in launch.items() if k != "harness_mask"} | {"eval_mode": mode}, indent=2), flush=True)
 
-    if is_full_score_split(score_split):
-        rows, pool_meta = load_bcplus_830_full()
-    else:
-        _train, rows, pool_meta = load_bcplus_830_split()
-        pool_meta = dict(pool_meta)
-        pool_meta.update(
-            {
-                "query_count": len(rows),
-                "eval_count": len(rows),
-                "primary_eval": score_split,
-                "score_split": score_split,
-            }
-        )
+    rows, pool_meta = load_eval_benchmark(spec.benchmark, score_split=score_split)
     audits = []
     for cell, path in adapter_map.items():
         if path:
@@ -172,7 +163,7 @@ def main(argv: list[str] | None = None) -> int:
             release_keepalive()
         raise SystemExit("pass --model_name /path/to/checkpoint for live eval")
 
-    from trim.eval.browsecomp_retrieval import open_retrieval
+    from trim.eval.transfer_benchmarks import open_eval_retrieval
     from trim.eval.eval_parallel import parse_gpu_ids, run_replicated_eval, write_jsonl
     from trim.eval.model_tokenizer import load_model_encoding
     from trim.training.four_cell_runtime import eval_closed_loop
@@ -225,6 +216,7 @@ def main(argv: list[str] | None = None) -> int:
                 "eval_chunk_size": getattr(args, "eval_chunk_size", None),
                 "seed": int(args.seed),
                 "primary_split": score_split,
+                "benchmark": spec.benchmark,
                 "tensor_parallel_size": replica_tp,
             }
             for cell, path in adapter_map.items():
@@ -247,7 +239,7 @@ def main(argv: list[str] | None = None) -> int:
                 summaries.append(ev)
         elif args.rollout_backend == "vllm":
             enc = load_model_encoding(str(spec.base_model))
-            searcher = open_retrieval(formal=True)
+            searcher = open_eval_retrieval(spec.benchmark, formal=True)
             runtime = SchemeARuntime()
             for i, (cell, path) in enumerate(adapter_map.items()):
                 if keepalive is not None:
@@ -301,7 +293,7 @@ def main(argv: list[str] | None = None) -> int:
             from trim.training.hf_tool_opd import ScapeHFToolOPD
 
             enc = load_model_encoding(str(spec.base_model))
-            searcher = open_retrieval(formal=True)
+            searcher = open_eval_retrieval(spec.benchmark, formal=True)
             if keepalive is not None:
                 keepalive.pause()
             gpu = str(args.gpu)

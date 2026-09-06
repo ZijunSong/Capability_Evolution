@@ -58,6 +58,7 @@ TRIM/data/**
 datasets/
 **/indexes/
 **/bm25/
+TRIM/manifests/transfer_local/
 *.parquet
 *.arrow
 *.feather
