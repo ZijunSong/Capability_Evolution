@@ -395,6 +395,47 @@ class ScapeHFToolOPD:
         logps = logp.gather(1, ids.unsqueeze(1)).squeeze(1)
         return logps
 
+    def _teacher_forced_logprobs_batch(
+        self,
+        pairs: Sequence[tuple[list[int], list[int]]],
+        *,
+        require_grad: bool,
+    ) -> list[torch.Tensor]:
+        """Padded teacher-forced logprobs. Falls back to per-row on tiny/empty batches."""
+        rows = [(list(p), list(r)) for p, r in pairs]
+        if not rows:
+            return []
+        if len(rows) == 1:
+            return [
+                self._teacher_forced_logprobs(rows[0][0], rows[0][1], require_grad=require_grad)
+            ]
+        from trim.training.hf_rl_batch import (
+            gather_response_logprobs,
+            pack_left_pad_teacher_forced,
+        )
+
+        pad_id = int(getattr(self.tokenizer, "pad_token_id", None) or 0)
+        packed = pack_left_pad_teacher_forced(rows, pad_id=pad_id, device=self._device)
+        if packed.max_resp <= 0:
+            return [torch.zeros(0, device=self._device) for _ in rows]
+        keep = packed.max_resp + 1
+        kwargs = {"attention_mask": packed.attention_mask, "logits_to_keep": keep}
+
+        def _forward(extra: dict[str, Any]) -> torch.Tensor:
+            if require_grad:
+                self.model.train()
+                return self.model(packed.input_ids, **extra).logits
+            self.model.eval()
+            with torch.no_grad():
+                return self.model(packed.input_ids, **extra).logits
+
+        try:
+            logits = _forward(kwargs)
+        except TypeError:
+            full = _forward({"attention_mask": packed.attention_mask})
+            logits = full[:, -keep:, :] if full.shape[1] >= keep else full
+        return gather_response_logprobs(logits, packed.response_ids, max_resp=packed.max_resp)
+
     def span_token_masks(
         self,
         response_text: str,

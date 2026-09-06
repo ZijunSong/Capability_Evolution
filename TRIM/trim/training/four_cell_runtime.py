@@ -63,6 +63,13 @@ from trim.training.action_codec import (
 from trim.training.hf_rl_opd_client import (
     HFDebugTrainingClient,
     group_relative_advantages,
+    sample_groups_for_step,
+)
+from trim.training.hf_rl_batch import (
+    HF_DEFAULT_GROUPS_PER_STEP,
+    HF_DEFAULT_HEARTBEAT_EVERY,
+    HF_DEFAULT_MICRO_BATCH,
+    log_train,
 )
 from trim.training.on_policy_collector import filter_component_states, write_collected_states
 from trim.training.opd_dataset import render_student_prompt
@@ -372,6 +379,8 @@ def build_manifest(args: argparse.Namespace, *, extra: dict[str, Any] | None = N
         "group_size": args.group_size,
         "max_turns": args.max_turns,
         "train_steps": args.train_steps,
+        "train_groups_per_step": int(getattr(args, "train_groups_per_step", HF_DEFAULT_GROUPS_PER_STEP) or 0),
+        "train_micro_batch_size": int(getattr(args, "train_micro_batch_size", HF_DEFAULT_MICRO_BATCH) or HF_DEFAULT_MICRO_BATCH),
         "n_queries": args.n_queries,
         "opd_states_per_trajectory": args.opd_states_per_trajectory,
         "seed": args.seed,
@@ -865,6 +874,9 @@ async def train_cell(
     teacher_fn: TeacherFn | None,
     opd_loss: str = "sr_opd_ce",
     opd_gate_beta: float = SCAPE_RL_OPD_GATE_BETA,
+    groups_per_step: int = HF_DEFAULT_GROUPS_PER_STEP,
+    micro_batch_size: int = HF_DEFAULT_MICRO_BATCH,
+    heartbeat_every: int = HF_DEFAULT_HEARTBEAT_EVERY,
 ) -> dict[str, Any]:
     if name in {"teacher", "before"} or train_steps <= 0:
         return {
@@ -874,14 +886,38 @@ async def train_cell(
             "n_opd_forward_backward": 0,
             "skipped_teacher": True,
         }
-    client = HFDebugTrainingClient(backend)
-    rl_by_q = {g.query_id: list((g.trajectory_group or {}).get("rl_rows") or []) for g in groups}
+    client = HFDebugTrainingClient(
+        backend,
+        micro_batch_size=micro_batch_size,
+        heartbeat_every=heartbeat_every,
+    )
     teacher = None if lambda_opd <= 0 else teacher_fn
     metrics_acc: list[dict[str, Any]] = []
     last_batch_stats: dict[str, Any] = {}
+    step_samples: list[dict[str, Any]] = []
+    pool_n = len(groups)
     for step in range(train_steps):
+        step_groups, sample_meta = sample_groups_for_step(
+            groups, groups_per_step, seed=int(step) + 17
+        )
+        rl_by_q = {
+            g.query_id: list((g.trajectory_group or {}).get("rl_rows") or []) for g in step_groups
+        }
+        client._step_tag = step + 1
+        t0 = time.perf_counter()
+        log_train(
+            "optim_step_start",
+            step=step + 1,
+            n_steps=int(train_steps),
+            cell=name,
+            n_pool_groups=pool_n,
+            n_step_groups=int(sample_meta["n_groups"]),
+            sampled=bool(sample_meta["sampled"]),
+            query_ids=sample_meta.get("query_ids") or [],
+            micro_batch_size=int(micro_batch_size),
+        )
         batch = prepare_hybrid_batch(
-            groups=groups,
+            groups=step_groups,
             rl_datums_by_query=rl_by_q,
             policy_version=policy_version,
             lambda_opd=lambda_opd,
@@ -895,13 +931,22 @@ async def train_cell(
             opd_loss=opd_loss,
             opd_gate_beta=opd_gate_beta,
         )
-        last_batch_stats = batch.projection_stats
+        last_batch_stats = dict(batch.projection_stats)
+        last_batch_stats["step_sample"] = sample_meta
         if name == "pure_opd":
             rl_use, opd_use = [], batch.opd_datums
         elif name == "rl":
             rl_use, opd_use = batch.rl_datums, []
         else:
             rl_use, opd_use = batch.rl_datums, batch.opd_datums
+        log_train(
+            "optim_step_datums",
+            step=step + 1,
+            n_rl_datums=len(rl_use),
+            n_opd_datums=len(opd_use),
+            n_rl_tokens=int(batch.n_rl_tokens),
+            n_opd_tokens=int(batch.n_opd_tokens),
+        )
         m = await hybrid_train_substep(
             training_client=client,
             rl_datums=rl_use,
@@ -915,7 +960,23 @@ async def train_cell(
             reject_rate=float(batch.projection_stats.get("reject_rate") or 0.0),
             opd_loss=opd_loss,
         )
-        metrics_acc.append(m.to_dict())
+        elapsed = round(time.perf_counter() - t0, 3)
+        md = m.to_dict()
+        md["elapsed_s"] = elapsed
+        md["step_sample"] = sample_meta
+        metrics_acc.append(md)
+        step_samples.append(sample_meta)
+        log_train(
+            "optim_step_done",
+            step=step + 1,
+            n_steps=int(train_steps),
+            elapsed_s=elapsed,
+            n_rl_datums=len(rl_use),
+            n_opd_datums=len(opd_use),
+            n_rl_tokens=int(batch.n_rl_tokens),
+            n_opd_tokens=int(batch.n_opd_tokens),
+            update_type=md.get("update_type"),
+        )
     from trim.training.tinker_rl_opd_trainer import HybridLoopState
 
     loop = HybridLoopState(policy_version=policy_version)
@@ -932,6 +993,9 @@ async def train_cell(
         ),
         "projection_stats": last_batch_stats,
         "substeps": metrics_acc,
+        "step_samples": step_samples,
+        "train_groups_per_step": int(groups_per_step),
+        "train_micro_batch_size": int(micro_batch_size),
         "backend": HFDebugTrainingClient.backend_name,
         "policy_version_start": policy_version,
         "policy_version_end": loop.policy_version if metrics_acc else policy_version,
@@ -1676,6 +1740,9 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
                             getattr(args, "opd_gate_beta", SCAPE_RL_OPD_GATE_BETA)
                             or SCAPE_RL_OPD_GATE_BETA
                         ),
+                        groups_per_step=int(getattr(args, "train_groups_per_step", HF_DEFAULT_GROUPS_PER_STEP) or 0),
+                        micro_batch_size=int(getattr(args, "train_micro_batch_size", HF_DEFAULT_MICRO_BATCH) or HF_DEFAULT_MICRO_BATCH),
+                        heartbeat_every=int(getattr(args, "train_heartbeat_every", HF_DEFAULT_HEARTBEAT_EVERY) or HF_DEFAULT_HEARTBEAT_EVERY),
                     )
                 )
                 rewards_after = [r for g in groups for r in g.terminal_rewards]
@@ -1724,6 +1791,9 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
                             getattr(args, "opd_gate_beta", SCAPE_RL_OPD_GATE_BETA)
                             or SCAPE_RL_OPD_GATE_BETA
                         ),
+                        groups_per_step=int(getattr(args, "train_groups_per_step", HF_DEFAULT_GROUPS_PER_STEP) or 0),
+                        micro_batch_size=int(getattr(args, "train_micro_batch_size", HF_DEFAULT_MICRO_BATCH) or HF_DEFAULT_MICRO_BATCH),
+                        heartbeat_every=int(getattr(args, "train_heartbeat_every", HF_DEFAULT_HEARTBEAT_EVERY) or HF_DEFAULT_HEARTBEAT_EVERY),
                     )
                 )
             )
@@ -1981,6 +2051,12 @@ def coerce_runtime_args(args: argparse.Namespace) -> argparse.Namespace:
         args.enforce_eager = True
     if not hasattr(args, "vllm_python"):
         args.vllm_python = ""
+    if not hasattr(args, "train_groups_per_step"):
+        args.train_groups_per_step = HF_DEFAULT_GROUPS_PER_STEP
+    if not hasattr(args, "train_micro_batch_size"):
+        args.train_micro_batch_size = HF_DEFAULT_MICRO_BATCH
+    if not hasattr(args, "train_heartbeat_every"):
+        args.train_heartbeat_every = HF_DEFAULT_HEARTBEAT_EVERY
     if getattr(args, "smoke", False):
         if getattr(args, "n_queries", None) in {None, 0}:
             args.n_queries = 6

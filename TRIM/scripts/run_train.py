@@ -78,6 +78,9 @@ def _main(argv: list[str] | None = None) -> int:
         "component_ids": list(spec.components),
         "base_model": str(spec.base_model),
         "n_queries": args.n_queries,
+        "train_groups_per_step": int(getattr(args, "train_groups_per_step", 32) or 0),
+        "train_micro_batch_size": int(getattr(args, "train_micro_batch_size", 4) or 4),
+        "train_heartbeat_every": int(getattr(args, "train_heartbeat_every", 8) or 8),
         "score_split": str(getattr(args, "score_split", None) or SCORE_SPLIT_166),
         "bcplus_split": (
             "830 = 664+166"

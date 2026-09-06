@@ -49,6 +49,11 @@ from trim.eval.official_query_pool import (
 from trim.eval.transfer_benchmarks import score_split_for_eval_benchmark
 from trim.eval.sec_corpus import default_sec_corpus_root, default_sec_rl_data
 from trim.training.sft_data import default_sft_pack
+from trim.training.hf_rl_batch import (
+    HF_DEFAULT_GROUPS_PER_STEP,
+    HF_DEFAULT_HEARTBEAT_EVERY,
+    HF_DEFAULT_MICRO_BATCH,
+)
 from trim.training.sft_runtime import (
     HARNESS1_SFT_BATCH_SIZE,
     HARNESS1_SFT_EVAL_EVERY,
@@ -506,6 +511,28 @@ def add_train_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--train-steps", type=int, default=8)
+    parser.add_argument(
+        "--train-groups-per-step",
+        type=int,
+        default=HF_DEFAULT_GROUPS_PER_STEP,
+        help=(
+            "Query groups used in each HF optimizer step. Default 32 is an explicit "
+            "HF recovery setting (not full-pool replay). 0 replays the entire train "
+            "pool every step (legacy; can take days on 20B)."
+        ),
+    )
+    parser.add_argument(
+        "--train-micro-batch-size",
+        type=int,
+        default=HF_DEFAULT_MICRO_BATCH,
+        help="Padded teacher-forced micro-batch size for CISPO/OPD. 1 is the old per-datum loop.",
+    )
+    parser.add_argument(
+        "--train-heartbeat-every",
+        type=int,
+        default=HF_DEFAULT_HEARTBEAT_EVERY,
+        help="Log a [train] hf_fb heartbeat every N completed datums (plus first/last).",
+    )
     parser.add_argument("--lambda-opd", type=float, default=None, help="OPD coefficient. Default 0.1; scape+rl and trim use 0.01 (SEED).")
     parser.add_argument(
         "--opd-gate-beta",
