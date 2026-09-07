@@ -315,6 +315,10 @@ class TokenizerHarmonyEncoding:
         del config
         return self.render_conversation_for_completion(conversation, next_turn_role=None)
 
+    def render_conversation_for_training(self, conversation: Any, config: Any = None) -> list[int]:
+        """Same token ids as ``render_conversation``; assistant turns already end in stop tokens."""
+        return self.render_conversation(conversation, config=config)
+
     def parse_messages_from_completion_tokens(
         self,
         tokens: Sequence[int],

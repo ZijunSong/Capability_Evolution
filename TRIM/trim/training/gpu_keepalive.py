@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 import threading
 from contextlib import contextmanager
-from typing import Iterator
+from typing import Iterator, Sequence
 
 
 def keepalive_enabled() -> bool:
@@ -23,14 +23,30 @@ def keepalive_enabled() -> bool:
 
 
 class GpuKeepAlive:
-    def __init__(self, *, dim: int = 2048, enabled: bool | None = None):
+    def __init__(
+        self,
+        *,
+        dim: int = 2048,
+        enabled: bool | None = None,
+        device_ids: Sequence[int] | None = None,
+    ):
         self.dim = int(dim)
         self.enabled = keepalive_enabled() if enabled is None else bool(enabled)
+        self.device_ids = None if device_ids is None else [int(i) for i in device_ids]
         self._cv = threading.Condition()
         self._state = "stopped"
         self._idle = True
         self._thread: threading.Thread | None = None
         self._ready = threading.Event()
+
+    def _devices(self) -> list[int]:
+        import torch
+
+        if self.device_ids is not None:
+            return list(self.device_ids)
+        if not torch.cuda.is_available():
+            return []
+        return list(range(int(torch.cuda.device_count())))
 
     def start(self) -> None:
         if not self.enabled or self._thread is not None:
@@ -38,7 +54,7 @@ class GpuKeepAlive:
         try:
             import torch
 
-            if not torch.cuda.is_available() or torch.cuda.device_count() <= 0:
+            if not torch.cuda.is_available() or not self._devices():
                 return
         except Exception:
             return
@@ -87,7 +103,7 @@ class GpuKeepAlive:
     def _loop(self) -> None:
         import torch
 
-        n = int(torch.cuda.device_count())
+        devices = self._devices()
         tensors: list[tuple[object, object]] = []
         streams: list[object] = []
         allocated = False
@@ -98,7 +114,7 @@ class GpuKeepAlive:
                 return
             tensors.clear()
             streams.clear()
-            for i in range(n):
+            for i in devices:
                 with torch.cuda.device(i):
                     a = torch.randn(self.dim, self.dim, device=f"cuda:{i}", dtype=torch.float16)
                     b = torch.randn(self.dim, self.dim, device=f"cuda:{i}", dtype=torch.float16)
@@ -134,7 +150,7 @@ class GpuKeepAlive:
                     alloc()
                     self._idle = False
                     live = list(zip(tensors, streams))
-                for i, ((a, b), stream) in enumerate(live):
+                for i, ((a, b), stream) in zip(devices, live):
                     with torch.cuda.device(i), torch.cuda.stream(stream):
                         a.copy_(torch.mm(a, b))
                 for stream in streams:
@@ -163,12 +179,12 @@ _SHARED: GpuKeepAlive | None = None
 _REFS = 0
 
 
-def acquire_keepalive(*, dim: int = 2048) -> GpuKeepAlive:
+def acquire_keepalive(*, dim: int = 2048, device_ids: Sequence[int] | None = None) -> GpuKeepAlive:
     """Process-wide keepalive so launchers and run_four_cell share one loop."""
     global _SHARED, _REFS
     with _LOCK:
         if _SHARED is None:
-            _SHARED = GpuKeepAlive(dim=dim)
+            _SHARED = GpuKeepAlive(dim=dim, device_ids=device_ids)
             _SHARED.start()
         _REFS += 1
         return _SHARED

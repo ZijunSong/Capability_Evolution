@@ -25,7 +25,7 @@ skipped then ALIGN to `select` / `lookup`).
 TRIM/
 ├── scripts/run_train.py    # training entry
 ├── scripts/run_eval.py     # closed-loop eval entry
-├── scripts/run_sft.py      # Harness-1 Tinker SFT entry
+├── scripts/run_sft.py      # Harness-1 SFT entry (Tinker or local HF LoRA)
 ├── trim/                   # package (CLI, adapters, training, eval)
 ├── manifests/browsecomp_plus_830/
 ├── external/harness-1/     # pinned Harness-1 runtime
@@ -86,26 +86,29 @@ PYTHONPATH=TRIM:SCAPE-EasyOPD python TRIM/scripts/run_eval.py \
 `trim` is CISPO + projected teacher actions + SEED-scale OPD (the method
 formerly launched as `scape+seed`; that flag remains an alias).
 
-## SFT (Harness-1 Tinker)
+## SFT (Harness-1)
 
-SFT is a separate line from `run_train.py`. It uses the pinned Harness-1
-`training/train_sft.py` + Tinker cookbook, with the public 899 GPT-5.4 v8d
+SFT is a separate line from `run_train.py`. It materializes the public 899 GPT-5.4 v8d
 trajectories from [`pat-jj/harness-1-train-data`](https://huggingface.co/datasets/pat-jj/harness-1-train-data)
-(`stage=sft` only). Defaults match `external/harness-1/training/launch_sft_training.sh`.
+(`stage=sft` only) and trains with the official Harness-1 recipe
+(`external/harness-1/training/launch_sft_training.sh`).
 
 ```bash
 PYTHONPATH=TRIM python TRIM/scripts/run_sft.py
 PYTHONPATH=TRIM python TRIM/scripts/run_sft.py --model-name openai/gpt-oss-20b
+PYTHONPATH=TRIM python TRIM/scripts/run_sft.py --model-name /mnt/songzijun/models/openai/gpt-oss-20b
 PYTHONPATH=TRIM python TRIM/scripts/run_sft.py --pack-only
 PYTHONPATH=TRIM python TRIM/scripts/run_sft.py --smoke --dry-run
 ```
 
-- **Model:** `openai/gpt-oss-20b` (Tinker id; also accepts `gpt-oss-20b`)
+- **Model:** `openai/gpt-oss-20b` (Tinker id; also accepts `gpt-oss-20b`) **or** a local HuggingFace directory
+- **Backend:** `auto` (default) — a local checkpoint path uses HuggingFace LoRA in-process and does **not** need `TINKER_API_KEY`. Tinker ids still use the hosted trainer. Override with `--backend hf` / `--backend tinker`.
 - **Data pack:** `TRIM/data/harness-1-sft-data.tar.gz` (in-repo 899 trajectories; override `--sft-data` / `TRIM_SFT_DATA`)
 - **Recipe:** 3 epochs, batch 128, lr `5e-6`, LoRA rank 32, `max_length=32768`, `min_recall=0.1`, save/eval every 50
 - **v8d flags:** same as Harness-1 SFT generation / RL (`VERIFY_TOOL`, `EVIDENCE_GRAPH`, …)
-- Requires `TINKER_API_KEY` (in `external/harness-1/.env.local` or the environment) except for `--dry-run` / `--pack-only`
-- Interpreter: `TRIM_SFT_PYTHON` / `--python`, else a local env that can `import tinker`, else `uv run --project external/harness-1`
+- **Tinker:** requires `TINKER_API_KEY` (in `external/harness-1/.env.local` or the environment) except for `--dry-run` / `--pack-only` / `--backend hf`
+- **HF LoRA:** packed DDP on every visible GPU (not `device_map=auto`). CPU data build / model load keep SMs busy via `GpuKeepAlive` so cluster watchdogs do not kill the job. Default `--pack-length 8192`. Writes `lora_checkpoint/` under `--out`; optional `--merge`. No `TINKER_API_KEY`.
+- **Tinker interpreter:** `TRIM_SFT_PYTHON` / `--python`, else a local env that can `import tinker`, else `uv run --project external/harness-1`
 
 `--train-data`:
 

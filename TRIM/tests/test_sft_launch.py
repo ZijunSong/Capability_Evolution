@@ -30,6 +30,8 @@ from trim.training.sft_runtime import (
     HARNESS1_SFT_V8D_ENV,
     HARNESS1_TRAIN_SFT,
     canonical_sft_model_name,
+    looks_like_local_model_path,
+    resolve_sft_backend,
     train_sft_argv,
 )
 
@@ -127,6 +129,8 @@ def test_parse_sft_defaults_match_harness1():
     assert smoke.num_epochs == 1
     assert smoke.batch_size == 4
     assert smoke.out.name == "trim-sft-smoke"
+    assert parse_sft_args(["--out", "/tmp/trim-sft"]).pack_length == 8192
+    assert parse_sft_args(["--out", "/tmp/trim-sft"]).micro_batch_size == 1
 
 
 def test_train_sft_argv_points_at_harness1():
@@ -174,6 +178,102 @@ def test_run_sft_dry_run(tmp_path: Path):
     launch = json.loads((out / "LAUNCH.json").read_text(encoding="utf-8"))
     assert launch["model_name"] == "openai/gpt-oss-20b"
     assert launch["framework"].startswith("tinker")
+    assert launch["backend"] == "tinker"
+    assert launch["requires_tinker_api_key"] is True
     assert launch["n_trajectory_json"] == 1
     assert launch["dry_run"] is True
     assert str(HARNESS1_TRAIN_SFT) == launch["entrypoint"]
+
+
+def test_backend_auto_uses_hf_for_local_path(tmp_path: Path):
+    model = tmp_path / "gpt-oss-20b"
+    model.mkdir()
+    (model / "config.json").write_text("{}", encoding="utf-8")
+    assert looks_like_local_model_path(str(model))
+    assert resolve_sft_backend("auto", str(model)) == "hf"
+    assert resolve_sft_backend("auto", "openai/gpt-oss-20b") == "tinker"
+    assert resolve_sft_backend("hf", "openai/gpt-oss-20b") == "hf"
+    assert resolve_sft_backend("tinker", str(model)) == "tinker"
+    assert canonical_sft_model_name(str(model)) == str(model.resolve())
+    args = parse_sft_args(["--model-name", str(model), "--out", str(tmp_path / "out")])
+    assert args.backend == "auto"
+    assert resolve_sft_backend(args.backend, args.model_name) == "hf"
+
+
+def test_run_sft_hf_dry_run_skips_tinker_key(tmp_path: Path, monkeypatch):
+    import importlib.util
+
+    monkeypatch.delenv("TINKER_API_KEY", raising=False)
+    model = tmp_path / "gpt-oss-20b"
+    model.mkdir()
+    (model / "config.json").write_text("{}", encoding="utf-8")
+    script = Path(__file__).resolve().parents[1] / "scripts" / "run_sft.py"
+    spec = importlib.util.spec_from_file_location("trim_run_sft_hf", script)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    traj_dir = tmp_path / "trajs"
+    traj_dir.mkdir()
+    (traj_dir / "ultra_v3_sec_q1.json").write_text(json.dumps(_traj()) + "\n", encoding="utf-8")
+    out = tmp_path / "out"
+    rc = mod.main(
+        [
+            "--sft-data",
+            str(traj_dir),
+            "--out",
+            str(out),
+            "--model-name",
+            str(model),
+            "--dry-run",
+            "--n-trajectories",
+            "1",
+        ]
+    )
+    assert rc == 0
+    launch = json.loads((out / "LAUNCH.json").read_text(encoding="utf-8"))
+    assert launch["backend"] == "hf"
+    assert launch["framework"].startswith("huggingface")
+    assert "packed DDP" in launch["framework"]
+    assert launch["requires_tinker_api_key"] is False
+    assert launch["pack_length"] == 8192
+    assert launch["entrypoint"] == "trim.training.hf_sft.run_hf_sft"
+
+
+def test_hf_examples_from_fake_encoder():
+    from trim.training.sft_examples import examples_from_trajectory, prepare_harness1_sft_imports
+
+    class _Enc:
+        def render_conversation(self, conv):
+            del conv
+            return [1, 2, 3]
+
+        def render_conversation_for_training(self, conv):
+            del conv
+            return [1, 2, 3, 4, 200012]
+
+    prepare_harness1_sft_imports()
+    rows = examples_from_trajectory(_traj(), _Enc(), max_length=32, min_recall=0.1)
+    assert len(rows) == 1
+    assert rows[0]["n_context"] == 3
+    assert rows[0]["input_ids"][-1] == 200012
+    skipped = examples_from_trajectory(_traj(recall=0.0), _Enc(), min_recall=0.1)
+    assert skipped == []
+
+
+def test_pack_sft_examples_fills_and_keeps_tail():
+    from trim.training.hf_sft import pack_sft_examples
+
+    short = [{"input_ids": list(range(10)), "n_context": 4} for _ in range(5)]
+    packs, meta = pack_sft_examples(short, pack_length=24, max_length=64, seed=0)
+    assert meta["n_packed_examples"] == 5
+    assert meta["n_packs"] >= 2
+    assert all(len(p["input_ids"]) <= 24 for p in packs)
+    assert meta["occupancy"] > 0.5
+    long = [{"input_ids": list(range(30)), "n_context": 20}]
+    packed, _ = pack_sft_examples(long, pack_length=10, max_length=64, seed=0)
+    assert len(packed) == 1
+    assert packed[0]["input_ids"] == list(range(20, 30))
+    skipped, skip_meta = pack_sft_examples(long, pack_length=10, max_length=16, seed=0)
+    assert skipped == []
+    assert skip_meta["n_skipped"] == 1

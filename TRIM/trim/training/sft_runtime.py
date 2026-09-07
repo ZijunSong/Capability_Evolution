@@ -31,6 +31,12 @@ HARNESS1_SFT_SAVE_EVERY = 50
 HARNESS1_SFT_EVAL_EVERY = 50
 HARNESS1_SFT_AUTO_POPULATE_TOP_K = "8"
 
+# Local HF packed DDP: fat sequences so SM-util stays high. Individual turns
+# longer than this are tail-truncated (action kept). Official Tinker max_length
+# still drops examples above 32768 before packing.
+HF_SFT_PACK_LENGTH = 8192
+HF_SFT_MICRO_BATCH = 1
+
 # v8d flags MUST match SFT generation + RL (see launch_sft_training.sh).
 HARNESS1_SFT_V8D_ENV: dict[str, str] = {
     "V8D_SUBTRACTIVE_CURATION": "1",
@@ -60,8 +66,75 @@ _MODEL_ALIASES = {
 
 def canonical_sft_model_name(value: str | None) -> str:
     text = str(value or "").strip() or HARNESS1_SFT_MODEL_NAME
+    if looks_like_local_model_path(text):
+        path = Path(text).expanduser()
+        try:
+            return str(path.resolve()) if path.exists() else str(path)
+        except OSError:
+            return str(path)
     key = text.lower().replace(" ", "").replace("_", "-")
     return _MODEL_ALIASES.get(key, text)
+
+
+def looks_like_local_model_path(name: str | None) -> bool:
+    """True for filesystem paths. Tinker/HF ids such as ``openai/gpt-oss-20b`` stay remote."""
+    text = str(name or "").strip()
+    if not text:
+        return False
+    if text.startswith("/") or text.startswith(".") or text.startswith("~") or text.startswith("\\"):
+        return True
+    if len(text) >= 3 and text[1:3] == ":\\":
+        return True
+    try:
+        return Path(text).expanduser().exists()
+    except OSError:
+        return False
+
+
+def is_local_hf_model(name: str | None) -> bool:
+    """True when ``name`` is a local HuggingFace checkpoint / adapter directory."""
+    if not looks_like_local_model_path(name):
+        return False
+    path = Path(str(name).strip()).expanduser()
+    try:
+        if not path.exists():
+            return False
+    except OSError:
+        return False
+    if path.is_file():
+        return path.suffix.lower() in {".json", ".safetensors", ".bin", ".pt"}
+    return True
+
+
+def resolve_sft_backend(backend: str | None, model_name: str | None) -> str:
+    """``auto`` uses local HF LoRA when ``model_name`` is a checkpoint directory."""
+    choice = str(backend or "auto").strip().lower() or "auto"
+    if choice in {"tinker", "hf"}:
+        return choice
+    if choice != "auto":
+        raise ValueError(f"unknown SFT backend {backend!r} (expected auto|tinker|hf)")
+    if is_local_hf_model(model_name) or looks_like_local_model_path(model_name):
+        return "hf"
+    return "tinker"
+
+
+def resolve_hf_model_dir(model_name: str | None) -> str:
+    text = str(model_name or "").strip()
+    if is_local_hf_model(text):
+        return str(Path(text).expanduser().resolve())
+    raise RuntimeError(
+        "HF SFT backend needs a local HuggingFace checkpoint directory "
+        f"(got {text!r}). Pass --model-name /path/to/gpt-oss-20b; "
+        "TINKER_API_KEY is not required for --backend hf."
+    )
+
+
+def apply_sft_v8d_env(env: dict[str, str] | None = None) -> dict[str, str]:
+    """Set official v8d flags before importing harness.ultra_core."""
+    target = env if env is not None else os.environ
+    for key, value in HARNESS1_SFT_V8D_ENV.items():
+        target[key] = value
+    return target
 
 
 def _uv_candidates() -> list[Path]:
@@ -212,14 +285,15 @@ def sft_subprocess_env(
     for path in dotenv_paths():
         for key, value in load_dotenv(path).items():
             env.setdefault(key, value)
-    env.update(HARNESS1_SFT_V8D_ENV)
+    apply_sft_v8d_env(env)
     if extra:
         env.update({str(k): str(v) for k, v in extra.items()})
     env["PYTHONPATH"] = harness1_pythonpath(env.get("PYTHONPATH"))
     if require_tinker_key and not str(env.get("TINKER_API_KEY") or "").strip():
         raise RuntimeError(
             "TINKER_API_KEY is not set. Copy external/harness-1/.env.example "
-            "to .env.local or export TINKER_API_KEY (Harness-1 SFT uses Tinker)."
+            "to .env.local, export TINKER_API_KEY, or pass a local HuggingFace "
+            "directory via --model-name /path/to/gpt-oss-20b (uses --backend hf, no API key)."
         )
     return env
 

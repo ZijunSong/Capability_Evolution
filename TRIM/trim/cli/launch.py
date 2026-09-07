@@ -55,6 +55,8 @@ from trim.training.hf_rl_batch import (
     HF_DEFAULT_MICRO_BATCH,
 )
 from trim.training.sft_runtime import (
+    HF_SFT_MICRO_BATCH,
+    HF_SFT_PACK_LENGTH,
     HARNESS1_SFT_BATCH_SIZE,
     HARNESS1_SFT_EVAL_EVERY,
     HARNESS1_SFT_LEARNING_RATE,
@@ -849,9 +851,47 @@ def add_sft_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
         dest="model_name",
         default=HARNESS1_SFT_MODEL_NAME,
         help=(
-            "Tinker base model id. Default openai/gpt-oss-20b (Harness-1 SFT). "
+            "Tinker base model id or local HuggingFace directory. "
+            "Default openai/gpt-oss-20b (Tinker). A local path such as "
+            "/mnt/.../gpt-oss-20b selects the HF LoRA backend (no TINKER_API_KEY). "
             "Aliases: gpt-oss-20b, gpt-oss-120b."
         ),
+    )
+    parser.add_argument(
+        "--backend",
+        choices=("auto", "tinker", "hf"),
+        default="auto",
+        help=(
+            "SFT trainer. auto: local checkpoint dir → HuggingFace LoRA "
+            "(no API key); otherwise Tinker. hf never requires TINKER_API_KEY."
+        ),
+    )
+    parser.add_argument(
+        "--device-map",
+        default="ddp",
+        help="Ignored for local HF (packed DDP). Kept for flag compatibility.",
+    )
+    parser.add_argument(
+        "--pack-length",
+        type=int,
+        default=HF_SFT_PACK_LENGTH,
+        help="HF packed sequence length (default 8192). Fat GEMMs keep SM util high.",
+    )
+    parser.add_argument(
+        "--micro-batch-size",
+        type=int,
+        default=HF_SFT_MICRO_BATCH,
+        help="Packed sequences per GPU per forward (default 1).",
+    )
+    parser.add_argument(
+        "--no-gradient-checkpointing",
+        action="store_true",
+        help="HF: disable activation checkpointing (more memory, slightly faster).",
+    )
+    parser.add_argument(
+        "--merge",
+        action="store_true",
+        help="HF backend: also write a merged full-weight checkpoint.",
     )
     parser.add_argument(
         "--sft-data",
@@ -914,9 +954,10 @@ def add_sft_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
 def parse_sft_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "One-click Harness-1 SFT via Tinker (train_sft.py). "
-            "Default recipe: openai/gpt-oss-20b, 3 epochs, LoRA r=32, "
-            "lr=5e-6, batch=128, max_length=32768, min_recall=0.1."
+            "One-click Harness-1 SFT. Tinker cloud when --model-name is a Tinker "
+            "id; local HuggingFace LoRA when it is a checkpoint directory "
+            "(no TINKER_API_KEY). Recipe: openai/gpt-oss-20b, 3 epochs, "
+            "LoRA r=32, lr=5e-6, batch=128, max_length=32768, min_recall=0.1."
         ),
     )
     add_sft_args(parser)
