@@ -4,12 +4,15 @@ Designed for cluster watchdogs that kill jobs with low GPU / SM util:
 
 - ``GpuKeepAlive`` dummy GEMMs during CPU data build and model load
 - token packing so every forward is an 8k-wide matmul, not a short sample
-- DDP across all visible GPUs (not ``device_map=auto`` pipeline shards)
+- FSDP FULL_SHARD across all visible GPUs (not DDP replicas, not
+  ``device_map=auto`` pipeline). 8x80GB can hold bf16 20B because each
+  rank only stores 1/8 of the weights.
 """
 
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import os
 import random
@@ -33,6 +36,7 @@ from trim.training.sft_runtime import (
     HARNESS1_SFT_NUM_EPOCHS,
     HARNESS1_SFT_SAVE_EVERY,
     apply_sft_v8d_env,
+    normalize_hf_shard,
     resolve_hf_model_dir,
 )
 
@@ -187,14 +191,16 @@ def run_hf_sft(
     save_every: int = HARNESS1_SFT_SAVE_EVERY,
     eval_every: int = HARNESS1_SFT_EVAL_EVERY,
     load_checkpoint_path: str | None = None,
-    device_map: str | dict[str, int] = "ddp",
+    device_map: str | dict[str, int] = "fsdp",
     merge: bool = False,
     seed: int = 0,
     pack_length: int = HF_SFT_PACK_LENGTH,
     micro_batch_size: int = HF_SFT_MICRO_BATCH,
     gradient_checkpointing: bool = True,
+    shard: str = "fsdp",
 ) -> dict[str, Any]:
-    del eval_every, device_map
+    del eval_every
+    shard = normalize_hf_shard(shard, device_map)
     from trim.training.gpu_keepalive import acquire_keepalive, release_keepalive
 
     apply_sft_v8d_env()
@@ -251,6 +257,7 @@ def run_hf_sft(
             "pack_length": int(pack_length),
             "micro_batch_size": int(micro_batch_size),
             "gradient_checkpointing": bool(gradient_checkpointing),
+            "shard": shard,
         }
         _dump(out_dir / "HF_SFT_WORKER.json", cfg)
         _dump(out_dir / "DATA_META.json", {**data_meta, **pack_meta})
@@ -260,7 +267,7 @@ def run_hf_sft(
             rc = _spawn_torchrun(out_dir, n_gpu)
             summary_path = out_dir / "SFT_SUMMARY.json"
             if rc != 0 or not summary_path.is_file():
-                raise RuntimeError(f"packed DDP SFT failed rc={rc} summary={summary_path}")
+                raise RuntimeError(f"packed {shard.upper()} SFT failed rc={rc} summary={summary_path}")
             return json.loads(summary_path.read_text(encoding="utf-8"))
         return _train_packed(cfg, keepalive=ka)
     finally:
@@ -270,6 +277,7 @@ def run_hf_sft(
 def _spawn_torchrun(out_dir: Path, n_gpu: int) -> int:
     env = os.environ.copy()
     env.setdefault("PYTHONUNBUFFERED", "1")
+    env.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
     cmd = [
         sys.executable,
         "-m",
@@ -304,6 +312,139 @@ def _maybe_init_dist() -> tuple[int, int, int]:
     return 0, 1, local_rank
 
 
+def _decoder_layer_classes(model: Any) -> set[type]:
+    found: set[type] = set()
+    try:
+        from transformers.models.gpt_oss.modeling_gpt_oss import GptOssDecoderLayer
+
+        found.add(GptOssDecoderLayer)
+    except Exception:
+        pass
+    for mod in model.modules():
+        cls = type(mod)
+        if cls.__name__.endswith("DecoderLayer"):
+            found.add(cls)
+    return found
+
+
+def _wrap_fsdp(model: Any, *, local_rank: int) -> Any:
+    import torch
+    from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+    from torch.distributed.fsdp import MixedPrecision, ShardingStrategy
+    from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy, transformer_auto_wrap_policy
+
+    layer_cls = _decoder_layer_classes(model)
+    if layer_cls:
+        policy = functools.partial(transformer_auto_wrap_policy, transformer_layer_cls=layer_cls)
+    else:
+        policy = functools.partial(size_based_auto_wrap_policy, min_num_params=1_000_000)
+    try:
+        from peft.utils.other import fsdp_auto_wrap_policy as peft_fsdp_policy
+
+        policy = peft_fsdp_policy(model)
+    except Exception:
+        pass
+    mp = MixedPrecision(
+        param_dtype=torch.bfloat16,
+        reduce_dtype=torch.bfloat16,
+        buffer_dtype=torch.float32,
+    )
+    fsdp_kw: dict[str, Any] = {
+        "auto_wrap_policy": policy,
+        "sharding_strategy": ShardingStrategy.FULL_SHARD,
+        "mixed_precision": mp,
+        "device_id": torch.device(f"cuda:{local_rank}"),
+        "use_orig_params": True,
+        "sync_module_states": True,
+        "limit_all_gathers": True,
+        "forward_prefetch": True,
+    }
+    try:
+        wrapped = FSDP(model, **fsdp_kw)
+    except TypeError:
+        fsdp_kw.pop("forward_prefetch", None)
+        fsdp_kw.pop("limit_all_gathers", None)
+        wrapped = FSDP(model, **fsdp_kw)
+    _log(
+        "fsdp_wrapped",
+        local_rank=local_rank,
+        layer_cls=sorted(c.__name__ for c in layer_cls) or ["size_based"],
+        strategy="FULL_SHARD",
+    )
+    return wrapped
+
+
+def _is_fsdp(module: Any) -> bool:
+    try:
+        from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+
+        return isinstance(module, FSDP)
+    except Exception:
+        return False
+
+
+def _peft_core(module: Any) -> Any:
+    from torch.nn.parallel import DistributedDataParallel as DDP
+
+    cur = module
+    for _ in range(8):
+        if _is_fsdp(cur) or isinstance(cur, DDP):
+            cur = cur.module
+            continue
+        break
+    return cur
+
+
+def _clip_grads(wrapped: Any, max_norm: float = 1.0) -> None:
+    import torch
+
+    if _is_fsdp(wrapped):
+        wrapped.clip_grad_norm_(max_norm)
+        return
+    torch.nn.utils.clip_grad_norm_([p for p in wrapped.parameters() if p.requires_grad], max_norm)
+
+
+def _dist_rank() -> int:
+    try:
+        import torch.distributed as dist
+
+        if dist.is_available() and dist.is_initialized():
+            return int(dist.get_rank())
+    except Exception:
+        pass
+    return 0
+
+
+def _save_peft_checkpoint(wrapped: Any, tokenizer: Any, path: Path, *, merge: bool = False) -> Path | None:
+    from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+
+    rank = _dist_rank()
+    merged_dir: Path | None = None
+    if rank == 0:
+        path.mkdir(parents=True, exist_ok=True)
+    if _is_fsdp(wrapped):
+        with FSDP.summon_full_params(wrapped, writeback=False, offload_to_cpu=True, rank0_only=True):
+            core = _peft_core(wrapped)
+            if rank == 0:
+                core.save_pretrained(str(path))
+                tokenizer.save_pretrained(str(path))
+                if merge:
+                    merged_dir = path.parent / "hf_merged"
+                    core.merge_and_unload().save_pretrained(str(merged_dir))
+                    tokenizer.save_pretrained(str(merged_dir))
+        return merged_dir
+    if rank != 0:
+        return None
+    core = _peft_core(wrapped)
+    core.save_pretrained(str(path))
+    tokenizer.save_pretrained(str(path))
+    if merge:
+        merged_dir = path.parent / "hf_merged"
+        core.merge_and_unload().save_pretrained(str(merged_dir))
+        tokenizer.save_pretrained(str(merged_dir))
+    return merged_dir
+
+
 def _load_lora_model(
     *,
     model_dir: str,
@@ -311,7 +452,9 @@ def _load_lora_model(
     lora_rank: int,
     load_checkpoint_path: str | None,
     gradient_checkpointing: bool,
+    shard: str,
 ):
+    import torch
     from peft import LoraConfig, PeftModel, TaskType, get_peft_model
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -321,12 +464,17 @@ def _load_lora_model(
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
     attn = _attn_implementation()
+    # Load on CPU. FSDP then shards onto GPUs. Putting the full bf16 20B on
+    # every CUDA device (DDP) is what OOM'd 80GB cards at backward.
     load_kw: dict[str, Any] = {
         "trust_remote_code": True,
-        "torch_dtype": __import__("torch").bfloat16,
-        "device_map": {"": f"cuda:{local_rank}"},
+        "torch_dtype": torch.bfloat16,
+        "low_cpu_mem_usage": True,
         "attn_implementation": attn,
     }
+    if shard != "fsdp":
+        load_kw["device_map"] = {"": f"cuda:{int(local_rank)}"}
+        load_kw.pop("low_cpu_mem_usage", None)
     try:
         model = AutoModelForCausalLM.from_pretrained(model_dir, **load_kw)
     except Exception:
@@ -336,7 +484,10 @@ def _load_lora_model(
     if hasattr(model, "config"):
         model.config.use_cache = False
     if gradient_checkpointing and hasattr(model, "gradient_checkpointing_enable"):
-        model.gradient_checkpointing_enable()
+        try:
+            model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+        except TypeError:
+            model.gradient_checkpointing_enable()
         if hasattr(model, "enable_input_require_grads"):
             model.enable_input_require_grads()
     adapter = Path(load_checkpoint_path or "")
@@ -367,6 +518,7 @@ def _train_packed(cfg: dict[str, Any], *, keepalive: Any) -> dict[str, Any]:
     from torch.nn.parallel import DistributedDataParallel as DDP
     from torch.utils.data import DataLoader, Dataset, DistributedSampler
 
+    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
     try:
@@ -375,6 +527,9 @@ def _train_packed(cfg: dict[str, Any], *, keepalive: Any) -> dict[str, Any]:
         pass
 
     rank, world, local_rank = _maybe_init_dist()
+    shard = str(cfg.get("shard") or "fsdp").strip().lower()
+    if world <= 1:
+        shard = "none"
     packs_path = Path(cfg["packs_path"])
     packs: list[dict[str, Any]]
     try:
@@ -394,29 +549,45 @@ def _train_packed(cfg: dict[str, Any], *, keepalive: Any) -> dict[str, Any]:
             return packs[idx]
 
     if rank == 0:
-        _log("load_model", rank=rank, world=world, local_rank=local_rank, n_packs=len(packs))
+        _log(
+            "load_model",
+            rank=rank,
+            world=world,
+            local_rank=local_rank,
+            n_packs=len(packs),
+            shard=shard,
+        )
     tokenizer, model, targets, attn = _load_lora_model(
         model_dir=str(cfg["model_dir"]),
         local_rank=local_rank,
         lora_rank=int(cfg["lora_rank"]),
         load_checkpoint_path=cfg.get("load_checkpoint_path"),
         gradient_checkpointing=bool(cfg.get("gradient_checkpointing", True)),
+        shard=shard,
     )
     pad_id = int(tokenizer.pad_token_id or 0)
     device = torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu")
     if keepalive is not None:
         keepalive.pause()
-    trainable = [p for p in model.parameters() if p.requires_grad]
-    optimizer = torch.optim.AdamW(trainable, lr=float(cfg["learning_rate"]))
     wrapped: Any = model
-    if world > 1:
+    if world > 1 and shard == "fsdp":
+        wrapped = _wrap_fsdp(model, local_rank=local_rank)
+    elif world > 1:
         wrapped = DDP(
             model,
             device_ids=[local_rank],
             output_device=local_rank,
             find_unused_parameters=False,
         )
-    sampler = DistributedSampler(_PackDS(), num_replicas=world, rank=rank, shuffle=True, seed=int(cfg["seed"])) if world > 1 else None
+    optimizer = torch.optim.AdamW(
+        [p for p in wrapped.parameters() if p.requires_grad],
+        lr=float(cfg["learning_rate"]),
+    )
+    sampler = (
+        DistributedSampler(_PackDS(), num_replicas=world, rank=rank, shuffle=True, seed=int(cfg["seed"]))
+        if world > 1
+        else None
+    )
     loader = DataLoader(
         _PackDS(),
         batch_size=micro_batch,
@@ -434,6 +605,7 @@ def _train_packed(cfg: dict[str, Any], *, keepalive: Any) -> dict[str, Any]:
         _log(
             "train_loop_start",
             world=world,
+            shard=shard,
             n_packs=len(packs),
             pack_length=pack_length,
             micro_batch=micro_batch,
@@ -452,7 +624,6 @@ def _train_packed(cfg: dict[str, Any], *, keepalive: Any) -> dict[str, Any]:
     ckpt_log = out_dir / "checkpoints.jsonl"
     last_ckpt: Path | None = None
     save_every = int(cfg["save_every"])
-    core = wrapped.module if isinstance(wrapped, DDP) else wrapped
 
     wrapped.train()
     optimizer.zero_grad(set_to_none=True)
@@ -476,7 +647,7 @@ def _train_packed(cfg: dict[str, Any], *, keepalive: Any) -> dict[str, Any]:
             del out, batch
             if micro_i % accum != 0:
                 continue
-            torch.nn.utils.clip_grad_norm_(trainable, 1.0)
+            _clip_grads(wrapped, 1.0)
             optimizer.step()
             optimizer.zero_grad(set_to_none=True)
             step += 1
@@ -489,14 +660,14 @@ def _train_packed(cfg: dict[str, Any], *, keepalive: Any) -> dict[str, Any]:
                     progress=f"{step}/{total_opt}",
                     elapsed_s=round(time.time() - t0, 1),
                     tokens_per_step=pack_length * micro_batch * world * accum,
+                    shard=shard,
                 )
             if save_every > 0 and step % save_every == 0:
                 if world > 1:
                     dist.barrier()
+                last_ckpt = ckpt_root / f"step_{step:06d}"
+                _save_peft_checkpoint(wrapped, tokenizer, last_ckpt, merge=False)
                 if rank == 0:
-                    last_ckpt = ckpt_root / f"step_{step:06d}"
-                    core.save_pretrained(str(last_ckpt))
-                    tokenizer.save_pretrained(str(last_ckpt))
                     _append_jsonl(
                         ckpt_log,
                         {"step": step, "epoch": epoch, "path": str(last_ckpt), "loss": losses[-1] if losses else None},
@@ -504,7 +675,7 @@ def _train_packed(cfg: dict[str, Any], *, keepalive: Any) -> dict[str, Any]:
                 if world > 1:
                     dist.barrier()
         if micro_i % accum != 0:
-            torch.nn.utils.clip_grad_norm_(trainable, 1.0)
+            _clip_grads(wrapped, 1.0)
             optimizer.step()
             optimizer.zero_grad(set_to_none=True)
             step += 1
@@ -513,18 +684,12 @@ def _train_packed(cfg: dict[str, Any], *, keepalive: Any) -> dict[str, Any]:
     final_ckpt = out_dir / "lora_checkpoint"
     if world > 1:
         dist.barrier()
+    merged = _save_peft_checkpoint(wrapped, tokenizer, final_ckpt, merge=bool(cfg.get("merge")))
     if rank == 0:
-        core.save_pretrained(str(final_ckpt))
-        tokenizer.save_pretrained(str(final_ckpt))
-        merged = None
-        if cfg.get("merge"):
-            merged = out_dir / "hf_merged"
-            core.merge_and_unload().save_pretrained(str(merged))
-            tokenizer.save_pretrained(str(merged))
         summary = {
             "ok": True,
             "backend": "hf",
-            "framework": "huggingface + peft LoRA packed DDP",
+            "framework": f"huggingface + peft LoRA packed {shard.upper()}",
             "model_name": cfg["model_dir"],
             "out": str(out_dir),
             "num_epochs": int(cfg["num_epochs"]),
@@ -534,6 +699,7 @@ def _train_packed(cfg: dict[str, Any], *, keepalive: Any) -> dict[str, Any]:
             "pack_length": pack_length,
             "micro_batch_size": micro_batch,
             "world_size": world,
+            "shard": shard,
             "attn_implementation": attn,
             "n_packs": len(packs),
             "n_optimizer_steps": step,
@@ -548,8 +714,17 @@ def _train_packed(cfg: dict[str, Any], *, keepalive: Any) -> dict[str, Any]:
             "tokens_per_optimizer_step": pack_length * micro_batch * world * accum,
         }
         _dump(out_dir / "SFT_SUMMARY.json", summary)
-        _append_jsonl(ckpt_log, {"step": step, "final": True, "path": str(final_ckpt), "mean_train_loss": summary["mean_train_loss"]})
-        _log("hf_sft_done", **{k: summary[k] for k in ("ok", "n_packs", "n_optimizer_steps", "mean_train_loss", "checkpoint_lora", "world_size")})
+        _append_jsonl(
+            ckpt_log,
+            {"step": step, "final": True, "path": str(final_ckpt), "mean_train_loss": summary["mean_train_loss"]},
+        )
+        _log(
+            "hf_sft_done",
+            **{
+                k: summary[k]
+                for k in ("ok", "n_packs", "n_optimizer_steps", "mean_train_loss", "checkpoint_lora", "world_size", "shard")
+            },
+        )
     else:
         summary = {"ok": True, "rank": rank}
     if world > 1:

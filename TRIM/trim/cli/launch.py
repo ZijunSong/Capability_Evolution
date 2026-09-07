@@ -69,6 +69,7 @@ from trim.training.sft_runtime import (
     SMOKE_BATCH_SIZE,
     SMOKE_NUM_EPOCHS,
     canonical_sft_model_name,
+    normalize_hf_shard,
 )
 
 TRIM_ROOT = Path(__file__).resolve().parents[2]
@@ -867,9 +868,18 @@ def add_sft_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--shard",
+        choices=("fsdp", "ddp"),
+        default="fsdp",
+        help=(
+            "HF multi-GPU strategy. fsdp (default): FULL_SHARD so 20B bf16 "
+            "fits 8x80GB. ddp: full replica per GPU (will OOM a 20B at 8k)."
+        ),
+    )
+    parser.add_argument(
         "--device-map",
-        default="ddp",
-        help="Ignored for local HF (packed DDP). Kept for flag compatibility.",
+        default=None,
+        help="Deprecated alias of --shard (fsdp|ddp). Ignored if --shard is set.",
     )
     parser.add_argument(
         "--pack-length",
@@ -963,6 +973,12 @@ def parse_sft_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     add_sft_args(parser)
     args = parser.parse_args(argv)
     args.model_name = canonical_sft_model_name(args.model_name)
+    argv_list = [str(a) for a in (argv or [])]
+    shard_explicit = any(a == "--shard" or a.startswith("--shard=") for a in argv_list)
+    if args.device_map and not shard_explicit:
+        args.shard = normalize_hf_shard(args.device_map)
+    else:
+        args.shard = normalize_hf_shard(args.shard)
     if args.sft_data is None:
         args.sft_data = default_sft_pack()
     if args.out is None:

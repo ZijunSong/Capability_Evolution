@@ -107,7 +107,7 @@ PYTHONPATH=TRIM python TRIM/scripts/run_sft.py --smoke --dry-run
 - **Recipe:** 3 epochs, batch 128, lr `5e-6`, LoRA rank 32, `max_length=32768`, `min_recall=0.1`, save/eval every 50
 - **v8d flags:** same as Harness-1 SFT generation / RL (`VERIFY_TOOL`, `EVIDENCE_GRAPH`, …)
 - **Tinker:** requires `TINKER_API_KEY` (in `external/harness-1/.env.local` or the environment) except for `--dry-run` / `--pack-only` / `--backend hf`
-- **HF LoRA:** packed DDP on every visible GPU (not `device_map=auto`). CPU data build / model load keep SMs busy via `GpuKeepAlive` so cluster watchdogs do not kill the job. Default `--pack-length 8192`. Writes `lora_checkpoint/` under `--out`; optional `--merge`. No `TINKER_API_KEY`.
+- **HF LoRA:** packed FSDP FULL_SHARD on every visible GPU (not DDP replicas, not `device_map=auto`). 8×80GB can hold bf16 20B because each rank stores ~1/8 of the weights. CPU data build / model load keep SMs busy via `GpuKeepAlive` so cluster watchdogs do not kill the job. Default `--pack-length 8192`. Override with `--shard ddp` only if the model already fits one GPU. Writes `lora_checkpoint/` under `--out`; optional `--merge`. No `TINKER_API_KEY`.
 - **Tinker interpreter:** `TRIM_SFT_PYTHON` / `--python`, else a local env that can `import tinker`, else `uv run --project external/harness-1`
 
 `--train-data`:

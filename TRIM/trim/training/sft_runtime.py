@@ -31,11 +31,20 @@ HARNESS1_SFT_SAVE_EVERY = 50
 HARNESS1_SFT_EVAL_EVERY = 50
 HARNESS1_SFT_AUTO_POPULATE_TOP_K = "8"
 
-# Local HF packed DDP: fat sequences so SM-util stays high. Individual turns
+# Local HF packed FSDP: fat sequences so SM-util stays high. Individual turns
 # longer than this are tail-truncated (action kept). Official Tinker max_length
 # still drops examples above 32768 before packing.
 HF_SFT_PACK_LENGTH = 8192
 HF_SFT_MICRO_BATCH = 1
+
+
+def normalize_hf_shard(shard: object | None, device_map: object | None = None) -> str:
+    """fsdp shards 20B across GPUs; ddp replicates a full copy on every rank."""
+    raw = shard if shard not in (None, "") else device_map
+    key = str(raw or "fsdp").strip().lower()
+    if key in {"ddp", "replicate", "copy"}:
+        return "ddp"
+    return "fsdp"
 
 # v8d flags MUST match SFT generation + RL (see launch_sft_training.sh).
 HARNESS1_SFT_V8D_ENV: dict[str, str] = {

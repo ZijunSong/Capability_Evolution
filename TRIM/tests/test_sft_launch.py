@@ -234,7 +234,8 @@ def test_run_sft_hf_dry_run_skips_tinker_key(tmp_path: Path, monkeypatch):
     launch = json.loads((out / "LAUNCH.json").read_text(encoding="utf-8"))
     assert launch["backend"] == "hf"
     assert launch["framework"].startswith("huggingface")
-    assert "packed DDP" in launch["framework"]
+    assert "packed FSDP" in launch["framework"]
+    assert launch["shard"] == "fsdp"
     assert launch["requires_tinker_api_key"] is False
     assert launch["pack_length"] == 8192
     assert launch["entrypoint"] == "trim.training.hf_sft.run_hf_sft"
@@ -277,3 +278,23 @@ def test_pack_sft_examples_fills_and_keeps_tail():
     skipped, skip_meta = pack_sft_examples(long, pack_length=10, max_length=16, seed=0)
     assert skipped == []
     assert skip_meta["n_skipped"] == 1
+
+
+def test_normalize_hf_shard_defaults_to_fsdp():
+    from trim.training.sft_runtime import normalize_hf_shard
+
+    assert normalize_hf_shard(None) == "fsdp"
+    assert normalize_hf_shard("fsdp") == "fsdp"
+    assert normalize_hf_shard("FULL_SHARD") == "fsdp"
+    assert normalize_hf_shard("ddp") == "ddp"
+    assert normalize_hf_shard(None, "ddp") == "ddp"
+    assert normalize_hf_shard("fsdp", "ddp") == "fsdp"
+
+
+def test_parse_sft_args_device_map_alias_sets_ddp():
+    args = parse_sft_args(["--device-map", "ddp", "--dry-run"])
+    assert args.shard == "ddp"
+    args = parse_sft_args(["--shard", "fsdp", "--device-map", "ddp", "--dry-run"])
+    assert args.shard == "fsdp"
+    args = parse_sft_args(["--dry-run"])
+    assert args.shard == "fsdp"

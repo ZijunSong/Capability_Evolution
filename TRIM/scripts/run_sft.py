@@ -38,6 +38,7 @@ from trim.training.sft_data import (
 from trim.training.sft_runtime import (
     HARNESS1_ROOT,
     HARNESS1_SFT_V8D_ENV,
+    normalize_hf_shard,
     resolve_sft_backend,
     run_harness1_train_sft,
     sft_subprocess_env,
@@ -106,14 +107,16 @@ def _main_body(args: Any, backend: str) -> int:
         load_checkpoint_path=args.load_checkpoint_path,
         python=args.python,
     )
+    shard = normalize_hf_shard(getattr(args, "shard", None), getattr(args, "device_map", None))
     if backend == "hf":
         launch = {
-            "framework": "huggingface + peft LoRA packed DDP",
+            "framework": f"huggingface + peft LoRA packed {shard.upper()}",
             "entrypoint": "trim.training.hf_sft.run_hf_sft",
             "cwd": None,
             "backend": backend,
             "model_name": args.model_name,
-            "device_map": "ddp",
+            "device_map": shard,
+            "shard": shard,
             "pack_length": int(getattr(args, "pack_length", 8192)),
             "micro_batch_size": int(getattr(args, "micro_batch_size", 1)),
             "gradient_checkpointing": not bool(getattr(args, "no_gradient_checkpointing", False)),
@@ -219,7 +222,8 @@ def _main_body(args: Any, backend: str) -> int:
             save_every=args.save_every,
             eval_every=args.eval_every,
             load_checkpoint_path=args.load_checkpoint_path,
-            device_map="ddp",
+            device_map=shard,
+            shard=shard,
             merge=bool(getattr(args, "merge", False)),
             pack_length=int(getattr(args, "pack_length", 8192)),
             micro_batch_size=int(getattr(args, "micro_batch_size", 1)),
