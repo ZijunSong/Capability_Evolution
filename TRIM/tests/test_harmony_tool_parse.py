@@ -68,3 +68,19 @@ def test_parse_unknown_tool_stays_illegal():
     assert parsed.parsed is True
     assert parsed.legal is False
     assert parsed.tool_name == "not_a_real_tool"
+
+
+def test_parse_harness_g_harmony_select_is_legal():
+    text = (
+        "<|start|>assistant to=functions.select<|channel|>commentary "
+        '<|constrain|>json<|message|>{"sid": "d1:s0"}<|call|>'
+    )
+    parsed = parse_harmony_tool_call(text)
+    assert parsed.parsed is True
+    assert parsed.legal is True
+    assert parsed.tool_name == "select"
+    assert parsed.arguments == {"sid": "d1:s0"}
+    action, ok = parse_generated_action(text, None, enc=None)
+    assert ok is True
+    assert action["name"] == "select"
+    assert action["arguments"]["sid"] == "d1:s0"

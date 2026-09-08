@@ -638,7 +638,7 @@ def parse_generated_action(text: str, completion_ids: list[int] | None, enc) -> 
         parsed = parse_harmony_tool_call(text, completion_ids=completion_ids, enc=enc)
     name = parsed.tool_name
     legal = set(STUDENT_NATIVE_TOOLS) | set(HARNESS_G_STUDENT_NATIVE_TOOLS)
-    if parsed.legal and name in legal:
+    if parsed.parsed and name in legal:
         return {"name": name, "arguments": dict(parsed.arguments or {})}, True
     from trim.eval.harness_g_runtime import parse_harness_g_action
 
@@ -750,7 +750,9 @@ def one_episode(
             break
         with timed_section(timing, "harness"):
             if g:
-                pids = build_g_prompt_ids(query, wm_text(st), enc)
+                pids = build_g_prompt_ids(
+                    query, wm_text(st), enc, harness_mask=harness_mask
+                )
             elif enc is not None and hasattr(enc, "build_first_turn_prompt_ids"):
                 if turn == 0:
                     pids = enc.build_first_turn_prompt_ids(query)

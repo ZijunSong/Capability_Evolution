@@ -16,6 +16,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Sequence
 
+from trim.training.action_codec import HARNESS_G_STUDENT_NATIVE_TOOLS
+
 CANONICAL_TOOLS = (
     "fan_out_search",
     "search_corpus",
@@ -26,7 +28,10 @@ CANONICAL_TOOLS = (
     "verify",
     "end_search",
 )
-SCHEMA_TOOLS = CANONICAL_TOOLS + ("multi_tool_use",)
+# Include Harness-G named tools so Harmony ``to=functions.select`` is legal.
+SCHEMA_TOOLS = CANONICAL_TOOLS + ("multi_tool_use",) + HARNESS_G_STUDENT_NATIVE_TOOLS + (
+    "answer_with",
+)
 
 SCOPE = Path("/data/ppnm/Capability_Evolution/SCOPE")
 REPO = Path(__file__).resolve().parents[2]

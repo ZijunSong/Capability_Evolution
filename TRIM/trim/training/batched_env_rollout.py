@@ -78,7 +78,9 @@ def _build_prompt_ids(ep: LiveEpisode, enc) -> list[int]:
         from trim.eval.harness_g_env import wm_text
         from trim.eval.harness_g_runtime import build_prompt_ids as build_g_prompt_ids
 
-        return build_g_prompt_ids(query, wm_text(ep.st), enc)
+        return build_g_prompt_ids(
+            query, wm_text(ep.st), enc, harness_mask=ep.harness_mask
+        )
     from trim.eval.local_search_env import wm_text
 
     wm = wm_text(ep.st)
