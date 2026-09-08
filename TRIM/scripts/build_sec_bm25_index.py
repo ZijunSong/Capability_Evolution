@@ -85,7 +85,9 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(f"SEC parquet corpus missing: {parquet_dir}")
 
     _configure_java_runtime()
-    os.environ.setdefault("OPENAI_API_KEY", "sk-pyserini-local")
+    from trim.eval.offline_credentials import ensure_local_offline_credentials
+
+    ensure_local_offline_credentials()
     if not os.environ.get("JAVA_HOME"):
         raise SystemExit("JAVA_HOME not set and no JDK was discovered for Pyserini")
 

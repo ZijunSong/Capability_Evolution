@@ -157,7 +157,7 @@ def infer_harness_from_ids(component_ids: Iterable[str] | str | None) -> str:
     else:
         parts = [str(x).strip() for x in component_ids if str(x).strip()]
     tokens = [_norm(p) for p in parts]
-    if not tokens or any(t in {"zero", "all"} for t in tokens):
+    if not tokens or any(t in {"zero", "all", "default"} for t in tokens):
         return DEFAULT_HARNESS
     g_ids = set(harness_g_components.COMPONENT_TAXONOMY)
     g_alias_map = {_norm(k): v for k, v in harness_g_components.COMPONENT_ALIASES.items()}

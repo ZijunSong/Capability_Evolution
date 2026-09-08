@@ -108,7 +108,9 @@ def _corpus_chunks(docid: str, text: str, *, title: str = "") -> list[dict[str, 
 
 def _index_jsonl(jsonl_path: Path, index_dir: Path, *, threads: int, python: str) -> None:
     _configure_java_runtime()
-    os.environ.setdefault("OPENAI_API_KEY", "sk-pyserini-local")
+    from trim.eval.offline_credentials import ensure_local_offline_credentials
+
+    ensure_local_offline_credentials()
     if index_dir.exists():
         shutil.rmtree(index_dir)
     index_dir.parent.mkdir(parents=True, exist_ok=True)

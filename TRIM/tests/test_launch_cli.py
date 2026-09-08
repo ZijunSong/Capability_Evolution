@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from trim.adapters.components import all_component_ids
+from trim.adapters.components import all_component_ids, default_component_ids
 from trim.cli.launch import (
     LaunchError,
     canonical_component_ids,
@@ -19,6 +19,7 @@ from trim.training.four_cell_runtime import (
     component_ids_of,
     student_mask_for,
     teacher_for,
+    teacher_mask_for,
     validate_wiring,
 )
 from trim.training.rl_opd_types import (
@@ -46,6 +47,12 @@ def test_parse_component_list_space_and_comma():
     assert canonical_component_ids(["all"]) == list(all_component_ids())
     assert canonical_component_ids(["zero"]) == []
     assert canonical_component_ids(["ZERO"]) == []
+    default_ids = canonical_component_ids(["default"])
+    assert default_ids == default_component_ids()
+    assert "chunk_neighbors" not in default_ids
+    assert "adaptive_rerank_instruction" not in default_ids
+    assert "evidence_graph" in default_ids
+    assert "verify_tool" in default_ids
 
 
 def test_unknown_component_rejected():
@@ -53,6 +60,8 @@ def test_unknown_component_rejected():
         canonical_component_ids(["not_a_component"])
     with pytest.raises(LaunchError):
         canonical_component_ids(["zero", "sentence_compress"])
+    with pytest.raises(LaunchError):
+        canonical_component_ids(["default", "verify_tool"])
 
 
 def test_train_method_mapping():
@@ -567,12 +576,40 @@ def test_parse_component_zero():
     assert spec.zero_components is True
     assert spec.components == ()
     assert spec.coalition == "zero"
+    assert spec.component_preset == "zero"
     assert args.component == "zero"
     teacher = teacher_mask_for_ids(spec.components)
     student = student_mask_for_ids(spec.components)
     assert teacher == student
     assert all(enabled is False for enabled in teacher.values())
     assert set(teacher) == set(all_component_ids())
+
+
+def test_parse_component_default_matches_harness1_rl():
+    args, spec = parse_eval_args(
+        [
+            "--component",
+            "default",
+            "--out",
+            "/tmp/scape-eval-default",
+        ]
+    )
+    assert spec.component_preset == "default"
+    assert "chunk_neighbors" not in spec.components
+    assert "adaptive_rerank_instruction" not in spec.components
+    assert "evidence_graph" in spec.components
+    assert "verify_tool" in spec.components
+    teacher = teacher_mask_for_ids(spec.components, harness=spec.harness)
+    student = student_mask_for_ids(spec.components, harness=spec.harness)
+    assert teacher["chunk_neighbors"] is False
+    assert teacher["adaptive_rerank_instruction"] is False
+    assert teacher["evidence_graph"] is True
+    assert teacher["verify_tool"] is True
+    assert student["evidence_graph"] is False
+    all_teacher = teacher_mask_for_ids(canonical_component_ids(["all"]), harness="Harness-1")
+    assert all_teacher["chunk_neighbors"] is True
+    assert all_teacher["adaptive_rerank_instruction"] is True
+    assert coalition_slug(spec.components, harness=spec.harness, preset=spec.component_preset) == "default"
 
 
 def test_masks_enable_listed_on_teacher_off_on_student():
@@ -597,6 +634,12 @@ def test_four_cell_coalition_mask_and_teacher():
     assert teacher_for("sentence_compress,evidence_graph") is not None
     assert teacher_for("content_dedup") is not None
     assert component_ids_of("zero") == []
+    assert component_ids_of("default") == [
+        cid for cid in all_component_ids() if cid not in {"chunk_neighbors", "adaptive_rerank_instruction"}
+    ]
+    assert teacher_mask_for("default")["chunk_neighbors"] is False
+    assert teacher_mask_for("default")["adaptive_rerank_instruction"] is False
+    assert teacher_mask_for("all")["chunk_neighbors"] is True
     zero_mask = student_mask_for("zero")
     assert all(enabled is False for enabled in zero_mask.values())
     assert teacher_for("zero") is not None
@@ -659,6 +702,8 @@ def test_discover_adapter_map(tmp_path: Path):
     assert found["rl_opd"].endswith("seed42/adapters/rl_opd")
     assert coalition_slug(["sentence_compress", "verify_tool"]) == "sentence_compress+verify_tool"
     assert coalition_slug([]) == "zero"
+    assert coalition_slug(list(all_component_ids())) == "all"
+    assert coalition_slug(default_component_ids()) == "default"
 
 
 def test_run_train_entry_is_train_only(monkeypatch, tmp_path: Path):

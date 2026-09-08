@@ -12,7 +12,10 @@ import shutil
 import sys
 import threading
 
+from trim.eval.offline_credentials import ensure_local_offline_credentials
 from trim.eval.official_query_pool import default_bcp_root
+
+ensure_local_offline_credentials()
 
 _PROBE_QUERIES = ("history", "company", "science", "government", "university")
 
@@ -122,14 +125,14 @@ class PyseriniBackend(RetrievalBackend):
 
     def __init__(self, index_dir: Path):
         _configure_java_runtime()
-        # pyserini.search.lucene imports the OpenAI encoder stack at module load.
-        os.environ.setdefault("OPENAI_API_KEY", "sk-pyserini-local")
+        # lucene/__init__ imports encode._openai, which constructs openai.OpenAI().
+        ensure_local_offline_credentials()
         index = str(index_dir)
         self._jni = _PyseriniThread.shared()
 
         def _construct():
             _configure_java_runtime()
-            os.environ.setdefault("OPENAI_API_KEY", "sk-pyserini-local")
+            ensure_local_offline_credentials()
             from pyserini.search.lucene import LuceneSearcher
 
             return LuceneSearcher(index)

@@ -19,6 +19,9 @@ those private corpora were rebuilt.
 per-query traces when every replica finishes.
 
 Without --run-dir / --adapter, listed --component flags are turned ON (harness eval).
+``--component default`` is the upstream Harness-1 operating point (8 of 10 v8d
+flags on; chunk_neighbors and adaptive_rerank_instruction stay off). ``all``
+turns every advanced flag on. Local BM25 eval does not need OPENAI_API_KEY.
 With a trained run directory, the student is scored under H_min (those flags OFF)
 plus the saved LoRA adapter.
 """
@@ -32,6 +35,10 @@ from pathlib import Path
 _TRIM = Path(__file__).resolve().parents[1]
 if str(_TRIM) not in sys.path:
     sys.path.insert(0, str(_TRIM))
+
+from trim.eval.offline_credentials import ensure_local_offline_credentials
+
+ensure_local_offline_credentials()
 
 from trim.cli.launch import (
     LaunchError,

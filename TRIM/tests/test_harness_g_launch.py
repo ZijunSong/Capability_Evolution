@@ -38,6 +38,7 @@ def test_unambiguous_g_id_infers_harness_g():
     assert infer_harness_from_ids("bridge_entities,snc_frontier") == "Harness-G"
     assert infer_harness_from_ids(["zero"]) == "Harness-1"
     assert infer_harness_from_ids(["all"]) == "Harness-1"
+    assert infer_harness_from_ids(["default"]) == "Harness-1"
 
 
 def test_canonical_g_all_requires_harness_flag():
@@ -49,6 +50,7 @@ def test_canonical_g_all_requires_harness_flag():
 
 def test_canonical_g_zero_and_single():
     assert canonical_component_ids(["zero"], harness="Harness-G") == []
+    assert canonical_component_ids(["default"], harness="Harness-G") == list(G_TAXONOMY)
     assert canonical_component_ids(["answer_with"], harness="Harness-G") == ["answer_with"]
     assert canonical_component_ids(["harvest", "snc"], harness="Harness-G") == [
         "answer_with",

@@ -6,6 +6,7 @@ from trim.adapters.components import (
     all_component_ids,
     assert_mask_diff_only,
     coalition_minus_mask,
+    default_component_ids,
     full_mask,
     minus_mask,
     zero_mask,
@@ -47,3 +48,10 @@ def test_zero_mask_disables_every_component():
     mask = zero_mask()
     assert set(mask) == set(all_component_ids())
     assert all(enabled is False for enabled in mask.values())
+
+
+def test_default_component_ids_match_full_mask():
+    mask = full_mask()
+    assert mask["chunk_neighbors"] is False
+    assert mask["adaptive_rerank_instruction"] is False
+    assert set(default_component_ids()) == {cid for cid, on in mask.items() if on}

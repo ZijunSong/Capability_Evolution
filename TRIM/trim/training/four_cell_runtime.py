@@ -15,7 +15,14 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-from trim.adapters.components import all_component_ids, coalition_minus_mask, full_mask, minus_mask, zero_mask
+from trim.adapters.components import (
+    all_component_ids,
+    coalition_minus_mask,
+    default_component_ids,
+    full_mask,
+    minus_mask,
+    zero_mask,
+)
 from trim.adapters.harness_profiles import infer_harness_from_ids, is_harness_g
 from trim.eval.adapter_reload_audit import audit_saved_adapter, write_reload_audit
 from trim.eval.browsecomp_retrieval import RetrievalBackend, hits_to_doc_store, open_retrieval
@@ -116,22 +123,33 @@ TEACHER_REGISTRY: dict[str, TeacherFn] = {
 
 
 def component_ids_of(value: Any, *, harness: str | None = None) -> list[str]:
-    """Parse a single id, comma-separated coalition, or `zero` (no advanced components)."""
+    """Parse a single id, comma-separated coalition, or `zero` / `all` / `default`."""
     if isinstance(value, (list, tuple)):
         parts = [str(x).strip() for x in value if str(x).strip()]
     else:
         text = str(value or "").replace(";", ",")
         parts = [p.strip() for p in text.split(",") if p.strip()]
-    if any(p.lower() == "zero" for p in parts):
+    lowered = [p.lower() for p in parts]
+    if any(p == "zero" for p in lowered):
         if len(parts) != 1 or parts[0].lower() != "zero":
             raise SystemExit("component zero cannot be mixed with other ids")
         return []
+    if any(p == "default" for p in lowered):
+        if len(parts) != 1 or parts[0].lower() != "default":
+            raise SystemExit("component default cannot be mixed with other ids")
+        resolved = harness or infer_harness_from_ids(parts)
+        return default_component_ids(resolved)
+    if any(p == "all" for p in lowered):
+        if len(parts) != 1 or parts[0].lower() != "all":
+            raise SystemExit("component all cannot be mixed with other ids")
+        resolved = harness or infer_harness_from_ids(parts)
+        return list(all_component_ids(resolved))
     resolved = harness or infer_harness_from_ids(parts)
     known = set(all_component_ids(resolved))
     unknown = [p for p in parts if p not in known]
     if unknown:
         raise SystemExit(
-            f"unknown component id(s) {unknown}; allowed: zero or {list(all_component_ids(resolved))}"
+            f"unknown component id(s) {unknown}; allowed: zero, all, default, or {list(all_component_ids(resolved))}"
         )
     if not parts:
         raise SystemExit("component id is empty; pass zero to disable all advanced components")

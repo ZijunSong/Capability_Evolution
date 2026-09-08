@@ -11,6 +11,10 @@ _TRIM = Path(__file__).resolve().parents[2]
 if str(_TRIM) not in sys.path:
     sys.path.insert(0, str(_TRIM))
 
+from trim.eval.offline_credentials import ensure_local_offline_credentials
+
+ensure_local_offline_credentials()
+
 from trim.eval.eval_parallel import load_json, write_json, write_jsonl
 
 

@@ -25,6 +25,10 @@ _TRIM = Path(__file__).resolve().parents[1]
 if str(_TRIM) not in sys.path:
     sys.path.insert(0, str(_TRIM))
 
+from trim.eval.offline_credentials import ensure_local_offline_credentials
+
+ensure_local_offline_credentials()
+
 from trim.cli.launch import LaunchError, parse_train_args, student_mask_for_ids, teacher_mask_for_ids
 from trim.eval.official_query_pool import SCORE_SPLIT_166, SCORE_SPLIT_830
 from trim.eval.sec_corpus import (

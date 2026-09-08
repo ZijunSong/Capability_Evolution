@@ -14,7 +14,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Sequence
 
-from trim.adapters.components import all_component_ids, coalition_minus_mask, full_mask, zero_mask
+from trim.adapters.components import (
+    all_component_ids,
+    coalition_minus_mask,
+    default_component_ids,
+    full_mask,
+    zero_mask,
+)
 from trim.adapters.harness_profiles import (
     ALLOWED_HARNESSES as PROFILE_HARNESSES,
     HARNESS_ALIASES as _PROFILE_HARNESS_ALIASES,
@@ -206,6 +212,7 @@ class LaunchSpec:
     base_model: Path = DEFAULT_BASE_MODEL
     out: Path = field(default_factory=lambda: TRIM_ROOT / "outputs")
     extra: dict = field(default_factory=dict)
+    component_preset: str | None = None
 
     @property
     def coalition(self) -> str:
@@ -263,13 +270,17 @@ def canonical_component_ids(
     alias_map = aliases_for(resolved_harness)
     if not tokens:
         raise LaunchError(
-            "--component is required; pass `zero`, `all`, or one or more of: "
+            "--component is required; pass `zero`, `all`, `default`, or one or more of: "
             + ", ".join(known)
         )
     if any(_norm(tok) == "zero" for tok in tokens):
         if len(tokens) != 1 or _norm(tokens[0]) != "zero":
             raise LaunchError("--component zero cannot be combined with other component ids")
         return []
+    if any(_norm(tok) == "default" for tok in tokens):
+        if len(tokens) != 1 or _norm(tokens[0]) != "default":
+            raise LaunchError("--component default cannot be combined with other component ids")
+        return default_component_ids(resolved_harness)
     if len(tokens) == 1 and _norm(tokens[0]) == "all":
         return list(known)
     seen: set[str] = set()
@@ -287,14 +298,38 @@ def canonical_component_ids(
         raise LaunchError(
             "unknown --component value(s): "
             + ", ".join(unknown)
-            + "; allowed: zero, all, "
+            + "; allowed: zero, all, default, "
             + ", ".join(known)
         )
     return ids
 
 
-def coalition_slug(component_ids: Sequence[str]) -> str:
-    return "+".join(component_ids) if component_ids else "zero"
+def component_preset_of(raw: Iterable[str] | str | None) -> str | None:
+    tokens = parse_component_tokens(raw)
+    if len(tokens) != 1:
+        return None
+    key = _norm(tokens[0])
+    if key in {"zero", "all", "default"}:
+        return key
+    return None
+
+
+def coalition_slug(
+    component_ids: Sequence[str],
+    *,
+    harness: str | None = None,
+    preset: str | None = None,
+) -> str:
+    if preset in {"zero", "all", "default"}:
+        return preset
+    if not component_ids:
+        return "zero"
+    ids = list(component_ids)
+    if ids == list(all_component_ids(harness)):
+        return "all"
+    if ids == default_component_ids(harness):
+        return "default"
+    return "+".join(ids)
 
 
 def train_method_to_mode(method: str) -> str:
@@ -377,6 +412,7 @@ def default_out_dir(
     model_name: str,
     components: Sequence[str],
     train_method: str | None = None,
+    component_preset: str | None = None,
 ) -> Path:
     parts = [
         kind,
@@ -386,7 +422,7 @@ def default_out_dir(
     ]
     if train_method:
         parts.append(_norm(train_method).replace("+", "_"))
-    parts.append(coalition_slug(components))
+    parts.append(coalition_slug(components, harness=harness, preset=component_preset))
     return TRIM_ROOT / "outputs" / "_".join(parts)
 
 
@@ -465,7 +501,10 @@ def add_common_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
             "Harness-1: V8D flags such as evidence_graph, verify_tool. "
             "Harness-G: answer_with, bridge_entities, entity_synonyms, "
             "sentence_neighbors, hybrid_init_retrieve, snc_frontier, … "
-            "Pass `all` to enable every advanced component, or `zero` for none."
+            "Pass `all` to enable every advanced component, `default` for the "
+            "upstream Harness-1 operating point (chunk_neighbors and "
+            "adaptive_rerank_instruction off; Harness-G default is all eight), "
+            "or `zero` for none."
         ),
     )
     parser.add_argument("--out", type=Path, default=None, help="Output directory.")
@@ -754,6 +793,7 @@ def _spec_from_ns(args: argparse.Namespace, *, train: bool) -> LaunchSpec:
         alias = _pick(user_model, _MODEL_ALIASES, ALLOWED_MODEL_NAMES, "--model_name")
         resolved = resolve_model_path(alias, explicit)
     model_name = str(resolved)
+    preset = component_preset_of(args.component)
     components = tuple(canonical_component_ids(args.component, harness=harness))
     method = None
     if train:
@@ -769,6 +809,7 @@ def _spec_from_ns(args: argparse.Namespace, *, train: bool) -> LaunchSpec:
             model_name=model_name,
             components=components,
             train_method=method,
+            component_preset=preset,
         )
     return LaunchSpec(
         harness=harness,
@@ -779,6 +820,7 @@ def _spec_from_ns(args: argparse.Namespace, *, train: bool) -> LaunchSpec:
         base_model=resolved,
         out=Path(out),
         extra=dict(vars(args)),
+        component_preset=preset,
     )
 
 

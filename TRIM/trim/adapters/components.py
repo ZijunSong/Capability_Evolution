@@ -145,6 +145,16 @@ def all_component_ids(harness: str | None = None) -> list[str]:
     return list(_taxonomy(harness).keys())
 
 
+def default_component_ids(harness: str | None = None) -> list[str]:
+    """Upstream default operating point (``--component default``).
+
+    Harness-1 ``launch_rl.sh`` / ``FULL_ENV`` turns on 8 of 10 v8d flags;
+    ``chunk_neighbors`` and ``adaptive_rerank_instruction`` stay off.
+    """
+    tax = _taxonomy(harness)
+    return [cid for cid, meta in tax.items() if meta["default_enabled"]]
+
+
 def flag_for(component_id: str, *, harness: str | None = None) -> str:
     tax = _taxonomy(harness)
     if component_id not in tax:
