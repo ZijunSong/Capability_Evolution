@@ -83,3 +83,20 @@ def test_load_transfer_queries_from_local_manifest(tmp_path: Path, monkeypatch):
     hits = searcher.search("Brussels synagogue", 3)
     assert hits
     assert searcher.normalize_id(hits[0].docid) == "https://example.com/gold"
+
+
+def test_load_eval_benchmark_bcplus_test_50():
+    from trim.eval.official_query_pool import SCORE_SPLIT_50, load_bcplus_830_split
+
+    rows, meta = load_eval_benchmark("bcplus_test_50")
+    _train, test166, _ = load_bcplus_830_split()
+    assert len(rows) == 50
+    assert meta["score_split"] == SCORE_SPLIT_50
+    assert meta["subset_of"] == "bcplus_test_166"
+    assert [r["query_id"] for r in rows] == [r["query_id"] for r in test166[:50]]
+    assert all(r["official_split"] == "test" for r in rows)
+    args, spec = parse_eval_args(
+        ["--benchmark", "bcplus_test_50", "--component", "zero", "--out", "/tmp/trim-eval-50"]
+    )
+    assert spec.benchmark == "bcplus_test_50"
+    assert args.score_split == "bcplus_test_50"

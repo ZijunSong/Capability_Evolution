@@ -108,6 +108,12 @@ def main(argv: list[str] | None = None) -> int:
         held_outer = True
 
     spec.out.mkdir(parents=True, exist_ok=True)
+    from trim.adapters.harness_profiles import is_harness_g
+    from trim.eval.runtime_effect_audit import audit_harness_mask_or_raise
+
+    wiring_audit = None
+    if not is_harness_g(mask=harness_mask, component_ids=spec.coalition):
+        wiring_audit = audit_harness_mask_or_raise(harness_mask, out=spec.out)
     launch = {
         "harness": spec.harness,
         "benchmark": spec.benchmark,
@@ -155,6 +161,7 @@ def main(argv: list[str] | None = None) -> int:
             ],
             adapter_audits=audits,
             pool_meta=pool_meta,
+            runtime_audit=wiring_audit,
         )
         print(json.dumps(payload, indent=2), flush=True)
         return 0
@@ -335,12 +342,19 @@ def main(argv: list[str] | None = None) -> int:
         if keepalive is not None:
             release_keepalive()
 
+    runtime_audit = None
+    for ev in summaries:
+        if isinstance(ev, dict) and ev.get("runtime_effect_audit"):
+            runtime_audit = ev["runtime_effect_audit"]
+            break
+    runtime_audit = runtime_audit or wiring_audit
     payload = write_eval_outputs(
         spec.out,
         component_id=spec.coalition,
         summaries=summaries,
         adapter_audits=audits,
         pool_meta=pool_meta,
+        runtime_audit=runtime_audit,
     )
     print(json.dumps(payload, indent=2), flush=True)
     if held_outer:

@@ -394,6 +394,33 @@ def test_parse_eval_cli_benchmark_test_166():
     assert args.score_split == "bcplus_test_166"
 
 
+def test_parse_eval_cli_benchmark_test_50():
+    args, spec = parse_eval_args(
+        [
+            "--benchmark",
+            "bcplus_test_50",
+            "--component",
+            "all",
+            "--out",
+            "/tmp/scape-eval-50-bench",
+        ]
+    )
+    assert spec.benchmark == "bcplus_test_50"
+    assert args.score_split == "bcplus_test_50"
+    args2, spec2 = parse_eval_args(
+        [
+            "--benchmark",
+            "test_50",
+            "--component",
+            "zero",
+            "--out",
+            "/tmp/scape-eval-50-alias",
+        ]
+    )
+    assert spec2.benchmark == "bcplus_test_50"
+    assert args2.score_split == "bcplus_test_50"
+
+
 def test_parse_eval_cli_benchmark_full():
     args, spec = parse_eval_args(
         [

@@ -112,19 +112,46 @@ def write_eval_outputs(
     summaries: list[dict[str, Any]],
     adapter_audits: list[dict[str, Any]],
     pool_meta: dict[str, Any],
+    runtime_audit: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     out.mkdir(parents=True, exist_ok=True)
     reload = write_reload_audit(out / "ADAPTER_RELOAD_AUDIT.json", adapter_audits)
+    claim_usable = False
+    claim_status = "NOT_USABLE_FOR_FULL_VS_ZERO"
+    if runtime_audit:
+        from trim.eval.runtime_effect_audit import write_runtime_audit
+
+        write_runtime_audit(out, runtime_audit)
+        claim_usable = bool(runtime_audit.get("claim_usable_for_full_vs_zero"))
+        claim_status = str(runtime_audit.get("claim_status") or claim_status)
+        (out / "CLAIM.json").write_text(
+            json.dumps(
+                {
+                    "claim_usable_for_full_vs_zero": claim_usable,
+                    "claim_status": claim_status,
+                    "reason": runtime_audit.get("reason"),
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+    status = "SR_OPD_CISPO_FOUR_CELL_EVAL"
+    if runtime_audit and not runtime_audit.get("pass"):
+        status = "RUNTIME_EFFECT_AUDIT_FAILED"
     payload = {
-        "status": "SR_OPD_CISPO_FOUR_CELL_EVAL",
+        "status": status,
         "component": component_id,
         "opd_loss": "sr_opd_ce",
         "rl_loss_fn": "cispo",
         "legacy_tool_token_kl_hook_used": False,
         "protocol_complete_rl_opd": True,
+        "claim_usable_for_full_vs_zero": claim_usable,
+        "claim_status": claim_status,
         "pool": pool_meta,
         "settings": summaries,
         "adapter_reload": reload,
+        "runtime_effect_audit": runtime_audit,
     }
     (out / "FOUR_CELL_OFFICIAL_SUMMARY.json").write_text(
         json.dumps(payload, indent=2, ensure_ascii=False) + "\n",

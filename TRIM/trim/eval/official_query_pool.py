@@ -51,7 +51,9 @@ OFFICIAL_384_COUNT = 384
 BCPLUS_TOTAL = 830
 BCPLUS_TRAIN = 664
 BCPLUS_TEST = 166
+BCPLUS_TEST_50 = 50
 SCORE_SPLIT_166 = "bcplus_test_166"
+SCORE_SPLIT_50 = "bcplus_test_50"
 SCORE_SPLIT_830 = "bcplus_830"
 SCORE_SPLIT_FULL = "bcplus_full"
 
@@ -61,6 +63,15 @@ _SCORE_SPLIT_TEST_ALIASES = frozenset(
         "bcplus_166",
         "test_166",
         "bcplus-test-166",
+    }
+)
+_SCORE_SPLIT_50_ALIASES = frozenset(
+    {
+        SCORE_SPLIT_50,
+        "bcplus_50",
+        "test_50",
+        "bcplus-test-50",
+        "bcplus_test50",
     }
 )
 _SCORE_SPLIT_FULL_ALIASES = frozenset(
@@ -82,6 +93,8 @@ def canonical_score_split(value: str | None, *, default: str | None = None) -> s
     key = str(value).strip().lower().replace("-", "_").replace(" ", "")
     if key in _SCORE_SPLIT_TEST_ALIASES:
         return SCORE_SPLIT_166
+    if key in _SCORE_SPLIT_50_ALIASES:
+        return SCORE_SPLIT_50
     if key in _SCORE_SPLIT_FULL_ALIASES:
         return SCORE_SPLIT_830
     return str(value)
@@ -96,6 +109,8 @@ def score_split_for_benchmark(benchmark: str) -> str | None:
     key = str(benchmark or "").strip()
     if key == SCORE_SPLIT_166:
         return SCORE_SPLIT_166
+    if key == SCORE_SPLIT_50:
+        return SCORE_SPLIT_50
     if key in {SCORE_SPLIT_FULL, SCORE_SPLIT_830}:
         return SCORE_SPLIT_830
     try:
@@ -377,6 +392,33 @@ def load_bcplus_830_split(
         },
     }
     return used_train, test_rows, meta
+
+
+def load_bcplus_test_50(
+    *,
+    split_file: Path | None = None,
+    bcp_root: Path | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """First 50 official BC+ test queries, in split-file order."""
+    _train, test_rows, split_meta = load_bcplus_830_split(split_file=split_file, bcp_root=bcp_root)
+    rows = list(test_rows[:BCPLUS_TEST_50])
+    if len(rows) != BCPLUS_TEST_50:
+        raise RuntimeError(f"BC+ test-50 subset requires {BCPLUS_TEST_50} queries, got {len(rows)}")
+    meta = dict(split_meta)
+    meta.update(
+        {
+            "query_count": len(rows),
+            "eval_count": len(rows),
+            "official_test_count": len(rows),
+            "official_test_expected": BCPLUS_TEST_50,
+            "primary_eval": SCORE_SPLIT_50,
+            "score_split": SCORE_SPLIT_50,
+            "subset_of": SCORE_SPLIT_166,
+            "subset_size": BCPLUS_TEST_50,
+            "query_ids": [str(r["query_id"]) for r in rows],
+        }
+    )
+    return rows, meta
 
 
 def load_bcplus_830_full(

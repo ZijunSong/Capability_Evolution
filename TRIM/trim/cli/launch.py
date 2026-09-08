@@ -41,6 +41,7 @@ from trim.training.rl_opd_types import (
 )
 from trim.eval.official_query_pool import (
     SCORE_SPLIT_166,
+    SCORE_SPLIT_50,
     SCORE_SPLIT_830,
     SCORE_SPLIT_FULL,
     canonical_score_split,
@@ -78,6 +79,7 @@ ALLOWED_HARNESSES = PROFILE_HARNESSES
 ALLOWED_BENCHMARKS = (
     "BC+",
     "bcplus_test_166",
+    "bcplus_test_50",
     "bcplus_full",
     "longsealqa",
     "frames",
@@ -104,6 +106,10 @@ _BENCHMARK_ALIASES = {
     "bcplus_test_166": "bcplus_test_166",
     "bcplus_166": "bcplus_test_166",
     "test_166": "bcplus_test_166",
+    "bcplus_test_50": "bcplus_test_50",
+    "bcplus_50": "bcplus_test_50",
+    "test_50": "bcplus_test_50",
+    "bcplus_test50": "bcplus_test_50",
     "bcplus_full": "bcplus_full",
     "bcplus_830": "bcplus_full",
     "bcplus830": "bcplus_full",
@@ -434,7 +440,7 @@ def add_common_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
         "--benchmark",
         default="BC+",
         help=(
-            "Evaluation benchmark. BC+ family: bcplus_test_166 / bcplus_full. "
+            "Evaluation benchmark. BC+ family: bcplus_test_166 / bcplus_test_50 / bcplus_full. "
             "Local transfer: longsealqa, frames, hotpotqa. "
             "web / patents require a rebuilt private corpus."
         ),
@@ -670,11 +676,12 @@ def add_eval_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--score-split",
-        choices=(SCORE_SPLIT_166, SCORE_SPLIT_830, SCORE_SPLIT_FULL),
+        choices=(SCORE_SPLIT_166, SCORE_SPLIT_50, SCORE_SPLIT_830, SCORE_SPLIT_FULL),
         default=None,
         help=(
             "Eval query pool. Default follows --benchmark: bcplus_full / BC+ → 830, "
-            "bcplus_test_166 → 166. bcplus_full is an alias of bcplus_830."
+            "bcplus_test_166 → 166, bcplus_test_50 → first 50 official test queries. "
+            "bcplus_full is an alias of bcplus_830."
         ),
     )
     parser.add_argument("--audit-only", action="store_true")

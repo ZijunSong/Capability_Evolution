@@ -41,6 +41,9 @@ def test_score_split_aliases_map_166_and_full():
     assert is_full_score_split("bcplus_full") is True
     assert is_full_score_split("bcplus_test_166") is False
     assert score_split_for_benchmark("bcplus_test_166") == "bcplus_test_166"
+    assert score_split_for_benchmark("bcplus_test_50") == "bcplus_test_50"
+    assert canonical_score_split("test_50") == "bcplus_test_50"
+    assert is_full_score_split("bcplus_test_50") is False
     assert score_split_for_benchmark("bcplus_full") == "bcplus_830"
     assert score_split_for_benchmark("BC+") is None
 

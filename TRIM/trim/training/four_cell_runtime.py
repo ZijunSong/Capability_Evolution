@@ -159,6 +159,45 @@ def teacher_mask_for(component_id: Any, *, harness: str | None = None) -> dict[s
     return mask
 
 
+def resolved_rollout_mask(
+    component_id: Any,
+    *,
+    harness: str | None = None,
+    harness_mask: dict[str, bool] | None = None,
+    teacher_mode: bool = False,
+) -> dict[str, bool]:
+    """Mask written into live env state for a rollout.
+
+    An explicit ``harness_mask`` wins. Otherwise teacher cells use H_full and
+    student / RL / TRIM rollouts use H_min. Never pass ``None`` through to
+    ``new_state``: that silently becomes zero and desyncs from snapshots.
+    """
+    if harness_mask is not None:
+        return dict(harness_mask)
+    if teacher_mode:
+        return teacher_mask_for(component_id, harness=harness)
+    return student_mask_for(component_id, harness=harness)
+
+
+def teacher_action_from_point(
+    point: StudentDecisionPoint,
+    component_id: str,
+    *,
+    harness: str | None = None,
+) -> dict[str, Any]:
+    """First student-legal teacher action for a heuristic teacher-cell turn."""
+    fn = teacher_for(component_id, harness=harness)
+    events = fn(point) if fn is not None else []
+    action_event = next((e for e in events if getattr(e, "action_name", None)), None)
+    if action_event is None:
+        q = str((point.pre_action_snapshot.working_memory or {}).get("query") or "")
+        return {"name": "search_corpus", "arguments": {"query": q}}
+    return {
+        "name": str(action_event.action_name),
+        "arguments": dict(action_event.arguments or {}),
+    }
+
+
 def generic_teacher_events_from_wm(
     wm: dict[str, Any],
     component_id: str,
@@ -370,6 +409,8 @@ def build_manifest(args: argparse.Namespace, *, extra: dict[str, Any] | None = N
         "opd_gate_beta": float(getattr(args, "opd_gate_beta", SCAPE_RL_OPD_GATE_BETA) or SCAPE_RL_OPD_GATE_BETA),
         "student_harness": "H_min",
         "teacher_harness": "H_full",
+        "student_mask": student_mask_for(args.component, harness=getattr(args, "harness", None)),
+        "teacher_mask": teacher_mask_for(args.component, harness=getattr(args, "harness", None)),
         "opd_state_source": "current_on_policy_rl_rollout",
         "joint_update_contract": "rl_fb+opd_fb+single_optim",
         "legacy_tool_token_kl_hook_used": False,
@@ -498,7 +539,7 @@ def snap_from_state(qid: str, st: dict[str, Any], component_id: str, *, harness_
             documents.append({"id": str(did), "text": str(rec.get("text") or "")[:2000]})
         else:
             documents.append({"id": str(did), "text": str(rec)[:2000]})
-    mask = harness_mask if harness_mask is not None else student_mask_for(component_id)
+    mask = resolved_rollout_mask(component_id, harness_mask=harness_mask)
     g = is_harness_g(mask=mask, component_ids=component_id)
     wm = {
         "curated_ids": curated,
@@ -507,6 +548,12 @@ def snap_from_state(qid: str, st: dict[str, Any], component_id: str, *, harness_
         "documents": documents,
         "query": st.get("query"),
         "doc_store": {did: {"id": did, "text": str((rec or {}).get("text") if isinstance(rec, dict) else rec)[:800]} for did, rec in list(store.items())[:12]},
+        "curated_importance": dict(st.get("importance") or {}),
+        "auto_populate_seed": st.get("auto_seed"),
+        "evidence_graph": st.get("evidence_graph") or {},
+        "token_budget_marker": st.get("token_budget_marker"),
+        "rerank_instruction": st.get("rerank_instruction"),
+        "runtime_effects": dict(st.get("runtime_effects") or {}),
     }
     if g:
         wm.update(
@@ -657,6 +704,9 @@ def one_episode(
         make_observation,
     )
     from trim.eval.harness1_metrics import EpisodeTiming, episode_quality_metrics, timed_section
+    harness_mask = resolved_rollout_mask(
+        component_id, harness_mask=harness_mask, teacher_mode=teacher_mode
+    )
     g = is_harness_g(mask=harness_mask, component_ids=component_id)
     if g:
         from trim.eval.harness_g_env import execute_tool, new_state, wm_text
@@ -669,10 +719,7 @@ def one_episode(
     qid = str(row["query_id"])
     gold_ids = [str(x) for x in (row.get("gold_docids") or row.get("evidence_docids") or [])]
     store = doc_store_for_row(row, searcher, k=doc_store_k)
-    if g:
-        st = new_state(query, store, harness_mask=harness_mask)
-    else:
-        st = new_state(query, store)
+    st = new_state(query, store, harness_mask=harness_mask)
     acts: list[tuple[Any, Any]] = []
     points: list[StudentDecisionPoint] = []
     rows: list[dict[str, Any]] = []
@@ -693,7 +740,7 @@ def one_episode(
                     pids = enc.build_continuation_prompt_ids(
                         query,
                         actions_obs=acts,
-                        wm_text=wm_text(st, auto_on=False),
+                        wm_text=wm_text(st),
                     )
             elif turn == 0:
                 pids = build_first_turn_prompt_ids(query, enc=enc)
@@ -701,16 +748,39 @@ def one_episode(
                 pids = build_continuation_prompt_ids(
                     query,
                     actions_obs=acts,
-                    wm_text=wm_text(st, auto_on=False),
+                    wm_text=wm_text(st),
                     enc=enc,
                 )
             pre = snap_from_state(qid, st, component_id, harness_mask=harness_mask)
             student_prefix = render_student_prompt(pre, component_id=component_id)
-        if teacher_mode and component_id == "adaptive_rerank_instruction":
-            action = {"name": "search_corpus", "arguments": {"query": query}}
+        if teacher_mode:
+            action = teacher_action_from_point(
+                StudentDecisionPoint(
+                    episode_id=f"{qid}_r{rollout_idx}",
+                    query_id=qid,
+                    rollout_idx=rollout_idx,
+                    turn_id=turn,
+                    policy_version=policy_version,
+                    pre_action_snapshot=pre,
+                    pre_action_snapshot_hash=pre.content_hash(),
+                    student_model_input=student_prefix,
+                    student_action_tokens=[],
+                    student_action_text="",
+                    action_tool_names=[],
+                    post_action_snapshot=pre,
+                    reward=None,
+                    structurally_valid=True,
+                ),
+                component_id,
+            )
             valid = True
             text = render_action(action)
-            gen = {"prompt_ids": pids, "action_ids": backend.encode(text), "text": text, "prompt_text": "teacher_full"}
+            gen = {
+                "prompt_ids": pids,
+                "action_ids": backend.encode(text),
+                "text": text,
+                "prompt_text": "teacher_full",
+            }
         else:
             with timed_section(timing, "model"):
                 gen = generate_harmony(
@@ -812,11 +882,14 @@ def one_episode(
     return points, rows, reward, stats
 
 
-def rollout_group(backend, *, row, component_id, group_size, max_turns, max_new, policy_version, seed, sample, enc, searcher=None, teacher_mode=False) -> HybridRolloutGroup:
+def rollout_group(backend, *, row, component_id, group_size, max_turns, max_new, policy_version, seed, sample, enc, searcher=None, teacher_mode=False, harness_mask=None) -> HybridRolloutGroup:
     points: list[StudentDecisionPoint] = []
     rewards: list[float] = []
     rl_rows: list[dict[str, Any]] = []
     tool_seqs: list[list[str]] = []
+    harness_mask = resolved_rollout_mask(
+        component_id, harness_mask=harness_mask, teacher_mode=teacher_mode
+    )
     for g in range(group_size):
         ep_points, ep_rows, reward, stats = one_episode(
             backend,
@@ -831,6 +904,7 @@ def rollout_group(backend, *, row, component_id, group_size, max_turns, max_new,
             rollout_idx=g,
             searcher=searcher,
             teacher_mode=teacher_mode,
+            harness_mask=harness_mask,
         )
         points.extend(ep_points)
         rl_rows.extend(ep_rows)
@@ -1032,6 +1106,16 @@ def eval_closed_loop(
         sample = float(temperature) > 0.0
     search_k = HARNESS1_EVAL_SEARCH_K if search_k is None else int(search_k)
     doc_store_k = HARNESS1_EVAL_DOC_STORE_K if doc_store_k is None else int(doc_store_k)
+    harness_mask = resolved_rollout_mask(
+        component_id, harness_mask=harness_mask, teacher_mode=teacher_mode
+    )
+    runtime_audit = None
+    if not is_harness_g(mask=harness_mask, component_ids=component_id):
+        from trim.eval.runtime_effect_audit import audit_mask_wiring, merge_audits, summarize_live_effects
+
+        runtime_audit = merge_audits(audit_mask_wiring(harness_mask))
+        if not runtime_audit.get("wiring", {}).get("pass"):
+            raise RuntimeError(runtime_audit.get("summary") or "mask wiring probe failed")
     if generate_batch is not None:
         from trim.training.batched_env_rollout import rollout_queries_batched, traces_from_groups
 
@@ -1056,6 +1140,13 @@ def eval_closed_loop(
             doc_store_workers=8 if doc_store_workers is None else int(doc_store_workers),
         )
         traces, leak = traces_from_groups(groups, rows, searcher=searcher)
+        if runtime_audit is not None:
+            from trim.eval.runtime_effect_audit import merge_audits, summarize_live_effects
+
+            live = summarize_live_effects(traces, harness_mask)
+            runtime_audit = merge_audits(runtime_audit.get("wiring") or runtime_audit, live)
+            if not live.get("pass"):
+                raise RuntimeError("; ".join(live.get("failures") or ["live effect gate failed"]))
         retrieval_name = searcher.name if searcher is not None else "none"
         split = split_summaries(traces, setting="closed_loop", retrieval_name=retrieval_name, eval_rows=rows)
         official = pack_closed_loop_summary(
@@ -1071,6 +1162,8 @@ def eval_closed_loop(
                 "doc_store_k": int(doc_store_k),
                 "sample": bool(sample),
                 "teacher_leak_count": int(leak),
+                "runtime_effect_audit": runtime_audit,
+                "claim_usable_for_full_vs_zero": bool((runtime_audit or {}).get("claim_usable_for_full_vs_zero")),
             },
         )
         return official, traces
@@ -1117,6 +1210,13 @@ def eval_closed_loop(
             }
         )
     retrieval_name = searcher.name if searcher is not None else "none"
+    if runtime_audit is not None:
+        from trim.eval.runtime_effect_audit import merge_audits, summarize_live_effects
+
+        live = summarize_live_effects(traces, harness_mask)
+        runtime_audit = merge_audits(runtime_audit.get("wiring") or runtime_audit, live)
+        if not live.get("pass"):
+            raise RuntimeError("; ".join(live.get("failures") or ["live effect gate failed"]))
     split = split_summaries(traces, setting="closed_loop", retrieval_name=retrieval_name, eval_rows=rows)
     official = pack_closed_loop_summary(
         split,
@@ -1131,6 +1231,8 @@ def eval_closed_loop(
             "doc_store_k": int(doc_store_k),
             "sample": bool(sample),
             "teacher_leak_count": int(leak),
+            "runtime_effect_audit": runtime_audit,
+            "claim_usable_for_full_vs_zero": bool((runtime_audit or {}).get("claim_usable_for_full_vs_zero")),
         },
     )
     return official, traces
@@ -1459,6 +1561,16 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
     out.mkdir(parents=True, exist_ok=True)
     train_only = bool(getattr(args, "train_only", False))
     log_tag = "train" if train_only else "four_cell"
+    from trim.eval.runtime_effect_audit import audit_train_runtime_or_raise
+
+    train_audit = audit_train_runtime_or_raise(args, out=out)
+    if not train_audit.get("skipped"):
+        print(
+            f"[{log_tag}] runtime wiring pass student_on={train_audit.get('student_n_on')} "
+            f"teacher_on={train_audit.get('teacher_n_on')} "
+            f"opd_steps={train_audit.get('opd_n_projected_steps')}",
+            flush=True,
+        )
     train_rows, eval_rows, pool_meta, frozen_points = resolve_queries(args)
     train_searcher = open_train_retrieval(args, train_rows)
     eval_searcher = None if train_only else open_eval_retrieval(args)
@@ -1631,9 +1743,10 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
             enc=enc,
             searcher=train_searcher,
             teacher_mode=teacher_mode,
-            harness_mask=student_mask_for(
+            harness_mask=resolved_rollout_mask(
                 args.component,
                 harness=getattr(args, "harness", None),
+                teacher_mode=teacher_mode,
             ),
             query_batch_size=getattr(args, "rollout_query_batch_size", None),
             doc_store_workers=int(getattr(args, "doc_store_workers", 8) or 8),
@@ -1658,9 +1771,10 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
             enc=enc,
             searcher=eval_searcher,
             teacher_mode=teacher_mode,
-            harness_mask=student_mask_for(
+            harness_mask=resolved_rollout_mask(
                 args.component,
                 harness=getattr(args, "harness", None),
+                teacher_mode=teacher_mode,
             ),
             temperature=float(getattr(args, "eval_temperature", 0.0)),
             primary_split=eval_primary,

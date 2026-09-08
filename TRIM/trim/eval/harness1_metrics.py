@@ -52,6 +52,8 @@ TRACE_EXPORT_KEYS: tuple[str, ...] = HARNESS1_QUALITY_KEYS + TIMING_KEYS + (
     "search_query",
     "n_turns",
     "ended",
+    "runtime_effects",
+    "auto_seed",
 )
 
 # Summary aliases matching the original eval table labels.
@@ -225,6 +227,8 @@ def episode_quality_metrics(
         "prune_accuracy": None,
         "rerank_recall": None,
         "rerank_dropped_relevant_count": None,
+        "runtime_effects": dict(state.get("runtime_effects") or {}),
+        "auto_seed": list(state.get("auto_seed") or []) if state.get("auto_seed") else None,
     }
     if timing:
         payload.update({k: float(timing[k]) for k in TIMING_KEYS if k in timing})

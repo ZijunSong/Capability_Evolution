@@ -4,7 +4,22 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any
+from typing import Any, Mapping
+
+from trim.eval.h1_component_runtime import (
+    apply_auto_populate as _apply_auto_populate,
+    curate_with_mask,
+    decorate_observation,
+    empty_effects,
+    filter_dedup_hits,
+    legal_tool_set,
+    mask_label,
+    mask_on,
+    maybe_compress,
+    note_effect,
+    resolve_mask,
+    update_evidence_graph,
+)
 
 
 def _doc_text(doc: Any) -> str:
@@ -44,7 +59,13 @@ def format_hits(hits: list[tuple[str, str, float]], *, n_chars: int = 280) -> st
     return "\n".join(lines) if lines else "(no hits)"
 
 
-def new_state(query: str, doc_store: dict[str, Any]) -> dict[str, Any]:
+def new_state(
+    query: str,
+    doc_store: dict[str, Any],
+    *,
+    harness_mask: Mapping[str, bool] | None = None,
+) -> dict[str, Any]:
+    mask = resolve_mask({}, override=harness_mask)
     return {
         "query": query,
         "step": 0,
@@ -61,36 +82,34 @@ def new_state(query: str, doc_store: dict[str, Any]) -> dict[str, Any]:
         "invalid_tools": 0,
         "n_tool_calls": 0,
         "n_search_calls": 0,
+        "harness_mask": mask,
+        "runtime_effects": empty_effects(mask),
+        "evidence_graph": {},
+        "token_budget_marker": None,
+        "rerank_instruction": None,
+        "dedup_fingerprints": [],
+        "dedup_dropped": [],
     }
 
 
 def apply_auto_populate(state: dict[str, Any], *, top_k: int = 8) -> dict[str, Any]:
     """State-time AUTO privilege: copy top pool docs into curated at fair."""
-    st = dict(state)
-    st["pool"] = dict(state.get("pool") or {})
-    st["curated"] = dict(state.get("curated") or {})
-    st["importance"] = dict(state.get("importance") or {})
-    ranked = sorted(st["pool"].items(), key=lambda kv: -float((kv[1] or {}).get("score") or 0.0))
-    seed = []
-    for did, rec in ranked[:top_k]:
-        if did not in st["curated"]:
-            st["curated"][did] = rec
-            st["importance"][did] = "fair"
-            seed.append(did)
-    st["auto_seed"] = seed
-    st["first_search_pending"] = False
-    return st
+    return _apply_auto_populate(state, top_k=top_k)
 
 
 POOL_DISPLAY_FULL = 50
 POOL_DISPLAY_COMPACT = 30
 
 
-def wm_text(state: dict[str, Any], *, auto_on: bool) -> str:
+def wm_text(state: dict[str, Any], *, auto_on: bool | None = None) -> str:
+    mask = resolve_mask(state)
+    if auto_on is None:
+        auto_on = bool(mask.get("auto_populate_first_search"))
     curated = state.get("curated") or {}
     pool = state.get("pool") or {}
     curated_set = set(curated)
     uncurated = [did for did in pool if did not in curated_set]
+    query = str(state.get("query") or "")
     lines = [
         "[Working Memory]",
         f"step={state.get('step', 0)}",
@@ -98,15 +117,26 @@ def wm_text(state: dict[str, Any], *, auto_on: bool) -> str:
         f"prior-search-count={int(state.get('search_count') or 0)}",
         f"auto_populate_first_search={'ON' if auto_on else 'OFF'}",
         f"auto_seed={state.get('auto_seed') if auto_on else None}",
-        f"mask={'full' if auto_on else 'reduced/no-AUTO'}",
+        f"mask={mask_label(mask)}",
         f"n_curated={len(curated)} n_pool={len(pool)}",
         "curated:",
     ]
     if curated:
-        for did, rec in list(curated.items())[:12]:
-            snippet = re.sub(r"\s+", " ", _doc_text(rec))[:180]
-            imp = (state.get("importance") or {}).get(did)
-            lines.append(f"  - {did} importance={imp}: {snippet}")
+        items = list(curated.items())[:12]
+        if mask_on(state, "importance_tagging"):
+            rank = {"very_high": 0, "high": 1, "fair": 2, "low": 3}
+            items = sorted(
+                items,
+                key=lambda kv: (rank.get((state.get("importance") or {}).get(kv[0], "fair"), 2), str(kv[0])),
+            )
+        for did, rec in items:
+            snippet = maybe_compress(query, _doc_text(rec), state, max_chars=180)
+            snippet = re.sub(r"\s+", " ", snippet)[:180]
+            if mask_on(state, "importance_tagging"):
+                imp = (state.get("importance") or {}).get(did)
+                lines.append(f"  - {did} importance={imp}: {snippet}")
+            else:
+                lines.append(f"  - {did}: {snippet}")
     else:
         lines.append("  (empty -- use curate tool to add relevant docs)")
     lines.append(
@@ -115,7 +145,8 @@ def wm_text(state: dict[str, Any], *, auto_on: bool) -> str:
     if uncurated:
         recent = list(reversed(uncurated[-POOL_DISPLAY_FULL:]))
         for did in recent:
-            snippet = re.sub(r"\s+", " ", _doc_text(pool.get(did)))[:120]
+            snippet = maybe_compress(query, _doc_text(pool.get(did)), state, max_chars=120)
+            snippet = re.sub(r"\s+", " ", snippet)[:120]
             lines.append(f"  [ ] {did}: {snippet}")
         hidden = len(uncurated) - len(recent)
         if hidden > 0:
@@ -124,6 +155,18 @@ def wm_text(state: dict[str, Any], *, auto_on: bool) -> str:
             if hidden > POOL_DISPLAY_COMPACT:
                 id_str += f" (+{hidden - POOL_DISPLAY_COMPACT} more)"
             lines.append(f"  Earlier uncurated ({hidden}): {id_str}")
+    if auto_on and state.get("auto_seed"):
+        lines.append(f"auto-populated: {list(state.get('auto_seed') or [])[:8]}")
+    if mask_on(state, "evidence_graph"):
+        from trim.eval.h1_component_runtime import render_evidence_graph
+
+        graph_txt = render_evidence_graph(state)
+        if graph_txt:
+            lines.append(graph_txt)
+    if mask_on(state, "token_budget_marker") and state.get("token_budget_marker"):
+        lines.append(str(state.get("token_budget_marker")))
+    if mask_on(state, "adaptive_rerank_instruction") and state.get("rerank_instruction"):
+        lines.append("[Rerank instruction] " + str(state.get("rerank_instruction")))
     hist = state.get("tool_history") or []
     lines.append("tool_history: " + ", ".join(str(h.get("name")) for h in hist[-8:]))
     return "\n".join(lines)
@@ -231,6 +274,7 @@ def execute_tool(
     *,
     searcher: Any | None = None,
     search_k: int = 10,
+    harness_mask: Mapping[str, bool] | None = None,
 ) -> tuple[dict[str, Any], str, bool]:
     st = dict(state)
     st["pool"] = dict(state.get("pool") or {})
@@ -239,17 +283,14 @@ def execute_tool(
     st["tool_history"] = list(state.get("tool_history") or [])
     st["step"] = int(state.get("step") or 0) + 1
     st["n_tool_calls"] = int(state.get("n_tool_calls") or 0) + 1
+    mask = resolve_mask(state, override=harness_mask)
+    st["harness_mask"] = mask
+    st["runtime_effects"] = dict(state.get("runtime_effects") or empty_effects(mask))
+    st["evidence_graph"] = dict(state.get("evidence_graph") or {})
+    st["dedup_fingerprints"] = list(state.get("dedup_fingerprints") or [])
+    st["dedup_dropped"] = list(state.get("dedup_dropped") or [])
     args = args or {}
-    legal = name in {
-        "fan_out_search",
-        "search_corpus",
-        "grep_corpus",
-        "read_document",
-        "review_docs",
-        "curate",
-        "verify",
-        "end_search",
-    }
+    legal = name in legal_tool_set(mask)
     if not legal:
         st["invalid_tools"] = int(state.get("invalid_tools") or 0) + 1
         obs = f"ERROR: invalid tool `{name}`."
@@ -259,11 +300,13 @@ def execute_tool(
     st["doc_store"] = dict(state.get("doc_store") or {})
     store = st["doc_store"]
     obs = ""
+    query = str(state.get("query") or "")
+    was_first_search = bool(state.get("first_search_pending"))
     if name in {"search_corpus", "grep_corpus", "fan_out_search"}:
         st["n_search_calls"] = int(state.get("n_search_calls") or 0) + 1
         st["search_count"] = int(state.get("search_count") or 0) + 1
         st["first_search_pending"] = False
-        queries = _tool_search_queries(name, args, str(state.get("query") or ""))
+        queries = _tool_search_queries(name, args, query)
         hits_all: dict[str, tuple[str, float]] = {}
         live = searcher is not None and getattr(searcher, "name", "none") != "none"
         for q in queries:
@@ -281,38 +324,64 @@ def execute_tool(
                 for did, text, score in rank_docs(q, store, k=int(search_k)):
                     _merge_hit(hits_all, str(did), text, float(score))
         ranked = sorted(hits_all.items(), key=lambda item: -item[1][1])
+        ranked = filter_dedup_hits(st, ranked)
         for did, (text, score) in ranked:
             rec = {"id": did, "text": text[:4000], "score": score}
             st["pool"][did] = rec
             store[did] = rec
+            if mask_on(st, "evidence_graph"):
+                update_evidence_graph(st, str(did), text)
+            if mask_on(st, "sentence_compress"):
+                rec["text"] = maybe_compress(query, text, st, max_chars=4000)[:4000]
+                note_effect(st, "sentence_compress")
         shown = ranked[: int(search_k)]
-        obs = "Search results:\n" + format_hits([(d, t, s) for d, (t, s) in shown])
+        shown_hits = []
+        for did, (text, score) in shown:
+            snippet = maybe_compress(query, text, st, max_chars=280) if mask_on(st, "sentence_compress") else text
+            shown_hits.append((did, snippet, score))
+        obs = "Search results:\n" + format_hits(shown_hits)
+        if was_first_search and mask_on(st, "auto_populate_first_search"):
+            st = _apply_auto_populate(st)
+            if st.get("auto_seed"):
+                obs += f"\n[AUTO] populated curated with {list(st['auto_seed'])[:8]}"
     elif name == "read_document":
         did = str(args.get("doc_id") or args.get("id") or "")
         rec = store.get(did) or st["pool"].get(did) or st["curated"].get(did)
-        obs = f"Document {did}:\n{_doc_text(rec)[:4000]}" if rec is not None else f"Document {did} not found."
+        text = _doc_text(rec)[:4000] if rec is not None else ""
+        if rec is not None and mask_on(st, "sentence_compress"):
+            text = maybe_compress(query, text, st, max_chars=4000)
+            note_effect(st, "sentence_compress")
+        if rec is not None and mask_on(st, "evidence_graph"):
+            update_evidence_graph(st, did, text)
+        obs = f"Document {did}:\n{text}" if rec is not None else f"Document {did} not found."
+        if rec is not None and mask_on(st, "chunk_neighbors"):
+            from trim.eval.h1_component_runtime import neighbor_ids
+
+            neigh = neighbor_ids(did, store)
+            if neigh:
+                obs += "\n[Chunk neighbors] " + ", ".join(neigh)
+                note_effect(st, "chunk_neighbors")
     elif name == "review_docs":
         ids = _as_str_list(args.get("doc_ids") or args.get("ids"), limit=8)
         parts = []
         for did in ids:
             rec = st["curated"].get(did) or st["pool"].get(did) or store.get(did)
-            parts.append(f"{did}: {_doc_text(rec)[:800]}" if rec is not None else f"{did}: missing")
+            text = _doc_text(rec)[:800] if rec is not None else "missing"
+            if rec is not None and mask_on(st, "sentence_compress"):
+                text = maybe_compress(query, text, st, max_chars=800)
+                note_effect(st, "sentence_compress")
+            parts.append(f"{did}: {text}" if rec is not None else f"{did}: missing")
         obs = "Review:\n" + "\n".join(parts)
     elif name == "curate":
         add_ids = _as_str_list(args.get("add_ids") or args.get("doc_ids") or args.get("ids"))
         remove_ids = _as_str_list(args.get("remove_ids"))
-        imp = args.get("importance") or {}
-        for did in add_ids:
-            rec = st["pool"].get(did) or store.get(did)
-            if rec is not None:
-                if not isinstance(rec, dict):
-                    rec = {"id": did, "text": _doc_text(rec)}
-                st["curated"][str(did)] = rec
-                if isinstance(imp, dict) and str(did) in imp:
-                    st["importance"][str(did)] = imp[str(did)]
-        for did in remove_ids:
-            st["curated"].pop(str(did), None)
-        obs = f"Curated n={len(st['curated'])} ids={list(st['curated'])[:12]}"
+        obs = curate_with_mask(
+            st,
+            add_ids=add_ids,
+            remove_ids=remove_ids,
+            importance=args.get("importance") or {},
+            store=store,
+        )
     elif name == "verify":
         ids = _as_str_list(args.get("doc_ids") or args.get("ids"), limit=5)
         claim = str(args.get("claim") or "")
@@ -324,10 +393,12 @@ def execute_tool(
             hit = len(ctoks & _tokenize(text)) >= max(1, len(ctoks) // 4)
             parts.append(f"{did}: {'yes' if hit else 'no'}")
         obs = f"Verify claim={claim[:200]}\n" + "\n".join(parts)
+        note_effect(st, "verify_tool")
     elif name == "end_search":
         st["ended"] = True
         st["end_reason"] = str(args.get("reasoning") or args.get("reason") or "")
         obs = f"end_search accepted. curated={list(st['curated'])[:12]}"
+    obs = decorate_observation(st, obs, query=query, name=str(name))
     footer = _harness_status(st, name)
     if footer:
         obs = f"{obs}\n{footer}".strip()

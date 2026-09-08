@@ -25,7 +25,7 @@ _TRIM = Path(__file__).resolve().parents[1]
 if str(_TRIM) not in sys.path:
     sys.path.insert(0, str(_TRIM))
 
-from trim.cli.launch import LaunchError, parse_train_args
+from trim.cli.launch import LaunchError, parse_train_args, student_mask_for_ids, teacher_mask_for_ids
 from trim.eval.official_query_pool import SCORE_SPLIT_166, SCORE_SPLIT_830
 from trim.eval.sec_corpus import (
     SEC_TRAIN_POOL_NAME,
@@ -94,16 +94,18 @@ def _main(argv: list[str] | None = None) -> int:
         "sec_corpus_root": str(getattr(args, "sec_corpus_root", None) or default_sec_corpus_root())
         if args.train_data == "sec"
         else None,
-        "student_mask": (
+        "student_mask_label": (
             "H_zero (all advanced components OFF)"
             if spec.zero_components
             else "H_min (listed advanced components OFF)"
         ),
-        "teacher_mask": (
+        "teacher_mask_label": (
             "H_zero (all advanced components OFF)"
             if spec.zero_components
             else "H_full (listed advanced components ON)"
         ),
+        "student_mask": student_mask_for_ids(spec.components, harness=spec.harness),
+        "teacher_mask": teacher_mask_for_ids(spec.components, harness=spec.harness),
         "out": str(spec.out),
         "train_only": True,
         "official_eval": False,

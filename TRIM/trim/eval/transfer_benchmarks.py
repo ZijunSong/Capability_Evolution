@@ -26,11 +26,13 @@ from trim.eval.browsecomp_retrieval import (
 )
 from trim.eval.official_query_pool import (
     SCORE_SPLIT_166,
+    SCORE_SPLIT_50,
     SCORE_SPLIT_830,
     canonical_score_split,
     is_full_score_split,
     load_bcplus_830_full,
     load_bcplus_830_split,
+    load_bcplus_test_50,
     load_query_manifest,
 )
 
@@ -41,7 +43,9 @@ TRANSFER_BENCHMARKS = ("longsealqa", "frames", "hotpotqa")
 OPTIONAL_PRIVATE_BENCHMARKS = ("web", "patents")
 LOCAL_EVAL_BENCHMARKS = TRANSFER_BENCHMARKS + OPTIONAL_PRIVATE_BENCHMARKS
 
-BCPLUS_BENCHMARKS = frozenset({"BC+", "bcplus_test_166", "bcplus_full", "bcplus_830"})
+BCPLUS_BENCHMARKS = frozenset(
+    {"BC+", "bcplus_test_166", "bcplus_test_50", "bcplus_full", "bcplus_830", "bcplus_50", "test_50"}
+)
 
 _TRANSFER_ALIASES = {
     "longseal": "longsealqa",
@@ -77,7 +81,7 @@ def is_bcplus_benchmark(benchmark: str) -> bool:
     if key in BCPLUS_BENCHMARKS:
         return True
     split = canonical_score_split(key)
-    return split in {SCORE_SPLIT_166, SCORE_SPLIT_830}
+    return split in {SCORE_SPLIT_166, SCORE_SPLIT_50, SCORE_SPLIT_830}
 
 
 def is_local_eval_benchmark(benchmark: str) -> bool:
@@ -273,6 +277,9 @@ def load_eval_benchmark(
     if transfer:
         return load_transfer_queries(transfer)
     split = canonical_score_split(score_split) if score_split else None
+    if split == SCORE_SPLIT_50 or str(benchmark).strip() in {"bcplus_test_50", "bcplus_50", "test_50"}:
+        rows, meta = load_bcplus_test_50()
+        return rows, meta
     if split == SCORE_SPLIT_166 or str(benchmark).strip() == "bcplus_test_166":
         _train, rows, meta = load_bcplus_830_split()
         meta = dict(meta)
@@ -296,6 +303,8 @@ def score_split_for_eval_benchmark(benchmark: str) -> str | None:
     key = str(benchmark or "").strip()
     if key == "bcplus_test_166":
         return SCORE_SPLIT_166
+    if key in {"bcplus_test_50", "bcplus_50", "test_50"}:
+        return SCORE_SPLIT_50
     if key in {"bcplus_full", "bcplus_830"}:
         return SCORE_SPLIT_830
     return None

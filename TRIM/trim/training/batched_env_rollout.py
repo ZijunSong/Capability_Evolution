@@ -81,7 +81,7 @@ def _build_prompt_ids(ep: LiveEpisode, enc) -> list[int]:
         return build_g_prompt_ids(query, wm_text(ep.st), enc)
     from trim.eval.local_search_env import wm_text
 
-    wm = wm_text(ep.st, auto_on=False)
+    wm = wm_text(ep.st)
     if enc is not None and hasattr(enc, "build_first_turn_prompt_ids"):
         if not ep.acts:
             return enc.build_first_turn_prompt_ids(query)
@@ -250,7 +250,7 @@ def _run_episode_turns(
                 ep.pending_pids = pids
             if teacher_mode:
                 from trim.training.action_codec import render_action
-                from trim.training.sentence_compress_teacher import teacher_events_from_point
+                from trim.training.four_cell_runtime import teacher_action_from_point
                 from trim.training.rl_opd_types import StudentDecisionPoint
 
                 point = StudentDecisionPoint(
@@ -269,8 +269,8 @@ def _run_episode_turns(
                     reward=None,
                     structurally_valid=True,
                 )
-                action_event = next(e for e in teacher_events_from_point(point) if e.action_name)
-                text = render_action({"name": action_event.action_name, "arguments": action_event.arguments})
+                action = teacher_action_from_point(point, component_id)
+                text = render_action(action)
                 token_ids = list(enc.encode(text))
                 generated[i] = GenerateResult(
                     request_id=f"{ep.row['query_id']}:g{ep.rollout_idx}:t{turn}:{i}",
@@ -433,6 +433,7 @@ def rollout_queries_batched(
     from trim.adapters.harness_profiles import is_harness_g
     from trim.training.four_cell_runtime import (
         doc_store_for_row,
+        resolved_rollout_mask,
         snap_from_state,
         terminal_reward,
     )
@@ -441,6 +442,9 @@ def rollout_queries_batched(
     rows = list(rows)
     if not rows:
         return []
+    harness_mask = resolved_rollout_mask(
+        component_id, harness_mask=harness_mask, teacher_mode=teacher_mode
+    )
     batch = resolved_query_batch_size(len(rows), group_size, query_batch_size)
     workers = max(1, int(doc_store_workers or 1))
     chunks = [rows[i : i + batch] for i in range(0, len(rows), batch)]
@@ -453,7 +457,9 @@ def rollout_queries_batched(
             return g_new_state(query, store, harness_mask=harness_mask)
 
     else:
-        new_state = h1_new_state
+
+        def new_state(query: str, store: dict[str, Any]) -> dict[str, Any]:
+            return h1_new_state(query, store, harness_mask=harness_mask)
 
     def prepare(chunk: Sequence[dict[str, Any]]) -> tuple[list[LiveEpisode], float]:
         t0 = time.perf_counter()
