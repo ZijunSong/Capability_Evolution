@@ -46,7 +46,7 @@ def main(argv: list[str] | None = None) -> int:
     from trim.upstream_harness1.env_bridge import build_eval_toolset, load_scoring_dataset, load_upstream_modules
     from trim.upstream_harness1.model_serve import ServedModelIdentity
     from trim.upstream_harness1.retrieval import RETRIEVAL_LOCAL_BM25, RetrievalConfig
-    from trim.upstream_harness1.token_count import TOKEN_COUNT_MODE, whitespace_token_counter
+    from trim.upstream_harness1.token_count import resolve_token_counter
 
     retrieval = RetrievalConfig.from_mapping(cfg.get("retrieval") or {})
     retrieval.assert_ready()
@@ -60,7 +60,12 @@ def main(argv: list[str] | None = None) -> int:
     ensure_harness1 = mods["root"]
     sys.path.insert(0, str(ensure_harness1))
     dataset = load_scoring_dataset(retrieval.dataset)
-    pack = build_eval_toolset(mods, retrieval, dataset=dataset, mask=mask)
+    token_counter, token_count_mode = resolve_token_counter(
+        identity.base_model or cfg.get("model_path") or identity.api_model
+    )
+    pack = build_eval_toolset(
+        mods, retrieval, dataset=dataset, mask=mask, token_counter=token_counter
+    )
     Env = mods["SlidingWindowSearchEnv"]
     temperature = _cfg_number(cfg, "temperature", 1.0)
     max_new_tokens = int(_cfg_number(cfg, "max_new_tokens", 2048))
@@ -75,7 +80,6 @@ def main(argv: list[str] | None = None) -> int:
     out = Path(cfg["out"])
     assert_fresh_eval_dir(out)
     out.mkdir(parents=True, exist_ok=True)
-    token_counter = pack.token_counter or whitespace_token_counter
     write_run_manifest(
         out,
         mask=mask,
@@ -86,7 +90,7 @@ def main(argv: list[str] | None = None) -> int:
             "worker_rank": cfg.get("rank"),
             "eval_profile": retrieval.eval_profile(),
             "capability_log": pack.capability_log,
-            "token_count_mode": TOKEN_COUNT_MODE,
+            "token_count_mode": token_count_mode,
             "sampling": {"temperature": temperature, "max_tokens": max_new_tokens, "model": identity.api_model},
         },
     )

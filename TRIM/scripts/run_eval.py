@@ -208,7 +208,7 @@ def main(argv: list[str] | None = None) -> int:
     eval_temperature = float(args.temperature)
 
     if evaluation_path == EVALUATION_PATH_UPSTREAM_API:
-        from trim.eval.harness1_api_launch import run_isolated_api_eval
+        from trim.eval.harness1_api_launch import run_isolated_api_eval, run_replicated_api_eval
         from trim.upstream_harness1.model_serve import identity_from_args
         from trim.upstream_harness1.pin import pin_manifest
         from trim.upstream_harness1.retrieval import retrieval_from_args
@@ -216,15 +216,17 @@ def main(argv: list[str] | None = None) -> int:
 
         identity = identity_from_args(args)
         retrieval = retrieval_from_args(args)
+        eval_replicas = int(getattr(args, "eval_replicas", 1))
         launch["served_model"] = identity.to_dict()
         launch["retrieval_config"] = retrieval.to_dict()
         launch["eval_profile"] = retrieval.eval_profile()
         launch["component_mask"] = describe_mask(harness_mask)
         launch["upstream"] = pin_manifest()
+        launch["eval_replicas"] = eval_replicas
         (spec.out / "LAUNCH.json").write_text(json.dumps(launch, indent=2) + "\n", encoding="utf-8")
         summaries = []
         try:
-            ev, traces = run_isolated_api_eval(
+            api_eval_kwargs = dict(
                 rows=rows,
                 out=spec.out / "upstream_api",
                 harness=spec.harness,
@@ -236,6 +238,14 @@ def main(argv: list[str] | None = None) -> int:
                 temperature=eval_temperature,
                 pool_meta=pool_meta,
             )
+            if eval_replicas > 1:
+                ev, traces = run_replicated_api_eval(
+                    **api_eval_kwargs,
+                    eval_replicas=eval_replicas,
+                    stagger_s=float(getattr(args, "eval_stagger_s", 0.0) or 0.0),
+                )
+            else:
+                ev, traces = run_isolated_api_eval(**api_eval_kwargs)
             ev["setting"] = "upstream_api"
             ev["evaluation_path"] = EVALUATION_PATH_UPSTREAM_API
             ev["eval_mode"] = mode

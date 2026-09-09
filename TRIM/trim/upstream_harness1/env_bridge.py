@@ -7,7 +7,9 @@ only inside an isolated worker process.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from trim.upstream_harness1.api_adapter import chat_tools_from_upstream_schemas
@@ -63,8 +65,33 @@ def load_upstream_modules() -> dict[str, Any]:
     }
 
 
+def ensure_browsecompplus_paths(*, bcp_root: Path | None = None) -> dict[str, str]:
+    """Populate upstream harness Config paths for BrowseComp+ when unset."""
+    if bcp_root is None:
+        from trim.eval.official_query_pool import default_bcp_root
+
+        bcp_root = default_bcp_root()
+    if bcp_root is None:
+        return {}
+    candidates = {
+        "BROWSECOMPPLUS_QRELS_GOLD_PATH": bcp_root / "topics-qrels" / "qrel_golds.txt",
+        "BROWSECOMPPLUS_QRELS_EVIDENCE_PATH": bcp_root / "topics-qrels" / "qrel_evidence.txt",
+        "BROWSECOMPPLUS_QUERIES_PATH": bcp_root / "topics-qrels" / "queries.tsv",
+        "BROWSECOMPPLUS_ANSWERS_PATH": bcp_root / "data" / "browsecomp_plus_decrypted.jsonl",
+    }
+    applied: dict[str, str] = {}
+    for env_key, path in candidates.items():
+        if os.environ.get(env_key):
+            continue
+        if path.is_file():
+            os.environ[env_key] = str(path)
+            applied[env_key] = str(path)
+    return applied
+
+
 def load_scoring_dataset(name: str) -> Any:
     ensure_harness1_on_path()
+    ensure_browsecompplus_paths()
     from datagen.search_dataset import get_dataset  # type: ignore[import-not-found]
 
     return get_dataset(canonical_dataset_name(name))
@@ -280,6 +307,35 @@ def _clip_observation(obs: Any, Observation: Any, max_chars: int) -> Any:
         return obs
 
 
+def _truncate_wm_pool(wm_text: str | None, *, chars_to_cut: int) -> str | None:
+    raw = str(wm_text or "")
+    if not raw or chars_to_cut <= 0:
+        return wm_text
+    pool_start = raw.find("Document Pool:")
+    hist_start = raw.find("Search History:")
+    if pool_start <= 0 or hist_start <= pool_start:
+        if len(raw) <= chars_to_cut:
+            return raw[: max(0, len(raw) // 2)] + "\n...(WM truncated)\n"
+        return raw[: max(0, len(raw) - chars_to_cut)] + "\n...(WM truncated)\n"
+    pool_section = raw[pool_start:hist_start]
+    cut = min(len(pool_section) - 100, chars_to_cut)
+    if cut <= 0:
+        return wm_text
+    new_pool = pool_section[: len(pool_section) - cut] + "\n  ... (truncated for context)\n\n"
+    return raw[:pool_start] + new_pool + raw[hist_start:]
+
+
+def _message_token_count(messages: Sequence[Mapping[str, Any]], counter) -> int:
+    return int(counter(flatten_message_text(messages)))
+
+
+def _raise_over_budget(*, token_count: int, budget: int, stage: str) -> None:
+    raise RuntimeError(
+        f"API prompt still exceeds budget after {stage}: {token_count} > {budget}. "
+        "Refuse to send a known over-budget request."
+    )
+
+
 def openai_messages_from_env(
     env: Any,
     mods: Mapping[str, Any],
@@ -308,7 +364,7 @@ def openai_messages_from_env(
 
     counter = token_counter or getattr(env, "text_token_counter", None) or whitespace_token_counter
     actions = list(window.get("recent_actions") or [])
-    observations = [_clip_observation(obs, Observation, obs_limit) for obs in list(window.get("recent_observations") or [])]
+    observations = list(window.get("recent_observations") or [])
     summaries = list(window.get("result_summaries") or [])
     extra: list[str] = []
     if not retry:
@@ -318,16 +374,26 @@ def openai_messages_from_env(
     else:
         extra.append(API_FORMAT_RETRY_PROMPT)
 
-    def _assemble(act: list[Any], obs: list[Any], sums: list[Any]) -> list[dict[str, Any]]:
+    wm_text = window.get("wm_text")
+    obs_limit = int(obs_limit)
+    tight = max(2000, obs_limit // 3)
+
+    def _assemble_current(
+        *,
+        wm: str | None,
+        act: list[Any],
+        obs: list[Any],
+        sums: list[Any],
+        obs_chars: int,
+    ) -> list[dict[str, Any]]:
+        clipped_obs = [_clip_observation(o, Observation, obs_chars) for o in obs]
         entries: list[Any] = [
             Observation(observations=[env.system_prompt], sources=["user"], tool_metadata=[None])
         ]
-        if window.get("wm_text"):
-            entries.append(
-                Observation(observations=[window["wm_text"]], sources=["user"], tool_metadata=[None])
-            )
+        if wm:
+            entries.append(Observation(observations=[wm], sources=["user"], tool_metadata=[None]))
         n = len(act)
-        for i, (action, item) in enumerate(zip(act, obs)):
+        for i, (action, item) in enumerate(zip(act, clipped_obs)):
             entries.append(action)
             entries.append(item)
             if i < n - 1 and i < len(sums) and sums[i]:
@@ -340,13 +406,50 @@ def openai_messages_from_env(
             messages.append({"role": "user", "content": text})
         return messages
 
-    messages = _assemble(actions, observations, summaries)
-    while counter(flatten_message_text(messages)) > budget and len(actions) > 1:
+    messages = _assemble_current(wm=wm_text, act=actions, obs=observations, sums=summaries, obs_chars=obs_limit)
+
+    # Pass 1: drop oldest recent turns.
+    while _message_token_count(messages, counter) > budget and len(actions) > 1:
         actions = actions[1:]
         observations = observations[1:]
         if summaries:
             summaries = summaries[1:]
-        messages = _assemble(actions, observations, summaries)
+        messages = _assemble_current(wm=wm_text, act=actions, obs=observations, sums=summaries, obs_chars=obs_limit)
+
+    # Pass 2: truncate WM pool section.
+    if _message_token_count(messages, counter) > budget and wm_text:
+        overshoot = _message_token_count(messages, counter) - budget
+        wm_text = _truncate_wm_pool(wm_text, chars_to_cut=min(len(str(wm_text)), overshoot * 3))
+        messages = _assemble_current(wm=wm_text, act=actions, obs=observations, sums=summaries, obs_chars=obs_limit)
+
+    # Pass 3: aggressive WM cap + tighter observation clip.
+    if _message_token_count(messages, counter) > budget:
+        if wm_text and len(str(wm_text)) > 2000:
+            wm_text = str(wm_text)[:2000] + "\n...(WM truncated)\n"
+        tight = max(2000, obs_limit // 3)
+        messages = _assemble_current(wm=wm_text, act=actions, obs=observations, sums=summaries, obs_chars=tight)
+
+    # Pass 4: shrink remaining observations until within budget or floor reached.
+    floor = 512
+    step = max(256, obs_limit // 8)
+    if _message_token_count(messages, counter) > budget:
+        current_obs_limit = tight
+        while _message_token_count(messages, counter) > budget and current_obs_limit > floor:
+            current_obs_limit = max(floor, current_obs_limit - step)
+            messages = _assemble_current(
+                wm=wm_text, act=actions, obs=observations, sums=summaries, obs_chars=current_obs_limit
+            )
+
+    # Pass 5: minimal context (system prompt + tail only).
+    if _message_token_count(messages, counter) > budget:
+        minimal = [{"role": "user", "content": str(env.system_prompt or "")}]
+        for text in extra:
+            minimal.append({"role": "user", "content": text})
+        messages = minimal
+
+    if _message_token_count(messages, counter) > budget:
+        _raise_over_budget(token_count=_message_token_count(messages, counter), budget=budget, stage="minimal_context")
+
     return messages
 
 

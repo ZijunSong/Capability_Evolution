@@ -79,6 +79,56 @@ def finish_reason_from_step(*, done: bool, step_metrics: Mapping[str, Any], env:
     return "continue"
 
 
+_COHORT_QUALITY_KEYS: tuple[str, ...] = (
+    "recall",
+    "precision",
+    "f1",
+    "f_beta",
+    "trajectory_recall",
+    "final_answer_recall",
+)
+
+
+def _resolved_n_curated(metrics: Mapping[str, Any]) -> float | None:
+    for key in ("n_curated", "num_curated_docs"):
+        value = metrics.get(key)
+        if value is not None:
+            return float(value)
+    return None
+
+
+def _impute_cohort_quality(out: dict[str, Any]) -> dict[str, Any]:
+    """Fill deterministically known zeros so cohort summaries use a fixed denominator."""
+    format_error = float(out.get("format_error") or 0.0) >= 1.0
+    n_curated = _resolved_n_curated(out)
+    imputed: list[str] = []
+
+    if format_error:
+        for key in _COHORT_QUALITY_KEYS:
+            if out.get(key) is None:
+                out[key] = 0.0
+                imputed.append(key)
+    elif n_curated is not None and n_curated <= 0.0:
+        for key in ("recall", "precision", "f1", "f_beta", "final_answer_recall"):
+            if out.get(key) is None:
+                out[key] = 0.0
+                imputed.append(key)
+        if out.get("final_answer_recall") is None:
+            out["final_answer_recall"] = 0.0
+            imputed.append("final_answer_recall")
+    elif out.get("final_answer_recall") is None and out.get("recall") is not None and out.get("precision") is not None:
+        if float(out.get("recall") or 0.0) == 0.0 and float(out.get("precision") or 0.0) == 0.0:
+            out["final_answer_recall"] = 0.0
+            imputed.append("final_answer_recall")
+
+    if out.get("trajectory_recall") is None and format_error:
+        out["trajectory_recall"] = 0.0
+        imputed.append("trajectory_recall")
+
+    out["quality_imputed"] = sorted(set(imputed))
+    return out
+
+
 def normalize_query_metrics(
     metrics: Mapping[str, Any],
     *,
@@ -98,28 +148,26 @@ def normalize_query_metrics(
             out[key] = value
     if float(merged.get("format_error") or 0.0) >= 1.0 and merged.get("reward") is not None:
         out["reward"] = merged["reward"]
-    missing: list[str] = []
     precision = out.get("precision")
     recall = out.get("recall")
     if precision is not None and recall is not None:
         out["f1"] = f1_score(float(precision), float(recall))
         out["f1_missing"] = False
     else:
-        missing.append("f1")
         out["f1"] = None
         out["f1_missing"] = True
     if out.get("f_beta") is None and precision is not None and recall is not None:
         from trim.eval.harness1_metrics import f_beta_score
 
         out["f_beta"] = f_beta_score(float(precision), float(recall))
-    if out.get("trajectory_recall") is None:
-        missing.append("trajectory_recall")
     if done is not None:
         out["ended"] = bool(done) or bool(out.get("ended"))
     if turns is not None:
         out.update(count_tool_calls_from_turns(turns))
         out["n_turns"] = len(turns)
         out["num_turns"] = out.get("num_turns") if out.get("num_turns") is not None else len(turns)
+    out = _impute_cohort_quality(out)
+    missing = [key for key in _COHORT_QUALITY_KEYS if out.get(key) is None]
     out["missing_metrics"] = missing
     return out
 
@@ -279,38 +327,58 @@ def write_run_manifest(
     return payload
 
 
-def _mean(values: Sequence[float | None]) -> tuple[float | None, int, int]:
-    present = [float(v) for v in values if v is not None]
-    missing = len(values) - len(present)
-    if not present:
-        return None, 0, missing
-    return sum(present) / len(present), len(present), missing
+def _cohort_stat(values: Sequence[float | None], *, n_expected: int) -> dict[str, Any]:
+    """Fixed-denominator mean: every expected query counts; unresolved values become 0."""
+    n_expected = int(n_expected)
+    if n_expected <= 0:
+        return {"mean": 0.0, "n_expected": 0, "n_scored": 0, "n_missing": 0}
+    padded = list(values[:n_expected])
+    if len(padded) < n_expected:
+        padded.extend([None] * (n_expected - len(padded)))
+    scored = [float(v) for v in padded if v is not None]
+    n_missing = sum(1 for v in padded if v is None)
+    total = sum(float(v or 0.0) for v in padded)
+    return {
+        "mean": total / n_expected,
+        "n_expected": n_expected,
+        "n_scored": len(scored),
+        "n_missing": n_missing,
+    }
 
 
 def summarize_api_traces(traces: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     n = len(traces)
     denom = max(1, n)
-    f1_mean, f1_n, f1_missing = _mean([t.get("f1") for t in traces])
-    recall_mean, _, recall_missing = _mean([t.get("recall") for t in traces])
-    precision_mean, _, precision_missing = _mean([t.get("precision") for t in traces])
-    traj_mean, _, traj_missing = _mean([t.get("trajectory_recall") for t in traces])
-    fa_mean, _, _ = _mean([t.get("final_answer_recall") for t in traces])
+    recall = _cohort_stat([t.get("recall") for t in traces], n_expected=n)
+    precision = _cohort_stat([t.get("precision") for t in traces], n_expected=n)
+    f1 = _cohort_stat([t.get("f1") for t in traces], n_expected=n)
+    traj = _cohort_stat([t.get("trajectory_recall") for t in traces], n_expected=n)
+    fa = _cohort_stat([t.get("final_answer_recall") for t in traces], n_expected=n)
     format_err = [float(t.get("format_error") or 0.0) for t in traces]
     tool_calls = [float(t.get("n_tool_calls") or 0.0) for t in traces]
     search_calls = [float(t.get("n_search_plus_fan_out") or t.get("n_search_calls") or 0.0) for t in traces]
     return {
         "evaluation_path": EVALUATION_PATH_UPSTREAM_API,
         "n_queries": n,
-        "recall": recall_mean if n else 0.0,
-        "precision": precision_mean if n else 0.0,
-        "f1": f1_mean if n else 0.0,
-        "f1_n": f1_n,
-        "f1_missing": f1_missing,
-        "recall_missing": recall_missing,
-        "precision_missing": precision_missing,
-        "trajectory_recall": traj_mean,
-        "trajectory_recall_missing": traj_missing,
-        "final_answer_recall": fa_mean if n else 0.0,
+        "recall": recall["mean"],
+        "precision": precision["mean"],
+        "f1": f1["mean"],
+        "f1_n": f1["n_scored"],
+        "f1_missing": f1["n_missing"],
+        "recall_missing": recall["n_missing"],
+        "precision_missing": precision["n_missing"],
+        "trajectory_recall": traj["mean"],
+        "trajectory_recall_missing": traj["n_missing"],
+        "final_answer_recall": fa["mean"],
+        "final_answer_recall_missing": fa["n_missing"],
+        "cohort_denominator": n,
+        "metric_denominators": {
+            "recall": recall,
+            "precision": precision,
+            "f1": f1,
+            "trajectory_recall": traj,
+            "final_answer_recall": fa,
+        },
         "format_error_rate": sum(format_err) / denom,
         "mean_turns": sum(float(t.get("num_turns") or t.get("n_turns") or 0.0) for t in traces) / denom,
         "mean_tool_calls_per_query": sum(tool_calls) / denom,

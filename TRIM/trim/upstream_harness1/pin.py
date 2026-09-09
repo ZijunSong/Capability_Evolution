@@ -86,4 +86,7 @@ def ensure_harness1_on_path() -> Path:
     root = str(HARNESS1_ROOT)
     if root not in sys.path:
         sys.path.insert(0, root)
+    cookbook = str(HARNESS1_ROOT / "tinker-cookbook")
+    if cookbook not in sys.path:
+        sys.path.insert(0, cookbook)
     return HARNESS1_ROOT

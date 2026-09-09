@@ -21,6 +21,7 @@ from trim.upstream_harness1.api_adapter import ChatCompletionsClient
 from trim.upstream_harness1.env_bridge import (
     API_FORMAT_RETRY_PROMPT,
     clip_observation_text,
+    flatten_message_text,
     openai_messages_from_env,
 )
 from trim.upstream_harness1.token_count import prefix_to_token_budget, whitespace_token_counter
@@ -237,8 +238,9 @@ def test_r04_summary_f1_from_precision_recall_not_missing_field():
     assert missing["f1"] is None
     assert missing["f1_missing"] is True
     miss_sum = summarize_api_traces([missing])
-    assert miss_sum["f1"] is None
+    assert miss_sum["f1"] == 0.0
     assert miss_sum["f1_missing"] == 1
+    assert miss_sum["cohort_denominator"] == 1
 
 
 def test_r04_tool_call_counts_are_not_turn_counts():
@@ -302,3 +304,55 @@ def test_clip_observation_helper_matches_upstream_suffix():
     assert clipped.startswith("a" * 15000)
     assert "40011 chars total" in clipped
     assert clipped.endswith("chars total)")
+
+
+def test_budget_single_turn_large_obs_is_clipped():
+    def char_counter(text: str) -> int:
+        return len(str(text))
+
+    long_obs = "BLOCK " * 8000
+    env = FakeEnv(obs_text=long_obs)
+    env.text_token_counter = char_counter
+    msgs = openai_messages_from_env(
+        env,
+        FAKE_MODS,
+        token_counter=char_counter,
+        max_obs_chars=15000,
+        prompt_token_budget=4000,
+    )
+    assert char_counter(flatten_message_text(msgs)) <= 4000
+
+
+def test_cohort_final_answer_recall_mixed_perfect_and_empty_curated():
+    perfect = normalize_query_metrics(
+        {"precision": 1.0, "recall": 1.0, "final_answer_recall": 1.0, "n_curated": 3.0}
+    )
+    empty = normalize_query_metrics(
+        {
+            "precision": 0.0,
+            "recall": 0.0,
+            "trajectory_recall": 0.25,
+            "n_curated": 0.0,
+            "no_error": 1.0,
+        }
+    )
+    assert empty["final_answer_recall"] == 0.0
+    summary = summarize_api_traces([perfect, empty])
+    assert summary["final_answer_recall"] == 0.5
+    assert summary["final_answer_recall_missing"] == 0
+    assert summary["cohort_denominator"] == 2
+
+
+def test_cohort_format_error_counts_as_zero_quality():
+    ok = normalize_query_metrics({"precision": 1.0, "recall": 1.0, "final_answer_recall": 1.0})
+    bad = normalize_query_metrics(
+        {"reward": -0.2},
+        step_metrics={"format_error": 1.0, "no_error": 0.0, "reward": -0.2},
+        done=True,
+    )
+    assert bad["recall"] == 0.0
+    assert bad["final_answer_recall"] == 0.0
+    summary = summarize_api_traces([ok, bad])
+    assert summary["recall"] == 0.5
+    assert summary["f1"] == 0.5
+    assert summary["format_error_rate"] == 0.5
