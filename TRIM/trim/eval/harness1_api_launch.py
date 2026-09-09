@@ -19,7 +19,7 @@ from trim.eval.eval_parallel import (
     write_json,
     write_jsonl,
 )
-from trim.upstream_harness1.model_serve import ServedModelIdentity
+from trim.upstream_harness1.model_serve import ServedModelIdentity, identity_for_actor_rank
 from trim.upstream_harness1.retrieval import RetrievalConfig
 from trim.upstream_harness1.v8d_flags import subprocess_env_for_mask
 
@@ -162,9 +162,10 @@ def run_replicated_api_eval(
     pool_meta: Mapping[str, Any],
     eval_replicas: int,
     stagger_s: float = 0.0,
+    actor_urls: Sequence[str] | None = None,
     extra: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    """Shard queries across parallel API workers sharing the same actor endpoint."""
+    """Shard queries across parallel API workers (one optional actor URL per shard)."""
     n_replicas = effective_replica_count(len(rows), eval_replicas)
     if n_replicas <= 1:
         return run_isolated_api_eval(
@@ -198,10 +199,11 @@ def run_replicated_api_eval(
             shard_dir.mkdir(parents=True, exist_ok=True)
             queries_path = shard_dir / "queries.json"
             queries_path.write_text(json.dumps(shard, ensure_ascii=False) + "\n", encoding="utf-8")
+            shard_identity = identity_for_actor_rank(identity, list(actor_urls or []), rank)
             cfg = _worker_config(
                 harness=harness,
                 harness_mask=harness_mask,
-                identity=identity,
+                identity=shard_identity,
                 retrieval=retrieval,
                 queries_path=queries_path,
                 out=shard_dir,
@@ -221,6 +223,7 @@ def run_replicated_api_eval(
                     "n_queries": len(shard),
                     "query_ids": [str(r["query_id"]) for r in shard],
                     "out": str(shard_dir),
+                    "api_base_url": shard_identity.api_base_url,
                 }
             )
             procs.append(_spawn_api_worker(cfg_path=cfg_path, env=env, log_path=shard_dir / "worker.log"))
@@ -229,7 +232,12 @@ def run_replicated_api_eval(
 
         write_json(
             out / "SHARD_PLAN.json",
-            {"eval_replicas": n_replicas, "stagger_s": float(stagger_s), "shards": plan},
+            {
+                "eval_replicas": n_replicas,
+                "stagger_s": float(stagger_s),
+                "actor_urls": list(actor_urls or [identity.api_base_url]),
+                "shards": plan,
+            },
         )
 
         failures: list[dict[str, Any]] = []

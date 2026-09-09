@@ -209,15 +209,21 @@ def main(argv: list[str] | None = None) -> int:
 
     if evaluation_path == EVALUATION_PATH_UPSTREAM_API:
         from trim.eval.harness1_api_launch import run_isolated_api_eval, run_replicated_api_eval
-        from trim.upstream_harness1.model_serve import identity_from_args
+        from trim.upstream_harness1.model_serve import identity_from_args, parse_actor_base_urls
         from trim.upstream_harness1.pin import pin_manifest
         from trim.upstream_harness1.retrieval import retrieval_from_args
         from trim.upstream_harness1.v8d_flags import describe_mask
 
         identity = identity_from_args(args)
+        actor_urls = parse_actor_base_urls(getattr(args, "api_base_url", None))
         retrieval = retrieval_from_args(args)
         eval_replicas = int(getattr(args, "eval_replicas", 1))
+        if len(actor_urls) > 1 and eval_replicas < len(actor_urls):
+            eval_replicas = len(actor_urls)
+            launch["eval_replicas"] = eval_replicas
         launch["served_model"] = identity.to_dict()
+        if len(actor_urls) > 1:
+            launch["actor_urls"] = actor_urls
         launch["retrieval_config"] = retrieval.to_dict()
         launch["eval_profile"] = retrieval.eval_profile()
         launch["component_mask"] = describe_mask(harness_mask)
@@ -243,6 +249,7 @@ def main(argv: list[str] | None = None) -> int:
                     **api_eval_kwargs,
                     eval_replicas=eval_replicas,
                     stagger_s=float(getattr(args, "eval_stagger_s", 0.0) or 0.0),
+                    actor_urls=actor_urls if len(actor_urls) > 1 else None,
                 )
             else:
                 ev, traces = run_isolated_api_eval(**api_eval_kwargs)

@@ -773,7 +773,11 @@ def add_eval_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     parser.add_argument(
         "--api-base-url",
         default=None,
-        help="OpenAI-compatible chat/completions base URL of the served actor model.",
+        help=(
+            "OpenAI-compatible chat/completions base URL of the served actor model. "
+            "Comma-separated URLs assign one actor vLLM per upstream_api shard "
+            "(e.g. http://127.0.0.1:8000/v1,http://127.0.0.1:8002/v1)."
+        ),
     )
     parser.add_argument(
         "--api-model",

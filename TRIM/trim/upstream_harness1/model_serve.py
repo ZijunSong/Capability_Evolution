@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from typing import Any
+from typing import Any, Sequence
 
 KNOWN_BASE_MODELS: tuple[str, ...] = (
     "openai/gpt-oss-20b",
@@ -41,9 +41,46 @@ class ServedModelIdentity:
             )
 
 
+def parse_actor_base_urls(value: str | None) -> list[str]:
+    """Split comma-separated OpenAI-compatible base URLs (one actor vLLM per URL)."""
+    text = str(value or "").strip()
+    if not text:
+        return []
+    urls = [part.strip() for part in text.split(",") if part.strip()]
+    if not urls:
+        raise RuntimeError("--api-base-url is empty after parsing")
+    for url in urls:
+        if not url.startswith(("http://", "https://")):
+            raise RuntimeError(f"invalid --api-base-url entry (expected http(s)://…): {url!r}")
+    return urls
+
+
+def identity_for_actor_rank(identity: ServedModelIdentity, urls: Sequence[str], rank: int) -> ServedModelIdentity:
+    if not urls:
+        return identity
+    url = urls[int(rank) % len(urls)]
+    return ServedModelIdentity(
+        api_base_url=url,
+        api_model=identity.api_model,
+        base_model=identity.base_model,
+        adapter_path=identity.adapter_path,
+        export_method=identity.export_method,
+        revision=identity.revision,
+        tokenizer=identity.tokenizer,
+        chat_template=identity.chat_template,
+        tool_parser=identity.tool_parser,
+        reasoning_parser=identity.reasoning_parser,
+        quantization=identity.quantization,
+        protocol=identity.protocol,
+        supports_tool_calls=identity.supports_tool_calls,
+    )
+
+
 def identity_from_args(args: Any) -> ServedModelIdentity:
+    raw_url = str(getattr(args, "api_base_url", None) or "")
+    urls = parse_actor_base_urls(raw_url)
     identity = ServedModelIdentity(
-        api_base_url=str(getattr(args, "api_base_url", None) or ""),
+        api_base_url=urls[0] if urls else raw_url,
         api_model=str(getattr(args, "api_model", None) or getattr(args, "model_name", "") or ""),
         base_model=str(getattr(args, "base_model", None) or getattr(args, "model_name", "") or "") or None,
         adapter_path=str(getattr(args, "adapter", None) or "") or None,

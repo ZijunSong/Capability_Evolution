@@ -6,6 +6,7 @@ import json
 
 from trim.cli.launch import eval_mask_for_ids, parse_eval_args, student_mask_for_ids, teacher_mask_for_ids
 from trim.upstream_harness1.api_adapter import parse_chat_completion, request_fingerprint
+from trim.upstream_harness1.model_serve import identity_for_actor_rank, parse_actor_base_urls
 from trim.upstream_harness1.pin import PINNED_UPSTREAM_COMMIT, pin_manifest
 from trim.upstream_harness1.v8d_flags import (
     ABLATE_FLAGS_CLEARED_FOR_BASELINE,
@@ -144,6 +145,21 @@ def test_api_adapter_does_not_invent_action_on_format_error():
     assert parsed.ok is False
     assert parsed.tool_calls == []
     assert "Reasoning-only" in (parsed.parse_error or "")
+
+
+def test_parse_actor_base_urls_comma_separated():
+    urls = parse_actor_base_urls("http://127.0.0.1:8000/v1,http://127.0.0.1:8002/v1")
+    assert urls == ["http://127.0.0.1:8000/v1", "http://127.0.0.1:8002/v1"]
+
+
+def test_identity_for_actor_rank_round_robin():
+    from trim.upstream_harness1.model_serve import ServedModelIdentity
+
+    base = ServedModelIdentity(api_base_url="http://127.0.0.1:8000/v1", api_model="harness-1")
+    urls = ["http://127.0.0.1:8000/v1", "http://127.0.0.1:8002/v1"]
+    assert identity_for_actor_rank(base, urls, 0).api_base_url == urls[0]
+    assert identity_for_actor_rank(base, urls, 1).api_base_url == urls[1]
+    assert identity_for_actor_rank(base, urls, 2).api_base_url == urls[0]
 
 
 def test_retry_fingerprint_is_stable():
