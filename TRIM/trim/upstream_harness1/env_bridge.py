@@ -78,6 +78,7 @@ class EnvToolPack:
     verifier_client: Any | None = None
     capability_log: dict[str, Any] = field(default_factory=dict)
     backend: str = RETRIEVAL_UPSTREAM
+    token_counter: Any | None = None
 
 
 def build_eval_toolset(
@@ -86,12 +87,16 @@ def build_eval_toolset(
     *,
     dataset: Any,
     mask: Mapping[str, bool] | None = None,
+    token_counter: Any | None = None,
 ) -> EnvToolPack:
+    from trim.upstream_harness1.token_count import TOKEN_COUNT_MODE, whitespace_token_counter
+
+    counter = token_counter or whitespace_token_counter
     retrieval.assert_ready()
     if retrieval.backend == RETRIEVAL_LOCAL_BM25:
         from trim.local_backend.factory import build_local_toolset
 
-        pack = build_local_toolset(mods, retrieval, dataset=dataset)
+        pack = build_local_toolset(mods, retrieval, dataset=dataset, token_counter=counter)
         if mask and mask.get("verify_tool") and pack.verifier_client is None:
             raise RuntimeError(
                 "component includes verify_tool; local_bm25 requires --verify-base-url "
@@ -104,19 +109,33 @@ def build_eval_toolset(
             verifier_client=pack.verifier_client,
             capability_log=pack.capability_log,
             backend=RETRIEVAL_LOCAL_BM25,
+            token_counter=counter,
         )
-    toolset, search_tool = build_upstream_toolset(mods, retrieval, dataset=dataset)
+    toolset, search_tool = build_upstream_toolset(
+        mods, retrieval, dataset=dataset, token_counter=counter
+    )
     return EnvToolPack(
         toolset=toolset,
         search_tool=search_tool,
         dataset=dataset,
         verifier_client=None,
-        capability_log={"retrieval_backend": RETRIEVAL_UPSTREAM, "chroma_initialized": True},
+        capability_log={
+            "retrieval_backend": RETRIEVAL_UPSTREAM,
+            "chroma_initialized": True,
+            "token_count_mode": TOKEN_COUNT_MODE,
+        },
         backend=RETRIEVAL_UPSTREAM,
+        token_counter=counter,
     )
 
 
-def build_upstream_toolset(mods: Mapping[str, Any], retrieval: RetrievalConfig, *, dataset: Any) -> tuple[Any, Any]:
+def build_upstream_toolset(
+    mods: Mapping[str, Any],
+    retrieval: RetrievalConfig,
+    *,
+    dataset: Any,
+    token_counter: Any | None = None,
+) -> tuple[Any, Any]:
     if retrieval.backend != RETRIEVAL_UPSTREAM:
         raise RuntimeError(
             f"build_upstream_toolset requires {RETRIEVAL_UPSTREAM}; got {retrieval.backend}"
@@ -167,6 +186,7 @@ def build_upstream_toolset(mods: Mapping[str, Any], retrieval: RetrievalConfig, 
             chroma_client=chroma_client,
             chroma_collection_name=collection_names,
             reranker=reranker,
+            token_counter=token_counter,
             max_tokens=retrieval.read_max_tokens,
         )
     )
@@ -182,33 +202,152 @@ def openai_tools_from_env(env: Any, mods: Mapping[str, Any]) -> list[dict[str, A
     return chat_tools_from_upstream_schemas(raw)
 
 
-def openai_messages_from_env(env: Any, mods: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """Use original Action/Observation objects via Trajectory.to_openai_format."""
+# Harmony commentary/analysis channels are not valid chat.completions tool calls.
+API_FORMAT_RETRY_PROMPT = (
+    "Your previous response could not be parsed as a valid tool call. "
+    "Please output a valid function call using the chat.completions tools interface "
+    "(JSON arguments on a named tool). "
+    "Do not emit Harmony channel markup such as commentary or analysis; "
+    "put any reasoning in the assistant message, then call a tool."
+)
+DEFAULT_CURATE_NUDGE_PROMPT = (
+    "IMPORTANT: You just searched without curating. Follow the search → curate rhythm: "
+    "review the results from your last search and call curate NOW to add ALL plausibly "
+    "relevant documents. Do not search again until you've curated."
+)
+DEFAULT_MAX_OBS_CHARS = 15000
+DEFAULT_PROMPT_TOKEN_BUDGET = 30720
+DEFAULT_CURATE_NUDGE_INTERVAL = 1
+
+
+def clip_observation_text(text: str, max_chars: int = DEFAULT_MAX_OBS_CHARS) -> str:
+    raw = str(text or "")
+    limit = int(max_chars)
+    if len(raw) <= limit:
+        return raw
+    return raw[:limit] + f"\n... (truncated, {len(raw)} chars total)"
+
+
+def flatten_message_text(messages: Sequence[Mapping[str, Any]]) -> str:
+    parts: list[str] = []
+    for msg in messages:
+        content = msg.get("content")
+        if isinstance(content, str):
+            parts.append(content)
+        elif isinstance(content, list):
+            for item in content:
+                if isinstance(item, Mapping) and item.get("type") == "text":
+                    parts.append(str(item.get("text") or ""))
+                else:
+                    parts.append(str(item))
+        elif content is not None:
+            parts.append(str(content))
+        for call in msg.get("tool_calls") or []:
+            parts.append(json.dumps(call, ensure_ascii=False))
+    return "\n".join(parts)
+
+
+def _nudge_prompt_for_env(env: Any) -> str | None:
+    interval = DEFAULT_CURATE_NUDGE_INTERVAL
+    nudge_text = DEFAULT_CURATE_NUDGE_PROMPT
+    try:
+        from harness.ultra_core import CURATE_NUDGE_INTERVAL, CURATE_NUDGE_PROMPT  # type: ignore[import-not-found]
+
+        interval = int(CURATE_NUDGE_INTERVAL)
+        nudge_text = str(CURATE_NUDGE_PROMPT)
+    except Exception:
+        pass
+    turns_since = int(getattr(env, "_turns_since_curate", 0) or 0)
+    pool = 0
+    wm = getattr(env, "wm", None)
+    if wm is not None and hasattr(wm, "get_pool_size"):
+        try:
+            pool = int(wm.get_pool_size())
+        except Exception:
+            pool = 0
+    if turns_since >= interval and pool > 0:
+        return nudge_text
+    return None
+
+
+def _clip_observation(obs: Any, Observation: Any, max_chars: int) -> Any:
+    texts = [clip_observation_text(t, max_chars) for t in list(getattr(obs, "observations", None) or [])]
+    sources = list(getattr(obs, "sources", None) or [])
+    meta = list(getattr(obs, "tool_metadata", None) or [None] * len(texts))
+    try:
+        return Observation(observations=texts, sources=sources, tool_metadata=meta)
+    except Exception:
+        return obs
+
+
+def openai_messages_from_env(
+    env: Any,
+    mods: Mapping[str, Any],
+    *,
+    retry: bool = False,
+    token_counter: Any | None = None,
+    max_obs_chars: int | None = None,
+    prompt_token_budget: int | None = None,
+) -> list[dict[str, Any]]:
+    """Messages from the original selected window, plus original nudge/retry/clip rules."""
+    from trim.upstream_harness1.token_count import whitespace_token_counter
+
     window = env.selected_context_window()
     Trajectory = mods["Trajectory"]
     Observation = mods["Observation"]
     import uuid
 
-    entries: list[Any] = [
-        Observation(observations=[env.system_prompt], sources=["user"], tool_metadata=[None])
-    ]
-    if window.get("wm_text"):
-        entries.append(
-            Observation(observations=[window["wm_text"]], sources=["user"], tool_metadata=[None])
-        )
+    try:
+        from harness.ultra_core import MAX_OBS_CHARS, PROMPT_TOKEN_BUDGET  # type: ignore[import-not-found]
+
+        obs_limit = int(max_obs_chars if max_obs_chars is not None else MAX_OBS_CHARS)
+        budget = int(prompt_token_budget if prompt_token_budget is not None else PROMPT_TOKEN_BUDGET)
+    except Exception:
+        obs_limit = int(max_obs_chars if max_obs_chars is not None else DEFAULT_MAX_OBS_CHARS)
+        budget = int(prompt_token_budget if prompt_token_budget is not None else DEFAULT_PROMPT_TOKEN_BUDGET)
+
+    counter = token_counter or getattr(env, "text_token_counter", None) or whitespace_token_counter
     actions = list(window.get("recent_actions") or [])
-    observations = list(window.get("recent_observations") or [])
+    observations = [_clip_observation(obs, Observation, obs_limit) for obs in list(window.get("recent_observations") or [])]
     summaries = list(window.get("result_summaries") or [])
-    n = len(actions)
-    for i, (action, obs) in enumerate(zip(actions, observations)):
-        entries.append(action)
-        entries.append(obs)
-        if i < n - 1 and i < len(summaries) and summaries[i]:
+    extra: list[str] = []
+    if not retry:
+        nudge = _nudge_prompt_for_env(env)
+        if nudge:
+            extra.append(nudge)
+    else:
+        extra.append(API_FORMAT_RETRY_PROMPT)
+
+    def _assemble(act: list[Any], obs: list[Any], sums: list[Any]) -> list[dict[str, Any]]:
+        entries: list[Any] = [
+            Observation(observations=[env.system_prompt], sources=["user"], tool_metadata=[None])
+        ]
+        if window.get("wm_text"):
             entries.append(
-                Observation(observations=[summaries[i]], sources=["user"], tool_metadata=[None])
+                Observation(observations=[window["wm_text"]], sources=["user"], tool_metadata=[None])
             )
-    traj = Trajectory(actions_and_observations=entries, id=uuid.uuid4())
-    return traj.to_openai_format()
+        n = len(act)
+        for i, (action, item) in enumerate(zip(act, obs)):
+            entries.append(action)
+            entries.append(item)
+            if i < n - 1 and i < len(sums) and sums[i]:
+                entries.append(
+                    Observation(observations=[sums[i]], sources=["user"], tool_metadata=[None])
+                )
+        traj = Trajectory(actions_and_observations=entries, id=uuid.uuid4())
+        messages = traj.to_openai_format()
+        for text in extra:
+            messages.append({"role": "user", "content": text})
+        return messages
+
+    messages = _assemble(actions, observations, summaries)
+    while counter(flatten_message_text(messages)) > budget and len(actions) > 1:
+        actions = actions[1:]
+        observations = observations[1:]
+        if summaries:
+            summaries = summaries[1:]
+        messages = _assemble(actions, observations, summaries)
+    return messages
 
 
 def action_from_parsed(parsed: Any, env: Any, mods: Mapping[str, Any]) -> Any:

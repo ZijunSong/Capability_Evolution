@@ -270,6 +270,8 @@ def open_upstream_train_session(
         }
         if pack.verifier_client is not None:
             env_kwargs["openai_client"] = pack.verifier_client
+        if pack.token_counter is not None:
+            env_kwargs["text_token_counter"] = pack.token_counter
         env = Env(**env_kwargs)
         env._trim_seed_store = store
         env._trim_capability_log = pack.capability_log

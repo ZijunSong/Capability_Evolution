@@ -31,7 +31,16 @@ class LocalVerifierClient:
         """Shape expected by original exec_verify_claim (OpenAI SDK-like)."""
         messages = kwargs.get("messages") or []
         tools = kwargs.get("tools")
-        response = self._http.complete(list(messages), list(tools) if tools else None)
+        max_tokens = kwargs.get("max_tokens")
+        timeout = kwargs.get("timeout")
+        temperature = kwargs.get("temperature")
+        response = self._http.complete(
+            list(messages),
+            list(tools) if tools else None,
+            max_tokens=None if max_tokens is None else int(max_tokens),
+            timeout_s=None if timeout is None else float(timeout),
+            temperature=None if temperature is None else float(temperature),
+        )
         return _OpenAICompat(response, model=self.model)
 
 

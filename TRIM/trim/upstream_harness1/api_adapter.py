@@ -201,40 +201,64 @@ class ChatCompletionsClient:
     temperature: float = 1.0
     max_tokens: int = 2048
 
+    def build_payload(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]] | None = None,
+        *,
+        extra: Mapping[str, Any] | None = None,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "messages": [dict(m) for m in messages],
+            "temperature": self.temperature if temperature is None else float(temperature),
+            "max_tokens": self.max_tokens if max_tokens is None else int(max_tokens),
+        }
+        if tools:
+            payload["tools"] = [dict(t) for t in tools]
+            payload["tool_choice"] = "auto"
+            payload["parallel_tool_calls"] = True
+        if extra:
+            payload.update(dict(extra))
+        return payload
+
     def complete(
         self,
         messages: Sequence[Mapping[str, Any]],
-        tools: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]] | None = None,
         *,
         extra: Mapping[str, Any] | None = None,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        timeout_s: float | None = None,
     ) -> dict[str, Any]:
         url = self.base_url.rstrip("/")
         if not url.endswith("/chat/completions"):
             url = url + "/chat/completions"
-        payload: dict[str, Any] = {
-            "model": self.model,
-            "messages": [dict(m) for m in messages],
-            "tools": [dict(t) for t in tools],
-            "temperature": self.temperature,
-            "max_tokens": self.max_tokens,
-            "tool_choice": "auto",
-            "parallel_tool_calls": True,
-        }
-        if extra:
-            payload.update(dict(extra))
+        payload = self.build_payload(
+            messages,
+            tools,
+            extra=extra,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
         body = json.dumps(payload).encode("utf-8")
         fingerprint = request_fingerprint(payload)
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
+        timeout = self.timeout_s if timeout_s is None else float(timeout_s)
         last_error: Exception | None = None
         for attempt in range(self.max_retries):
             req = urllib.request.Request(url, data=body, headers=headers, method="POST")
             try:
-                with urllib.request.urlopen(req, timeout=self.timeout_s) as resp:
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
                     raw = json.loads(resp.read().decode("utf-8"))
                 raw["_request_fingerprint"] = fingerprint
                 raw["_protocol"] = self.protocol
+                raw["_request_payload"] = payload
                 return raw
             except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
                 last_error = exc

@@ -9,6 +9,7 @@ from typing import Any, Callable, Mapping
 from trim.local_backend.bm25 import LocalBm25Backend, RankHit
 from trim.local_backend.corpus_store import LocalCorpusStore
 from trim.local_backend.format_obs import format_search_observation
+from trim.upstream_harness1.token_count import prefix_to_token_budget
 
 GREP_LIMIT = 5
 GREP_TIMEOUT_S = 10.0
@@ -201,10 +202,17 @@ class LocalReadDocumentTool(_LocalToolBase):
                 used = 0
                 for doc in documents:
                     n = self._token_counter(doc)
-                    if used + n > max_tokens:
+                    remaining = int(max_tokens) - used
+                    if remaining <= 0:
                         break
-                    kept.append(doc)
-                    used += n
+                    if n <= remaining:
+                        kept.append(doc)
+                        used += n
+                        continue
+                    prefix = prefix_to_token_budget(doc, remaining, self._token_counter)
+                    if prefix:
+                        kept.append(prefix)
+                    break
                 assembled = "".join(kept)
         self.store.assert_immutable(raw_id, checksum_before or None)
         if self._token_counter is not None:

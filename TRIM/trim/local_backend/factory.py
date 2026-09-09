@@ -78,8 +78,12 @@ def build_local_toolset(
     *,
     dataset: Any = None,
     require_loopback: bool = True,
+    token_counter: Any | None = None,
 ) -> LocalToolPack:
     retrieval.assert_local_bm25()
+    from trim.upstream_harness1.token_count import TOKEN_COUNT_MODE, whitespace_token_counter
+
+    counter = token_counter or whitespace_token_counter
     store = load_local_store(retrieval)
     if not retrieval.index_path:
         raise RuntimeError("local_bm25 requires --index-path pointing at a Lucene/Pyserini index")
@@ -93,6 +97,7 @@ def build_local_toolset(
         "adaptive_rerank_instruction_consumed_by_search": False,
         "chunk_neighbors_source": "parent_doc_ordinal",
         "chunk_strategy": store.manifest.chunk_strategy,
+        "token_count_mode": TOKEN_COUNT_MODE,
     }
     reranker = None
     if retrieval.reranker not in {"none", "", None}:
@@ -108,6 +113,7 @@ def build_local_toolset(
                 base_url=retrieval.reranker_base_url,
                 model=retrieval.reranker_model or "local-reranker",
                 max_tokens=retrieval.read_max_tokens,
+                token_counter=counter,
                 require_loopback=require_loopback,
             )
             capability_log["reranker_identity"] = reranker.identity
@@ -137,17 +143,20 @@ def build_local_toolset(
         reranker=reranker,
         display_limit=retrieval.search_display_limit,
         search_limit=retrieval.search_limit,
+        token_counter=counter,
         capability_log=capability_log,
     )
     grep = LocalGrepCorpusTool(
         store=store,
         metadata_cls=_load_meta(mods, "GrepCorpusToolCallMetadata"),
         schema=_schema(mods, "GREP_CORPUS_SCHEMA", "grep_corpus"),
+        token_counter=counter,
     )
     read = LocalReadDocumentTool(
         store=store,
         schema=_schema(mods, "READ_DOCUMENT_SCHEMA", "read_document"),
         reranker=reranker,
+        token_counter=counter,
         max_tokens=retrieval.read_max_tokens,
     )
     toolset = mods["ToolSet"](name="local_bm25_toolset")

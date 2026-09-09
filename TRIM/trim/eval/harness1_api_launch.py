@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from trim.eval.harness1_api_eval import assert_fresh_eval_dir
 from trim.upstream_harness1.model_serve import ServedModelIdentity
 from trim.upstream_harness1.retrieval import RetrievalConfig
 from trim.upstream_harness1.v8d_flags import subprocess_env_for_mask
@@ -31,6 +32,7 @@ def run_isolated_api_eval(
     """Spawn one worker process that imports ultra_core after V8D flags are set."""
     retrieval.assert_ready()
     identity.assert_tool_calling()
+    assert_fresh_eval_dir(out)
     out.mkdir(parents=True, exist_ok=True)
     queries_path = out / "queries.json"
     queries_path.write_text(json.dumps(list(rows), ensure_ascii=False) + "\n", encoding="utf-8")

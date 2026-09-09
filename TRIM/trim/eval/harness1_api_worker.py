@@ -35,11 +35,18 @@ def main(argv: list[str] | None = None) -> int:
     for key, value in subprocess_env_for_mask(mask, harness=cfg.get("harness") or "Harness-1").items():
         os.environ[str(key)] = str(value)
 
-    from trim.eval.harness1_api_eval import run_one_query_api, summarize_api_traces, write_run_manifest
+    from trim.eval.harness1_api_eval import (
+        _cfg_number,
+        assert_fresh_eval_dir,
+        run_one_query_api,
+        summarize_api_traces,
+        write_run_manifest,
+    )
     from trim.upstream_harness1.api_adapter import ChatCompletionsClient
     from trim.upstream_harness1.env_bridge import build_eval_toolset, load_scoring_dataset, load_upstream_modules
     from trim.upstream_harness1.model_serve import ServedModelIdentity
     from trim.upstream_harness1.retrieval import RETRIEVAL_LOCAL_BM25, RetrievalConfig
+    from trim.upstream_harness1.token_count import TOKEN_COUNT_MODE, whitespace_token_counter
 
     retrieval = RetrievalConfig.from_mapping(cfg.get("retrieval") or {})
     retrieval.assert_ready()
@@ -55,16 +62,20 @@ def main(argv: list[str] | None = None) -> int:
     dataset = load_scoring_dataset(retrieval.dataset)
     pack = build_eval_toolset(mods, retrieval, dataset=dataset, mask=mask)
     Env = mods["SlidingWindowSearchEnv"]
+    temperature = _cfg_number(cfg, "temperature", 1.0)
+    max_new_tokens = int(_cfg_number(cfg, "max_new_tokens", 2048))
     client = ChatCompletionsClient(
         base_url=identity.api_base_url,
         model=identity.api_model,
         api_key=os.environ.get("OPENAI_API_KEY") or cfg.get("api_key"),
-        temperature=float(cfg.get("temperature") or 1.0),
-        max_tokens=int(cfg.get("max_new_tokens") or 2048),
+        temperature=temperature,
+        max_tokens=max_new_tokens,
     )
     rows = json.loads(Path(cfg["queries_path"]).read_text(encoding="utf-8"))
     out = Path(cfg["out"])
+    assert_fresh_eval_dir(out)
     out.mkdir(parents=True, exist_ok=True)
+    token_counter = pack.token_counter or whitespace_token_counter
     write_run_manifest(
         out,
         mask=mask,
@@ -75,6 +86,8 @@ def main(argv: list[str] | None = None) -> int:
             "worker_rank": cfg.get("rank"),
             "eval_profile": retrieval.eval_profile(),
             "capability_log": pack.capability_log,
+            "token_count_mode": TOKEN_COUNT_MODE,
+            "sampling": {"temperature": temperature, "max_tokens": max_new_tokens, "model": identity.api_model},
         },
     )
     traces: list[dict] = []
@@ -95,6 +108,7 @@ def main(argv: list[str] | None = None) -> int:
                 "query_text": query_text or str(row.get("query") or ""),
                 "dataset": pack.dataset,
                 "max_turns": int(cfg.get("max_turns") or 40),
+                "text_token_counter": token_counter,
             }
             if pack.verifier_client is not None:
                 env_kwargs["openai_client"] = pack.verifier_client
@@ -106,6 +120,7 @@ def main(argv: list[str] | None = None) -> int:
                 query_row={**row, "query": query_text or row.get("query")},
                 trace_dir=out,
                 max_turns=int(cfg.get("max_turns") or 40),
+                token_counter=token_counter,
             )
             traces.append(result["metrics"])
 

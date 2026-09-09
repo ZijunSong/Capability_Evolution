@@ -22,3 +22,5 @@ Every local difference from that commit must be an I/O boundary. Component algor
 - `evaluate_harness1.py` uses a TokenCompleter, not chat/completions. Official TRIM eval adds a messages adapter in `trim/upstream_harness1/` rather than changing that script's algorithm.
 - Adaptive rerank in RL env is constructed with `use_llm=False`. Kept as-is.
 - `SearchCorpusTool.__call__` builds `rerank_instruction` override but does not pass it into the reranker. Local BM25 keeps this native no-op and records `adaptive_rerank_instruction_consumed_by_search=false`.
+- Vendored `ultra_core.py` still contains a local Harmony fallback import path that is not in the pinned upstream commit. That is a dependency-isolation difference, not an algorithm change; it is not treated as a complete byte-for-byte upstream tree.
+- `Trajectory.to_openai_format()` on the OPENAI provider path does not keep `reasoning_content`. API eval records reasoning from the raw chat response separately.
