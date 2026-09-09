@@ -128,14 +128,28 @@ class LocalCorpusStore:
         documents: dict[str, Document] = {}
         chunks: dict[str, Chunk] = {}
         strategy = CHUNK_STRATEGY_DOCUMENT
+        n_lines = 0
+        n_skipped_no_id = 0
+        n_skipped_empty_text = 0
+        n_query_like = 0
         with path.open(encoding="utf-8") as handle:
             for line in handle:
                 if not line.strip():
                     continue
+                n_lines += 1
                 row = json.loads(line)
+                if row.get("query_id") and row.get("query") and not (
+                    row.get("text") or row.get("contents") or row.get("content")
+                ):
+                    n_query_like += 1
+                    continue
                 official = str(row.get("id") or row.get("docid") or row.get("doc_id") or row.get("source") or "")
                 text = str(row.get("text") or row.get("contents") or row.get("content") or "")
                 if not official:
+                    n_skipped_no_id += 1
+                    continue
+                if not text.strip():
+                    n_skipped_empty_text += 1
                     continue
                 id_map.register_official(official)
                 documents[official] = Document(
@@ -169,7 +183,32 @@ class LocalCorpusStore:
         man.n_chunks = len(chunks)
         man.chunk_strategy = strategy
         man.corpus_path = str(path)
+        man.notes = list(man.notes or [])
+        man.notes.extend(
+            [
+                f"jsonl_lines={n_lines}",
+                f"skipped_no_id={n_skipped_no_id}",
+                f"skipped_empty_text={n_skipped_empty_text}",
+                f"skipped_query_like={n_query_like}",
+            ]
+        )
+        cls._assert_usable_store(man, path=path, n_query_like=n_query_like)
         return cls(documents=documents, chunks=chunks, id_map=id_map, manifest=man)
+
+    @staticmethod
+    def _assert_usable_store(manifest: CorpusManifest, *, path: Path, n_query_like: int) -> None:
+        if manifest.n_documents <= 0 or manifest.n_chunks <= 0:
+            raise RuntimeError(
+                f"corpus at {path} loaded 0 documents / 0 chunks. "
+                "Use Tevatron/browsecomp-plus-corpus JSONL or build from the Lucene index "
+                "(TRIM/scripts/build_browsecomp_corpus_from_index.py). "
+                "Do not pass browsecomp_plus_decrypted.jsonl (queries/answers only)."
+            )
+        if n_query_like > 0 and manifest.n_documents == 0:
+            raise RuntimeError(
+                f"corpus at {path} looks like a query/answer file ({n_query_like} query-like rows), "
+                "not a document store."
+            )
 
     @classmethod
     def from_sqlite(cls, path: Path, *, id_map: IdMap | None = None, manifest: CorpusManifest | None = None) -> "LocalCorpusStore":

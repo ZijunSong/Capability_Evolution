@@ -26,6 +26,20 @@ from trim.upstream_harness1.v8d_flags import subprocess_env_for_mask
 _TRIM_ROOT = Path(__file__).resolve().parents[2]
 
 
+def _write_jsonl_atomic(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
+    """Write JSONL via temp file; verify each line parses before replace."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with tmp.open("w", encoding="utf-8") as handle:
+        for row in rows:
+            line = json.dumps(row, ensure_ascii=False) + "\n"
+            json.loads(line)
+            handle.write(line)
+    if not tmp.is_file() or tmp.stat().st_size == 0:
+        raise RuntimeError(f"refusing to publish empty trace file: {path}")
+    tmp.replace(path)
+
+
 def _worker_config(
     *,
     harness: str,
@@ -261,9 +275,9 @@ def run_replicated_api_eval(
                 merged_turns.extend(load_jsonl(turns_path))
 
         traces = merge_traces(shard_traces, rows)
-        write_jsonl(out / "PER_QUERY.jsonl", traces)
+        _write_jsonl_atomic(out / "PER_QUERY.jsonl", traces)
         if merged_turns:
-            write_jsonl(out / "TURNS.jsonl", merged_turns)
+            _write_jsonl_atomic(out / "TURNS.jsonl", merged_turns)
 
         summary = summarize_api_traces(traces)
         summary["eval_profile"] = retrieval.eval_profile()

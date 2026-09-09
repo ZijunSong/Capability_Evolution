@@ -74,9 +74,28 @@ def test_id_map_keeps_official_ids_with_underscores():
 def test_formatter_document_marker_matches_upstream():
     text = format_search_observation(["plain_0"], ["hello world"], display_limit=10)
     assert DOCUMENT_ID_PREFIX in text
-    assert "# DOCUMENT ID: plain_0" in text
+    assert "# DOCUMENT ID: plain_0\n" in text
     assert "hello world" in text
     assert format_search_observation([], []) == "No results found"
+
+
+def test_formatter_header_matches_sentence_compress_regex():
+    import re
+
+    text = format_search_observation(["123_0"], ["body text"], token_counts=[3], display_limit=10)
+    assert re.search(r"(# DOCUMENT ID:\s*\S+\n)", text)
+    assert "(3 tokens)" in text
+    assert "# DOCUMENT ID: 123_0 (3 tokens)" not in text
+
+
+def test_query_jsonl_rejected_as_corpus(tmp_path):
+    path = tmp_path / "queries.jsonl"
+    path.write_text(
+        '{"query_id":"1","query":"hello","answer":"x","gold_docs":[]}\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(RuntimeError, match="0 documents"):
+        LocalCorpusStore.from_jsonl(path)
 
 
 def test_grep_real_regex_invalid_timeout_and_empty():

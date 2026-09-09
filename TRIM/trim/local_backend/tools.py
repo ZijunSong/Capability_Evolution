@@ -119,6 +119,7 @@ class LocalGrepCorpusTool(_LocalToolBase):
         self._token_counter = token_counter
         self._limit = int(limit)
         self._timeout_s = float(timeout_s)
+        self.capability_log: dict[str, Any] = {}
 
     def __call__(self, params: Mapping[str, Any], overrides: Mapping[str, Any] | None = None):
         del overrides
@@ -149,6 +150,11 @@ class LocalGrepCorpusTool(_LocalToolBase):
             )
         token_counts = [self._token_counter(d) for d in docs] if self._token_counter else [None] * len(docs)
         text = format_search_observation(ids, docs, token_counts, display_limit=self._limit)
+        if isinstance(self.capability_log, dict):
+            if ids:
+                self.capability_log["grep_success"] = int(self.capability_log.get("grep_success") or 0) + 1
+            else:
+                self.capability_log["grep_no_results"] = int(self.capability_log.get("grep_no_results") or 0) + 1
         return (text, self._metadata_cls(returned_chunk_ids=list(ids)))
 
 
@@ -167,6 +173,7 @@ class LocalReadDocumentTool(_LocalToolBase):
         self._reranker = reranker
         self._token_counter = token_counter
         self._max_tokens = max_tokens
+        self.capability_log: dict[str, Any] = {}
 
     def __call__(self, params: Mapping[str, Any], overrides: Mapping[str, Any] | None = None):
         if not isinstance(params, dict) or ("doc_id" not in params and "id" not in params):
@@ -177,6 +184,9 @@ class LocalReadDocumentTool(_LocalToolBase):
         if not chunks:
             doc = self.store.get_document(raw_id)
             if doc is None:
+                log = getattr(self, "capability_log", None)
+                if isinstance(log, dict):
+                    log["read_unknown_id"] = int(log.get("read_unknown_id") or 0) + 1
                 return (f"read_document: unknown id {raw_id}", None)
             from trim.local_backend.corpus_store import Chunk
 
@@ -215,6 +225,8 @@ class LocalReadDocumentTool(_LocalToolBase):
                     break
                 assembled = "".join(kept)
         self.store.assert_immutable(raw_id, checksum_before or None)
+        if isinstance(self.capability_log, dict):
+            self.capability_log["read_success"] = int(self.capability_log.get("read_success") or 0) + 1
         if self._token_counter is not None:
             return (f"# Document ({self._token_counter(assembled)} tokens)\n{assembled}", None)
         return (assembled, None)

@@ -81,9 +81,10 @@ def build_local_toolset(
     token_counter: Any | None = None,
 ) -> LocalToolPack:
     retrieval.assert_local_bm25()
-    from trim.upstream_harness1.token_count import TOKEN_COUNT_MODE, whitespace_token_counter
+    from trim.upstream_harness1.token_count import whitespace_token_counter
 
     counter = token_counter or whitespace_token_counter
+    token_count_mode = getattr(counter, "__name__", None) or "callable"
     store = load_local_store(retrieval)
     if not retrieval.index_path:
         raise RuntimeError("local_bm25 requires --index-path pointing at a Lucene/Pyserini index")
@@ -97,7 +98,13 @@ def build_local_toolset(
         "adaptive_rerank_instruction_consumed_by_search": False,
         "chunk_neighbors_source": "parent_doc_ordinal",
         "chunk_strategy": store.manifest.chunk_strategy,
-        "token_count_mode": TOKEN_COUNT_MODE,
+        "token_count_mode": token_count_mode,
+        "corpus_n_documents": store.manifest.n_documents,
+        "corpus_n_chunks": store.manifest.n_chunks,
+        "read_unknown_id": 0,
+        "read_success": 0,
+        "grep_no_results": 0,
+        "grep_success": 0,
     }
     reranker = None
     if retrieval.reranker not in {"none", "", None}:
@@ -159,6 +166,8 @@ def build_local_toolset(
         token_counter=counter,
         max_tokens=retrieval.read_max_tokens,
     )
+    grep.capability_log = capability_log
+    read.capability_log = capability_log
     toolset = mods["ToolSet"](name="local_bm25_toolset")
     bound_search = _bind_tool(mods, search)
     toolset.tools[search.tool_schema.name] = bound_search

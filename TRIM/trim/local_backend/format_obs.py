@@ -7,9 +7,12 @@ DOCUMENT_ID_PREFIX = "# DOCUMENT ID:"
 
 
 def format_document_block(doc_id: str, text: str, tokens: int | None = None) -> str:
-    suffix = f" ({tokens} tokens)" if tokens is not None else ""
+    """Match upstream compress regex: ``# DOCUMENT ID: <id>\\n`` with no trailing space."""
     body = (text or "")[:DOC_TRUNCATION]
-    return f"\n{DOCUMENT_ID_PREFIX} {doc_id}{suffix} \n{body}"
+    header = f"\n{DOCUMENT_ID_PREFIX} {doc_id}\n"
+    if tokens is not None:
+        header += f"({int(tokens)} tokens)\n"
+    return header + body
 
 
 def format_search_observation(
