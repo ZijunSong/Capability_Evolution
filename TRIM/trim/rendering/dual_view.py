@@ -65,8 +65,9 @@ def default_render(snapshot: EnvironmentSnapshot, mask: Mapping[str, bool]) -> d
         if mask.get("importance_tagging") and importance:
             item["importance"] = importance.get(str(item["id"]))
         if mask.get("sentence_compress") and isinstance(item["text"], str):
-            # Cheap deterministic stand-in for sentence compress
+            # Display-only clip. Snapshot documents keep full text.
             item["text"] = item["text"][: max(32, len(item["text"]) // 2)]
+            item["display_clipped"] = True
         if mask.get("content_dedup"):
             item["dedup_key"] = stable_hash(item["text"])[:12]
         rendered_docs.append(item)
@@ -79,6 +80,7 @@ def default_render(snapshot: EnvironmentSnapshot, mask: Mapping[str, bool]) -> d
 
     payload: dict[str, Any] = {
         "query_id": snapshot.query_id,
+        "query_text": snapshot.query_text or wm.get("query") or wm.get("query_text") or "",
         "step": snapshot.step,
         "mask": dict(mask),
         "documents": rendered_docs,
@@ -155,15 +157,22 @@ class DualViewRenderer:
         *,
         component_id: str | None = None,
         student_mask: Mapping[str, bool] | None = None,
+        teacher_mask: Mapping[str, bool] | None = None,
         include_null_controls: bool = True,
     ) -> DualView:
         if student_mask is None:
             if component_id is None:
                 raise ValueError("component_id or student_mask required")
             student_mask = minus_mask(component_id)
-        from trim.adapters.harness_profiles import infer_harness_from_ids, full_mask_for
+        if teacher_mask is None:
+            meta = snapshot.metadata or {}
+            stored = meta.get("teacher_mask")
+            teacher_mask = dict(stored) if stored else None
+        if teacher_mask is None:
+            from trim.adapters.role_masks import teacher_mask_for_component
 
-        fmask = full_mask_for(infer_harness_from_ids(list(student_mask.keys()) or component_id))
+            teacher_mask = teacher_mask_for_component(component_id)
+        fmask = dict(teacher_mask)
         # Render without stepping environment
         before = self._env_steps
         student_view = self.render_fn(snapshot, student_mask)

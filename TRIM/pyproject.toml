@@ -25,6 +25,9 @@ train = [
 serve = [
   "vllm",
 ]
+chroma = [
+  "chromadb==1.4.0",
+]
 
 [tool.setuptools.packages.find]
 include = ["trim*"]

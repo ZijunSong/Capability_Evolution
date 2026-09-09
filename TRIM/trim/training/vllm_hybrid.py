@@ -227,7 +227,7 @@ def plan_cell_phases(
         return ["vllm_rollout", "vllm_eval"]
     if cell == "pure_opd" and use_frozen_states:
         return ["hf_train"] * steps + ["vllm_eval"]
-    if cell in {"rl", "rl_opd"} and on_policy_refresh:
+    if cell in {"rl", "rl_opd", "scape_seed", "scape_rl"} and on_policy_refresh:
         phases: list[str] = []
         for _ in range(steps):
             phases.extend(["vllm_rollout", "hf_train"])

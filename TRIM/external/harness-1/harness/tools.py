@@ -31,12 +31,8 @@ try:
     sys.modules["sqlite3"] = pysqlite3
 except Exception:
     pass
-import chromadb
-from chromadb.api.types import SearchResult
-import openai
 import tenacity
 
-from chromadb.utils.embedding_functions import Bm25EmbeddingFunction
 from pydantic import BaseModel, Field
 from harness.utils import ProviderFormat
 import hashlib
@@ -45,7 +41,10 @@ import re
 import structlog
 import time
 
-from harness.rerank import Reranker
+if TYPE_CHECKING:
+    from harness.rerank import Reranker
+else:
+    Reranker = Any  # Avoid importing harness.rerank (and get_config) at module load.
 
 logger = structlog.get_logger("search_agent.tools")
 
@@ -98,8 +97,8 @@ _CHROMA_SEARCH_SEMAPHORE = threading.BoundedSemaphore(CHROMA_SEARCH_MAX_CONCURRE
     ),
 )
 def _search_with_retry(
-    collection: chromadb.Collection, search: chromadb.Search
-) -> SearchResult:
+    collection: Any, search: Any
+) -> Any:
     """Execute a ChromaDB search with retry logic for transient errors."""
     start = time.perf_counter()
     with _CHROMA_SEARCH_SEMAPHORE:
@@ -357,13 +356,13 @@ class SearchCorpusTool(Tool):
         reranker: Optional reranker to reorder results by relevance.
     """
 
-    _chroma_client: chromadb.ClientAPI
-    _openai_client: openai.OpenAI
-    _bm25_ef: Optional[Bm25EmbeddingFunction]  # TODO: consider allowing this to be a field for experiment tracking
+    _chroma_client: Any
+    _openai_client: Any
+    _bm25_ef: Any
     _openai_ef_name: str = (
         "text-embedding-3-small"  # TODO: consider allowing this to be a field for experiment tracking
     )
-    _collections: List[chromadb.Collection]
+    _collections: List[Any]
     _reranker: Optional[Reranker] = (
         None  # TODO: consider allowing this to be a field for experiment tracking
     )
@@ -371,8 +370,8 @@ class SearchCorpusTool(Tool):
 
     def __init__(
         self,
-        chroma_client: chromadb.ClientAPI,
-        openai_client: openai.OpenAI,
+        chroma_client: Any,
+        openai_client: Any,
         chroma_collection_name: Union[str, List[str]],
         openai_ef_name: str = "text-embedding-3-small",
         reranker: Optional[Reranker] = None,
@@ -385,7 +384,11 @@ class SearchCorpusTool(Tool):
         self._chroma_client = chroma_client
         self._openai_client = openai_client
         self._local_hash_embedding = os.environ.get("SCAPE_LOCAL_OPENAI_EMBEDDINGS", "0") == "1"
-        self._bm25_ef = None if self._local_hash_embedding else Bm25EmbeddingFunction(avg_len=4000, task="query")
+        self._bm25_ef = None
+        if not self._local_hash_embedding:
+            from chromadb.utils.embedding_functions import Bm25EmbeddingFunction
+
+            self._bm25_ef = Bm25EmbeddingFunction(avg_len=4000, task="query")
         if isinstance(chroma_collection_name, str):
             collection_names = [chroma_collection_name]
         else:
@@ -418,6 +421,8 @@ class SearchCorpusTool(Tool):
             query=query,
             ignore_ids=len(ignore_ids),
         )
+
+        import chromadb
 
         sparse_vector = _hash_embedding(query) if self._bm25_ef is None else self._bm25_ef([query])[0]
         dense_vecs = self.create_embeddings([query])
@@ -521,14 +526,14 @@ class GrepCorpusTool(Tool):
         token_counter: Optional callable that counts tokens in a string.
     """
 
-    _chroma_client: chromadb.ClientAPI
-    _collections: List[chromadb.Collection]
+    _chroma_client: Any
+    _collections: List[Any]
     _token_counter: Optional[Callable[[str], int]] = None
     tool_schema: ToolSchema
 
     def __init__(
         self,
-        chroma_client: chromadb.ClientAPI,
+        chroma_client: Any,
         chroma_collection_name: Union[str, List[str]],
         token_counter: Optional[Callable[[str], int]] = None,
     ) -> None:
@@ -554,6 +559,7 @@ class GrepCorpusTool(Tool):
 
         query = params["pattern"]
         log.info("grep_corpus", pattern=query)
+        import chromadb
         # TODO: grep limit is very high, we should probably limit it more
         search = (
             chromadb.Search()
@@ -604,8 +610,8 @@ class ReadDocumentTool(Tool):
     """
 
     tool_schema: ToolSchema
-    _chroma_client: chromadb.ClientAPI
-    _collections: List[chromadb.Collection]
+    _chroma_client: Any
+    _collections: List[Any]
     _reranker: Optional[Reranker] = (
         None  # TODO: consider allowing this to be a field for experiment tracking
     )
@@ -614,7 +620,7 @@ class ReadDocumentTool(Tool):
 
     def __init__(
         self,
-        chroma_client: chromadb.ClientAPI,
+        chroma_client: Any,
         chroma_collection_name: Union[str, List[str]],
         reranker: Optional[Reranker] = None,
         token_counter: Optional[Callable[[str], int]] = None,
@@ -653,6 +659,7 @@ class ReadDocumentTool(Tool):
         # Model may call with <docid> or <docid>_<chunk_id>, so we need to handle both
         if "_" in doc_id:
             doc_id = doc_id.split("_")[0]
+        import chromadb
         search = (
             chromadb.Search()
             .where(chromadb.Key("source") == doc_id)

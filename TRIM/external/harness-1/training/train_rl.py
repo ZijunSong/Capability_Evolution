@@ -258,6 +258,7 @@ class SlidingWindowSearchEnv(Env):
         text_token_counter: Optional[Callable[[str], int]] = None,
         max_turns: int = MAX_TURNS,
         rollout_idx: int = 0,
+        openai_client: Any | None = None,
     ):
         self.toolset = toolset
         self.search_tool = search_tool
@@ -267,6 +268,7 @@ class SlidingWindowSearchEnv(Env):
         self.text_token_counter = text_token_counter
         self.max_turns = max_turns
         self.rollout_idx = rollout_idx
+        self._openai_client = openai_client
 
         try:
             self.enc = load_harmony_encoding(HarmonyEncodingName.HARMONY_GPT_OSS)
@@ -307,7 +309,6 @@ class SlidingWindowSearchEnv(Env):
         self._approx_prompt_tokens: int = 0
         self._first_search_done: bool = False
         self._dataset_name: str = getattr(dataset, "name", "web")
-        self._openai_client = None  # lazily acquired when needed
         # Build rerank instruction once per episode (cheap if LLM path disabled)
         self.wm.rerank_instruction = build_rerank_instruction(
             query=query_text,
@@ -361,6 +362,15 @@ class SlidingWindowSearchEnv(Env):
         if len(action.tools) == 0:
             return self._handle_format_error("Reasoning-only action with no tool calls")
 
+        return await self.step_action(action)
+
+    async def step_action(self, action: Action) -> StepResult:
+        """Original step lifecycle after tokens (or API tool calls) are parsed.
+
+        TRIM API eval and token training must call this rather than
+        ``_execute_tools`` so format retries, summaries, WM, and terminal
+        metrics stay on the upstream path.
+        """
         # Check for episode end
         has_end_search = any(
             t.tool_schema.name == "end_search" for t in action.tools
@@ -513,22 +523,39 @@ class SlidingWindowSearchEnv(Env):
 
     # ── Context Rendering (single pathway via ultra_core) ──────────────────
 
+    def selected_context_window(self) -> Dict[str, Any]:
+        """Same RECENT_K / WM split used by ``_render_next_context``.
+
+        API adapters must build messages from this window instead of inventing
+        a second history policy. Token rendering may still apply budget cuts.
+        """
+        n_turns = len(self._all_actions)
+        if n_turns <= RECENT_K:
+            return {
+                "system_prompt": self.system_prompt,
+                "query_id": self.query_id,
+                "query_text": self.query_text,
+                "wm_text": None,
+                "recent_actions": self._all_actions,
+                "recent_observations": self._all_observations,
+                "result_summaries": self._result_summaries,
+                "turn": self._current_turn,
+            }
+        wm_boundary = n_turns - RECENT_K
+        return {
+            "system_prompt": self.system_prompt,
+            "query_id": self.query_id,
+            "query_text": self.query_text,
+            "wm_text": self._wm_snapshots[wm_boundary].text,
+            "recent_actions": self._all_actions[-RECENT_K:],
+            "recent_observations": self._all_observations[-RECENT_K:],
+            "result_summaries": self._result_summaries[-RECENT_K:],
+            "turn": self._current_turn,
+        }
+
     def _render_next_context(self) -> List[int]:
         """Render context for the next turn using render_context_within_budget."""
-        n_turns = len(self._all_actions)
-
-        if n_turns <= RECENT_K:
-            wm_text = None
-            recent_actions = self._all_actions
-            recent_obs = self._all_observations
-            recent_summaries = self._result_summaries
-        else:
-            wm_boundary = n_turns - RECENT_K
-            wm_text = self._wm_snapshots[wm_boundary].text
-            recent_actions = self._all_actions[-RECENT_K:]
-            recent_obs = self._all_observations[-RECENT_K:]
-            recent_summaries = self._result_summaries[-RECENT_K:]
-
+        window = self.selected_context_window()
         nudge = None
         if (self._turns_since_curate >= CURATE_NUDGE_INTERVAL
                 and self.wm.get_pool_size() > 0):
@@ -536,10 +563,10 @@ class SlidingWindowSearchEnv(Env):
 
         tokens = render_context_within_budget(
             system_prompt=self.system_prompt,
-            wm_text=wm_text,
-            recent_actions=recent_actions,
-            recent_observations=recent_obs,
-            result_summaries=recent_summaries,
+            wm_text=window["wm_text"],
+            recent_actions=window["recent_actions"],
+            recent_observations=window["recent_observations"],
+            result_summaries=window["result_summaries"],
             enc=self.enc,
             nudge_prompt=nudge,
         )
@@ -549,26 +576,13 @@ class SlidingWindowSearchEnv(Env):
 
     def _render_retry_context(self) -> List[int]:
         """Re-render current context with retry prompt appended."""
-        n_turns = len(self._all_actions)
-
-        if n_turns <= RECENT_K:
-            wm_text = None
-            recent_actions = self._all_actions
-            recent_obs = self._all_observations
-            recent_summaries = self._result_summaries
-        else:
-            wm_boundary = n_turns - RECENT_K
-            wm_text = self._wm_snapshots[wm_boundary].text
-            recent_actions = self._all_actions[-RECENT_K:]
-            recent_obs = self._all_observations[-RECENT_K:]
-            recent_summaries = self._result_summaries[-RECENT_K:]
-
+        window = self.selected_context_window()
         return render_context_within_budget(
             system_prompt=self.system_prompt,
-            wm_text=wm_text,
-            recent_actions=recent_actions,
-            recent_observations=recent_obs,
-            result_summaries=recent_summaries,
+            wm_text=window["wm_text"],
+            recent_actions=window["recent_actions"],
+            recent_observations=window["recent_observations"],
+            result_summaries=window["result_summaries"],
             enc=self.enc,
             retry_prompt=FORMAT_RETRY_PROMPT,
         )

@@ -1,29 +1,21 @@
 #!/usr/bin/env python3
 """One-click Harness-1 / Harness-G closed-loop eval.
 
-Defaults match Harness-1 Table-2 eval: --max-turns 40, --max-new-tokens 2048,
---temperature 1.0, --search-k 10, --max-model-len 32768. Training stay on a
-short horizon; do not copy those smoke values into eval.
+Harness-1 official path (``--evaluation-path upstream_api``): original
+``SlidingWindowSearchEnv`` plus an OpenAI-compatible chat/completions adapter.
+``--component`` is the actual v8d mask (all=10/10, default=8/10, zero=0/10,
+or an exact list). ``--run-dir`` / ``--adapter`` / ``--eval-mode`` identify
+weights only and never invert that mask.
 
-Pass ``--harness Harness-G`` to score the graph-menu runtime. Advanced
-components (answer_with, bridge_entities, SNC frontier, …) are ON in harness
-eval and OFF when scoring a trained student adapter.
+``legacy_local`` keeps the old TRIM in-process env for historical replay. It
+is never selected automatically when the official path fails.
 
-Score split: ``--benchmark bcplus_full`` (or ``BC+``) uses the 830-query pool
-(664 train + 166 test). ``--benchmark bcplus_test_166`` uses the 166-test subset.
-Local transfer pools: ``longsealqa``, ``frames``, ``hotpotqa`` (build with
-``scripts/build_transfer_local_corpus.py``). ``web`` / ``patents`` only work if
-those private corpora were rebuilt.
+Harness-G still uses its graph runtime.
 
-``--tp N`` starts N replica model servers, shards the eval set, and merges
-per-query traces when every replica finishes.
-
-Without --run-dir / --adapter, listed --component flags are turned ON (harness eval).
-``--component default`` is the upstream Harness-1 operating point (8 of 10 v8d
-flags on; chunk_neighbors and adaptive_rerank_instruction stay off). ``all``
-turns every advanced flag on. Local BM25 eval does not need OPENAI_API_KEY.
-With a trained run directory, the student is scored under H_min (those flags OFF)
-plus the saved LoRA adapter.
+Pass ``--api-base-url`` and ``--api-model`` for the served actor. Default retrieval
+is ``--retrieval-backend upstream`` (original Chroma tools). Pass
+``--retrieval-backend local_bm25`` with ``--index-path`` and a full-text corpus to
+keep the original env while dropping Chroma. Do not use ``legacy_local``.
 """
 
 from __future__ import annotations
@@ -43,9 +35,14 @@ ensure_local_offline_credentials()
 from trim.cli.launch import (
     LaunchError,
     discover_adapter_map,
+    eval_mask_for_ids,
     parse_eval_args,
     student_mask_for_ids,
     teacher_mask_for_ids,
+)
+from trim.upstream_harness1.v8d_flags import (
+    EVALUATION_PATH_LEGACY_LOCAL,
+    EVALUATION_PATH_UPSTREAM_API,
 )
 from trim.eval.adapter_reload_audit import audit_saved_adapter
 from trim.eval.official_query_pool import (
@@ -71,6 +68,7 @@ def _adapter_map(args) -> dict[str, str | None]:
 
 
 def resolve_eval_mode(args) -> tuple[str, dict[str, str | None]]:
+    """Model-artifact discovery only. Does not choose a component mask."""
     mapping = _adapter_map(args)
     mode = args.eval_mode
     if mode == "auto":
@@ -78,6 +76,31 @@ def resolve_eval_mode(args) -> tuple[str, dict[str, str | None]]:
     if mode == "harness":
         return "harness", mapping or {"harness": None}
     return "adapter", mapping or {"before": None}
+
+
+def resolve_evaluation_path(args, spec) -> str:
+    explicit = getattr(args, "evaluation_path", None)
+    if explicit:
+        return str(explicit)
+    from trim.adapters.harness_profiles import is_harness_g
+
+    if is_harness_g(harness=spec.harness, component_ids=spec.components):
+        return EVALUATION_PATH_LEGACY_LOCAL
+    return EVALUATION_PATH_UPSTREAM_API
+
+
+def resolve_eval_mask(args, spec, *, evaluation_path: str) -> dict[str, bool]:
+    """Official eval: --component is the live mask. Training complement is not used."""
+    if evaluation_path == EVALUATION_PATH_UPSTREAM_API:
+        return eval_mask_for_ids(
+            spec.components, harness=spec.harness, preset=spec.component_preset
+        )
+    mode, _mapping = resolve_eval_mode(args)
+    if mode == "harness":
+        return teacher_mask_for_ids(
+            spec.components, harness=spec.harness, preset=spec.component_preset
+        )
+    return student_mask_for_ids(spec.components, harness=spec.harness)
 
 
 def detect_score_split(args) -> str:
@@ -101,11 +124,9 @@ def main(argv: list[str] | None = None) -> int:
     mode, adapter_map = resolve_eval_mode(args)
     score_split = detect_score_split(args)
     args.score_split = score_split
-    harness_mask = (
-        teacher_mask_for_ids(spec.components, harness=spec.harness)
-        if mode == "harness"
-        else student_mask_for_ids(spec.components, harness=spec.harness)
-    )
+    evaluation_path = resolve_evaluation_path(args, spec)
+    args.evaluation_path = evaluation_path
+    harness_mask = resolve_eval_mask(args, spec, evaluation_path=evaluation_path)
 
     from trim.training.gpu_keepalive import acquire_keepalive, release_keepalive
 
@@ -119,7 +140,9 @@ def main(argv: list[str] | None = None) -> int:
     from trim.eval.runtime_effect_audit import audit_harness_mask_or_raise
 
     wiring_audit = None
-    if not is_harness_g(mask=harness_mask, component_ids=spec.coalition):
+    if evaluation_path == EVALUATION_PATH_LEGACY_LOCAL and not is_harness_g(
+        mask=harness_mask, component_ids=spec.coalition
+    ):
         wiring_audit = audit_harness_mask_or_raise(harness_mask, out=spec.out)
     launch = {
         "harness": spec.harness,
@@ -127,11 +150,15 @@ def main(argv: list[str] | None = None) -> int:
         "model_name": spec.model_name,
         "component": spec.coalition,
         "component_ids": list(spec.components),
+        "component_preset": spec.component_preset,
+        "evaluation_path": evaluation_path,
         "eval_mode": mode,
         "base_model": str(spec.base_model),
         "adapter_map": adapter_map,
         "score_split": score_split,
         "harness_mask": harness_mask,
+        "api_base_url": getattr(args, "api_base_url", None),
+        "api_model": getattr(args, "api_model", None),
         "max_turns": 2 if args.smoke else int(args.max_turns),
         "max_new_tokens": min(int(args.max_new_tokens), 256) if args.smoke else int(args.max_new_tokens),
         "temperature": float(args.temperature),
@@ -172,6 +199,67 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(json.dumps(payload, indent=2), flush=True)
         return 0
+
+    rows = rows[: args.n_eval] if args.n_eval else rows
+    if args.smoke:
+        rows = rows[:6]
+    eval_max_turns = 2 if args.smoke else int(args.max_turns)
+    eval_max_new = min(int(args.max_new_tokens), 256) if args.smoke else int(args.max_new_tokens)
+    eval_temperature = float(args.temperature)
+
+    if evaluation_path == EVALUATION_PATH_UPSTREAM_API:
+        from trim.eval.harness1_api_launch import run_isolated_api_eval
+        from trim.upstream_harness1.model_serve import identity_from_args
+        from trim.upstream_harness1.pin import pin_manifest
+        from trim.upstream_harness1.retrieval import retrieval_from_args
+        from trim.upstream_harness1.v8d_flags import describe_mask
+
+        identity = identity_from_args(args)
+        retrieval = retrieval_from_args(args)
+        launch["served_model"] = identity.to_dict()
+        launch["retrieval_config"] = retrieval.to_dict()
+        launch["eval_profile"] = retrieval.eval_profile()
+        launch["component_mask"] = describe_mask(harness_mask)
+        launch["upstream"] = pin_manifest()
+        (spec.out / "LAUNCH.json").write_text(json.dumps(launch, indent=2) + "\n", encoding="utf-8")
+        summaries = []
+        try:
+            ev, traces = run_isolated_api_eval(
+                rows=rows,
+                out=spec.out / "upstream_api",
+                harness=spec.harness,
+                harness_mask=harness_mask,
+                identity=identity,
+                retrieval=retrieval,
+                max_turns=eval_max_turns,
+                max_new_tokens=eval_max_new,
+                temperature=eval_temperature,
+                pool_meta=pool_meta,
+            )
+            ev["setting"] = "upstream_api"
+            ev["evaluation_path"] = EVALUATION_PATH_UPSTREAM_API
+            ev["eval_mode"] = mode
+            summaries.append(ev)
+            cell_dir = spec.out / "upstream_api"
+            cell_dir.mkdir(parents=True, exist_ok=True)
+        finally:
+            if held_outer:
+                release_keepalive()
+        payload = write_eval_outputs(
+            spec.out,
+            component_id=spec.coalition,
+            summaries=summaries,
+            adapter_audits=audits,
+            pool_meta=pool_meta,
+            runtime_audit=None,
+        )
+        payload["evaluation_path"] = EVALUATION_PATH_UPSTREAM_API
+        (spec.out / "FOUR_CELL_OFFICIAL_SUMMARY.json").write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
+        print(json.dumps(payload, indent=2), flush=True)
+        return 0
+
     if not spec.base_model:
         if held_outer:
             release_keepalive()

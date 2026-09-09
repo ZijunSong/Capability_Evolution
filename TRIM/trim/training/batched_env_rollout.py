@@ -66,12 +66,14 @@ class LiveEpisode:
     pending_prefix: str = ""
     pending_pids: list[int] = field(default_factory=list)
     harness_mask: dict[str, bool] | None = None
+    teacher_mode: bool = False
     timing: EpisodeTiming = field(default_factory=EpisodeTiming)
 
 
 def _build_prompt_ids(ep: LiveEpisode, enc) -> list[int]:
     from trim.adapters.harness_profiles import is_harness_g
     from trim.eval.harmony_runtime import build_continuation_prompt_ids, build_first_turn_prompt_ids
+    from trim.training.upstream_train_env import is_upstream_state, wm_text_for_train_state
 
     query = str(ep.row["query"])
     if is_harness_g(mask=ep.harness_mask, component_ids=ep.component_id):
@@ -81,9 +83,11 @@ def _build_prompt_ids(ep: LiveEpisode, enc) -> list[int]:
         return build_g_prompt_ids(
             query, wm_text(ep.st), enc, harness_mask=ep.harness_mask
         )
-    from trim.eval.local_search_env import wm_text
+    wm = wm_text_for_train_state(ep.st) if is_upstream_state(ep.st) else None
+    if wm is None:
+        from trim.eval.local_search_env import wm_text
 
-    wm = wm_text(ep.st)
+        wm = wm_text(ep.st)
     if enc is not None and hasattr(enc, "build_first_turn_prompt_ids"):
         if not ep.acts:
             return enc.build_first_turn_prompt_ids(query)
@@ -109,6 +113,7 @@ def _apply_generation(
     from trim.eval.harmony_runtime import decode_ids, make_action, make_observation
     from trim.adapters.harness_profiles import is_harness_g
     from trim.training.four_cell_runtime import parse_generated_action, snap_from_state
+    from trim.training.upstream_train_env import apply_train_action, is_upstream_state
 
     if is_harness_g(mask=ep.harness_mask, component_ids=ep.component_id):
         from trim.eval.harness_g_env import execute_tool
@@ -116,19 +121,45 @@ def _apply_generation(
         from trim.eval.local_search_env import execute_tool
 
     qid = str(ep.row["query_id"])
-    action, valid = parse_generated_action(gen.text, gen.token_ids, enc)
+    action, valid = parse_generated_action(
+        gen.text,
+        gen.token_ids,
+        enc,
+        harness_mask=ep.harness_mask,
+        teacher_mode=bool(ep.teacher_mode),
+    )
     ep.valids.append(valid)
     ep.actions.append(action)
     ep.names.append(str(action.get("name")))
     with timed_section(ep.timing, "harness"):
         try:
-            ep.st, obs, _ok = execute_tool(
-                ep.st,
-                action.get("name") if valid else None,
-                action.get("arguments"),
-                searcher=searcher,
-                search_k=search_k,
-            )
+            if is_upstream_state(ep.st):
+                ep.st, obs, _ok = apply_train_action(
+                    ep.st,
+                    action,
+                    valid,
+                    searcher=searcher,
+                    search_k=search_k,
+                    mods=ep.st.get("_upstream_mods"),
+                    execute_local=execute_tool,
+                )
+            elif is_harness_g(mask=ep.harness_mask, component_ids=ep.component_id):
+                ep.st, obs, _ok = execute_tool(
+                    ep.st,
+                    action.get("name") if valid else None,
+                    action.get("arguments"),
+                    searcher=searcher,
+                    search_k=search_k,
+                )
+            else:
+                ep.st, obs, _ok = apply_train_action(
+                    ep.st,
+                    action,
+                    valid,
+                    searcher=searcher,
+                    search_k=search_k,
+                    execute_local=execute_tool,
+                )
         except Exception as exc:  # noqa: BLE001
             ep.st["invalid_tools"] = int(ep.st.get("invalid_tools") or 0) + 1
             obs = f"ERROR: tool failed ({type(exc).__name__})."
@@ -192,6 +223,7 @@ def _prepare_chunk_episodes(
     doc_store_workers: int,
     new_state,
     doc_store_for_row,
+    teacher_mode: bool = False,
 ) -> list[LiveEpisode]:
     workers = max(1, int(doc_store_workers or 1))
     if workers == 1 or len(chunk) <= 1:
@@ -210,10 +242,11 @@ def _prepare_chunk_episodes(
                     row=row,
                     rollout_idx=g,
                     seed=int(seed) + 17 * g,
-                    st=new_state(str(row["query"]), dict(copied)),
+                    st=new_state(str(row["query"]), dict(copied), str(row.get("query_id") or "")),
                     component_id=component_id,
                     policy_version=policy_version,
                     harness_mask=harness_mask,
+                    teacher_mode=teacher_mode,
                 )
             )
     return episodes
@@ -424,6 +457,8 @@ def rollout_queries_batched(
     doc_store_k: int = 12,
     query_batch_size: int | None = None,
     doc_store_workers: int = DEFAULT_DOC_STORE_WORKERS,
+    train_env: str = "local_legacy",
+    train_session: Any | None = None,
 ) -> list[HybridRolloutGroup]:
     """Batch across queries and group members; step the env between turns.
 
@@ -431,7 +466,7 @@ def rollout_queries_batched(
     soon as one micro-batch is ready. The next chunk is prepared on a
     background thread while the GPU rolls out the current chunk.
     """
-    from trim.eval.local_search_env import curated_recall, new_state as h1_new_state
+    from trim.eval.local_search_env import curated_recall
     from trim.adapters.harness_profiles import is_harness_g
     from trim.training.four_cell_runtime import (
         doc_store_for_row,
@@ -440,6 +475,7 @@ def rollout_queries_batched(
         terminal_reward,
     )
     from trim.training.hf_rl_opd_client import group_relative_advantages
+    from trim.training.upstream_train_env import canonical_train_env, new_state_fn
 
     rows = list(rows)
     if not rows:
@@ -452,16 +488,13 @@ def rollout_queries_batched(
     chunks = [rows[i : i + batch] for i in range(0, len(rows), batch)]
     temperature = 0.0 if not sample else float(temperature if temperature is not None else 1.0)
     g = is_harness_g(mask=harness_mask, component_ids=component_id)
-    if g:
-        from trim.eval.harness_g_env import new_state as g_new_state
-
-        def new_state(query: str, store: dict[str, Any]) -> dict[str, Any]:
-            return g_new_state(query, store, harness_mask=harness_mask)
-
-    else:
-
-        def new_state(query: str, store: dict[str, Any]) -> dict[str, Any]:
-            return h1_new_state(query, store, harness_mask=harness_mask)
+    train_env = canonical_train_env(train_env) if not g else "local_legacy"
+    new_state = new_state_fn(
+        train_env=train_env,
+        harness_mask=harness_mask,
+        session=train_session,
+        is_harness_g=g,
+    )
 
     def prepare(chunk: Sequence[dict[str, Any]]) -> tuple[list[LiveEpisode], float]:
         t0 = time.perf_counter()
@@ -477,6 +510,7 @@ def rollout_queries_batched(
             doc_store_workers=workers,
             new_state=new_state,
             doc_store_for_row=doc_store_for_row,
+            teacher_mode=teacher_mode,
         )
         return episodes, time.perf_counter() - t0
 

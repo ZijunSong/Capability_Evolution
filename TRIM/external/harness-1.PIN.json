@@ -1,0 +1,12 @@
+{
+  "upstream_repo": "https://github.com/pat-jj/harness-1",
+  "pinned_commit": "8ac4012167858f6478fb2a8fd840e4550e2af161",
+  "pin_method": "vendored_tree",
+  "vendored_path": "TRIM/external/harness-1",
+  "trim_review_commit": "9c6b3a74d4c191b080254e13c0606f8fb9a55078",
+  "notes": [
+    "external/harness-1 is a vendored copy, not a git submodule. Directory name is not evidence of an unmodified upstream tree.",
+    "Official eval uses this tree as the unique Harness-1 implementation. TRIM local_search_env / h1_component_runtime are legacy_local only.",
+    "Allowed local edits are listed in trim/upstream_harness1/PATCHES.md and INTERFACE_PATCHES: input/output boundaries only."
+  ]
+}

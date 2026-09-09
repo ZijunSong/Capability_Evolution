@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import re
 import time
 from pathlib import Path
+from dataclasses import replace
 from typing import Any, Callable
 
 from trim.adapters.components import (
@@ -23,6 +25,7 @@ from trim.adapters.components import (
     minus_mask,
     zero_mask,
 )
+from trim.upstream_harness1.v8d_flags import all_enabled_mask
 from trim.adapters.harness_profiles import infer_harness_from_ids, is_harness_g
 from trim.eval.adapter_reload_audit import audit_saved_adapter, write_reload_audit
 from trim.eval.browsecomp_retrieval import RetrievalBackend, hits_to_doc_store, open_retrieval
@@ -94,6 +97,8 @@ from trim.training.rl_opd_types import (
     SCAPE_RL_OPD_GATE_BETA,
     StudentDecisionPoint,
 )
+from trim.training.parse_rollout_action import parse_generated_action
+from trim.training.teacher_isolation import COMPONENT_KIND, run_teacher_branch_isolated
 from trim.training.auto_populate_teacher import teacher_events_from_point as auto_populate_events_from_point
 from trim.training.sentence_compress_teacher import teacher_events_from_point
 from trim.training.token_budget_marker_teacher import teacher_events_from_point as token_budget_marker_events_from_point
@@ -101,6 +106,11 @@ from trim.training.adaptive_rerank_teacher import teacher_events_from_point as a
 from trim.training.verify_tool_teacher import teacher_events_from_point as verify_tool_events_from_point
 from trim.training.harness_g_teacher import teacher_events_from_point_for as harness_g_events_from_point
 from trim.training.tinker_rl_opd_trainer import hybrid_train_substep, prepare_hybrid_batch
+
+def stable_rollout_seed(base: int, tag: str) -> int:
+    digest = hashlib.sha256(f"{int(base)}:{tag}".encode("utf-8")).hexdigest()
+    return int(base) + (int(digest[:8], 16) % 100_000)
+
 
 CELLS = ("teacher", "before", "pure_opd", "rl_opd")
 TeacherFn = Callable[[StudentDecisionPoint], list[Any]]
@@ -171,6 +181,8 @@ def teacher_mask_for(component_id: Any, *, harness: str | None = None) -> dict[s
     ids = component_ids_of(component_id, harness=resolved)
     if not ids:
         return zero_mask(resolved)
+    if ids == list(all_component_ids(resolved)):
+        return all_enabled_mask(resolved)
     mask = full_mask(resolved)
     for cid in ids:
         mask[cid] = True
@@ -202,18 +214,25 @@ def teacher_action_from_point(
     component_id: str,
     *,
     harness: str | None = None,
+    teacher_kind: str = "upstream",
 ) -> dict[str, Any]:
     """First student-legal teacher action for a heuristic teacher-cell turn."""
-    fn = teacher_for(component_id, harness=harness)
-    events = fn(point) if fn is not None else []
-    action_event = next((e for e in events if getattr(e, "action_name", None)), None)
-    if action_event is None:
-        q = str((point.pre_action_snapshot.working_memory or {}).get("query") or "")
-        return {"name": "search_corpus", "arguments": {"query": q}}
-    return {
-        "name": str(action_event.action_name),
-        "arguments": dict(action_event.arguments or {}),
-    }
+    fn = teacher_for(component_id, harness=harness, teacher_kind=teacher_kind)
+
+    def _run(forked_snap: Any) -> dict[str, Any]:
+        forked_point = replace(point, pre_action_snapshot=forked_snap)
+        events = fn(forked_point) if fn is not None else []
+        action_event = next((e for e in events if getattr(e, "action_name", None)), None)
+        if action_event is None:
+            q = str((forked_snap.working_memory or {}).get("query") or "")
+            return {"name": "search_corpus", "arguments": {"query": q}}
+        return {
+            "name": str(action_event.action_name),
+            "arguments": dict(action_event.arguments or {}),
+        }
+
+    action, _original = run_teacher_branch_isolated(point.pre_action_snapshot, _run)
+    return action
 
 
 def generic_teacher_events_from_wm(
@@ -264,23 +283,52 @@ def generic_teacher_events_from_wm(
     return events
 
 
-def _teacher_fn_for_one(component_id: str) -> TeacherFn:
+def _teacher_fn_for_one(component_id: str, *, teacher_kind: str = "upstream") -> TeacherFn:
     registered = TEACHER_REGISTRY.get(component_id)
     if registered is not None:
         return registered
+    if teacher_kind == "heuristic_generic":
+        def _generic(point: StudentDecisionPoint) -> list[Any]:
+            wm = point.pre_action_snapshot.working_memory
+            events = generic_teacher_events_from_wm(wm, component_id, turn_id=int(point.turn_id))
+            for event in events:
+                meta = getattr(event, "metadata", None)
+                if isinstance(meta, dict):
+                    meta["teacher_kind"] = "heuristic_generic"
+            return events
 
-    def _generic(point: StudentDecisionPoint) -> list[Any]:
-        wm = point.pre_action_snapshot.working_memory
-        return generic_teacher_events_from_wm(wm, component_id, turn_id=int(point.turn_id))
+        return _generic
 
-    return _generic
+    def _skip(point: StudentDecisionPoint) -> list[Any]:
+        from trim.training.opd_events import obs_transform
+
+        kind = COMPONENT_KIND.get(component_id, "unknown")
+        return [
+            obs_transform(
+                component_id,
+                turn_id=int(point.turn_id),
+                observation={
+                    "owner": "teacher_full",
+                    "skip_reason": "no_upstream_side_branch",
+                    "component_kind": kind,
+                },
+                visible_to_student=False,
+                metadata={
+                    "teacher_kind": "skip_unregistered",
+                    "component_kind": kind,
+                    "not_a_continuous_teacher_rollout": True,
+                },
+            )
+        ]
+
+    return _skip
 
 
-def teacher_for(component_id: str, *, harness: str | None = None) -> TeacherFn | None:
+def teacher_for(component_id: str, *, harness: str | None = None, teacher_kind: str = "upstream") -> TeacherFn | None:
     ids = component_ids_of(component_id, harness=harness)
     if not ids:
-        return _teacher_fn_for_one("zero")
-    fns = [_teacher_fn_for_one(cid) for cid in ids]
+        return _teacher_fn_for_one("zero", teacher_kind=teacher_kind)
+    fns = [_teacher_fn_for_one(cid, teacher_kind=teacher_kind) for cid in ids]
     if len(fns) == 1:
         return fns[0]
 
@@ -288,6 +336,11 @@ def teacher_for(component_id: str, *, harness: str | None = None) -> TeacherFn |
         events: list[Any] = []
         for fn in fns:
             events.extend(fn(point))
+        for event in events:
+            meta = getattr(event, "metadata", None)
+            if isinstance(meta, dict):
+                meta["combined_independent_events"] = True
+                meta["not_a_continuous_teacher_rollout"] = True
         return events
 
     return _combined
@@ -547,31 +600,42 @@ def doc_store_for_row(
     return remember(labeled_doc_store(row))
 
 
-def snap_from_state(qid: str, st: dict[str, Any], component_id: str, *, harness_mask: dict[str, bool] | None = None):
+def snap_from_state(qid: str, st: dict[str, Any], component_id: str, *, harness_mask: dict[str, bool] | None = None, teacher_mask: dict[str, bool] | None = None):
+    from trim.training.upstream_train_env import is_upstream_state, sync_upstream_state
+
+    if is_upstream_state(st):
+        sync_upstream_state(st)
     curated = [str(x) for x in (st.get("curated") or {})]
     pool = [str(x) for x in (st.get("pool") or {})]
     store = st.get("doc_store") or {}
     documents = []
-    for did, rec in list(store.items())[:16]:
-        if isinstance(rec, dict):
-            documents.append({"id": str(did), "text": str(rec.get("text") or "")[:2000]})
-        else:
-            documents.append({"id": str(did), "text": str(rec)[:2000]})
+    full_store: dict[str, Any] = {}
+    for did, rec in store.items():
+        text = str(rec.get("text") or "") if isinstance(rec, dict) else str(rec)
+        documents.append({"id": str(did), "text": text})
+        full_store[str(did)] = {"id": str(did), "text": text, **({k: v for k, v in rec.items() if k != "text"} if isinstance(rec, dict) else {})}
     mask = resolved_rollout_mask(component_id, harness_mask=harness_mask)
+    tmask = teacher_mask if teacher_mask is not None else teacher_mask_for(component_id)
     g = is_harness_g(mask=mask, component_ids=component_id)
+    query_text = str(st.get("query") or "")
     wm = {
         "curated_ids": curated,
         "accessible_doc_ids": list(dict.fromkeys(pool + curated + list(store))),
         "pool": st.get("pool") or {},
         "documents": documents,
-        "query": st.get("query"),
-        "doc_store": {did: {"id": did, "text": str((rec or {}).get("text") if isinstance(rec, dict) else rec)[:800]} for did, rec in list(store.items())[:12]},
+        "query": query_text,
+        "query_text": query_text,
+        "doc_store": full_store,
         "curated_importance": dict(st.get("importance") or {}),
         "auto_populate_seed": st.get("auto_seed"),
         "evidence_graph": st.get("evidence_graph") or {},
         "token_budget_marker": st.get("token_budget_marker"),
         "rerank_instruction": st.get("rerank_instruction"),
         "runtime_effects": dict(st.get("runtime_effects") or {}),
+        "step": int(st.get("step") or 0),
+        "rng_state": st.get("rng_state"),
+        "first_search_done": st.get("first_search_done"),
+        "content_dedup_state": st.get("content_dedup_state"),
     }
     if g:
         wm.update(
@@ -590,12 +654,20 @@ def snap_from_state(qid: str, st: dict[str, Any], component_id: str, *, harness_
         wm["accessible_doc_ids"] = list(dict.fromkeys(list(wm["accessible_doc_ids"]) + extra_ids))
     return capture_snapshot(
         query_id=qid,
+        query_text=query_text,
         step=int(st.get("step") or 0),
         harness_mask=mask,
         working_memory=wm,
         tool_history=list(st.get("tool_history") or []),
         observations=[],
-        metadata={"component_id": component_id, "owner": "student_reduced", "harness": "Harness-G" if g else "Harness-1"},
+        metadata={
+            "component_id": component_id,
+            "owner": "student_reduced",
+            "harness": "Harness-G" if g else "Harness-1",
+            "teacher_mask": dict(tmask),
+            "student_mask": dict(mask),
+            "display_clip_chars": None,
+        },
     )
 
 
@@ -629,23 +701,23 @@ def terminal_reward(st: dict[str, Any], *, query: str, gold_ids: list[str], vali
     )
 
 
-def parse_generated_action(text: str, completion_ids: list[int] | None, enc) -> tuple[dict[str, Any], bool]:
-    from trim.eval.harmony_runtime import parse_harmony_tool_call
+def parse_generated_action(
+    text: str,
+    completion_ids: list[int] | None,
+    enc,
+    *,
+    harness_mask: dict[str, bool] | None = None,
+    teacher_mode: bool = False,
+) -> tuple[dict[str, Any], bool]:
+    from trim.training.parse_rollout_action import parse_generated_action as _parse
 
-    if enc is not None and hasattr(enc, "parse_tool_call"):
-        parsed = enc.parse_tool_call(text, completion_ids=completion_ids)
-    else:
-        parsed = parse_harmony_tool_call(text, completion_ids=completion_ids, enc=enc)
-    name = parsed.tool_name
-    legal = set(STUDENT_NATIVE_TOOLS) | set(HARNESS_G_STUDENT_NATIVE_TOOLS)
-    if parsed.parsed and name in legal:
-        return {"name": name, "arguments": dict(parsed.arguments or {})}, True
-    from trim.eval.harness_g_runtime import parse_harness_g_action
-
-    g_action, g_ok = parse_harness_g_action(text)
-    if g_ok:
-        return g_action, True
-    return {"name": name or g_action.get("name") or "unknown", "arguments": dict(parsed.arguments or {})}, False
+    return _parse(
+        text,
+        completion_ids,
+        enc,
+        harness_mask=harness_mask,
+        teacher_mode=teacher_mode,
+    )
 
 
 def _maybe_empty_cache() -> None:
@@ -714,6 +786,8 @@ def one_episode(
     harness_mask: dict[str, bool] | None = None,
     search_k: int = 10,
     doc_store_k: int = 12,
+    train_env: str = "local_legacy",
+    train_session: Any | None = None,
 ) -> tuple[list[StudentDecisionPoint], list[dict[str, Any]], float, dict[str, Any]]:
     from trim.eval.harmony_runtime import (
         build_continuation_prompt_ids,
@@ -730,14 +804,22 @@ def one_episode(
         from trim.eval.harness_g_env import execute_tool, new_state, wm_text
         from trim.eval.harness_g_runtime import build_prompt_ids as build_g_prompt_ids
     else:
-        from trim.eval.local_search_env import execute_tool, new_state, wm_text
+        from trim.eval.local_search_env import execute_tool, wm_text
+        from trim.training.upstream_train_env import apply_train_action, new_state_fn, wm_text_for_train_state
     import torch
 
     query = str(row["query"])
     qid = str(row["query_id"])
     gold_ids = [str(x) for x in (row.get("gold_docids") or row.get("evidence_docids") or [])]
     store = doc_store_for_row(row, searcher, k=doc_store_k)
-    st = new_state(query, store, harness_mask=harness_mask)
+    if g:
+        st = new_state(query, store, harness_mask=harness_mask)
+    else:
+        st = new_state_fn(
+            train_env=train_env,
+            harness_mask=harness_mask,
+            session=train_session,
+        )(query, store, qid)
     acts: list[tuple[Any, Any]] = []
     points: list[StudentDecisionPoint] = []
     rows: list[dict[str, Any]] = []
@@ -760,7 +842,7 @@ def one_episode(
                     pids = enc.build_continuation_prompt_ids(
                         query,
                         actions_obs=acts,
-                        wm_text=wm_text(st),
+                        wm_text=wm_text_for_train_state(st),
                     )
             elif turn == 0:
                 pids = build_first_turn_prompt_ids(query, enc=enc)
@@ -768,7 +850,7 @@ def one_episode(
                 pids = build_continuation_prompt_ids(
                     query,
                     actions_obs=acts,
-                    wm_text=wm_text(st),
+                    wm_text=wm_text_for_train_state(st),
                     enc=enc,
                 )
             pre = snap_from_state(qid, st, component_id, harness_mask=harness_mask)
@@ -813,18 +895,35 @@ def one_episode(
                     prompt_ids=pids,
                 )
             with timed_section(timing, "harness"):
-                action, valid = parse_generated_action(gen["text"], gen["action_ids"], enc)
+                action, valid = parse_generated_action(
+                    gen["text"],
+                    gen["action_ids"],
+                    enc,
+                    harness_mask=harness_mask,
+                    teacher_mode=teacher_mode,
+                )
         with timed_section(timing, "harness"):
             valids.append(valid)
             actions.append(action)
             names.append(str(action.get("name")))
-            st, obs, _ok = execute_tool(
-                st,
-                action.get("name") if valid else None,
-                action.get("arguments"),
-                searcher=searcher,
-                search_k=search_k,
-            )
+            if g:
+                st, obs, _ok = execute_tool(
+                    st,
+                    action.get("name") if valid else None,
+                    action.get("arguments"),
+                    searcher=searcher,
+                    search_k=search_k,
+                )
+            else:
+                st, obs, _ok = apply_train_action(
+                    st,
+                    action,
+                    valid,
+                    searcher=searcher,
+                    search_k=search_k,
+                    mods=st.get("_upstream_mods"),
+                    execute_local=execute_tool,
+                )
             if valid:
                 try:
                     acts.append((make_action(action["name"], action.get("arguments") or {}), make_observation(obs)))
@@ -1116,6 +1215,8 @@ def eval_closed_loop(
     query_batch_size: int | None = None,
     doc_store_workers: int | None = None,
     primary_split: str = "official_test",
+    train_env: str = "local_legacy",
+    train_session: Any | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     from trim.eval.eval_defaults import (
         HARNESS1_EVAL_DOC_STORE_K,
@@ -1158,6 +1259,8 @@ def eval_closed_loop(
             doc_store_k=doc_store_k,
             query_batch_size=query_batch_size,
             doc_store_workers=8 if doc_store_workers is None else int(doc_store_workers),
+            train_env=train_env,
+            train_session=train_session,
         )
         traces, leak = traces_from_groups(groups, rows, searcher=searcher)
         if runtime_audit is not None:
@@ -1385,7 +1488,11 @@ def validate_wiring(args: argparse.Namespace) -> dict[str, Any]:
     from trim.training.opd_dataset import project_and_materialize
     from trim.training.opd_projection import StudentActionSpaceProjector
 
-    teacher_fn = teacher_for(args.component, harness=getattr(args, "harness", None))
+    teacher_fn = teacher_for(
+        args.component,
+        harness=getattr(args, "harness", None),
+        teacher_kind=str(getattr(args, "teacher_kind", "upstream") or "upstream"),
+    )
     if teacher_fn is None:
         raise SystemExit(f"no teacher registered for component={args.component}")
     train_rows, eval_rows, pool_meta, frozen_points = resolve_queries(args)
@@ -1594,6 +1701,32 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
     train_rows, eval_rows, pool_meta, frozen_points = resolve_queries(args)
     train_searcher = open_train_retrieval(args, train_rows)
     eval_searcher = None if train_only else open_eval_retrieval(args)
+    from trim.training.upstream_train_env import TRAIN_ENV_UPSTREAM, canonical_train_env, open_upstream_train_session
+
+    train_env = canonical_train_env(getattr(args, "train_env", TRAIN_ENV_UPSTREAM))
+    train_session = None
+    if train_env == TRAIN_ENV_UPSTREAM and not is_harness_g(
+        harness=getattr(args, "harness", None), component_ids=getattr(args, "component", None)
+    ):
+        from trim.upstream_harness1.retrieval import retrieval_from_args
+
+        try:
+            train_session = open_upstream_train_session(
+                retrieval=retrieval_from_args(args),
+                harness_mask=teacher_mask_for(
+                    args.component, harness=getattr(args, "harness", None)
+                ),
+                max_turns=int(args.max_turns),
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise SystemExit(
+                "train_env=upstream failed to open original SlidingWindowSearchEnv: "
+                f"{exc}\nChroma backend needs --retrieval-backend upstream and cloud/local "
+                "Chroma credentials; Lucene backend needs --retrieval-backend local_bm25 "
+                "with --index-path and --corpus-path/--docstore-path. "
+                "This does not fall back to TRIM local_search_env. "
+                "Pass --train-env local_legacy only for the named substitute."
+            ) from exc
     frozen_groups = groups_from_frozen_points(frozen_points) if frozen_points else []
     vllm_on = uses_vllm(args)
     scheme_a = uses_scheme_a(args)
@@ -1613,12 +1746,19 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
                     train_only=train_only,
                 )
             ),
+            "train_env": str(getattr(args, "train_env", "upstream") or "upstream"),
+            "teacher_kind": str(getattr(args, "teacher_kind", "upstream") or "upstream"),
+            "updates_per_rollout": int(getattr(args, "updates_per_rollout", 1) or 1),
             "tensor_parallel_size": tp,
             "train_device_map": device_map,
         },
     )
     (out / "RUN_MANIFEST.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-    teacher_fn = teacher_for(args.component, harness=getattr(args, "harness", None))
+    teacher_fn = teacher_for(
+        args.component,
+        harness=getattr(args, "harness", None),
+        teacher_kind=str(getattr(args, "teacher_kind", "upstream") or "upstream"),
+    )
     if teacher_fn is None:
         raise SystemExit(f"no teacher registered for {args.component}")
 
@@ -1758,7 +1898,7 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
             max_turns=args.max_turns,
             max_new=args.max_new_tokens,
             policy_version=policy_version,
-            seed=args.seed + 100 * (abs(hash(tag)) % 1000),
+            seed=stable_rollout_seed(int(args.seed), tag),
             sample=sample,
             enc=enc,
             searcher=train_searcher,
@@ -1770,6 +1910,8 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
             ),
             query_batch_size=getattr(args, "rollout_query_batch_size", None),
             doc_store_workers=int(getattr(args, "doc_store_workers", 8) or 8),
+            train_env=train_env,
+            train_session=train_session,
         )
         if vllm_on and not (lora_path and Path(lora_path).name != "theta0"):
             client = open_vllm(lora_path, tag)
@@ -1800,6 +1942,8 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
             primary_split=eval_primary,
             query_batch_size=getattr(args, "rollout_query_batch_size", None),
             doc_store_workers=int(getattr(args, "doc_store_workers", 8) or 8),
+            train_env=train_env,
+            train_session=train_session,
         )
         if vllm_on and not (lora_path and Path(lora_path).name != "theta0"):
             client = open_vllm(lora_path, tag)
@@ -1839,8 +1983,13 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
         groups = None
         train_parts: list[dict[str, Any]] = []
         use_frozen = cell == "pure_opd" and bool(frozen_groups)
-        refresh = False  # one rollout per cell; eight updates must stay within 64*7*6 generations
+        refresh = bool(getattr(args, "on_policy_refresh", False)) and cell not in {"teacher", "before"}
+        if use_frozen:
+            refresh = False
         n_train = 0 if cell in {"teacher", "before"} else int(args.train_steps)
+        updates_per_rollout = int(getattr(args, "updates_per_rollout", 1) or 1)
+        if refresh:
+            updates_per_rollout = 1
 
         if use_frozen:
             groups = frozen_groups

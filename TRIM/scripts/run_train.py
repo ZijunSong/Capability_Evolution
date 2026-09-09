@@ -59,7 +59,8 @@ def _main(argv: list[str] | None = None) -> int:
     args.train_steps = int(args.train_steps)
     args.max_steps = args.train_steps
     args.seeds = [int(args.seed)]
-    args.on_policy_refresh = True
+    if getattr(args, "on_policy_refresh", None) is None:
+        args.on_policy_refresh = True
     args.gpu_schedule = "scheme_a"
     args.enforce_eager = True
     args.target_component = args.component
@@ -109,7 +110,12 @@ def _main(argv: list[str] | None = None) -> int:
             else "H_full (listed advanced components ON)"
         ),
         "student_mask": student_mask_for_ids(spec.components, harness=spec.harness),
-        "teacher_mask": teacher_mask_for_ids(spec.components, harness=spec.harness),
+        "teacher_mask": teacher_mask_for_ids(
+            spec.components, harness=spec.harness, preset=spec.component_preset
+        ),
+        "on_policy_refresh": bool(args.on_policy_refresh),
+        "train_env": getattr(args, "train_env", "upstream"),
+        "teacher_kind": getattr(args, "teacher_kind", "upstream"),
         "out": str(spec.out),
         "train_only": True,
         "official_eval": False,

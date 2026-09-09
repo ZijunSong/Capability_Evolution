@@ -9,6 +9,7 @@ import sys
 from functools import lru_cache
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import anthropic
 try:
@@ -20,7 +21,6 @@ try:
     sys.modules["sqlite3"] = pysqlite3
 except Exception:
     pass
-import chromadb
 import structlog
 try:
     import tinker
@@ -101,7 +101,7 @@ class _LocalOpenAIClient:
 
 
 class _LocalChromaCollection:
-    def __init__(self, collection: chromadb.Collection | None, records: list[dict[str, str]] | None = None) -> None:
+    def __init__(self, collection: Any | None, records: list[dict[str, str]] | None = None) -> None:
         self._collection = collection
         self._records = records or []
 
@@ -150,7 +150,11 @@ class _LocalChromaClient:
                         "source": str(obj.get("source") or obj.get("id")),
                         "text": str(obj.get("text") or ""),
                     })
-        self._client = None if self._records else chromadb.PersistentClient(path=str(chroma_path))
+        self._client = None
+        if not self._records:
+            import chromadb
+
+            self._client = chromadb.PersistentClient(path=str(chroma_path))
         self._collection_name = collection_name
         self._collection_cache: dict[str, _LocalChromaCollection] = {}
 
@@ -186,7 +190,14 @@ class Config(BaseSettings):
     jina_api_key: SecretStr = SecretStr("dummy")
     contextual_api_key: SecretStr = SecretStr("dummy")
 
-    def get_chroma_client(self) -> chromadb.ClientAPI:
+    def get_chroma_client(self):
+        if os.environ.get("HARNESS1_FORBID_CHROMA") == "1":
+            raise RuntimeError(
+                "Chroma client construction is forbidden in this process "
+                "(HARNESS1_FORBID_CHROMA=1, local_bm25)."
+            )
+        import chromadb
+
         chroma_path = os.environ.get("SCAPE_CHROMA_PATH") or os.environ.get("HARNESS1_CHROMA_PATH")
         if chroma_path:
             return _LocalChromaClient(

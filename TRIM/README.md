@@ -21,6 +21,20 @@ as a privileged side branch; OPD projects those events onto the basic tools
 (`answer_with` → `select`, unreachable bridge LOOKUP skipped, SNC previews
 skipped then ALIGN to `select` / `lookup`).
 
+Official Harness-1 **eval** (`--evaluation-path upstream_api`, default) uses
+the pinned original `SlidingWindowSearchEnv` plus chat/completions. Eval
+`--component` is the live v8d mask (`all` 10/10, `default` 8/10, `zero` 0/10)
+and is independent of `--adapter` / `--run-dir`. Default retrieval is
+`--retrieval-backend upstream` (original Chroma tools). To drop Chroma, pass
+`--retrieval-backend local_bm25` with a Lucene index and a full-text corpus;
+results are tagged `eval_profile=upstream_core_local_bm25` and are **not** a
+paper hybrid-retrieval reproduction. The old in-process TRIM env is
+`--evaluation-path legacy_local` only; it is never an automatic fallback.
+
+Pinned upstream: `TRIM/external/harness-1` at
+https://github.com/pat-jj/harness-1/commit/8ac4012167858f6478fb2a8fd840e4550e2af161
+(see `TRIM/external/harness-1.PIN.json`).
+
 ```text
 TRIM/
 ├── scripts/run_train.py    # training entry
@@ -44,8 +58,22 @@ PYTHONPATH=TRIM:SCAPE-EasyOPD python TRIM/scripts/run_train.py \
 
 PYTHONPATH=TRIM:SCAPE-EasyOPD python TRIM/scripts/run_eval.py \
   --harness Harness-1 --benchmark bcplus_test_166 \
-  --model_name /mnt/songzijun/models/pat-jj_harness-1-full/harness-1 \
+  --api-base-url http://127.0.0.1:8000/v1 \
+  --api-model pat-jj/harness-1 \
   --component all
+
+# Original env + local Lucene (no Chroma). Profile: upstream_core_local_bm25
+PYTHONPATH=TRIM:SCAPE-EasyOPD python TRIM/scripts/run_eval.py \
+  --harness Harness-1 --benchmark bcplus_test_166 \
+  --api-base-url http://127.0.0.1:8000/v1 \
+  --api-model pat-jj/harness-1 \
+  --component all \
+  --retrieval-backend local_bm25 \
+  --index-path /data/bcplus/local_index \
+  --corpus-path /data/bcplus/corpus.jsonl \
+  --reranker none \
+  --verify-base-url http://127.0.0.1:8001/v1 \
+  --offline
 
 PYTHONPATH=TRIM:SCAPE-EasyOPD python TRIM/scripts/run_train.py \
   --harness Harness-G --benchmark BC+ \

@@ -26,6 +26,7 @@ from trim.cli.launch import (
     resolve_model_path,
     student_mask_for_ids,
     teacher_mask_for_ids,
+    eval_mask_for_ids,
     train_method_to_mode,
 )
 
@@ -55,5 +56,6 @@ __all__ = [
     "resolve_model_path",
     "student_mask_for_ids",
     "teacher_mask_for_ids",
+    "eval_mask_for_ids",
     "train_method_to_mode",
 ]

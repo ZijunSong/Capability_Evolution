@@ -39,6 +39,8 @@ class EnvironmentSnapshot:
     tool_history: list[dict[str, Any]] = field(default_factory=list)
     observations: list[dict[str, Any]] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
+    # Natural-language task text. Distinct from query_id.
+    query_text: str = ""
     # Monotonic creation counter used to prove "no future information"
     created_at_step: int | None = None
 
@@ -62,6 +64,7 @@ class EnvironmentSnapshot:
         meta = {k: v for k, v in self.metadata.items() if not str(k).startswith("_")}
         return {
             "query_id": self.query_id,
+            "query_text": self.query_text,
             "step": self.step,
             "created_at_step": self.created_at_step,
             "harness_mask": self.harness_mask,
@@ -85,6 +88,7 @@ class EnvironmentSnapshot:
         payload.pop("content_hash", None)
         return cls(
             query_id=str(payload["query_id"]),
+            query_text=str(payload.get("query_text") or payload.get("query") or ""),
             step=int(payload["step"]),
             harness_mask=dict(payload["harness_mask"]),
             working_memory=dict(payload.get("working_memory") or {}),
@@ -124,12 +128,16 @@ def capture_snapshot(
     tool_history: list[dict[str, Any]] | None = None,
     observations: list[dict[str, Any]] | None = None,
     metadata: Mapping[str, Any] | None = None,
+    query_text: str | None = None,
 ) -> EnvironmentSnapshot:
+    wm = dict(working_memory)
+    text = str(query_text if query_text is not None else wm.get("query") or "")
     return EnvironmentSnapshot(
         query_id=query_id,
+        query_text=text,
         step=step,
         harness_mask=dict(harness_mask),
-        working_memory=dict(working_memory),
+        working_memory=wm,
         tool_history=list(tool_history or []),
         observations=list(observations or []),
         metadata=dict(metadata or {}),

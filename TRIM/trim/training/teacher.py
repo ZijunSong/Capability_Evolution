@@ -72,9 +72,14 @@ class FullViewTeacher:
         snapshot: EnvironmentSnapshot,
         *,
         component_id: str,
+        teacher_mask: Mapping[str, bool] | None = None,
     ) -> DualView:
         before = self.renderer.environment_steps
-        view = self.renderer.render_pair(snapshot, component_id=component_id)
+        view = self.renderer.render_pair(
+            snapshot,
+            component_id=component_id,
+            teacher_mask=teacher_mask or (snapshot.metadata or {}).get("teacher_mask"),
+        )
         after = self.renderer.environment_steps
         if after != before:
             raise RuntimeError("full teacher must not step the environment")

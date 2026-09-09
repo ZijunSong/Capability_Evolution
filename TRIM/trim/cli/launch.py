@@ -1,10 +1,13 @@
 """Shared CLI for one-click Harness-1 / Harness-G train and eval launchers.
 
 `--component` lists *advanced* components (v8d on Harness-1, graph extras on
-Harness-G), not the always-on runtime tools. Training uses Teacher H_full with
-those flags enabled and Student H_-S with them disabled. Eval without an
-adapter runs the base harness with those flags on; eval with `--run-dir` /
-`--adapter` scores the internalized student.
+Harness-G), not the always-on runtime tools.
+
+Eval: `--component` is the actual enabled set (all / default / zero / exact
+list). Adapter / run-dir / eval-mode must not invert that mask.
+
+Train: the same flag names mean Teacher privilege vs Student removal. See
+``student_mask_for_ids`` / ``teacher_mask_for_ids``.
 """
 
 from __future__ import annotations
@@ -16,10 +19,12 @@ from typing import Iterable, Sequence
 
 from trim.adapters.components import (
     all_component_ids,
-    coalition_minus_mask,
     default_component_ids,
-    full_mask,
-    zero_mask,
+)
+from trim.adapters.role_masks import (
+    eval_mask_for_ids,
+    student_mask_for_ids,
+    teacher_mask_for_ids,
 )
 from trim.adapters.harness_profiles import (
     ALLOWED_HARNESSES as PROFILE_HARNESSES,
@@ -56,11 +61,6 @@ from trim.eval.official_query_pool import (
 from trim.eval.transfer_benchmarks import score_split_for_eval_benchmark
 from trim.eval.sec_corpus import default_sec_corpus_root, default_sec_rl_data
 from trim.training.sft_data import default_sft_pack
-from trim.training.hf_rl_batch import (
-    HF_DEFAULT_GROUPS_PER_STEP,
-    HF_DEFAULT_HEARTBEAT_EVERY,
-    HF_DEFAULT_MICRO_BATCH,
-)
 from trim.training.sft_runtime import (
     HF_SFT_MICRO_BATCH,
     HF_SFT_PACK_LENGTH,
@@ -78,6 +78,10 @@ from trim.training.sft_runtime import (
     canonical_sft_model_name,
     normalize_hf_shard,
 )
+
+HF_DEFAULT_GROUPS_PER_STEP = 32
+HF_DEFAULT_MICRO_BATCH = 4
+HF_DEFAULT_HEARTBEAT_EVERY = 8
 
 TRIM_ROOT = Path(__file__).resolve().parents[2]
 
@@ -379,31 +383,6 @@ def resolve_model_path(model_name: str, explicit: str | Path | None = None) -> P
     return DEFAULT_BASE_MODEL
 
 
-def student_mask_for_ids(
-    component_ids: Sequence[str],
-    *,
-    harness: str | None = None,
-) -> dict[str, bool]:
-    resolved = harness or infer_harness_from_ids(component_ids)
-    if not component_ids:
-        return zero_mask(resolved)
-    return coalition_minus_mask(component_ids, harness=resolved)
-
-
-def teacher_mask_for_ids(
-    component_ids: Sequence[str],
-    *,
-    harness: str | None = None,
-) -> dict[str, bool]:
-    resolved = harness or infer_harness_from_ids(component_ids)
-    if not component_ids:
-        return zero_mask(resolved)
-    mask = full_mask(resolved)
-    for cid in component_ids:
-        mask[cid] = True
-    return mask
-
-
 def default_out_dir(
     *,
     kind: str,
@@ -521,6 +500,46 @@ def add_common_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     parser.add_argument("--tensor-parallel-size", type=int, default=None)
     parser.add_argument("--max-model-len", type=int, default=8192)
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.90)
+    parser.add_argument(
+        "--retrieval-backend",
+        choices=("upstream", "local_bm25", "local_hybrid", "substitute_bm25"),
+        default="upstream",
+        help=(
+            "upstream = original Chroma ToolSet. local_bm25 = original env + local Lucene "
+            "search/grep/read (profile upstream_core_local_bm25). local_hybrid is reserved. "
+            "substitute_bm25 is retired; use local_bm25."
+        ),
+    )
+    parser.add_argument(
+        "--reranker",
+        choices=("baseten", "vllm", "local", "none"),
+        default="baseten",
+        help="Auxiliary reranker. Independent of the actor. local_bm25 must use local or none.",
+    )
+    parser.add_argument(
+        "--verify-model",
+        default=None,
+        help="Auxiliary verifier model id. Independent of the actor checkpoint.",
+    )
+    parser.add_argument("--index-path", default=None, help="Lucene/Pyserini index for local_bm25.")
+    parser.add_argument("--corpus-path", default=None, help="Full-text jsonl corpus for local_bm25.")
+    parser.add_argument("--docstore-path", default=None, help="SQLite DocStore for local_bm25.")
+    parser.add_argument("--id-map-path", default=None, help="Official/internal ID map JSON.")
+    parser.add_argument("--corpus-manifest", default=None, help="Corpus/index version manifest JSON.")
+    parser.add_argument("--corpus-version", default=None, help="Corpus version string recorded in logs.")
+    parser.add_argument("--verify-base-url", default=None, help="Local OpenAI-compatible verifier URL.")
+    parser.add_argument("--reranker-base-url", default=None, help="Local /rerank server URL.")
+    parser.add_argument("--reranker-model", default=None, help="Local reranker model id.")
+    parser.add_argument(
+        "--offline",
+        action="store_true",
+        help="Forbid runtime downloads and require loopback auxiliary URLs for local_bm25.",
+    )
+    parser.add_argument(
+        "--upstream-dataset",
+        default=None,
+        help="Original scoring dataset name (default browsecompplus).",
+    )
     return parser
 
 
@@ -659,6 +678,31 @@ def add_train_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     parser.add_argument("--sft-adapter", default="")
     parser.add_argument("--validate-only", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--on-policy-refresh",
+        dest="on_policy_refresh",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Sample → update → reload sampler weights → sample again. --no-on-policy-refresh is the frozen/offline control.",
+    )
+    parser.add_argument(
+        "--train-env",
+        choices=("upstream", "local_legacy"),
+        default="upstream",
+        help="Harness-1 training env. upstream reuses original SlidingWindowSearchEnv; local_legacy is the old TRIM BM25 env.",
+    )
+    parser.add_argument(
+        "--teacher-kind",
+        choices=("upstream", "heuristic_generic"),
+        default="upstream",
+        help="heuristic_generic is a named baseline, not a Harness-1 component teacher.",
+    )
+    parser.add_argument(
+        "--updates-per-rollout",
+        type=int,
+        default=1,
+        help="Optimizer steps allowed on one sampled batch when on-policy refresh is off.",
+    )
     return parser
 
 
@@ -711,7 +755,45 @@ def add_eval_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
         "--eval-mode",
         choices=("auto", "harness", "adapter"),
         default="auto",
-        help="auto: adapter if --run-dir/--adapter is given, else harness-on.",
+        help=(
+            "Deprecated for component masks. Kept only to discover model "
+            "artifacts (--run-dir / --adapter). Official --component is never inverted."
+        ),
+    )
+    parser.add_argument(
+        "--evaluation-path",
+        choices=("upstream_api", "legacy_local"),
+        default=None,
+        help=(
+            "Harness-1 default: upstream_api (original env + chat/completions). "
+            "legacy_local is the old TRIM in-process env and is never an automatic fallback. "
+            "Harness-G stays on its graph runtime."
+        ),
+    )
+    parser.add_argument(
+        "--api-base-url",
+        default=None,
+        help="OpenAI-compatible chat/completions base URL of the served actor model.",
+    )
+    parser.add_argument(
+        "--api-model",
+        default=None,
+        help="Served model id as the API reports it. Defaults to --model_name.",
+    )
+    parser.add_argument(
+        "--api-key",
+        default=None,
+        help="Optional bearer token for the actor API. Defaults to OPENAI_API_KEY.",
+    )
+    parser.add_argument(
+        "--adapter-export",
+        default=None,
+        help="How trained weights were deployed: merged | lora. Does not change --component.",
+    )
+    parser.add_argument(
+        "--model-revision",
+        default=None,
+        help="Checkpoint revision / commit recorded in the eval manifest.",
     )
     parser.add_argument(
         "--score-split",

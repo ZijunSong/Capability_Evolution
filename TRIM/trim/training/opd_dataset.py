@@ -104,6 +104,13 @@ class ProjectionAudit:
         return payload
 
 
+def snapshot_query_text(snapshot: EnvironmentSnapshot) -> str:
+    if snapshot.query_text:
+        return str(snapshot.query_text)
+    wm = snapshot.working_memory or {}
+    return str(wm.get("query") or wm.get("query_text") or "")
+
+
 def render_student_prompt(snapshot: EnvironmentSnapshot, *, component_id: str = "") -> str:
     """Student prefix from reduced harness only. No Teacher-only observations."""
     renderer = DualViewRenderer()
@@ -111,6 +118,7 @@ def render_student_prompt(snapshot: EnvironmentSnapshot, *, component_id: str = 
         snapshot,
         component_id=component_id or None,
         student_mask=snapshot.harness_mask,
+        teacher_mask=(snapshot.metadata or {}).get("teacher_mask"),
     )
     student_view = dict(dual.student_view)
     for key in TEACHER_ONLY_PROMPT_MARKERS:
@@ -123,17 +131,17 @@ def render_student_prompt(snapshot: EnvironmentSnapshot, *, component_id: str = 
             student_view["working_memory"].pop("curated_importance", None)
     if not snapshot.harness_mask.get("verify_tool", False):
         student_view.pop("verify", None)
-    # Component context can remain in WorkingMemory snapshots; never expose
-    # adaptive rerank instructions when the reduced mask disables the feature.
     if not snapshot.harness_mask.get("snc_frontier", False):
         student_view.pop("snc_frontier", None)
     if not snapshot.harness_mask.get("bridge_entities", False):
         student_view.pop("bridge_entities", None)
     if not snapshot.harness_mask.get("answer_with", False):
         student_view.pop("answer_with_available", None)
+    query_text = snapshot_query_text(snapshot)
     return (
         f"System: Harness reduced view (minus {component_id or 'component'}).\n"
-        f"Query: {snapshot.query_id}\n"
+        f"Query: {query_text}\n"
+        f"Query-id: {snapshot.query_id}\n"
         f"State:\n{json.dumps(student_view, ensure_ascii=False)}\n"
         f"Assistant:"
     )
@@ -146,11 +154,14 @@ def render_teacher_prompt(snapshot: EnvironmentSnapshot, *, component_id: str = 
         snapshot,
         component_id=component_id or None,
         student_mask=snapshot.harness_mask,
+        teacher_mask=(snapshot.metadata or {}).get("teacher_mask"),
     )
     full_view = dict(dual.full_view)
+    query_text = snapshot_query_text(snapshot)
     return (
         f"System: Harness full view ({component_id or 'component'} ON).\n"
-        f"Query: {snapshot.query_id}\n"
+        f"Query: {query_text}\n"
+        f"Query-id: {snapshot.query_id}\n"
         f"State:\n{json.dumps(full_view, ensure_ascii=False)}\n"
         f"Assistant:"
     )
