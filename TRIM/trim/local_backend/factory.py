@@ -8,6 +8,7 @@ from typing import Any, Mapping
 
 from trim.local_backend.bm25 import LocalBm25Backend
 from trim.local_backend.corpus_store import CorpusManifest, LocalCorpusStore
+from trim.local_backend.corpus_validate import validate_corpus_against_index
 from trim.local_backend.id_map import IdMap
 from trim.local_backend.tools import LocalGrepCorpusTool, LocalReadDocumentTool, LocalSearchCorpusTool
 from trim.upstream_harness1.retrieval import RetrievalConfig
@@ -105,7 +106,22 @@ def build_local_toolset(
         "read_success": 0,
         "grep_no_results": 0,
         "grep_success": 0,
+        "grep_invalid_regex": 0,
+        "grep_timeout": 0,
+        "verify_requests": 0,
+        "verify_valid_verdict": 0,
+        "verify_empty_content": 0,
+        "verify_parse_failures": 0,
+        "verify_length_truncated": 0,
+        "verify_calls": [],
     }
+    corpus_validation = validate_corpus_against_index(
+        store=store,
+        index_num_docs=backend.num_docs(),
+        index_path=Path(retrieval.index_path),
+    )
+    capability_log["corpus_validation"] = corpus_validation
+    capability_log["index_num_docs"] = corpus_validation["index_num_docs"]
     reranker = None
     if retrieval.reranker not in {"none", "", None}:
         if retrieval.reranker in {"local", "local_model"}:
@@ -138,6 +154,7 @@ def build_local_toolset(
                 base_url=retrieval.verify_base_url,
                 model=retrieval.verify_model,
                 require_loopback=require_loopback,
+                capability_log=capability_log,
             )
         )
         capability_log["verifier_base_url"] = retrieval.verify_base_url

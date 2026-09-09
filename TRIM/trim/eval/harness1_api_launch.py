@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from trim.eval.harness1_api_eval import assert_fresh_eval_dir, summarize_api_traces, write_run_manifest
+from trim.eval.tool_health import merge_tool_health, write_tool_health
 from trim.eval.eval_parallel import (
     effective_replica_count,
     load_json,
@@ -264,6 +265,7 @@ def run_replicated_api_eval(
 
         shard_traces: list[list[dict[str, Any]]] = []
         merged_turns: list[dict[str, Any]] = []
+        tool_health_paths: list[Path] = []
         for shard_meta in plan:
             shard_dir = Path(shard_meta["out"])
             done = load_json(shard_dir / "DONE.json")
@@ -273,6 +275,9 @@ def run_replicated_api_eval(
             turns_path = shard_dir / "TURNS.jsonl"
             if turns_path.is_file():
                 merged_turns.extend(load_jsonl(turns_path))
+            health_path = shard_dir / "TOOL_HEALTH.json"
+            if health_path.is_file():
+                tool_health_paths.append(health_path)
 
         traces = merge_traces(shard_traces, rows)
         _write_jsonl_atomic(out / "PER_QUERY.jsonl", traces)
@@ -287,17 +292,23 @@ def run_replicated_api_eval(
             json.dumps({"ok": True, "n_queries": len(traces), "eval_replicas": n_replicas}) + "\n",
             encoding="utf-8",
         )
+        merged_health = merge_tool_health(tool_health_paths) if tool_health_paths else None
+        manifest_extra = {
+            "eval_replicas": n_replicas,
+            "shard_plan": str(out / "SHARD_PLAN.json"),
+            **(dict(extra) if extra else {}),
+        }
+        if merged_health is not None:
+            write_tool_health(out / "TOOL_HEALTH.json", merged_health)
+            manifest_extra["capability_log"] = merged_health.get("capability_log") or {}
+            manifest_extra["tool_health_path"] = "TOOL_HEALTH.json"
         write_run_manifest(
             out,
             mask=harness_mask,
             identity=identity,
             retrieval=retrieval,
             pool_meta=pool_meta,
-            extra={
-                "eval_replicas": n_replicas,
-                "shard_plan": str(out / "SHARD_PLAN.json"),
-                **(dict(extra) if extra else {}),
-            },
+            extra=manifest_extra,
         )
         return summary, list(traces)
     finally:

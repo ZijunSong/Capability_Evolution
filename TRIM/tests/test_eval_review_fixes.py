@@ -170,7 +170,7 @@ def test_r01_local_verify_issues_one_http_request():
         assert resp.choices[0].message.content.lower().startswith("yes")
         assert len(hits) == 1
         assert "tools" not in hits[0]
-        assert hits[0]["max_tokens"] == 80
+        assert hits[0]["max_tokens"] == 512
     finally:
         server.shutdown()
 

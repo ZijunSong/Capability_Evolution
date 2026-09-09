@@ -129,6 +129,10 @@ class LocalGrepCorpusTool(_LocalToolBase):
         try:
             compiled = re.compile(pattern)
         except re.error as exc:
+            if isinstance(self.capability_log, dict):
+                self.capability_log["grep_invalid_regex"] = int(
+                    self.capability_log.get("grep_invalid_regex") or 0
+                ) + 1
             return (f"grep: invalid regex ({exc})", self._metadata_cls(returned_chunk_ids=[]))
         started = time.perf_counter()
         ids: list[str] = []
@@ -143,6 +147,9 @@ class LocalGrepCorpusTool(_LocalToolBase):
                 docs.append(chunk.text)
                 if len(ids) >= self._limit:
                     break
+        if timed_out:
+            if isinstance(self.capability_log, dict):
+                self.capability_log["grep_timeout"] = int(self.capability_log.get("grep_timeout") or 0) + 1
         if timed_out and not ids:
             return (
                 f"grep: scan timed out after {self._timeout_s:.1f}s; not a confirmed empty corpus",

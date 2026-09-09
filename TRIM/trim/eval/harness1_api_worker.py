@@ -42,6 +42,7 @@ def main(argv: list[str] | None = None) -> int:
         summarize_api_traces,
         write_run_manifest,
     )
+    from trim.eval.tool_health import build_tool_health_payload, write_tool_health
     from trim.upstream_harness1.api_adapter import ChatCompletionsClient
     from trim.upstream_harness1.env_bridge import build_eval_toolset, load_scoring_dataset, load_upstream_modules
     from trim.upstream_harness1.model_serve import ServedModelIdentity
@@ -132,6 +133,27 @@ def main(argv: list[str] | None = None) -> int:
     summary = summarize_api_traces(traces)
     summary["eval_profile"] = retrieval.eval_profile()
     (out / "SUMMARY.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+    tool_health = build_tool_health_payload(
+        pack.capability_log,
+        worker_rank=cfg.get("rank"),
+        phase="final",
+    )
+    write_tool_health(out / "TOOL_HEALTH.json", tool_health)
+    write_run_manifest(
+        out,
+        mask=mask,
+        identity=identity,
+        retrieval=retrieval,
+        pool_meta=cfg.get("pool_meta") or {},
+        extra={
+            "worker_rank": cfg.get("rank"),
+            "eval_profile": retrieval.eval_profile(),
+            "capability_log": pack.capability_log,
+            "token_count_mode": token_count_mode,
+            "sampling": {"temperature": temperature, "max_tokens": max_new_tokens, "model": identity.api_model},
+            "tool_health_path": "TOOL_HEALTH.json",
+        },
+    )
     (out / "DONE.json").write_text(json.dumps({"ok": True, "n_queries": len(traces)}) + "\n", encoding="utf-8")
     return 0
 
