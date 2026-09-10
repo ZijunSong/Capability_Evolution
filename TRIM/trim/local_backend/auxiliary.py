@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from typing import Any, Callable, Mapping, Sequence
 from urllib.parse import urlparse
 
@@ -36,24 +35,11 @@ def _message_fields(payload: Mapping[str, Any]) -> tuple[Any, Any, Any]:
     return content, reasoning, message
 
 
-def _extract_verifier_text(content: Any, reasoning: Any) -> str | None:
+def _extract_verifier_text(content: Any, reasoning: Any = None) -> str | None:
+    """Return verifier text only from final message content, never from reasoning."""
+    del reasoning
     if isinstance(content, str) and content.strip():
         return content.strip()
-    if reasoning is None:
-        return None
-    text = str(reasoning).strip()
-    if not text:
-        return None
-    for line in reversed(text.splitlines()):
-        stripped = line.strip()
-        if not stripped:
-            continue
-        lower = stripped.lower()
-        if lower.startswith("yes") or lower.startswith("no"):
-            return stripped
-    match = re.search(r"\b(yes|no)\b[.:\s]", text, flags=re.IGNORECASE)
-    if match:
-        return text[match.start() :].strip()
     return None
 
 

@@ -73,15 +73,72 @@ ACTOR_PIDS=()
 VERIFY_PID=""
 MASTER_LOG="${REL_LOGS}/master.log"
 
+# Log to file + stderr only. Never stdout (stdout is reserved for pid capture).
 log() {
-  echo "[$(date -Is)] $*" | tee -a "${MASTER_LOG}"
+  echo "[$(date -Is)] $*" >> "${MASTER_LOG}"
+  echo "[$(date -Is)] $*" >&2
+}
+
+normalize_pid() {
+  local raw="${1:-}"
+  raw="${raw//$'\r'/}"
+  while [[ "${raw}" == *$'\n' ]]; do
+    raw="${raw%$'\n'}"
+  done
+  if [[ "${raw}" =~ ^([0-9]+)$ ]]; then
+    echo "${BASH_REMATCH[1]}"
+    return 0
+  fi
+  # Tolerate legacy captures where log lines were mixed into stdout.
+  local last="${raw##*$'\n'}"
+  if [[ "${last}" =~ ^([0-9]+)$ ]]; then
+    echo "${BASH_REMATCH[1]}"
+    return 0
+  fi
+  return 1
 }
 
 stop_pid() {
   local pid="${1:-}"
+  pid="$(normalize_pid "${pid}" 2>/dev/null || true)"
   [[ -n "${pid}" ]] || return 0
   kill "${pid}" 2>/dev/null || true
   wait "${pid}" 2>/dev/null || true
+}
+
+pids_on_port() {
+  local port="$1"
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -ti ":${port}" 2>/dev/null || true
+    return 0
+  fi
+  if command -v ss >/dev/null 2>&1; then
+    ss -lptn "sport = :${port}" 2>/dev/null | sed -n 's/.*pid=\([0-9]*\).*/\1/p' || true
+    return 0
+  fi
+  return 0
+}
+
+stop_port() {
+  local port="$1"
+  local pid_file="${2:-}"
+  local pid pids
+
+  if [[ -n "${pid_file}" && -f "${pid_file}" ]]; then
+    pid="$(normalize_pid "$(cat "${pid_file}")" 2>/dev/null || true)"
+    stop_pid "${pid}"
+    rm -f "${pid_file}"
+  fi
+
+  pids="$(pids_on_port "${port}")"
+  if [[ -n "${pids}" ]]; then
+    log "stopping stale listener(s) on port ${port}: ${pids//$'\n'/ }"
+    # shellcheck disable=SC2086
+    kill ${pids} 2>/dev/null || true
+    sleep 2
+    # shellcheck disable=SC2086
+    kill -9 ${pids} 2>/dev/null || true
+  fi
 }
 
 stop_all_actors() {
@@ -124,6 +181,21 @@ wait_port_free() {
   return 1
 }
 
+verify_api_model() {
+  local port="$1" expected="$2"
+  local body ids
+  body="$(curl -sf "http://127.0.0.1:${port}/v1/models")" || {
+    log "failed to read /v1/models on port ${port}"
+    return 1
+  }
+  ids="$("${PY}" -c "import json,sys; d=json.load(sys.stdin); print(','.join(m.get('id','') for m in d.get('data',[])))" <<< "${body}")"
+  if [[ ",${ids}," != *",${expected},"* ]]; then
+    log "port ${port} served-model mismatch: expected ${expected}, got [${ids}]"
+    return 1
+  fi
+  return 0
+}
+
 join_urls() {
   local out=()
   for p in "$@"; do
@@ -148,7 +220,7 @@ vllm_extra_for_model() {
       echo "--enable-auto-tool-choice --tool-call-parser openai --max-model-len 32768 --trust-remote-code --moe-backend triton"
       ;;
     Qwen3-4B-Instruct-2507)
-      echo "--enable-auto-tool-choice --tool-call-parser openai --max-model-len 32768 --trust-remote-code"
+      echo "--enable-auto-tool-choice --tool-call-parser hermes --max-model-len 32768 --trust-remote-code"
       ;;
     *)
       echo "--enable-auto-tool-choice --tool-call-parser openai --max-model-len 32768"
@@ -156,12 +228,66 @@ vllm_extra_for_model() {
   esac
 }
 
+smoke_test_tool_call() {
+  local port="$1" model="$2"
+  log "smoke test tool call port=${port} model=${model}"
+  "${PY}" - <<PY
+import json
+import sys
+import urllib.error
+import urllib.request
+
+port = ${port}
+model = ${model@Q}
+payload = {
+    "model": model,
+    "messages": [{"role": "user", "content": "Search the corpus for the phrase smoke test query."}],
+    "tools": [{
+        "type": "function",
+        "function": {
+            "name": "search_corpus",
+            "description": "Search corpus",
+            "parameters": {
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"],
+            },
+        },
+    }],
+    "tool_choice": "auto",
+    "max_tokens": 256,
+    "temperature": 0.0,
+}
+req = urllib.request.Request(
+    f"http://127.0.0.1:{port}/v1/chat/completions",
+    data=json.dumps(payload).encode("utf-8"),
+    headers={"Content-Type": "application/json"},
+    method="POST",
+)
+try:
+    with urllib.request.urlopen(req, timeout=120) as resp:
+        body = json.loads(resp.read().decode("utf-8"))
+except urllib.error.HTTPError as exc:
+    raise SystemExit(f"smoke test HTTP {exc.code}: {exc.read().decode('utf-8', errors='replace')[:500]}")
+message = (body.get("choices") or [{}])[0].get("message") or {}
+tool_calls = message.get("tool_calls") or []
+if not tool_calls:
+    raise SystemExit(f"smoke test missing tool_calls: {json.dumps(message)[:500]}")
+name = ((tool_calls[0].get("function") or {}).get("name") or "")
+if name != "search_corpus":
+    raise SystemExit(f"smoke test unexpected tool name: {name!r}")
+print("smoke_ok", name)
+PY
+}
+
 start_vllm_bg() {
   local gpu="$1" port="$2" model_path="$3" served_name="$4" extra="$5" log_path="$6"
 
-  wait_port_free "${port}" 60 || true
+  stop_port "${port}" "${log_path}.pid"
+  wait_port_free "${port}" 120
 
   log "starting vLLM GPU${gpu} port ${port} model=${model_path} served=${served_name}"
+  # shellcheck disable=SC2086
   CUDA_VISIBLE_DEVICES="${gpu}" nohup "${VLLM}" serve "${model_path}" \
     --host 127.0.0.1 --port "${port}" \
     --served-model-name "${served_name}" \
@@ -171,6 +297,7 @@ start_vllm_bg() {
   local pid=$!
   echo "${pid}" > "${log_path}.pid"
   wait_api "${port}"
+  verify_api_model "${port}" "${served_name}"
   echo "${pid}"
 }
 
@@ -179,12 +306,16 @@ start_zero_stack() {
   stop_all_actors
   stop_verify
 
-  local extra
+  local extra pid
   extra="$(vllm_extra_for_model "${model_slug}")"
-  local pid
   pid="$(start_vllm_bg "${GPU}" "${ZERO_ACTOR_PORT}" "${model_path}" "${api_model}" \
     "${extra}" "${REL_LOGS}/actor_${model_slug}_zero.log")"
+  pid="$(normalize_pid "${pid}")"
   ACTOR_PIDS=("${pid}")
+
+  if [[ "${model_slug}" == "Qwen3-4B-Instruct-2507" ]]; then
+    smoke_test_tool_call "${ZERO_ACTOR_PORT}" "${api_model}"
+  fi
 }
 
 start_all_stack() {
@@ -214,12 +345,18 @@ start_all_stack() {
     port="${actor_ports[$i]}"
     pid="$(start_vllm_bg "${gpu}" "${port}" "${model_path}" "${api_model}" \
       "${extra}" "${REL_LOGS}/actor_${model_slug}_all_gpu${gpu}.log")"
+    pid="$(normalize_pid "${pid}")"
     ACTOR_PIDS+=("${pid}")
   done
+
+  if [[ "${model_slug}" == "Qwen3-4B-Instruct-2507" ]]; then
+    smoke_test_tool_call "${actor_ports[0]}" "${api_model}"
+  fi
 
   VERIFY_PID="$(start_vllm_bg "${ALL_VERIFY_GPU}" "${ALL_VERIFY_PORT}" "${VERIFY_MODEL_PATH}" \
     "${VERIFY_MODEL_NAME}" "--max-model-len 8192 --trust-remote-code --moe-backend triton" \
     "${REL_LOGS}/verify_${model_slug}.log")"
+  VERIFY_PID="$(normalize_pid "${VERIFY_PID}")"
 }
 
 ensure_full_corpus() {
@@ -277,40 +414,41 @@ run_eval() {
     --component "${component}" \
     --out "${out}" \
     "${extra[@]}" \
-    2>&1 | tee "${log_path}"
+    2>&1 | tee -a "${log_path}" >&2
   log "DONE model=${model_slug} component=${component}"
 }
 
-ensure_full_corpus
+main() {
+  ensure_full_corpus
 
-csv_to_array "${ALL_ACTOR_PORTS}" _ALL_PORTS_CHECK
-ALL_ACTOR_URLS="$(join_urls "${_ALL_PORTS_CHECK[@]}")"
-ZERO_ACTOR_URL="http://127.0.0.1:${ZERO_ACTOR_PORT}/v1"
-ALL_VERIFY_URL="http://127.0.0.1:${ALL_VERIFY_PORT}/v1"
+  csv_to_array "${ALL_ACTOR_PORTS}" _ALL_PORTS_CHECK
+  ALL_ACTOR_URLS="$(join_urls "${_ALL_PORTS_CHECK[@]}")"
+  ZERO_ACTOR_URL="http://127.0.0.1:${ZERO_ACTOR_PORT}/v1"
+  ALL_VERIFY_URL="http://127.0.0.1:${ALL_VERIFY_PORT}/v1"
 
-log "RUN_ID=${RUN_ID} zero_gpu=${GPU} zero_tp=${TP} all_actors=${ALL_ACTOR_GPUS} all_verify=${ALL_VERIFY_GPU} all_tp=${ALL_TP}"
+  log "RUN_ID=${RUN_ID} zero_gpu=${GPU} zero_tp=${TP} all_actors=${ALL_ACTOR_GPUS} all_verify=${ALL_VERIFY_GPU} all_tp=${ALL_TP}"
 
-for idx in "${!MODEL_PATHS[@]}"; do
-  model_path="${MODEL_PATHS[$idx]}"
-  model_slug="${MODEL_SLUGS[$idx]}"
-  api_model="${API_MODELS[$idx]}"
+  for idx in "${!MODEL_PATHS[@]}"; do
+    model_path="${MODEL_PATHS[$idx]}"
+    model_slug="${MODEL_SLUGS[$idx]}"
+    api_model="${API_MODELS[$idx]}"
 
-  [[ -d "${model_path}" ]] || { log "missing model dir ${model_path}"; exit 1; }
+    [[ -d "${model_path}" ]] || { log "missing model dir ${model_path}"; exit 1; }
 
-  start_zero_stack "${model_path}" "${api_model}" "${model_slug}"
-  run_eval "${model_path}" "${model_slug}" "${api_model}" "zero" \
-    "${ZERO_ACTOR_URL}" "${TP}" "gpu${GPU}"
+    start_zero_stack "${model_path}" "${api_model}" "${model_slug}"
+    run_eval "${model_path}" "${model_slug}" "${api_model}" "zero" \
+      "${ZERO_ACTOR_URL}" "${TP}" "gpu${GPU}"
 
-  start_all_stack "${model_path}" "${api_model}" "${model_slug}"
-  run_eval "${model_path}" "${model_slug}" "${api_model}" "all" \
-    "${ALL_ACTOR_URLS}" "${ALL_TP}" "gpu${ALL_ACTOR_GPUS//,/}v${ALL_VERIFY_GPU}"
-done
+    start_all_stack "${model_path}" "${api_model}" "${model_slug}"
+    run_eval "${model_path}" "${model_slug}" "${api_model}" "all" \
+      "${ALL_ACTOR_URLS}" "${ALL_TP}" "gpu${ALL_ACTOR_GPUS//,/}v${ALL_VERIFY_GPU}"
+  done
 
-stop_all_actors
-stop_verify
+  stop_all_actors
+  stop_verify
 
-GIT_COMMIT="$(git -C . rev-parse HEAD 2>/dev/null || echo unknown)"
-cat > "${REL_LOGS}/MANIFEST.json" <<EOF
+  GIT_COMMIT="$(git -C . rev-parse HEAD 2>/dev/null || echo unknown)"
+  cat > "${REL_LOGS}/MANIFEST.json" <<EOF
 {
   "run_id": "${RUN_ID}",
   "benchmark": "bcplus_full",
@@ -329,8 +467,8 @@ cat > "${REL_LOGS}/MANIFEST.json" <<EOF
     {"model": "${REL_MODELS}/gpt-oss-20b", "component": "all", "layout": "3actor+1verify"},
     {"model": "${REL_MODELS}/harness-1", "component": "zero", "layout": "1gpu"},
     {"model": "${REL_MODELS}/harness-1", "component": "all", "layout": "3actor+1verify"},
-    {"model": "${REL_MODELS}/Qwen3-4B-Instruct-2507", "component": "zero", "layout": "1gpu"},
-    {"model": "${REL_MODELS}/Qwen3-4B-Instruct-2507", "component": "all", "layout": "3actor+1verify"}
+    {"model": "${REL_MODELS}/Qwen3-4B-Instruct-2507", "component": "zero", "layout": "1gpu", "tool_call_parser": "hermes"},
+    {"model": "${REL_MODELS}/Qwen3-4B-Instruct-2507", "component": "all", "layout": "3actor+1verify", "tool_call_parser": "hermes"}
   ],
   "zero_actor_url": "${ZERO_ACTOR_URL}",
   "all_actor_urls": "${ALL_ACTOR_URLS}",
@@ -341,5 +479,10 @@ cat > "${REL_LOGS}/MANIFEST.json" <<EOF
 }
 EOF
 
-log "finished six runs; outputs under ${REL_OUT}/eval_h1_bcplus_full_*_${RUN_ID}"
-log "manifest ${REL_LOGS}/MANIFEST.json"
+  log "finished six runs; outputs under ${REL_OUT}/eval_h1_bcplus_full_*_${RUN_ID}"
+  log "manifest ${REL_LOGS}/MANIFEST.json"
+}
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  main "$@"
+fi

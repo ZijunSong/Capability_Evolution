@@ -27,10 +27,10 @@ def test_validate_corpus_against_index_accepts_matching_store():
     assert report["ok"] is True
 
 
-def test_extract_verifier_text_from_reasoning_tail():
-    text = _extract_verifier_text(None, "Long reasoning...\nno. document does not support the claim.")
-    assert text is not None
-    assert text.lower().startswith("no")
+def test_extract_verifier_text_rejects_reasoning_only():
+    assert _extract_verifier_text(None, "Long reasoning...\nno. document does not support the claim.") is None
+    assert _extract_verifier_text("", "yes. supported.") is None
+    assert _extract_verifier_text("yes. supported.", "ignored reasoning") == "yes. supported."
 
 
 def test_tool_health_merge_sums_counters(tmp_path: Path):
