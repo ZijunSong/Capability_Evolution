@@ -1,0 +1,92 @@
+[
+  {
+    "path": "README.txt",
+    "bytes": 3628,
+    "sha256": "5e5c08516ae1b91d13d66a4f1a870c21aed3dcc18723c35a40a37f2f544f2bc7"
+  },
+  {
+    "path": "install.sh",
+    "bytes": 1190,
+    "sha256": "79b2aaae06afb8c1f0f11f121842015a39ada788c55e2e23f3f459a0a3ff4356"
+  },
+  {
+    "path": "share/hf_tokenizer/special_tokens_map.json",
+    "bytes": 98,
+    "sha256": "dd5e191d20c12d2fee1da5bae14ca1db0f5f4215300af691f23cdee97120a293"
+  },
+  {
+    "path": "share/hf_tokenizer/tokenizer.json",
+    "bytes": 27868174,
+    "sha256": "0614fe83cadab421296e664e1f48f4261fa8fef6e03e63bb75c20f38e37d07d3"
+  },
+  {
+    "path": "share/hf_tokenizer/tokenizer_config.json",
+    "bytes": 4200,
+    "sha256": "9279e942392b742d633c7adbb89ebe002c98399db8926a7af5125c726f404070"
+  },
+  {
+    "path": "share/tiktoken/cl100k_base.tiktoken",
+    "bytes": 1681126,
+    "sha256": "223921b76ee99bde995b7ff738513eef100fb51d18c93597a113bcffe865b2a7"
+  },
+  {
+    "path": "share/tiktoken/o200k_base.tiktoken",
+    "bytes": 3613922,
+    "sha256": "446a9538cb6c348e3516120d7c08b09f57c36495e2acfffe59a5bf8b0cfb1a2d"
+  },
+  {
+    "path": "share/tiktoken/o200k_harmony.special_tokens.json",
+    "bytes": 38903,
+    "sha256": "15ea0a0784c0f08ad13c458e7b63371e67c3365cae9bcef9ddb255498f5163e1"
+  },
+  {
+    "path": "share/tiktoken/o200k_harmony.tiktoken",
+    "bytes": 3613922,
+    "sha256": "446a9538cb6c348e3516120d7c08b09f57c36495e2acfffe59a5bf8b0cfb1a2d"
+  },
+  {
+    "path": "tiktoken_cache/223921b76ee99bde995b7ff738513eef100fb51d18c93597a113bcffe865b2a7",
+    "bytes": 1681126,
+    "sha256": "223921b76ee99bde995b7ff738513eef100fb51d18c93597a113bcffe865b2a7"
+  },
+  {
+    "path": "tiktoken_cache/26b9c229141b3d34dcac6d3728f94f1e40abb67ef4a84ca1351abc0a20e6b701",
+    "bytes": 1681126,
+    "sha256": "223921b76ee99bde995b7ff738513eef100fb51d18c93597a113bcffe865b2a7"
+  },
+  {
+    "path": "tiktoken_cache/446a9538cb6c348e3516120d7c08b09f57c36495e2acfffe59a5bf8b0cfb1a2d",
+    "bytes": 3613922,
+    "sha256": "446a9538cb6c348e3516120d7c08b09f57c36495e2acfffe59a5bf8b0cfb1a2d"
+  },
+  {
+    "path": "tiktoken_cache/9b5ad71b2ce5302211f9c61530b329a4922fc6a4",
+    "bytes": 1681126,
+    "sha256": "223921b76ee99bde995b7ff738513eef100fb51d18c93597a113bcffe865b2a7"
+  },
+  {
+    "path": "tiktoken_cache/c2b253dde4cc892911674e7139928c6a87030d9e9415de8fc3591931c10987b1",
+    "bytes": 3613922,
+    "sha256": "446a9538cb6c348e3516120d7c08b09f57c36495e2acfffe59a5bf8b0cfb1a2d"
+  },
+  {
+    "path": "tiktoken_cache/fb374d419588a4632f3f557e76b4b70aebbca790",
+    "bytes": 3613922,
+    "sha256": "446a9538cb6c348e3516120d7c08b09f57c36495e2acfffe59a5bf8b0cfb1a2d"
+  },
+  {
+    "path": "tiktoken_rs_cache/9b5ad71b2ce5302211f9c61530b329a4922fc6a4",
+    "bytes": 1681126,
+    "sha256": "223921b76ee99bde995b7ff738513eef100fb51d18c93597a113bcffe865b2a7"
+  },
+  {
+    "path": "tiktoken_rs_cache/fb374d419588a4632f3f557e76b4b70aebbca790",
+    "bytes": 3613922,
+    "sha256": "446a9538cb6c348e3516120d7c08b09f57c36495e2acfffe59a5bf8b0cfb1a2d"
+  },
+  {
+    "path": "verify_offline.py",
+    "bytes": 3844,
+    "sha256": "9101c3e405b2347f38df91cd1c9393a057d93e96ecc83decec511b5cac54fc84"
+  }
+]
