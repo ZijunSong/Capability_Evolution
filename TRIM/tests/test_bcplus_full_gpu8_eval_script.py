@@ -1,4 +1,4 @@
-"""Sanity checks for bcplus_full GPU4 launch script."""
+"""Sanity checks for bcplus_full GPU8 launch script."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import subprocess
 from pathlib import Path
 
 
-SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "run_bcplus_full_gpu4_eval.sh"
+SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "run_bcplus_full_gpu8_eval.sh"
 
 
 def _bash_fn(name: str, *args: str) -> str:
@@ -36,3 +36,14 @@ def test_normalize_pid_strips_log_noise():
         text=True,
     )
     assert out.strip() == "12345"
+
+
+def test_default_all_actor_count_is_six():
+    out = subprocess.check_output(
+        [
+            "env", "-i", "bash", "-c",
+            f'source "{SCRIPT}" >/dev/null 2>&1; echo "$ALL_TP"',
+        ],
+        text=True,
+    )
+    assert out.strip() == "6"

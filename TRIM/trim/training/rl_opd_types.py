@@ -129,11 +129,11 @@ class HybridStepMetrics:
     n_opd_tokens: int
     rl_loss_proxy: float | None
     opd_nll: float | None
-    opd_weighted_gap: float | None = None
     lambda_opd: float
     projection_coverage: float
     reject_rate: float
     policy_version: str
+    opd_weighted_gap: float | None = None
     n_rl_forward_backward: int = 0
     n_opd_forward_backward: int = 0
     n_optimizer_steps: int = 0

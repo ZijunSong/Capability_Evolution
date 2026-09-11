@@ -6,6 +6,10 @@
 # (message) API. Each eval worker talks to a local vLLM actor that serves
 # base_model + LoRA adapter.
 #
+# Retrieval: local_bm25 (Lucene index + jsonl corpus) — no Chroma Cloud/local service.
+# Verifier (COMPONENT=all only): always ../../models/harness-1 as harness-1-verifier,
+# independent of BASE_MODEL / LoRA adapter. Do not swap per trained checkpoint.
+#
 # -----------------------------------------------------------------------------
 # Quick start (8×GPU server, multi-actor layout — recommended)
 # -----------------------------------------------------------------------------
@@ -71,8 +75,11 @@
 #   ACTOR_GPUS       Comma GPU ids for actor vLLMs in multi layout
 #   ACTOR_GPU        Single actor GPU in single layout (default: 0)
 #   ACTOR_PORTS      Comma ports, one per actor (default: 8040,8042,...)
-#   VERIFY_GPU       GPU for harness-1 verifier when COMPONENT=all
-#   VERIFY_PORT      Verifier port (default: 8050)
+#   BENCHMARK        bcplus_full | bcplus_test_50 (default: bcplus_full)
+#   VERIFY_GPU       GPU for harness-1 verifier when COMPONENT=all (default: 7)
+#   VERIFY_PORT      Verifier port (default: 8050; must not appear in ACTOR_PORTS)
+#   VERIFY_MODEL_PATH  Verifier weights (default: ../../models/harness-1)
+#   VERIFY_MODEL_NAME  vLLM served name (default: harness-1-verifier)
 #   EVAL_TP          Parallel eval worker count (default: 32 multi, 24 single)
 #   LORA_NAME        vLLM LoRA module id / --api-model (default: trained-policy)
 #   MAX_LORA_RANK    vLLM --max-lora-rank (default: read from adapter_config.json)
@@ -82,7 +89,7 @@
 #   PY, VLLM         Python / vLLM binaries
 #   SMOKE=1          Run 6-query smoke instead of full 830
 #
-# Outputs: TRIM/outputs/eval_h1_bcplus_full_adapter_<component>_<layout>_<RUN_ID>/
+# Outputs: TRIM/outputs/eval_h1_<benchmark>_adapter_<component>_<layout>_<RUN_ID>/
 # Logs:    TRIM/outputs/logs/<RUN_ID>/
 # =============================================================================
 set -euo pipefail
@@ -94,6 +101,7 @@ cd "${TRIM_ROOT}"
 RUN_ID="${RUN_ID:-$(date +%Y%m%d_%H%M%S)_bcplus_adapter_upstream}"
 PY="${PY:-python3}"
 VLLM="${VLLM:-vllm}"
+BENCHMARK="${BENCHMARK:-bcplus_full}"
 
 REL_BCPLUS="../SCOPE/external/BrowseComp-Plus"
 REL_OUT="outputs"
@@ -118,12 +126,15 @@ SMOKE="${SMOKE:-0}"
 # multi: one actor vLLM per GPU; single: one actor, many eval workers
 ACTOR_GPUS="${ACTOR_GPUS:-0,1,2,3,4,5,6,7}"
 ACTOR_GPU="${ACTOR_GPU:-0}"
-ACTOR_PORTS="${ACTOR_PORTS:-8040,8042,8044,8046,8048,8050,8052,8054}"
+# 8050 is reserved for the harness-1 verifier (COMPONENT=all); do not assign to actors.
+ACTOR_PORTS="${ACTOR_PORTS:-8040,8042,8044,8046,8048,8052,8054,8056}"
 VERIFY_GPU="${VERIFY_GPU:-7}"
 VERIFY_PORT="${VERIFY_PORT:-8050}"
 
 export PYTHONPATH=".:${REL_SCAPE_EASYOPD}"
 export TRIM_GPU_KEEPALIVE=0
+# Hard-disable Chroma client construction in harness-1 (local_bm25 path only).
+export HARNESS1_FORBID_CHROMA=1
 
 ACTOR_PIDS=()
 VERIFY_PID=""
@@ -353,8 +364,12 @@ start_lora_vllm_bg() {
 }
 
 start_verify_vllm() {
+  [[ -d "${VERIFY_MODEL_PATH}" ]] || {
+    log "missing verifier weights ${VERIFY_MODEL_PATH} (local eval always uses harness-1)"
+    exit 1
+  }
   stop_verify
-  log "starting verifier GPU${VERIFY_GPU} port=${VERIFY_PORT}"
+  log "starting verifier GPU${VERIFY_GPU} port=${VERIFY_PORT} model=${VERIFY_MODEL_PATH} served=${VERIFY_MODEL_NAME}"
   stop_port "${VERIFY_PORT}" "${REL_LOGS}/verify.log.pid"
   wait_port_free "${VERIFY_PORT}" 120
   # shellcheck disable=SC2086
@@ -398,11 +413,36 @@ start_actors() {
   smoke_test_tool_call "${actor_ports[0]}" "${LORA_NAME}"
 
   if [[ "${COMPONENT}" == "all" ]]; then
+    local gpu port
+    for gpu in "${actor_gpus[@]}"; do
+      if [[ "${gpu}" == "${VERIFY_GPU}" ]]; then
+        log "ACTOR_GPUS includes VERIFY_GPU=${VERIFY_GPU}; use disjoint GPUs for COMPONENT=all"
+        exit 1
+      fi
+    done
+    for port in "${actor_ports[@]}"; do
+      if [[ "${port}" == "${VERIFY_PORT}" ]]; then
+        log "ACTOR_PORTS includes VERIFY_PORT=${VERIFY_PORT}; pick a different verifier port"
+        exit 1
+      fi
+    done
     start_verify_vllm
   fi
 
   ACTOR_URLS="$(join_urls "${actor_ports[@]}")"
   N_ACTORS="${#actor_ports[@]}"
+}
+
+assert_local_retrieval_ready() {
+  [[ -d "${BCPLUS_INDEX}" ]] || {
+    log "missing Lucene index ${BCPLUS_INDEX} (local_bm25; no Chroma)"
+    exit 1
+  }
+  if [[ ! -f "${BCPLUS_CORPUS}" ]]; then
+    log "corpus missing ${BCPLUS_CORPUS}; will build from index"
+    return 0
+  fi
+  log "local_bm25 ready index=${BCPLUS_INDEX} corpus=${BCPLUS_CORPUS}"
 }
 
 ensure_full_corpus() {
@@ -417,7 +457,7 @@ ensure_full_corpus() {
 
 run_eval() {
   local eval_tp="$1"
-  local out="${REL_OUT}/eval_h1_bcplus_full_adapter_${COMPONENT}_${LAYOUT}_${RUN_ID}"
+  local out="${REL_OUT}/eval_h1_${BENCHMARK}_adapter_${COMPONENT}_${LAYOUT}_${RUN_ID}"
   local log_path="${REL_LOGS}/eval_${COMPONENT}.log"
   local extra=()
 
@@ -433,7 +473,7 @@ run_eval() {
   local rc=0
   "${PY}" scripts/run_eval.py \
     --harness Harness-1 \
-    --benchmark bcplus_full \
+    --benchmark "${BENCHMARK}" \
     --model_name "${BASE_MODEL}" \
     --evaluation-path upstream_api \
     --retrieval-backend local_bm25 \
@@ -468,6 +508,7 @@ run_eval() {
 main() {
   mkdir -p "${REL_LOGS}"
   resolve_paths
+  assert_local_retrieval_ready
   ensure_full_corpus
 
   if [[ "${LAYOUT}" == "single" ]]; then
@@ -476,7 +517,7 @@ main() {
     EVAL_TP="${EVAL_TP:-32}"
   fi
 
-  log "RUN_ID=${RUN_ID} component=${COMPONENT} layout=${LAYOUT} base=${BASE_MODEL} adapter=${ADAPTER} eval_tp=${EVAL_TP} lora_name=${LORA_NAME} max_lora_rank=${MAX_LORA_RANK}"
+  log "RUN_ID=${RUN_ID} benchmark=${BENCHMARK} component=${COMPONENT} layout=${LAYOUT} base=${BASE_MODEL} adapter=${ADAPTER} eval_tp=${EVAL_TP} lora_name=${LORA_NAME} max_lora_rank=${MAX_LORA_RANK} verify=${VERIFY_MODEL_PATH}:${VERIFY_MODEL_NAME}"
 
   start_actors
   run_eval "${EVAL_TP}" || log "eval returned non-zero; see ${REL_LOGS}"
@@ -488,9 +529,11 @@ main() {
   cat > "${REL_LOGS}/MANIFEST.json" <<EOF
 {
   "run_id": "${RUN_ID}",
-  "benchmark": "bcplus_full",
+  "benchmark": "${BENCHMARK}",
   "evaluation_path": "upstream_api",
   "eval_profile": "upstream_core_local_bm25",
+  "retrieval_backend": "local_bm25",
+  "chroma_required": false,
   "eval_mode": "adapter",
   "component": "${COMPONENT}",
   "layout": "${LAYOUT}",
@@ -503,6 +546,9 @@ main() {
   "actor_urls": "${ACTOR_URLS}",
   "verify_gpu": "${VERIFY_GPU}",
   "verify_port": ${VERIFY_PORT},
+  "verify_model_path": "${VERIFY_MODEL_PATH}",
+  "verify_model_name": "${VERIFY_MODEL_NAME}",
+  "verify_url": "http://127.0.0.1:${VERIFY_PORT}/v1",
   "vllm_max_num_seqs": ${VLLM_MAX_NUM_SEQS},
   "worker_stagger_s": ${WORKER_STAGGER},
   "corpus_path": "${BCPLUS_CORPUS}",

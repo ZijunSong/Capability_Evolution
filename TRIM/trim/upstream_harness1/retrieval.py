@@ -14,7 +14,8 @@ PROFILE_UPSTREAM_CHROMA = "upstream_chroma"
 PROFILE_LOCAL_BM25 = "upstream_core_local_bm25"
 
 DEFAULT_RERANKER = "baseten"
-DEFAULT_VERIFY_MODEL = "gpt-5.4-mini"
+# Local upstream_api eval: verifier is always a separate harness-1 vLLM, not the actor.
+DEFAULT_VERIFY_MODEL = "harness-1-verifier"
 DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
 SEARCH_DISPLAY_LIMIT = 10
 SEARCH_KNN_LIMIT = 25

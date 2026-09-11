@@ -519,7 +519,10 @@ def add_common_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     parser.add_argument(
         "--verify-model",
         default=None,
-        help="Auxiliary verifier model id. Independent of the actor checkpoint.",
+        help=(
+            "Auxiliary verifier model id (OpenAI API name). Independent of the actor. "
+            "Local eval default: harness-1-verifier served from ../../models/harness-1."
+        ),
     )
     parser.add_argument("--index-path", default=None, help="Lucene/Pyserini index for local_bm25.")
     parser.add_argument("--corpus-path", default=None, help="Full-text jsonl corpus for local_bm25.")
