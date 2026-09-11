@@ -13,6 +13,7 @@ from trim.upstream_harness1.api_adapter import (
 from trim.upstream_harness1.env_bridge import (
     GPT_OSS_FORMAT_RETRY_PROMPT,
     QWEN_FORMAT_RETRY_PROMPT,
+    _allowed_tool_names,
     format_retry_prompt,
     is_harmony_chat_model,
 )
@@ -298,3 +299,24 @@ def test_train_all_student_zero_teacher_ten():
     student = student_mask_for_ids(list(all_enabled_mask("Harness-1")), harness="Harness-1")
     assert sum(teacher.values()) == 10
     assert sum(student.values()) == 0
+
+
+def test_allowed_tool_names_reads_toolset_dict_keys():
+    class _Schema:
+        name = "search_corpus"
+
+    class _Tool:
+        tool_schema = _Schema()
+
+    class _Toolset:
+        tools = {
+            "search_corpus": _Tool(),
+            "grep_corpus": _Tool(),
+            "fan_out_search": _Tool(),
+        }
+
+    class _Env:
+        def _build_full_toolset(self):
+            return _Toolset()
+
+    assert _allowed_tool_names(_Env()) == {"search_corpus", "grep_corpus", "fan_out_search"}

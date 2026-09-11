@@ -541,8 +541,12 @@ def openai_messages_from_env(
 
 def _allowed_tool_names(env: Any) -> set[str]:
     toolset = env._build_full_toolset()
+    tools = getattr(toolset, "tools", None) or {}
+    # ToolSet.tools is a name -> Tool dict; iterating the dict yields keys only.
+    if isinstance(tools, dict):
+        return {str(name) for name in tools.keys()}
     names: set[str] = set()
-    for tool in getattr(toolset, "tools", []) or []:
+    for tool in tools:
         schema = getattr(tool, "tool_schema", None)
         if schema is not None and getattr(schema, "name", None):
             names.add(str(schema.name))

@@ -4,13 +4,14 @@
 #   harness-1         × {zero, all}
 #   Qwen3-4B-Instruct × {zero, all}
 #
-# zero: single actor on GPU (default GPU=4), --tp shards share one vLLM.
-# all:  4 GPUs — 3 actor vLLMs in parallel + 1 verifier (default actors 1,2,3 / verify 4).
+# zero: single actor on GPU (default GPU=4); TP=24 eval workers share one vLLM.
+# all:  4 GPUs — 3 actor vLLMs + 1 verifier; ALL_EVAL_TP=24 workers round-robin across actors.
 #
 # All repo/data paths are relative to TRIM root (parent of scripts/).
 #   bash TRIM/scripts/run_bcplus_full_gpu4_eval.sh
 #
-# Optional env: GPU, TP, ALL_ACTOR_GPUS, ALL_VERIFY_GPU, ALL_ACTOR_PORTS, ALL_VERIFY_PORT, ALL_TP, ...
+# Optional env: GPU, TP, ALL_EVAL_TP, ALL_ACTOR_GPUS, ALL_VERIFY_GPU, ALL_ACTOR_PORTS,
+#   ALL_VERIFY_PORT, ALL_TP, VLLM_MAX_NUM_SEQS, WORKER_STAGGER, ...
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -49,9 +50,9 @@ API_MODELS=(
 )
 COMPONENTS=(zero all)
 
-# zero: one GPU
+# zero: one GPU actor; TP = data-parallel eval workers sharing that actor (not vLLM tensor parallel)
 GPU="${GPU:-4}"
-TP="${TP:-3}"
+TP="${TP:-24}"
 ZERO_ACTOR_PORT="${ZERO_ACTOR_PORT:-8040}"
 
 # all: 3 actor GPUs + 1 verifier GPU (4 cards total)
@@ -60,10 +61,13 @@ ALL_VERIFY_GPU="${ALL_VERIFY_GPU:-4}"
 ALL_ACTOR_PORTS="${ALL_ACTOR_PORTS:-8040,8042,8044}"
 ALL_VERIFY_PORT="${ALL_VERIFY_PORT:-8050}"
 ALL_TP="${ALL_TP:-3}"
+# Eval workers for all mode (round-robin across ALL_ACTOR_PORTS); can exceed actor count
+ALL_EVAL_TP="${ALL_EVAL_TP:-24}"
 
 VERIFY_MODEL_NAME="${VERIFY_MODEL_NAME:-harness-1-verifier}"
 GPU_UTIL="${GPU_UTIL:-0.75}"
-WORKER_STAGGER="${WORKER_STAGGER:-30}"
+VLLM_MAX_NUM_SEQS="${VLLM_MAX_NUM_SEQS:-64}"
+WORKER_STAGGER="${WORKER_STAGGER:-2}"
 
 export PYTHONPATH=".:${REL_SCAPE_EASYOPD}"
 export TRIM_GPU_KEEPALIVE=0
@@ -292,7 +296,7 @@ start_vllm_bg() {
     --host 127.0.0.1 --port "${port}" \
     --served-model-name "${served_name}" \
     ${extra} \
-    --gpu-memory-utilization "${GPU_UTIL}" --enforce-eager \
+    --gpu-memory-utilization "${GPU_UTIL}" --max-num-seqs "${VLLM_MAX_NUM_SEQS}" --enforce-eager \
     > "${log_path}" 2>&1 &
   local pid=$!
   echo "${pid}" > "${log_path}.pid"
@@ -432,7 +436,7 @@ main() {
   ZERO_ACTOR_URL="http://127.0.0.1:${ZERO_ACTOR_PORT}/v1"
   ALL_VERIFY_URL="http://127.0.0.1:${ALL_VERIFY_PORT}/v1"
 
-  log "RUN_ID=${RUN_ID} zero_gpu=${GPU} zero_tp=${TP} all_actors=${ALL_ACTOR_GPUS} all_verify=${ALL_VERIFY_GPU} all_tp=${ALL_TP}"
+  log "RUN_ID=${RUN_ID} zero_gpu=${GPU} zero_eval_tp=${TP} all_actors=${ALL_ACTOR_GPUS} all_verify=${ALL_VERIFY_GPU} all_actor_tp=${ALL_TP} all_eval_tp=${ALL_EVAL_TP} vllm_max_num_seqs=${VLLM_MAX_NUM_SEQS} worker_stagger=${WORKER_STAGGER}"
 
   for idx in "${!MODEL_PATHS[@]}"; do
     model_path="${MODEL_PATHS[$idx]}"
@@ -449,7 +453,7 @@ main() {
 
     start_all_stack "${model_path}" "${api_model}" "${model_slug}"
     if ! run_eval "${model_path}" "${model_slug}" "${api_model}" "all" \
-      "${ALL_ACTOR_URLS}" "${ALL_TP}" "gpu${ALL_ACTOR_GPUS//,/}v${ALL_VERIFY_GPU}"; then
+      "${ALL_ACTOR_URLS}" "${ALL_EVAL_TP}" "gpu${ALL_ACTOR_GPUS//,/}v${ALL_VERIFY_GPU}"; then
       log "continuing after all eval failure for ${model_slug}"
     fi
   done
@@ -464,14 +468,17 @@ main() {
   "benchmark": "bcplus_full",
   "evaluation_path": "upstream_api",
   "eval_profile": "upstream_core_local_bm25",
-  "zero": {"gpu": "${GPU}", "tp": ${TP}, "actor_port": ${ZERO_ACTOR_PORT}},
+  "zero": {"gpu": "${GPU}", "eval_tp": ${TP}, "actor_port": ${ZERO_ACTOR_PORT}},
   "all": {
     "actor_gpus": "${ALL_ACTOR_GPUS}",
     "actor_ports": "${ALL_ACTOR_PORTS}",
     "verify_gpu": "${ALL_VERIFY_GPU}",
     "verify_port": ${ALL_VERIFY_PORT},
-    "tp": ${ALL_TP}
+    "actor_tp": ${ALL_TP},
+    "eval_tp": ${ALL_EVAL_TP}
   },
+  "vllm_max_num_seqs": ${VLLM_MAX_NUM_SEQS},
+  "worker_stagger_s": ${WORKER_STAGGER},
   "experiments": [
     {"model": "${REL_MODELS}/gpt-oss-20b", "component": "zero", "layout": "1gpu"},
     {"model": "${REL_MODELS}/gpt-oss-20b", "component": "all", "layout": "3actor+1verify"},
