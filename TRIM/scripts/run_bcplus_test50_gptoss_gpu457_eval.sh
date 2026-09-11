@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Qwen3-4B-Instruct bcplus_test_50 — sequential zero → all, high-concurrency eval.
+# gpt-oss-20b bcplus_test_50 — sequential zero → all, high-concurrency eval.
 # GPUs 4,5,7: zero actor on 7; all actors on 5+7, harness-1 verifier on 4.
 #
-#   bash TRIM/scripts/run_bcplus_test50_qwen_gpu457_eval.sh
+#   bash TRIM/scripts/run_bcplus_test50_gptoss_gpu457_eval.sh
 #
 # Optional env: RUN_ID, GPU, TP, ALL_ACTOR_GPUS, ALL_VERIFY_GPU, ALL_EVAL_TP, ...
 set -euo pipefail
@@ -11,7 +11,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TRIM_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${TRIM_ROOT}"
 
-RUN_ID="${RUN_ID:-$(date +%Y%m%d_%H%M%S)_qwen_test50_gpu457}"
+RUN_ID="${RUN_ID:-$(date +%Y%m%d_%H%M%S)_gptoss_test50_gpu457}"
 PY="${PY:-/data/ppnm/miniconda3/envs/bishop/bin/python}"
 VLLM="${VLLM:-/data/ppnm/miniconda3/envs/bishop/bin/vllm}"
 
@@ -22,9 +22,9 @@ REL_LOGS="${REL_OUT}/logs/${RUN_ID}"
 REL_SCAPE_EASYOPD="../SCAPE-EasyOPD"
 PKG="/data/ppnm/trim_bcplus_test50_eval_upstream_api"
 
-MODEL_PATH="${MODEL_PATH:-/data/ppnm/models/Qwen3-4B-Instruct-2507}"
-MODEL_SLUG="Qwen3-4B-Instruct-2507"
-API_MODEL="${API_MODEL:-Qwen3-4B-Instruct-2507}"
+MODEL_PATH="${MODEL_PATH:-/data/ppnm/models/gpt-oss-20b}"
+MODEL_SLUG="gpt-oss-20b"
+API_MODEL="${API_MODEL:-gpt-oss-20b}"
 
 BCPLUS_INDEX="${REL_BCPLUS}/indexes/bm25"
 BCPLUS_CORPUS="${REL_BCPLUS}/data/browsecomp_plus_corpus_full.jsonl"
@@ -158,6 +158,9 @@ csv_to_array() {
 
 vllm_extra_for_model() {
   case "${1}" in
+    gpt-oss-20b)
+      echo "--enable-auto-tool-choice --tool-call-parser openai --max-model-len 32768 --trust-remote-code --moe-backend triton"
+      ;;
     Qwen3-4B-Instruct-2507)
       echo "--enable-auto-tool-choice --tool-call-parser hermes --max-model-len 32768 --trust-remote-code"
       ;;
@@ -323,7 +326,7 @@ main() {
   },
   "vllm_max_num_seqs": ${VLLM_MAX_NUM_SEQS},
   "worker_stagger_s": ${WORKER_STAGGER},
-  "tool_call_parser": "hermes"
+  "tool_call_parser": "openai"
 }
 EOF
   cp "${PKG}/results/${RUN_ID}/MANIFEST.json" "${REL_LOGS}/MANIFEST.json"

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -265,7 +266,12 @@ DEFAULT_CURATE_NUDGE_PROMPT = (
 )
 DEFAULT_MAX_OBS_CHARS = 15000
 DEFAULT_PROMPT_TOKEN_BUDGET = 30720
+# Reserve extra tokens: whitespace/heuristic counters often undercount vs served tokenizer.
+PROMPT_BUDGET_SAFETY_MARGIN = 512
 DEFAULT_CURATE_NUDGE_INTERVAL = 1
+
+
+_DOC_HEADER_RE = re.compile(r"\n# DOCUMENT ID:\s*\S+")
 
 
 def clip_observation_text(text: str, max_chars: int = DEFAULT_MAX_OBS_CHARS) -> str:
@@ -273,6 +279,32 @@ def clip_observation_text(text: str, max_chars: int = DEFAULT_MAX_OBS_CHARS) -> 
     limit = int(max_chars)
     if len(raw) <= limit:
         return raw
+
+    matches = list(_DOC_HEADER_RE.finditer(raw))
+    if len(matches) >= 2:
+        blocks: list[str] = []
+        for idx, match in enumerate(matches):
+            start = match.start()
+            end = matches[idx + 1].start() if idx + 1 < len(matches) else len(raw)
+            blocks.append(raw[start:end])
+        kept: list[str] = []
+        running = 0
+        for block in blocks:
+            sep = 0 if not kept else 0
+            if running + len(block) <= limit:
+                kept.append(block)
+                running += len(block)
+                continue
+            break
+        if kept:
+            clipped = "".join(kept).rstrip()
+            hidden_docs = len(blocks) - len(kept)
+            suffix = f"\n... (truncated, {len(raw)} chars total"
+            if hidden_docs:
+                suffix += f"; {hidden_docs} more document(s) not shown"
+            suffix += ")"
+            return clipped + suffix
+
     return raw[:limit] + f"\n... (truncated, {len(raw)} chars total)"
 
 
@@ -446,6 +478,7 @@ def openai_messages_from_env(
     except Exception:
         obs_limit = int(max_obs_chars if max_obs_chars is not None else DEFAULT_MAX_OBS_CHARS)
         budget = int(prompt_token_budget if prompt_token_budget is not None else DEFAULT_PROMPT_TOKEN_BUDGET)
+    budget = max(1024, int(budget) - PROMPT_BUDGET_SAFETY_MARGIN)
 
     counter = token_counter or getattr(env, "text_token_counter", None) or whitespace_token_counter
     actions = list(window.get("recent_actions") or [])
@@ -553,6 +586,31 @@ def _allowed_tool_names(env: Any) -> set[str]:
     return names
 
 
+def _validate_tool_params(tool: Any, params: Mapping[str, Any]) -> None:
+    schema = getattr(tool, "tool_schema", None)
+    if schema is None:
+        return
+    required = list(getattr(schema, "required", None) or [])
+    name = str(getattr(schema, "name", "") or "tool")
+    for key in required:
+        if key not in params:
+            raise ValueError(f"Tool {name} missing required parameter: {key}")
+        if params[key] is None:
+            raise ValueError(f"Tool {name} parameter {key} must not be null")
+    props = getattr(schema, "parameters", None) or {}
+    for key, spec in props.items():
+        if key not in params or params[key] is None:
+            continue
+        expected = (spec or {}).get("type")
+        val = params[key]
+        if expected == "array" and not isinstance(val, list):
+            raise ValueError(f"Tool {name} parameter {key} expected array")
+        if expected == "object" and not isinstance(val, dict):
+            raise ValueError(f"Tool {name} parameter {key} expected object")
+        if expected == "string" and not isinstance(val, str):
+            raise ValueError(f"Tool {name} parameter {key} expected string")
+
+
 def action_from_parsed(parsed: Any, env: Any, mods: Mapping[str, Any]) -> Any:
     ActionBuilder = mods["ActionBuilder"]
     UserTextTool = mods["UserTextTool"]
@@ -587,5 +645,6 @@ def action_from_parsed(parsed: Any, env: Any, mods: Mapping[str, Any]) -> Any:
         tool = toolset.get_tool(name)
         if tool is None:
             raise ValueError(f"Model requested unknown tool or tool not in toolset: {name}")
+        _validate_tool_params(tool, params)
         builder.add_tool_call(tool, params, source)
     return builder.build()

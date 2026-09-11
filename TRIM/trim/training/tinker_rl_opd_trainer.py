@@ -188,7 +188,9 @@ def project_on_policy_decisions(
     proj = projector or StudentActionSpaceProjector()
     audit = ProjectionAudit()
     steps: list[ProjectedTrainingStep] = []
-    overlap_hits = 0
+    same_tool_hits = 0
+    same_canonical_hits = 0
+    same_token_hits = 0
     overlap_total = 0
     for point in points:
         events = list(teacher_event_fn(point) or [])
@@ -206,18 +208,33 @@ def project_on_policy_decisions(
             step.metadata["decision_point_id"] = point.decision_point_id
             if point.student_prompt_token_ids:
                 step.metadata["student_prompt_token_ids"] = list(point.student_prompt_token_ids)
+            if point.teacher_prompt_token_ids:
+                step.metadata["teacher_prompt_token_ids"] = list(point.teacher_prompt_token_ids)
             if point.student_action_tokens:
-                step.metadata["target_token_ids"] = list(point.student_action_tokens)
-            if point.student_action_text and step.target_text:
+                step.metadata["sampled_action_token_ids"] = list(point.student_action_tokens)
+            if point.student_action_text and step.target_action:
                 overlap_total += 1
-                if point.student_action_text.strip() == step.target_text.strip() or (
-                    point.action_tool_names and point.action_tool_names[0] == step.target_action.get("name")
-                ):
-                    overlap_hits += 1
+                student_tool = (point.action_tool_names or [""])[0]
+                projected_tool = str(step.target_action.get("name") or "")
+                if student_tool and projected_tool and student_tool == projected_tool:
+                    same_tool_hits += 1
+                try:
+                    from trim.training.action_codec import parse_action
+
+                    student_parsed = parse_action(point.student_action_text)
+                    if student_parsed == step.target_action:
+                        same_canonical_hits += 1
+                except Exception:
+                    pass
+                if list(point.student_action_tokens) == list(step.metadata.get("projected_action_token_ids") or []):
+                    same_token_hits += 1
         steps.extend(mat)
     finalize_audit(audit)
     extras = {
-        "rl_opd_exact_target_overlap_rate": (overlap_hits / overlap_total) if overlap_total else 0.0,
+        "rl_opd_same_tool_rate": (same_tool_hits / overlap_total) if overlap_total else 0.0,
+        "rl_opd_same_canonical_action_rate": (same_canonical_hits / overlap_total) if overlap_total else 0.0,
+        "rl_opd_same_supervised_token_rate": (same_token_hits / overlap_total) if overlap_total else 0.0,
+        "rl_opd_exact_target_overlap_rate": (same_tool_hits / overlap_total) if overlap_total else 0.0,
         "n_sampled_decision_points": len(points),
     }
     return steps, audit, extras
@@ -427,6 +444,7 @@ async def hybrid_train_substep(
 
     n_rl_tok = _n_rl_tokens(rl_list)
     n_opd_tok = _n_opd_tokens(opd_list)
+    opd_gap = _extract_loss(opd_result)
     return HybridStepMetrics(
         update_type=classify_update_type(n_rl=len(rl_list), n_opd=len(opd_list)),
         n_rl_datums=len(rl_list),
@@ -434,7 +452,8 @@ async def hybrid_train_substep(
         n_rl_tokens=n_rl_tok,
         n_opd_tokens=n_opd_tok,
         rl_loss_proxy=_extract_loss(rl_result),
-        opd_nll=_extract_loss(opd_result),
+        opd_nll=opd_gap,
+        opd_weighted_gap=opd_gap,
         lambda_opd=requested_lambda,
         projection_coverage=float(projection_coverage),
         reject_rate=float(reject_rate),

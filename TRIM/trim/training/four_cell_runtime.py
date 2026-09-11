@@ -105,6 +105,7 @@ from trim.training.rl_opd_types import (
     SCAPE_RL_LAMBDA_OPD,
     SCAPE_RL_OPD_GATE_BETA,
     StudentDecisionPoint,
+    uses_sampled_opd,
 )
 from trim.training.parse_rollout_action import parse_generated_action
 from trim.training.teacher_isolation import COMPONENT_KIND, run_teacher_branch_isolated
@@ -631,20 +632,14 @@ def doc_store_for_row(
     if searcher is not None and searcher.name != "none":
         hits = searcher.search(str(row.get("query") or ""), k)
         store = hits_to_doc_store(hits)
-        if row.get("seed_doc_store"):
-            seeded = dict(row["seed_doc_store"])
-            seeded.update(store)
-            store = seeded
         if store:
             return remember(store)
-        # Live Lucene with 0 hits is a retrieval failure, not a cue to inject
-        # synthetic gold/noise docs. Those never enter the episode pool and
-        # hide empty-search bugs in official eval.
-        if getattr(searcher, "name", "") == "pyserini_lucene":
-            return remember({})
-    if row.get("seed_doc_store"):
-        return remember(dict(row["seed_doc_store"]))
-    return remember(labeled_doc_store(row))
+        # Live retrieval with 0 hits is a failure — do not inject gold labels or
+        # synthetic fallback docs into the episode store.
+        return remember({})
+    # No live searcher: start from an empty store; gold/evidence labels stay on
+    # the row for scoring only (row["gold_docids"] / row["evidence_docids"]).
+    return remember({})
 
 
 def snap_from_state(qid: str, st: dict[str, Any], component_id: str, *, harness_mask: dict[str, bool] | None = None, teacher_mask: dict[str, bool] | None = None):
@@ -655,24 +650,32 @@ def snap_from_state(qid: str, st: dict[str, Any], component_id: str, *, harness_
     curated = [str(x) for x in (st.get("curated") or {})]
     pool = [str(x) for x in (st.get("pool") or {})]
     store = st.get("doc_store") or {}
+    observed_ids = list(dict.fromkeys(pool + curated))
     documents = []
-    full_store: dict[str, Any] = {}
-    for did, rec in store.items():
+    observed_store: dict[str, Any] = {}
+    for did in observed_ids:
+        rec = (st.get("pool") or {}).get(did) or (st.get("curated") or {}).get(did) or store.get(did)
+        if rec is None:
+            continue
         text = str(rec.get("text") or "") if isinstance(rec, dict) else str(rec)
         documents.append({"id": str(did), "text": text})
-        full_store[str(did)] = {"id": str(did), "text": text, **({k: v for k, v in rec.items() if k != "text"} if isinstance(rec, dict) else {})}
+        observed_store[str(did)] = {
+            "id": str(did),
+            "text": text,
+            **({k: v for k, v in rec.items() if k != "text"} if isinstance(rec, dict) else {}),
+        }
     mask = resolved_rollout_mask(component_id, harness_mask=harness_mask)
     tmask = teacher_mask if teacher_mask is not None else teacher_mask_for(component_id)
     g = is_harness_g(mask=mask, component_ids=component_id)
     query_text = str(st.get("query") or "")
     wm = {
         "curated_ids": curated,
-        "accessible_doc_ids": list(dict.fromkeys(pool + curated + list(store))),
+        "accessible_doc_ids": list(observed_ids),
         "pool": st.get("pool") or {},
         "documents": documents,
         "query": query_text,
         "query_text": query_text,
-        "doc_store": full_store,
+        "doc_store": observed_store,
         "curated_importance": dict(st.get("importance") or {}),
         "auto_populate_seed": st.get("auto_seed"),
         "evidence_graph": st.get("evidence_graph") or {},
@@ -852,7 +855,12 @@ def one_episode(
         from trim.eval.harness_g_runtime import build_prompt_ids as build_g_prompt_ids
     else:
         from trim.eval.local_search_env import execute_tool, wm_text
-        from trim.training.upstream_train_env import apply_train_action, new_state_fn, wm_text_for_train_state
+        from trim.training.upstream_train_env import (
+            apply_train_action,
+            is_upstream_state,
+            new_state_fn,
+            wm_text_for_train_state,
+        )
     import torch
 
     query = str(row["query"])
@@ -983,7 +991,7 @@ def one_episode(
         effective_prompt_ids = fit_prompt_ids_to_context(
             list(prompt_ids),
             max_model_len=int(getattr(enc, "max_model_len", 8192) or 8192),
-            max_new_tokens=len(action_ids) or 1,
+            max_new_tokens=int(max_new),
         )
         with timed_section(timing, "model"):
             with torch.no_grad():
@@ -995,6 +1003,24 @@ def one_episode(
         prompt_ids = effective_prompt_ids
         with timed_section(timing, "harness"):
             post = snap_from_state(qid, st, component_id, harness_mask=harness_mask)
+            teacher_prompt_ids: list[int] = []
+            if enc is not None and not teacher_mode:
+                from trim.training.opd_prompt_encoding import encode_teacher_rollout_style_prompt
+
+                teacher_st = dict(st)
+                teacher_st["harness_mask"] = teacher_mask_for(component_id)
+                if is_upstream_state(teacher_st):
+                    teacher_wm = wm_text_for_train_state(teacher_st)
+                else:
+                    from trim.eval.local_search_env import wm_text as local_wm_text
+
+                    teacher_wm = local_wm_text(teacher_st)
+                teacher_prompt_ids, _ = encode_teacher_rollout_style_prompt(
+                    enc,
+                    query,
+                    acts=acts,
+                    wm_text=teacher_wm,
+                )
             points.append(
                 StudentDecisionPoint(
                     episode_id=f"{qid}_r{rollout_idx}",
@@ -1012,6 +1038,7 @@ def one_episode(
                     reward=None,
                     structurally_valid=valid,
                     student_prompt_token_ids=list(prompt_ids),
+                    teacher_prompt_token_ids=list(teacher_prompt_ids),
                 )
             )
         rows.append(
@@ -1144,10 +1171,12 @@ async def train_cell(
             "n_opd_forward_backward": 0,
             "skipped_teacher": True,
         }
+    max_full = int(getattr(backend, "max_full_tokens", 0) or getattr(model_enc, "max_model_len", 8192) or 8192)
     client = HFDebugTrainingClient(
         backend,
         micro_batch_size=micro_batch_size,
         heartbeat_every=heartbeat_every,
+        max_full_tokens=max_full,
     )
     teacher = None if lambda_opd <= 0 else teacher_fn
     metrics_acc: list[dict[str, Any]] = []
@@ -1197,7 +1226,7 @@ async def train_cell(
             opd_states_per_trajectory=opd_states_per_trajectory,
             seed=step,
             remove_constant_reward_groups=True,
-            include_format_errors=True,
+            include_format_errors=uses_sampled_opd(opd_loss),
             opd_loss=opd_loss,
             opd_gate_beta=opd_gate_beta,
         )
@@ -1717,6 +1746,7 @@ def load_hf_backend(args: argparse.Namespace, device_map: str, *, adapter_dir: s
         lora_r=8,
         lora_alpha=16,
     )
+    backend.max_full_tokens = int(getattr(args, "max_model_len", 8192) or 8192)
     if adapter_dir:
         load_adapter_weights(backend, adapter_dir)
     return backend
@@ -2347,7 +2377,7 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
             "rollout": gstat,
             "n_decision_points": gstat["n_decision_points"],
             "n_component_states": len(collected),
-            "reward_unchanged_by_teacher": True,
+            "reward_unchanged_by_teacher": cell in {"teacher", "before"},
             "adapter": adapter_map.get(cell),
             "on_policy_refresh": refresh,
             "rollout_backend": "vllm" if vllm_on else "hf",

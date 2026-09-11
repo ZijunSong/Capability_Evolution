@@ -94,9 +94,14 @@ class LocalSearchCorpusTool(_LocalToolBase):
             docs = [r.document for r in ranked]
             token_counts = [getattr(r, "tokens", None) for r in ranked]
             self.capability_log["reranker_called"] = True
-        text = format_search_observation(ids, docs, token_counts, display_limit=self._display_limit)
         shown = ids[: self._display_limit] if ids else []
-        meta = self._metadata_cls(returned_chunk_ids=list(shown), pre_rerank_chunk_ids=pre_ids if self._reranker else None)
+        doc_texts = {cid: doc for cid, doc in zip(shown, docs[: len(shown)])}
+        text = format_search_observation(ids, docs, token_counts, display_limit=self._display_limit)
+        meta = self._metadata_cls(
+            returned_chunk_ids=list(shown),
+            pre_rerank_chunk_ids=pre_ids if self._reranker else None,
+            doc_texts=doc_texts or None,
+        )
         result = (text, meta)
         self._cache[key] = result
         return result
@@ -156,13 +161,14 @@ class LocalGrepCorpusTool(_LocalToolBase):
                 self._metadata_cls(returned_chunk_ids=[]),
             )
         token_counts = [self._token_counter(d) for d in docs] if self._token_counter else [None] * len(docs)
+        doc_texts = {cid: doc for cid, doc in zip(ids, docs)}
         text = format_search_observation(ids, docs, token_counts, display_limit=self._limit)
         if isinstance(self.capability_log, dict):
             if ids:
                 self.capability_log["grep_success"] = int(self.capability_log.get("grep_success") or 0) + 1
             else:
                 self.capability_log["grep_no_results"] = int(self.capability_log.get("grep_no_results") or 0) + 1
-        return (text, self._metadata_cls(returned_chunk_ids=list(ids)))
+        return (text, self._metadata_cls(returned_chunk_ids=list(ids), doc_texts=doc_texts or None))
 
 
 class LocalReadDocumentTool(_LocalToolBase):

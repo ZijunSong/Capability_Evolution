@@ -339,10 +339,12 @@ class SearchCorpusToolCallMetadata(ToolCallMetadata):
 
     - returned_chunk_ids: The chunks that were returned after reranking. These are formatted as <docid>_<chunk_id>.
     - pre_rerank_chunk_ids: The chunks before reranking (original hybrid search order). Only populated when a reranker is used.
+    - doc_texts: Optional full document texts keyed by chunk/doc id for memory storage (display text may be truncated).
     """
 
     returned_chunk_ids: List[str]
     pre_rerank_chunk_ids: Optional[List[str]] = None
+    doc_texts: Optional[Dict[str, str]] = None
 
 
 class SearchCorpusTool(Tool):
@@ -511,9 +513,11 @@ class GrepCorpusToolCallMetadata(ToolCallMetadata):
     Metadata about a grep corpus tool call.
 
     - returned_chunk_ids: The chunks that were found for the query. These are formatted as <docid>_<chunk_id>.
+    - doc_texts: Optional full document texts keyed by chunk/doc id for memory storage.
     """
 
     returned_chunk_ids: List[str]
+    doc_texts: Optional[Dict[str, str]] = None
 
 
 class GrepCorpusTool(Tool):

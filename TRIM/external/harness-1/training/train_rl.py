@@ -737,6 +737,13 @@ class SlidingWindowSearchEnv(Env):
 
         return output
 
+    @staticmethod
+    def _doc_texts_from_tool_meta(meta: Optional[ToolCallMetadata], output: str) -> Dict[str, str]:
+        texts = getattr(meta, "doc_texts", None) if meta is not None else None
+        if isinstance(texts, dict) and texts:
+            return {str(k): str(v) for k, v in texts.items() if v}
+        return parse_doc_texts_from_observation(output)
+
     def _exec_search(self, params: Dict) -> Tuple[str, Optional[ToolCallMetadata]]:
         query = params.get("query") or params.get("q", "")
         pool_before = self.wm.get_pool_size()
@@ -749,7 +756,7 @@ class SlidingWindowSearchEnv(Env):
         if meta and isinstance(meta, SearchCorpusToolCallMetadata):
             ranked_ids = list(meta.returned_chunk_ids)
             self._ids_seen.update(meta.returned_chunk_ids)
-            doc_texts = parse_doc_texts_from_observation(output)
+            doc_texts = self._doc_texts_from_tool_meta(meta, output)
             self.wm.add_to_pool(meta.returned_chunk_ids, doc_texts)
             for cid in meta.returned_chunk_ids:
                 doc_id = cid.split("_")[0] if "_" in cid else cid
@@ -788,7 +795,7 @@ class SlidingWindowSearchEnv(Env):
                 all_results.append(output)
                 if meta and isinstance(meta, SearchCorpusToolCallMetadata):
                     self._ids_seen.update(meta.returned_chunk_ids)
-                    doc_texts = parse_doc_texts_from_observation(output)
+                    doc_texts = self._doc_texts_from_tool_meta(meta, output)
                     self.wm.add_to_pool(meta.returned_chunk_ids, doc_texts)
                     all_chunk_ids.extend(meta.returned_chunk_ids)
                     for cid in meta.returned_chunk_ids:
@@ -822,7 +829,7 @@ class SlidingWindowSearchEnv(Env):
         pool_before = self.wm.get_pool_size()
         output, meta = grep_tool(params)
         if meta and isinstance(meta, GrepCorpusToolCallMetadata):
-            doc_texts = parse_doc_texts_from_observation(output)
+            doc_texts = self._doc_texts_from_tool_meta(meta, output)
             self.wm.add_to_pool(meta.returned_chunk_ids, doc_texts)
             num_new = self.wm.get_pool_size() - pool_before
             self.wm.add_search_record(
@@ -925,7 +932,7 @@ class SlidingWindowSearchEnv(Env):
         doc_ids = params.get("doc_ids", [])
         if not isinstance(doc_ids, list):
             doc_ids = [str(doc_ids)] if doc_ids else []
-        doc_ids = [str(x).strip() for x in doc_ids if x][:MAX_REVIEW_DOCS]
+        doc_ids = [str(x).strip() for x in doc_ids if x]
         if not doc_ids:
             return "No doc_ids provided."
         result = self.wm.review_docs(doc_ids)

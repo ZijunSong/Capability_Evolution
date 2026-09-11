@@ -164,7 +164,11 @@ def build_projected_seed_datums(
     beta = float(gate_beta)
     datums: list[TinkerOPDDatum] = []
     from trim.state.snapshot import EnvironmentSnapshot
-    from trim.training.opd_prompt_encoding import encode_rollout_style_action, encode_rollout_style_prompt
+    from trim.training.opd_prompt_encoding import (
+        assert_supervised_action_matches,
+        encode_rollout_style_action,
+        encode_rollout_style_prompt,
+    )
 
     for step in steps:
         meta = dict(step.metadata or {})
@@ -179,36 +183,40 @@ def build_projected_seed_datums(
             )
         else:
             prompt_ids = encode(step.prompt_reduced)
-        if meta.get("target_token_ids"):
-            target_ids = list(meta["target_token_ids"])
-        elif model_enc is not None:
-            target_ids, _ = encode_rollout_style_action(model_enc, step.target_action)
+        if model_enc is not None:
+            target_ids, target_text = encode_rollout_style_action(model_enc, step.target_action)
         else:
-            target_ids = encode(step.target_text)
+            target_text = step.target_text
+            target_ids = encode(target_text)
         if not target_ids:
             continue
-        teacher_prompt = str(meta.get("prompt_full") or "")
+        meta["projected_action_token_ids"] = list(target_ids)
+        if model_enc is not None:
+            assert_supervised_action_matches(
+                model_enc,
+                target_action=step.target_action,
+                target_token_ids=target_ids,
+            )
         if meta.get("teacher_prompt_token_ids"):
             teacher_ids = list(meta["teacher_prompt_token_ids"])
-        elif teacher_prompt and model_enc is not None and step.student_snapshot:
+        elif model_enc is not None and step.student_snapshot:
             snap = EnvironmentSnapshot.from_dict(step.student_snapshot)
             teacher_ids, _ = encode_rollout_style_prompt(
                 model_enc,
                 snap,
                 component_id=str(meta.get("component_id") or ""),
             )
-        elif teacher_prompt:
-            teacher_ids = encode(teacher_prompt)
         else:
-            teacher_ids = []
+            teacher_prompt = str(meta.get("prompt_full") or "")
+            teacher_ids = encode(teacher_prompt) if teacher_prompt else []
         if not teacher_ids:
             continue
-        if len(target_ids) != len(list(step.token_mask or [True] * len(target_ids))):
-            if step.token_mask is not None:
-                raise ValueError("projected target/mask length mismatch")
-        n_tok = len(target_ids)
+        mask = list(step.token_mask) if step.token_mask is not None else [True] * len(target_ids)
+        if len(mask) != len(target_ids):
+            raise ValueError("projected target/mask length mismatch")
+        n_tok = max(1, sum(1 for bit in mask if bit))
         try:
-            parsed = parse_action(step.target_text)
+            parsed = parse_action(target_text)
         except Exception:
             parsed = dict(step.target_action or {})
         datums.append(
@@ -216,7 +224,7 @@ def build_projected_seed_datums(
                 model_input=step.prompt_reduced,
                 prompt_token_ids=prompt_ids,
                 target_tokens=[0] * len(prompt_ids) + list(target_ids),
-                weights=[0.0] * len(prompt_ids) + [1.0] * n_tok,
+                weights=[0.0] * len(prompt_ids) + [1.0 if bit else 0.0 for bit in mask],
                 policy_version=policy_version,
                 n_supervised_tokens=n_tok,
                 projection_confidence=float(
@@ -285,10 +293,13 @@ def build_sampled_opd_datums(
         prompt_ids, student_text = _student_prefix_ids(
             point, encode, component_id=component_id
         )
-        teacher_text = render_teacher_prompt(
-            point.pre_action_snapshot, component_id=component_id
-        )
-        teacher_ids = encode(teacher_text) if teacher_text else []
+        if point.teacher_prompt_token_ids:
+            teacher_ids = list(point.teacher_prompt_token_ids)
+        else:
+            teacher_text = render_teacher_prompt(
+                point.pre_action_snapshot, component_id=component_id
+            )
+            teacher_ids = encode(teacher_text) if teacher_text else []
         if not teacher_ids:
             continue
         n_tok = len(action_ids)

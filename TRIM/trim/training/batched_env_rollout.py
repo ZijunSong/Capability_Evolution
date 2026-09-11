@@ -170,14 +170,7 @@ def _apply_generation(
             except Exception:
                 pass
         action_ids = list(gen.token_ids)
-        prompt_ids = list(ep.pending_pids)
-        from trim.eval.harmony_runtime import fit_prompt_ids_to_context
-
-        effective_prompt_ids = fit_prompt_ids_to_context(
-            prompt_ids,
-            max_model_len=int(getattr(enc, "max_model_len", 8192) or 8192),
-            max_new_tokens=len(action_ids) or 1,
-        )
+        effective_prompt_ids = list(getattr(gen, "effective_prompt_ids", None) or ep.pending_pids)
         prompt_text = ""
         if enc is not None:
             try:
@@ -185,6 +178,26 @@ def _apply_generation(
             except Exception:
                 prompt_text = ""
         prompt_text = prompt_text or ep.pending_prefix
+        teacher_prompt_ids: list[int] = []
+        if enc is not None and not ep.teacher_mode:
+            from trim.training.four_cell_runtime import teacher_mask_for
+            from trim.training.opd_prompt_encoding import encode_teacher_rollout_style_prompt
+            from trim.training.upstream_train_env import is_upstream_state, wm_text_for_train_state
+
+            teacher_st = dict(ep.st)
+            teacher_st["harness_mask"] = teacher_mask_for(ep.component_id)
+            if is_upstream_state(teacher_st):
+                wm = wm_text_for_train_state(teacher_st)
+            else:
+                from trim.eval.local_search_env import wm_text
+
+                wm = wm_text(teacher_st)
+            teacher_prompt_ids, _ = encode_teacher_rollout_style_prompt(
+                enc,
+                str(ep.row["query"]),
+                acts=ep.acts,
+                wm_text=wm,
+            )
         truncated = str(getattr(gen, "finish_reason", "") or "") == "length"
         post = snap_from_state(qid, ep.st, ep.component_id, harness_mask=ep.harness_mask)
     ep.points.append(
@@ -203,7 +216,8 @@ def _apply_generation(
             post_action_snapshot=post,
             reward=None,
             structurally_valid=valid,
-            student_prompt_token_ids=list(prompt_ids),
+            student_prompt_token_ids=list(effective_prompt_ids),
+            teacher_prompt_token_ids=list(teacher_prompt_ids),
         )
     )
     rec = cispo_row_from_generation(

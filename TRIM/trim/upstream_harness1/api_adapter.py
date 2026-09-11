@@ -171,27 +171,83 @@ def messages_from_selected_context(
     return messages
 
 
+_KNOWN_TOOL_NAMES = frozenset(
+    {
+        "search_corpus",
+        "curate",
+        "end_search",
+        "grep_corpus",
+        "read_document",
+        "verify",
+        "fan_out_search",
+        "review_docs",
+        "prune_chunks",
+    }
+)
+
 _TOOL_CALL_IN_CONTENT_RE = re.compile(
-    r'(?:"name"\s*:\s*"(?:search_corpus|curate|end_search|grep_corpus|read_document|verify|fan_out_search)"'
-    r'|<\|channel\|>|functions-(?:search_corpus|curate|end_search))',
+    r'(?:<tool_call\b'
+    r'|"name"\s*:\s*"(?:search_corpus|curate|end_search|grep_corpus|read_document|verify|fan_out_search|review_docs|prune_chunks)"'
+    r'|"(?:type|operation|function)"\s*:\s*"(?:search_corpus|curate|end_search|grep_corpus|read_document|verify|fan_out_search|review_docs|prune_chunks)"'
+    r'|<\|channel\|>|functions[\.\-](?:search_corpus|curate|end_search|grep_corpus|read_document|verify|fan_out_search|review_docs|prune_chunks))',
+    re.IGNORECASE,
+)
+
+_TOOL_ARG_HINT_RE = re.compile(
+    r'"(?:query|queries|doc_id|doc_ids|add_ids|remove_ids|pattern|claim|chunk_ids)"\s*:',
     re.IGNORECASE,
 )
 
 
-def _content_looks_like_tool_call(text: str) -> bool:
+def _strip_code_fences(text: str) -> str:
     raw = str(text or "").strip()
+    if not raw.startswith("```"):
+        return raw
+    lines = raw.splitlines()
+    if len(lines) < 2:
+        return raw
+    body = lines[1:]
+    if body and body[-1].strip() == "```":
+        body = body[:-1]
+    return "\n".join(body).strip()
+
+
+def _json_obj_looks_like_tool_call(obj: Mapping[str, Any], names: frozenset[str]) -> bool:
+    if "name" in obj and isinstance(obj.get("name"), str):
+        return True
+    for key in ("type", "operation", "function"):
+        val = obj.get(key)
+        if isinstance(val, str) and val in names:
+            return True
+    recipient = obj.get("recipient")
+    if isinstance(recipient, str) and "functions." in recipient:
+        return True
+    for key in obj:
+        if key in names:
+            return True
+    if ("arguments" in obj or "parameters" in obj) and any(
+        k in obj for k in ("name", "type", "function", "operation")
+    ):
+        return True
+    return False
+
+
+def _content_looks_like_tool_call(text: str, known_tool_names: frozenset[str] | None = None) -> bool:
+    names = known_tool_names or _KNOWN_TOOL_NAMES
+    raw = _strip_code_fences(str(text or "").strip())
     if not raw:
         return False
     if _TOOL_CALL_IN_CONTENT_RE.search(raw):
         return True
-    if raw.startswith("{") and raw.endswith("}"):
-        try:
-            obj = json.loads(raw)
-        except json.JSONDecodeError:
-            return False
-        if isinstance(obj, dict) and "name" in obj:
+    if not raw.startswith("{"):
+        return False
+    try:
+        obj = json.loads(raw)
+    except json.JSONDecodeError:
+        if any(f'"{name}"' in raw for name in names) and _TOOL_ARG_HINT_RE.search(raw):
             return True
-    return False
+        return False
+    return isinstance(obj, dict) and _json_obj_looks_like_tool_call(obj, names)
 
 
 def _message_text(message: Mapping[str, Any]) -> str:

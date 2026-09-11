@@ -343,7 +343,7 @@ class ScapeHFToolOPD:
         if not response_ids:
             return torch.zeros(0, 0, device=self._device)
         full = prompt_ids + response_ids
-        max_len = 2048
+        max_len = int(getattr(self, "max_full_tokens", 8192) or 8192)
         if len(full) > max_len:
             overflow = len(full) - max_len
             if overflow < len(prompt_ids):

@@ -8,12 +8,14 @@ from urllib.parse import urlparse
 from trim.upstream_harness1.api_adapter import ChatCompletionsClient
 
 VERIFY_MIN_MAX_TOKENS = 512
+_VERIFY_RETRY_BUDGETS = (512, 1024, 2048)
 _VERIFY_COUNTER_DEFAULTS = {
     "verify_requests": 0,
     "verify_valid_verdict": 0,
     "verify_empty_content": 0,
     "verify_parse_failures": 0,
     "verify_length_truncated": 0,
+    "verify_length_retries": 0,
 }
 
 
@@ -121,19 +123,41 @@ class LocalVerifierClient:
         max_tokens = _normalize_verifier_max_tokens(kwargs.get("max_tokens"))
         timeout = kwargs.get("timeout")
         temperature = kwargs.get("temperature")
-        response = self._http.complete(
-            list(messages),
-            list(tools) if tools else None,
-            max_tokens=max_tokens,
-            timeout_s=None if timeout is None else float(timeout),
-            temperature=None if temperature is None else float(temperature),
-        )
-        choice = (response.get("choices") or [{}])[0]
-        content, reasoning, _message = _message_fields(choice)
-        parsed = _extract_verifier_text(content, reasoning)
+        retry_budgets: list[int | None] = []
+        for budget in [max_tokens, *_VERIFY_RETRY_BUDGETS]:
+            if budget is None:
+                continue
+            if not retry_budgets or budget > retry_budgets[-1]:
+                retry_budgets.append(budget)
+
+        response: dict[str, Any] | None = None
+        parsed: str | None = None
+        used_budget = max_tokens
+        for attempt, budget in enumerate(retry_budgets):
+            response = self._http.complete(
+                list(messages),
+                list(tools) if tools else None,
+                max_tokens=budget,
+                timeout_s=None if timeout is None else float(timeout),
+                temperature=None if temperature is None else float(temperature),
+            )
+            choice = (response.get("choices") or [{}])[0]
+            content, reasoning, _message = _message_fields(choice)
+            parsed = _extract_verifier_text(content, reasoning)
+            used_budget = budget
+            finish_reason = choice.get("finish_reason")
+            if parsed is not None:
+                break
+            if finish_reason != "length" or attempt + 1 >= len(retry_budgets):
+                break
+            self.capability_log["verify_length_retries"] = int(
+                self.capability_log.get("verify_length_retries") or 0
+            ) + 1
+
+        assert response is not None
         request_meta = {
             "model": kwargs.get("model") or self.model,
-            "max_tokens": max_tokens,
+            "max_tokens": used_budget,
         }
         self._record_verify_call(request=request_meta, response=response, parsed_text=parsed)
         if parsed is None:

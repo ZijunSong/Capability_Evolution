@@ -50,6 +50,8 @@ class GenerateResult:
     logprob_provenance: str
     action_mask: list[int] = field(default_factory=list)
     finish_reason: str = ""
+    # Token ids actually fed to the sampler after context budgeting (authoritative for RL/OPD).
+    effective_prompt_ids: list[int] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if not self.action_mask:
@@ -79,11 +81,12 @@ def cispo_row_from_generation(
     mask = list(gen.action_mask or [1] * len(action_ids))
     if len(mask) != len(action_ids):
         mask = [1] * len(action_ids)
+    eff = list(getattr(gen, "effective_prompt_ids", None) or prompt_ids)
     return {
         "query_id": query_id,
         "prompt": prompt_text,
         "prompt_ids": list(prompt_ids),
-        "effective_prompt_ids": list(prompt_ids),
+        "effective_prompt_ids": eff,
         "action_text": gen.text,
         "action_ids": action_ids,
         "token_logprobs": list(gen.token_logprobs),
@@ -200,6 +203,7 @@ def result_from_worker_row(row: dict[str, Any], *, enc) -> GenerateResult:
     logprobs = [float(x) for x in (row.get("token_logprobs") or [])]
     if len(logprobs) != len(token_ids):
         logprobs = (logprobs + [0.0] * len(token_ids))[: len(token_ids)]
+    eff = [int(x) for x in (row.get("effective_prompt_ids") or row.get("prompt_token_ids") or [])]
     return GenerateResult(
         request_id=str(row.get("request_id") or ""),
         token_ids=token_ids,
@@ -209,6 +213,7 @@ def result_from_worker_row(row: dict[str, Any], *, enc) -> GenerateResult:
         logprob_provenance="vllm_sampled_token",
         action_mask=[1] * len(token_ids),
         finish_reason=str(row.get("finish_reason") or ""),
+        effective_prompt_ids=eff,
     )
 
 
@@ -470,15 +475,18 @@ class VLLMGenerateClient:
                 what=f"vLLM prompt {req.request_id}",
             )
             prompt_rows.append(
-                asdict(
-                    GenerateRequest(
-                        request_id=req.request_id,
-                        prompt_token_ids=prompt_ids,
-                        max_new_tokens=req.max_new_tokens,
-                        temperature=req.temperature,
-                        seed=req.seed,
-                    )
-                )
+                {
+                    **asdict(
+                        GenerateRequest(
+                            request_id=req.request_id,
+                            prompt_token_ids=prompt_ids,
+                            max_new_tokens=req.max_new_tokens,
+                            temperature=req.temperature,
+                            seed=req.seed,
+                        )
+                    ),
+                    "effective_prompt_ids": list(prompt_ids),
+                }
             )
         payload = {"cmd": "generate", "requests": prompt_rows}
         (self.session_dir / "job.json").write_text(
@@ -502,6 +510,9 @@ class VLLMGenerateClient:
             result = result_from_worker_row(row, enc=decoder)
             if row.get("text"):
                 result.text = str(row["text"])
+            eff = [int(x) for x in (row.get("effective_prompt_ids") or row.get("prompt_token_ids") or [])]
+            if eff:
+                result.effective_prompt_ids = eff
             ordered.append(result)
         self.n_generate_calls += 1
         self.n_prompts += len(requests)
@@ -602,10 +613,17 @@ class HFGenerateClient:
                     ),
                     flush=True,
                 )
-            prompt_ids = assert_family_prompt_ids(
+            raw_prompt = assert_family_prompt_ids(
                 req.prompt_token_ids,
                 family=family,
                 what=f"HF prompt {req.request_id}",
+            )
+            from trim.eval.harmony_runtime import fit_prompt_ids_to_context
+
+            eff_prompt = fit_prompt_ids_to_context(
+                list(raw_prompt),
+                max_model_len=int(getattr(self.enc, "max_model_len", 8192) or 8192),
+                max_new_tokens=int(req.max_new_tokens),
             )
             gen = generate_harmony(
                 self.backend,
@@ -614,7 +632,7 @@ class HFGenerateClient:
                 max_new=req.max_new_tokens,
                 sample=req.temperature > 0,
                 seed=req.seed,
-                prompt_ids=list(prompt_ids),
+                prompt_ids=list(eff_prompt),
             )
             token_ids = list(gen["action_ids"])
             logprobs: list[float] = []
@@ -622,20 +640,12 @@ class HFGenerateClient:
             if self.logprob_from_hf and token_ids:
                 import torch
 
-                from trim.eval.harmony_runtime import fit_prompt_ids_to_context
-
-                eff_prompt = fit_prompt_ids_to_context(
-                    list(prompt_ids),
-                    max_model_len=int(getattr(self.backend, "max_model_len", 8192) or 8192),
-                    max_new_tokens=len(token_ids),
-                )
                 with torch.no_grad():
                     old_lp = self.backend._teacher_forced_logprobs(
                         eff_prompt, token_ids, require_grad=False
                     )
                 logprobs = [float(x) for x in old_lp.detach().cpu().tolist()]
                 logprob_old = mean_behavior_logprob(logprobs)
-                prompt_ids = eff_prompt
             out.append(
                 GenerateResult(
                     request_id=req.request_id,
@@ -645,6 +655,7 @@ class HFGenerateClient:
                     logprob_old=logprob_old,
                     logprob_provenance=self.logprob_provenance,
                     action_mask=[1] * len(token_ids),
+                    effective_prompt_ids=list(eff_prompt),
                 )
             )
         return out

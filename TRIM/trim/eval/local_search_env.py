@@ -320,9 +320,8 @@ def execute_tool(
                         continue
                     _merge_hit(hits_all, did, text, score)
                     got_live = True
-            if not got_live:
-                for did, text, score in rank_docs(q, store, k=int(search_k)):
-                    _merge_hit(hits_all, str(did), text, float(score))
+            # Do not fall back to the episode doc_store (which must not contain
+            # gold-label prefetch). Empty live retrieval stays empty.
         ranked = sorted(hits_all.items(), key=lambda item: -item[1][1])
         ranked = filter_dedup_hits(st, ranked)
         for did, (text, score) in ranked:

@@ -46,6 +46,12 @@ def _cfg_number(payload: Mapping[str, Any], key: str, default: float) -> float:
     return float(payload[key])
 
 
+def _env_turn_count(trace: Mapping[str, Any]) -> float:
+    if trace.get("num_turns") is not None:
+        return float(trace["num_turns"])
+    return 0.0
+
+
 def count_tool_calls_from_turns(turns: Sequence[Mapping[str, Any]]) -> dict[str, float]:
     n_api = 0
     n_search = 0
@@ -232,6 +238,7 @@ async def run_one_query_api(
     trace_dir: Path,
     max_turns: int,
     token_counter: Any | None = None,
+    prompt_token_budget: int | None = None,
 ) -> dict[str, Any]:
     from trim.upstream_harness1.env_bridge import (
         action_from_parsed,
@@ -250,6 +257,7 @@ async def run_one_query_api(
     retry_error_hint: str | None = None
     last_step_metrics: dict[str, Any] = {}
     n_generation_attempts = 0
+    protocol_error_attempts = 0
     while not done and env._current_turn < max_turns:
         attempt_id = len(turns)
         messages = openai_messages_from_env(
@@ -259,6 +267,7 @@ async def run_one_query_api(
             retry_error=retry_error_hint,
             model=client.model,
             token_counter=token_counter or getattr(env, "text_token_counter", None),
+            prompt_token_budget=prompt_token_budget,
         )
         tools = openai_tools_from_env(env, mods)
         turn_rec: dict[str, Any] = {
@@ -337,6 +346,7 @@ async def run_one_query_api(
         n_executed = 0
         try:
             if api_error is not None:
+                protocol_error_attempts += 1
                 if isinstance(api_error, ServerParseError):
                     retry_error_hint = "Server could not parse model output as Harmony/tool call"
                 else:
@@ -344,6 +354,7 @@ async def run_one_query_api(
                 result = env._handle_format_error(str(api_error))
                 awaiting_retry = not bool(result.episode_done)
             elif parsed is not None and (parsed.parse_error or parsed.protocol_error):
+                protocol_error_attempts += 1
                 retry_error_hint = parsed.protocol_error or parsed.parse_error
                 result = env._handle_format_error(parsed.parse_error or parsed.protocol_error or "parse_error")
                 awaiting_retry = not bool(result.episode_done)
@@ -400,6 +411,11 @@ async def run_one_query_api(
         turns=turns,
         done=done,
     )
+    recovered_format_error = float(
+        protocol_error_attempts > 0
+        and finish_reason != "format_error"
+        and not float(last_step_metrics.get("format_error") or 0.0) >= 1.0
+    )
     metrics.update(
         {
             "query_id": qid,
@@ -409,6 +425,9 @@ async def run_one_query_api(
             "e2e_sec": time.time() - started,
             "evaluation_path": EVALUATION_PATH_UPSTREAM_API,
             "n_generation_attempts": n_generation_attempts,
+            "protocol_error_attempts": protocol_error_attempts,
+            "format_retry_attempts": protocol_error_attempts,
+            "recovered_format_error": recovered_format_error,
         }
     )
     _append_jsonl(trace_dir / "PER_QUERY.jsonl", {k: v for k, v in metrics.items()})
@@ -520,7 +539,7 @@ def summarize_api_traces(traces: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
             "final_answer_recall": fa,
         },
         "format_error_rate": sum(format_err) / denom,
-        "mean_turns": sum(float(t.get("num_turns") or t.get("n_turns") or 0.0) for t in traces) / denom,
+        "mean_turns": sum(_env_turn_count(t) for t in traces) / denom,
         "mean_tool_calls_per_query": sum(tool_calls) / denom,
         "mean_search_and_fan_out_per_query": sum(search_calls) / denom,
         "dropped_queries": 0,
@@ -530,4 +549,9 @@ def summarize_api_traces(traces: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         "server_parse_error_total": sum(float(t.get("server_parse_error_count") or 0.0) for t in traces),
         "invalid_tool_name_total": sum(float(t.get("invalid_tool_name_count") or 0.0) for t in traces),
         "length_truncation_total": sum(float(t.get("length_truncation_count") or 0.0) for t in traces),
+        "protocol_error_attempts_total": sum(int(t.get("protocol_error_attempts") or 0) for t in traces),
+        "format_retry_attempts_total": sum(int(t.get("format_retry_attempts") or 0) for t in traces),
+        "queries_with_recovered_format_error": sum(
+            1 for t in traces if float(t.get("recovered_format_error") or 0.0) >= 1.0
+        ),
     }

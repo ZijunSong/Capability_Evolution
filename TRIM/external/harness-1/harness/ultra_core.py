@@ -101,6 +101,7 @@ MAX_CURATED_DOCS = 30
 DOC_SNIPPET_CHARS = int(os.environ.get("DOC_SNIPPET_CHARS", "120"))
 CURATED_DOC_CHARS = int(os.environ.get("CURATED_DOC_CHARS", "0"))
 MAX_REVIEW_DOCS = 5
+REVIEW_DISPLAY_SNIPPET_CHARS = int(os.environ.get("REVIEW_SNIPPET_CHARS", "4096"))
 SEARCH_DISPLAY_LIMIT = int(os.environ.get("SEARCH_DISPLAY_LIMIT", "10"))
 MAX_TURNS = int(os.environ.get("MAX_TURNS", "35"))
 
@@ -739,6 +740,8 @@ class WorkingMemory:
             if doc_texts:
                 text = doc_texts.get(cid, doc_texts.get(doc_id, "")) or ""
 
+            self._store_doc_text(cid, doc_id, text)
+
             # v8d: dedup on content, *before* adding to pool. We check against the
             # normalized doc_id so that multiple chunks of the same SEC filing
             # with slight boilerplate variation don't all make it in.
@@ -755,27 +758,76 @@ class WorkingMemory:
                 self.pool_ids.append(doc_id)
                 self.pool_id_set.add(doc_id)
                 added += 1
-            if text and doc_id not in self.doc_store:
-                self.doc_store[doc_id] = {
-                    "full_text": text,
-                    "snippet": text[:DOC_SNIPPET_CHARS].replace("\n", " ").strip(),
-                }
-                # v8d: update evidence graph from the newly-seen doc text
-                if self.evidence_graph is not None:
-                    self.evidence_graph.update_from_doc(doc_id, text)
         return added
 
+    def _store_doc_text(self, chunk_id: str, doc_id: str, text: str) -> None:
+        """Persist full text for review/read even when pool dedup skips the doc."""
+        if not text:
+            return
+        entry = {
+            "full_text": text,
+            "snippet": text[:DOC_SNIPPET_CHARS].replace("\n", " ").strip(),
+        }
+        newly_stored = False
+        for key in (doc_id, chunk_id):
+            if key and key not in self.doc_store:
+                self.doc_store[key] = dict(entry)
+                newly_stored = True
+        if newly_stored and self.evidence_graph is not None:
+            self.evidence_graph.update_from_doc(doc_id, text)
+
     def review_docs(self, doc_ids: List[str]) -> str:
-        """Retrieve full text from outer memory. Free — no corpus call."""
-        parts = []
-        for did in doc_ids[:MAX_REVIEW_DOCS]:
-            if did in self.doc_store:
-                parts.append(
-                    f"# DOCUMENT ID: {did}\n{self.doc_store[did].get('full_text', '')}"
+        """Retrieve text from outer memory. Free — no corpus call."""
+        requested = [str(x).strip() for x in doc_ids if x]
+        if not requested:
+            return "No matching docs in memory."
+
+        limited = requested[:MAX_REVIEW_DOCS]
+        omitted_by_limit = max(0, len(requested) - len(limited))
+        parts: List[str] = []
+        returned = 0
+        not_found = 0
+        truncated = 0
+
+        for raw_id in limited:
+            lookup_id = self._normalize_id(raw_id)
+            store = self.doc_store.get(raw_id) or self.doc_store.get(lookup_id)
+            if store is None:
+                parts.append(f"# DOCUMENT ID: {raw_id}\n(not found in memory)")
+                not_found += 1
+                continue
+
+            full = str(store.get("full_text") or "")
+            if len(full) > REVIEW_DISPLAY_SNIPPET_CHARS:
+                body = (
+                    full[:REVIEW_DISPLAY_SNIPPET_CHARS]
+                    + f"\n... (truncated, {len(full)} chars total; use read_document for full text)"
                 )
+                truncated += 1
             else:
-                parts.append(f"# DOCUMENT ID: {did}\n(not found in memory)")
-        return "\n\n".join(parts) if parts else "No matching docs in memory."
+                body = full
+            parts.append(f"# DOCUMENT ID: {raw_id}\n{body}")
+            returned += 1
+
+        footers: List[str] = []
+        if omitted_by_limit:
+            footers.append(
+                f"[review_docs: omitted_by_limit={omitted_by_limit}; max={MAX_REVIEW_DOCS} per call]"
+            )
+        meta_bits = []
+        if returned:
+            meta_bits.append(f"returned={returned}")
+        if not_found:
+            meta_bits.append(f"not_found={not_found}")
+        if truncated:
+            meta_bits.append(f"truncated={truncated}")
+        if meta_bits:
+            footers.append(f"[review_docs: {', '.join(meta_bits)}]")
+
+        text = "\n\n".join(parts)
+        if footers:
+            text = text + "\n" + "\n".join(footers)
+        return text
 
     def curate(
         self,
@@ -865,6 +917,13 @@ class WorkingMemory:
                     continue
 
             dropped.append(doc_id)
+
+        # Importance-only retags: docs already curated but omitted from add_ids.
+        if imp_norm and V8D_IMPORTANCE_TAGGING:
+            curated_set = set(self.curated_ids)
+            for doc_id, tag in imp_norm.items():
+                if doc_id in curated_set:
+                    self.curated_importance[doc_id] = tag
 
         n = len(self.curated_ids)
         if V8D_IMPORTANCE_TAGGING and self.curated_importance:

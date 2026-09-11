@@ -19,6 +19,7 @@ _COUNTER_KEYS = (
     "verify_empty_content",
     "verify_parse_failures",
     "verify_length_truncated",
+    "verify_length_retries",
 )
 
 

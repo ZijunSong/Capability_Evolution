@@ -72,6 +72,8 @@ def main(argv: list[str] | None = None) -> int:
     Env = mods["SlidingWindowSearchEnv"]
     temperature = _cfg_number(cfg, "temperature", 1.0)
     max_new_tokens = int(_cfg_number(cfg, "max_new_tokens", 2048))
+    max_model_len = int(_cfg_number(cfg, "max_model_len", 32768))
+    prompt_token_budget = max(1024, max_model_len - max_new_tokens - 512)
     client = ChatCompletionsClient(
         base_url=identity.api_base_url,
         model=identity.api_model,
@@ -130,6 +132,7 @@ def main(argv: list[str] | None = None) -> int:
                     trace_dir=out,
                     max_turns=int(cfg.get("max_turns") or 40),
                     token_counter=token_counter,
+                    prompt_token_budget=prompt_token_budget,
                 )
                 traces.append(result["metrics"])
             except ConfigError:

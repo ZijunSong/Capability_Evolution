@@ -73,6 +73,7 @@ class StudentDecisionPoint:
     structurally_valid: bool = True
     decision_point_id: str = ""
     student_prompt_token_ids: list[int] = field(default_factory=list)
+    teacher_prompt_token_ids: list[int] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if not self.decision_point_id:
@@ -128,6 +129,7 @@ class HybridStepMetrics:
     n_opd_tokens: int
     rl_loss_proxy: float | None
     opd_nll: float | None
+    opd_weighted_gap: float | None = None
     lambda_opd: float
     projection_coverage: float
     reject_rate: float
