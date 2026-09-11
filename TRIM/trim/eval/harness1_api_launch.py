@@ -260,24 +260,42 @@ def run_replicated_api_eval(
             rc = proc.wait()
             if rc != 0:
                 failures.append({**shard_meta, "returncode": rc})
-        if failures:
-            raise RuntimeError(f"upstream_api eval shards failed: {failures}")
 
         shard_traces: list[list[dict[str, Any]]] = []
         merged_turns: list[dict[str, Any]] = []
         tool_health_paths: list[Path] = []
+        shard_status: list[dict[str, Any]] = []
         for shard_meta in plan:
             shard_dir = Path(shard_meta["out"])
-            done = load_json(shard_dir / "DONE.json")
-            if not done.get("ok"):
-                raise RuntimeError(f"upstream_api shard {shard_meta['rank']} not ok: {done}")
-            shard_traces.append(load_jsonl(shard_dir / "PER_QUERY.jsonl"))
+            done_path = shard_dir / "DONE.json"
+            done = load_json(done_path) if done_path.is_file() else {}
+            pq_path = shard_dir / "PER_QUERY.jsonl"
+            n_written = 0
+            if pq_path.is_file():
+                shard_rows = load_jsonl(pq_path)
+                n_written = len(shard_rows)
+                if shard_rows:
+                    shard_traces.append(shard_rows)
             turns_path = shard_dir / "TURNS.jsonl"
             if turns_path.is_file():
                 merged_turns.extend(load_jsonl(turns_path))
             health_path = shard_dir / "TOOL_HEALTH.json"
             if health_path.is_file():
                 tool_health_paths.append(health_path)
+            shard_status.append(
+                {
+                    "rank": shard_meta["rank"],
+                    "returncode": next(
+                        (f["returncode"] for f in failures if f["rank"] == shard_meta["rank"]),
+                        0,
+                    ),
+                    "n_written": n_written,
+                    "done": done,
+                }
+            )
+
+        if failures and not shard_traces:
+            raise RuntimeError(f"upstream_api eval shards failed with no partial results: {failures}")
 
         traces = merge_traces(shard_traces, rows)
         _write_jsonl_atomic(out / "PER_QUERY.jsonl", traces)
@@ -287,9 +305,22 @@ def run_replicated_api_eval(
         summary = summarize_api_traces(traces)
         summary["eval_profile"] = retrieval.eval_profile()
         summary["eval_replicas"] = n_replicas
+        if failures:
+            summary["shard_failures"] = failures
+            summary["partial"] = True
+        summary["shard_status"] = shard_status
         (out / "SUMMARY.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
         (out / "DONE.json").write_text(
-            json.dumps({"ok": True, "n_queries": len(traces), "eval_replicas": n_replicas}) + "\n",
+            json.dumps(
+                {
+                    "ok": not failures,
+                    "partial": bool(failures),
+                    "n_queries": len(traces),
+                    "eval_replicas": n_replicas,
+                    "shard_failures": failures,
+                }
+            )
+            + "\n",
             encoding="utf-8",
         )
         merged_health = merge_tool_health(tool_health_paths) if tool_health_paths else None

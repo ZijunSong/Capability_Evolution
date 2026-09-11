@@ -8,7 +8,14 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from trim.eval.harness1_metrics import f1_score
-from trim.upstream_harness1.api_adapter import ChatCompletionsClient, parse_chat_completion
+from trim.upstream_harness1.api_adapter import (
+    ApiError,
+    ChatCompletionsClient,
+    ConfigError,
+    ServerParseError,
+    TransportError,
+    parse_chat_completion,
+)
 from trim.upstream_harness1.model_serve import ServedModelIdentity
 from trim.upstream_harness1.pin import pin_manifest
 from trim.upstream_harness1.retrieval import RetrievalConfig
@@ -44,7 +51,18 @@ def count_tool_calls_from_turns(turns: Sequence[Mapping[str, Any]]) -> dict[str,
     n_search = 0
     n_fan_out = 0
     n_executed = 0
+    n_explicit_end = 0
+    server_parse_errors = 0
+    invalid_tool_names = 0
+    length_truncations = 0
     for turn in turns:
+        if turn.get("api_error_category") == "model_output_parse_error":
+            server_parse_errors += 1
+        if turn.get("protocol_error") == "length_truncated" or turn.get("api_finish_reason") == "length":
+            length_truncations += 1
+        exc = str(turn.get("env_exception") or "")
+        if "unknown tool" in exc.lower():
+            invalid_tool_names += 1
         response = turn.get("api_response") or {}
         choices = response.get("choices") or []
         message = (choices[0].get("message") if choices else {}) or {}
@@ -53,23 +71,42 @@ def count_tool_calls_from_turns(turns: Sequence[Mapping[str, Any]]) -> dict[str,
         names = [str((c.get("function") or {}).get("name") or "") for c in api_calls]
         n_search += sum(1 for n in names if n == "search_corpus")
         n_fan_out += sum(1 for n in names if n == "fan_out_search")
-        if turn.get("parse_error"):
-            continue
-        n_executed += len(api_calls)
+        if "n_executed_tool_calls" in turn:
+            executed = int(turn.get("n_executed_tool_calls") or 0)
+        elif turn.get("parse_error") or turn.get("env_exception") or turn.get("api_error"):
+            executed = 0
+        else:
+            executed = len(api_calls)
+        n_executed += executed
+        if turn.get("explicit_end_search"):
+            n_explicit_end += 1
     return {
         "n_tool_calls": float(n_executed),
         "n_api_tool_calls": float(n_api),
         "n_search_calls": float(n_search),
         "n_fan_out_calls": float(n_fan_out),
         "n_search_plus_fan_out": float(n_search + n_fan_out),
+        "explicit_end_search_count": float(n_explicit_end),
+        "server_parse_error_count": float(server_parse_errors),
+        "invalid_tool_name_count": float(invalid_tool_names),
+        "length_truncation_count": float(length_truncations),
     }
 
 
-def finish_reason_from_step(*, done: bool, step_metrics: Mapping[str, Any], env: Any, max_turns: int) -> str:
+def finish_reason_from_step(
+    *,
+    done: bool,
+    step_metrics: Mapping[str, Any],
+    env: Any,
+    max_turns: int,
+    episode_finish_reason: str | None = None,
+) -> str:
     if float(step_metrics.get("format_error") or 0.0) >= 1.0:
         return "format_error"
     if float(step_metrics.get("max_turns_reached") or 0.0) >= 1.0:
         return "max_turns"
+    if done and episode_finish_reason:
+        return episode_finish_reason
     if done and bool(getattr(env, "_episode_ended", False)):
         return "end_search"
     if done:
@@ -208,59 +245,134 @@ async def run_one_query_api(
     started = time.time()
     done = False
     finish_reason = "running"
+    episode_finish_reason: str | None = None
     awaiting_retry = False
+    retry_error_hint: str | None = None
     last_step_metrics: dict[str, Any] = {}
+    n_generation_attempts = 0
     while not done and env._current_turn < max_turns:
+        attempt_id = len(turns)
         messages = openai_messages_from_env(
-            env, mods, retry=awaiting_retry, token_counter=token_counter or getattr(env, "text_token_counter", None)
+            env,
+            mods,
+            retry=awaiting_retry,
+            retry_error=retry_error_hint,
+            model=client.model,
+            token_counter=token_counter or getattr(env, "text_token_counter", None),
         )
         tools = openai_tools_from_env(env, mods)
-        t0 = time.time()
-        response = client.complete(messages, tools)
-        model_s = time.time() - t0
-        parsed = parse_chat_completion(response)
-        usage = response.get("usage") or {}
-        turn_rec = {
+        turn_rec: dict[str, Any] = {
             "query_id": qid,
             "turn": int(env._current_turn),
+            "attempt_id": attempt_id,
+            "stage": "attempt_start",
             "request_messages": messages,
             "tools": tools,
-            "api_response": {k: v for k, v in response.items() if k != "choices"} | {
-                "choices": response.get("choices"),
-            },
-            "finish_reason": parsed.finish_reason,
-            "reasoning": parsed.reasoning,
-            "parse_error": parsed.parse_error,
-            "usage": usage,
-            "model_sec": model_s,
-            "request_fingerprint": response.get("_request_fingerprint"),
+            "format_retry_turn": bool(awaiting_retry),
             "sampling": {
                 "temperature": client.temperature,
                 "max_tokens": client.max_tokens,
                 "model": client.model,
             },
-            "format_retry_turn": bool(awaiting_retry),
         }
+        _append_jsonl(trace_dir / "TURNS.jsonl", turn_rec)
+
+        t0 = time.time()
+        response: dict[str, Any] | None = None
+        api_error: ApiError | None = None
+        try:
+            response = client.complete(messages, tools)
+            n_generation_attempts += 1
+        except ConfigError:
+            raise
+        except ApiError as exc:
+            api_error = exc
+            n_generation_attempts += 1
+        model_s = time.time() - t0
+
+        turn_rec = {
+            "query_id": qid,
+            "turn": int(env._current_turn),
+            "attempt_id": attempt_id,
+            "stage": "attempt_result",
+            "request_messages": messages,
+            "tools": tools,
+            "model_sec": model_s,
+            "format_retry_turn": bool(awaiting_retry),
+            "sampling": {
+                "temperature": client.temperature,
+                "max_tokens": client.max_tokens,
+                "model": client.model,
+            },
+        }
+
+        parsed = None
+        if api_error is not None:
+            turn_rec["api_error"] = api_error.to_dict()
+            turn_rec["api_error_category"] = api_error.category
+            turn_rec["parse_error"] = str(api_error)
+            turn_rec["transport_attempts"] = getattr(api_error, "attempt", None)
+        else:
+            assert response is not None
+            parsed = parse_chat_completion(response)
+            usage = response.get("usage") or {}
+            turn_rec.update(
+                {
+                    "api_response": {k: v for k, v in response.items() if k != "choices"}
+                    | {"choices": response.get("choices")},
+                    "finish_reason": parsed.finish_reason,
+                    "api_finish_reason": parsed.api_finish_reason,
+                    "episode_finish_reason": parsed.episode_finish_reason,
+                    "protocol_error": parsed.protocol_error,
+                    "reasoning": parsed.reasoning,
+                    "parse_error": parsed.parse_error,
+                    "usage": usage,
+                    "request_fingerprint": response.get("_request_fingerprint"),
+                    "transport_attempts": response.get("_transport_attempts"),
+                }
+            )
+
         t1 = time.time()
         result: Any = None
+        n_executed = 0
         try:
-            if parsed.parse_error:
-                result = env._handle_format_error(parsed.parse_error)
+            if api_error is not None:
+                if isinstance(api_error, ServerParseError):
+                    retry_error_hint = "Server could not parse model output as Harmony/tool call"
+                else:
+                    retry_error_hint = str(api_error)
+                result = env._handle_format_error(str(api_error))
+                awaiting_retry = not bool(result.episode_done)
+            elif parsed is not None and (parsed.parse_error or parsed.protocol_error):
+                retry_error_hint = parsed.protocol_error or parsed.parse_error
+                result = env._handle_format_error(parsed.parse_error or parsed.protocol_error or "parse_error")
                 awaiting_retry = not bool(result.episode_done)
             else:
+                assert parsed is not None
                 awaiting_retry = False
+                retry_error_hint = None
                 action = action_from_parsed(parsed, env, mods)
                 result = await env.step_action(action)
+                n_executed = len(parsed.tool_calls)
+                if parsed.episode_finish_reason:
+                    episode_finish_reason = parsed.episode_finish_reason
             last_step_metrics = dict(result.metrics or {})
             last_step_metrics.setdefault("reward", float(result.reward))
             done = bool(result.episode_done)
             finish_reason = finish_reason_from_step(
-                done=done, step_metrics=last_step_metrics, env=env, max_turns=max_turns
+                done=done,
+                step_metrics=last_step_metrics,
+                env=env,
+                max_turns=max_turns,
+                episode_finish_reason=episode_finish_reason,
             )
             turn_rec["env_metrics"] = dict(last_step_metrics)
             turn_rec["reward"] = float(result.reward)
             turn_rec["episode_done"] = done
+            turn_rec["n_executed_tool_calls"] = n_executed
+            turn_rec["explicit_end_search"] = episode_finish_reason == "explicit_end_search"
         except Exception as exc:  # noqa: BLE001
+            retry_error_hint = str(exc)
             result = env._handle_format_error(str(exc))
             last_step_metrics = dict(result.metrics or {})
             last_step_metrics.setdefault("reward", float(result.reward))
@@ -272,6 +384,7 @@ async def run_one_query_api(
             turn_rec["env_exception"] = repr(exc)
             turn_rec["episode_done"] = done
             turn_rec["env_metrics"] = dict(last_step_metrics)
+            turn_rec["n_executed_tool_calls"] = 0
         turn_rec["harness_sec"] = time.time() - t1
         turns.append(turn_rec)
         _append_jsonl(trace_dir / "TURNS.jsonl", turn_rec)
@@ -292,12 +405,36 @@ async def run_one_query_api(
             "query_id": qid,
             "query_text": str(query_row.get("query") or getattr(env, "query_text", "") or ""),
             "finish_reason": finish_reason,
+            "episode_finish_reason": episode_finish_reason,
             "e2e_sec": time.time() - started,
             "evaluation_path": EVALUATION_PATH_UPSTREAM_API,
+            "n_generation_attempts": n_generation_attempts,
         }
     )
     _append_jsonl(trace_dir / "PER_QUERY.jsonl", {k: v for k, v in metrics.items()})
     return {"metrics": metrics, "turns": turns}
+
+
+def write_infra_error_query(
+    *,
+    trace_dir: Path,
+    query_row: Mapping[str, Any],
+    exc: BaseException,
+) -> dict[str, Any]:
+    """Record a query that failed before a normal terminal env step."""
+    qid = str(query_row.get("query_id") or "")
+    metrics = {
+        "query_id": qid,
+        "query_text": str(query_row.get("query") or ""),
+        "finish_reason": "infra_error",
+        "format_error": 0.0,
+        "ended": False,
+        "reward": 0.0,
+        "evaluation_path": EVALUATION_PATH_UPSTREAM_API,
+        "infra_error": repr(exc),
+    }
+    _append_jsonl(trace_dir / "PER_QUERY.jsonl", metrics)
+    return metrics
 
 
 def write_run_manifest(
@@ -357,6 +494,9 @@ def summarize_api_traces(traces: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     format_err = [float(t.get("format_error") or 0.0) for t in traces]
     tool_calls = [float(t.get("n_tool_calls") or 0.0) for t in traces]
     search_calls = [float(t.get("n_search_plus_fan_out") or t.get("n_search_calls") or 0.0) for t in traces]
+    infra = sum(1 for t in traces if t.get("finish_reason") == "infra_error")
+    explicit_end = sum(float(t.get("explicit_end_search_count") or 0.0) for t in traces)
+    implicit_text = sum(1 for t in traces if t.get("episode_finish_reason") == "implicit_user_text")
     return {
         "evaluation_path": EVALUATION_PATH_UPSTREAM_API,
         "n_queries": n,
@@ -384,4 +524,10 @@ def summarize_api_traces(traces: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         "mean_tool_calls_per_query": sum(tool_calls) / denom,
         "mean_search_and_fan_out_per_query": sum(search_calls) / denom,
         "dropped_queries": 0,
+        "n_infra_error": infra,
+        "explicit_end_search_total": explicit_end,
+        "implicit_user_text_total": implicit_text,
+        "server_parse_error_total": sum(float(t.get("server_parse_error_count") or 0.0) for t in traces),
+        "invalid_tool_name_total": sum(float(t.get("invalid_tool_name_count") or 0.0) for t in traces),
+        "length_truncation_total": sum(float(t.get("length_truncation_count") or 0.0) for t in traces),
     }

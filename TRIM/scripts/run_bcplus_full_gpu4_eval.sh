@@ -394,6 +394,7 @@ run_eval() {
   fi
 
   log "START model=${model_slug} component=${component} tp=${tp} urls=${actor_urls} out=${out}"
+  local rc=0
   "${PY}" scripts/run_eval.py \
     --harness Harness-1 \
     --benchmark bcplus_full \
@@ -414,8 +415,13 @@ run_eval() {
     --component "${component}" \
     --out "${out}" \
     "${extra[@]}" \
-    2>&1 | tee -a "${log_path}" >&2
+    2>&1 | tee -a "${log_path}" >&2 || rc=$?
+  if [[ "${rc}" -ne 0 ]]; then
+    log "WARN eval exited ${rc} model=${model_slug} component=${component} out=${out}"
+    return "${rc}"
+  fi
   log "DONE model=${model_slug} component=${component}"
+  return 0
 }
 
 main() {
@@ -436,12 +442,16 @@ main() {
     [[ -d "${model_path}" ]] || { log "missing model dir ${model_path}"; exit 1; }
 
     start_zero_stack "${model_path}" "${api_model}" "${model_slug}"
-    run_eval "${model_path}" "${model_slug}" "${api_model}" "zero" \
-      "${ZERO_ACTOR_URL}" "${TP}" "gpu${GPU}"
+    if ! run_eval "${model_path}" "${model_slug}" "${api_model}" "zero" \
+      "${ZERO_ACTOR_URL}" "${TP}" "gpu${GPU}"; then
+      log "continuing after zero eval failure for ${model_slug}"
+    fi
 
     start_all_stack "${model_path}" "${api_model}" "${model_slug}"
-    run_eval "${model_path}" "${model_slug}" "${api_model}" "all" \
-      "${ALL_ACTOR_URLS}" "${ALL_TP}" "gpu${ALL_ACTOR_GPUS//,/}v${ALL_VERIFY_GPU}"
+    if ! run_eval "${model_path}" "${model_slug}" "${api_model}" "all" \
+      "${ALL_ACTOR_URLS}" "${ALL_TP}" "gpu${ALL_ACTOR_GPUS//,/}v${ALL_VERIFY_GPU}"; then
+      log "continuing after all eval failure for ${model_slug}"
+    fi
   done
 
   stop_all_actors

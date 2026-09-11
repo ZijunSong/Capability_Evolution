@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import time
 import urllib.error
 import urllib.request
@@ -17,6 +18,66 @@ from typing import Any, Mapping, Sequence
 PROTOCOL_CHAT_COMPLETIONS_V1 = "chat_completions_v1"
 # Nested ``function`` tools: OpenAI chat.completions / vLLM / Qwen.
 CHAT_TOOLS_PROVIDER = "qwen_moonshot"
+
+_MAX_ERROR_BODY_CHARS = 8192
+_TRANSPORT_RETRY_STATUS = frozenset({429, 502, 503, 504})
+_CONFIG_ERROR_STATUS = frozenset({400, 401, 403, 404, 422})
+_HARMONY_ERROR_MARKERS = (
+    "harmonyerror",
+    "harmony_error",
+    "unexpected tokens remaining in message header",
+    "could not decode header",
+)
+
+
+class ApiError(RuntimeError):
+    """Base class for API-layer failures with structured metadata."""
+
+    category: str = "api_error"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        category: str | None = None,
+        status: int | None = None,
+        body: str | None = None,
+        request_id: str | None = None,
+        attempt: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        if category is not None:
+            self.category = category
+        self.status = status
+        self.body = body
+        self.request_id = request_id
+        self.attempt = attempt
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "category": self.category,
+            "message": str(self),
+            "status": self.status,
+            "body": self.body,
+            "request_id": self.request_id,
+            "attempt": self.attempt,
+        }
+
+
+class TransportError(ApiError):
+    category = "transport_error"
+
+
+class ConfigError(ApiError):
+    category = "config_error"
+
+
+class ServerParseError(ApiError):
+    category = "model_output_parse_error"
+
+
+class ServerErrorUnclassified(ApiError):
+    category = "server_error_unclassified"
 
 
 @dataclass
@@ -34,7 +95,8 @@ class ChatMessage:
         if self.tool_call_id:
             payload["tool_call_id"] = self.tool_call_id
         if self.reasoning:
-            payload["reasoning_content"] = self.reasoning
+            # vLLM 0.25.1 normalizes reasoning_content → reasoning for GPT-OSS.
+            payload["reasoning"] = self.reasoning
         return payload
 
 
@@ -45,12 +107,15 @@ class ParsedApiAction:
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     reasoning: str | None = None
     finish_reason: str | None = None
+    api_finish_reason: str | None = None
+    episode_finish_reason: str | None = None
+    protocol_error: str | None = None
     parse_error: str | None = None
     raw_response: dict[str, Any] = field(default_factory=dict)
 
     @property
     def ok(self) -> bool:
-        return self.parse_error is None
+        return self.parse_error is None and self.protocol_error is None
 
 
 def chat_tools_from_upstream_schemas(schemas: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -106,64 +171,27 @@ def messages_from_selected_context(
     return messages
 
 
-def parse_chat_completion(response: Mapping[str, Any]) -> ParsedApiAction:
-    """Convert one chat.completions payload. Do not invent missing reasoning."""
-    raw = dict(response)
-    choices = raw.get("choices") or []
-    if not choices:
-        return ParsedApiAction(parse_error="No response choices received from API", raw_response=raw)
-    choice = choices[0] if isinstance(choices[0], Mapping) else {}
-    message = choice.get("message") or {}
-    finish = choice.get("finish_reason")
-    reasoning = message.get("reasoning_content")
-    if reasoning is None:
-        reasoning = message.get("reasoning")
-    parsed = ParsedApiAction(
-        reasoning=str(reasoning) if reasoning else None,
-        finish_reason=None if finish is None else str(finish),
-        raw_response=raw,
-    )
-    tool_calls = message.get("tool_calls") or []
-    if finish == "tool_calls" or tool_calls:
-        if not tool_calls:
-            parsed.parse_error = "finish_reason=tool_calls but no tool_calls"
-            return parsed
-        for call in tool_calls:
-            fn = call.get("function") or {}
-            name = str(fn.get("name") or "")
-            if not name:
-                parsed.parse_error = "Tool call is missing function name"
-                parsed.tool_calls = []
-                return parsed
-            args_raw = fn.get("arguments") or "{}"
-            if isinstance(args_raw, Mapping):
-                params = dict(args_raw)
-            else:
-                try:
-                    params = json.loads(args_raw)
-                except json.JSONDecodeError as exc:
-                    parsed.parse_error = f"Invalid JSON arguments for tool {name}: {exc}"
-                    parsed.tool_calls = []
-                    return parsed
-            parsed.tool_calls.append(
-                {
-                    "name": name,
-                    "arguments": params,
-                    "id": str(call.get("id") or "agent"),
-                }
-            )
-        return parsed
-    text = _message_text(message)
-    if text:
-        parsed.tool_calls.append(
-            {"name": "user_text", "arguments": {"text": text}, "id": "agent"}
-        )
-        return parsed
-    if finish in {None, "stop", "length"}:
-        parsed.parse_error = "Reasoning-only action with no tool calls"
-        return parsed
-    parsed.parse_error = f"Unhandled finish_reason={finish!r} with empty content"
-    return parsed
+_TOOL_CALL_IN_CONTENT_RE = re.compile(
+    r'(?:"name"\s*:\s*"(?:search_corpus|curate|end_search|grep_corpus|read_document|verify|fan_out_search)"'
+    r'|<\|channel\|>|functions-(?:search_corpus|curate|end_search))',
+    re.IGNORECASE,
+)
+
+
+def _content_looks_like_tool_call(text: str) -> bool:
+    raw = str(text or "").strip()
+    if not raw:
+        return False
+    if _TOOL_CALL_IN_CONTENT_RE.search(raw):
+        return True
+    if raw.startswith("{") and raw.endswith("}"):
+        try:
+            obj = json.loads(raw)
+        except json.JSONDecodeError:
+            return False
+        if isinstance(obj, dict) and "name" in obj:
+            return True
+    return False
 
 
 def _message_text(message: Mapping[str, Any]) -> str:
@@ -183,9 +211,133 @@ def _message_text(message: Mapping[str, Any]) -> str:
     return str(content).strip()
 
 
+def parse_chat_completion(response: Mapping[str, Any]) -> ParsedApiAction:
+    """Convert one chat.completions payload. Do not invent missing reasoning."""
+    raw = dict(response)
+    choices = raw.get("choices") or []
+    if not choices:
+        return ParsedApiAction(parse_error="No response choices received from API", raw_response=raw)
+    choice = choices[0] if isinstance(choices[0], Mapping) else {}
+    message = choice.get("message") or {}
+    finish = choice.get("finish_reason")
+    api_finish = None if finish is None else str(finish)
+    reasoning = message.get("reasoning_content")
+    if reasoning is None:
+        reasoning = message.get("reasoning")
+    parsed = ParsedApiAction(
+        reasoning=str(reasoning) if reasoning else None,
+        finish_reason=api_finish,
+        api_finish_reason=api_finish,
+        raw_response=raw,
+    )
+    tool_calls = message.get("tool_calls") or []
+    if finish == "tool_calls" or tool_calls:
+        if not tool_calls:
+            parsed.parse_error = "finish_reason=tool_calls but no tool_calls"
+            return parsed
+        for call in tool_calls:
+            fn = call.get("function") or {}
+            name = str(fn.get("name") or "")
+            if not name:
+                parsed.parse_error = "Tool call is missing function name"
+                parsed.tool_calls = []
+                return parsed
+            if "<|channel|>" in name or name.startswith("functions-"):
+                parsed.protocol_error = f"Corrupted tool name: {name!r}"
+                parsed.tool_calls = []
+                return parsed
+            args_raw = fn.get("arguments") or "{}"
+            if isinstance(args_raw, Mapping):
+                params = dict(args_raw)
+            else:
+                try:
+                    params = json.loads(args_raw)
+                except json.JSONDecodeError as exc:
+                    parsed.parse_error = f"Invalid JSON arguments for tool {name}: {exc}"
+                    parsed.tool_calls = []
+                    return parsed
+            if not isinstance(params, dict):
+                parsed.parse_error = f"Tool {name} arguments must be a JSON object"
+                parsed.tool_calls = []
+                return parsed
+            parsed.tool_calls.append(
+                {
+                    "name": name,
+                    "arguments": params,
+                    "id": str(call.get("id") or "agent"),
+                }
+            )
+        if any(str(c.get("name") or "") == "end_search" for c in parsed.tool_calls):
+            parsed.episode_finish_reason = "explicit_end_search"
+        return parsed
+
+    text = _message_text(message)
+    if text and _content_looks_like_tool_call(text):
+        parsed.protocol_error = "tool_call_in_content"
+        parsed.parse_error = "Response body contains tool-call syntax without structured tool_calls"
+        return parsed
+
+    if api_finish == "length":
+        if text:
+            parsed.protocol_error = "length_truncated"
+            parsed.parse_error = "Response truncated (finish_reason=length) with partial content"
+        else:
+            parsed.protocol_error = "length_truncated"
+            parsed.parse_error = "Reasoning-only action truncated (finish_reason=length)"
+        return parsed
+
+    if text:
+        parsed.tool_calls.append(
+            {"name": "user_text", "arguments": {"text": text}, "id": "agent"}
+        )
+        parsed.episode_finish_reason = "implicit_user_text"
+        return parsed
+
+    if finish in {None, "stop"}:
+        parsed.parse_error = "Reasoning-only action with no tool calls"
+        return parsed
+    parsed.parse_error = f"Unhandled finish_reason={finish!r} with empty content"
+    return parsed
+
+
 def request_fingerprint(payload: Mapping[str, Any]) -> str:
     blob = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def _read_error_body(exc: urllib.error.HTTPError) -> tuple[str, str | None]:
+    body = ""
+    request_id: str | None = None
+    try:
+        raw = exc.read(_MAX_ERROR_BODY_CHARS + 1)
+        body = raw[:_MAX_ERROR_BODY_CHARS].decode("utf-8", errors="replace")
+        if len(raw) > _MAX_ERROR_BODY_CHARS:
+            body += "\n...(truncated)"
+    except Exception:
+        body = ""
+    try:
+        payload = json.loads(body)
+        if isinstance(payload, Mapping):
+            err = payload.get("error")
+            if isinstance(err, Mapping):
+                request_id = str(err.get("request_id") or err.get("requestId") or "") or None
+            request_id = request_id or str(payload.get("request_id") or "") or None
+    except json.JSONDecodeError:
+        pass
+    if request_id is None and exc.headers:
+        request_id = exc.headers.get("x-request-id") or exc.headers.get("X-Request-Id")
+    return body, request_id
+
+
+def _classify_http_error(status: int, body: str) -> type[ApiError]:
+    lowered = body.lower()
+    if status in _CONFIG_ERROR_STATUS:
+        return ConfigError
+    if status == 500 and any(marker in lowered for marker in _HARMONY_ERROR_MARKERS):
+        return ServerParseError
+    if status >= 500:
+        return ServerErrorUnclassified
+    return TransportError
 
 
 @dataclass
@@ -250,8 +402,9 @@ class ChatCompletionsClient:
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
         timeout = self.timeout_s if timeout_s is None else float(timeout_s)
-        last_error: Exception | None = None
-        for attempt in range(self.max_retries):
+        last_error: ApiError | None = None
+        max_attempts = max(1, int(self.max_retries))
+        for attempt in range(max_attempts):
             req = urllib.request.Request(url, data=body, headers=headers, method="POST")
             try:
                 with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -259,8 +412,32 @@ class ChatCompletionsClient:
                 raw["_request_fingerprint"] = fingerprint
                 raw["_protocol"] = self.protocol
                 raw["_request_payload"] = payload
+                raw["_transport_attempts"] = attempt + 1
                 return raw
-            except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
-                last_error = exc
+            except urllib.error.HTTPError as exc:
+                err_body, request_id = _read_error_body(exc)
+                err_cls = _classify_http_error(int(exc.code), err_body)
+                last_error = err_cls(
+                    f"HTTP {exc.code} from chat/completions: {err_body[:500] or exc.reason}",
+                    status=int(exc.code),
+                    body=err_body,
+                    request_id=request_id,
+                    attempt=attempt + 1,
+                )
+                if err_cls is ConfigError:
+                    raise last_error
+                if int(exc.code) not in _TRANSPORT_RETRY_STATUS and int(exc.code) < 500:
+                    raise last_error
+                if attempt + 1 >= max_attempts:
+                    raise last_error
                 time.sleep(min(2**attempt, 8))
-        raise RuntimeError(f"API request failed after {self.max_retries} identical retries: {last_error}")
+            except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+                last_error = TransportError(
+                    f"Transport failure on chat/completions attempt {attempt + 1}: {exc}",
+                    attempt=attempt + 1,
+                )
+                if attempt + 1 >= max_attempts:
+                    raise last_error
+                time.sleep(min(2**attempt, 8))
+        assert last_error is not None
+        raise last_error

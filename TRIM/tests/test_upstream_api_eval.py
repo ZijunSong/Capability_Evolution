@@ -5,7 +5,17 @@ from __future__ import annotations
 import json
 
 from trim.cli.launch import eval_mask_for_ids, parse_eval_args, student_mask_for_ids, teacher_mask_for_ids
-from trim.upstream_harness1.api_adapter import parse_chat_completion, request_fingerprint
+from trim.upstream_harness1.api_adapter import (
+    ServerParseError,
+    parse_chat_completion,
+    request_fingerprint,
+)
+from trim.upstream_harness1.env_bridge import (
+    GPT_OSS_FORMAT_RETRY_PROMPT,
+    QWEN_FORMAT_RETRY_PROMPT,
+    format_retry_prompt,
+    is_harmony_chat_model,
+)
 from trim.upstream_harness1.model_serve import identity_for_actor_rank, parse_actor_base_urls
 from trim.upstream_harness1.pin import PINNED_UPSTREAM_COMMIT, pin_manifest
 from trim.upstream_harness1.v8d_flags import (
@@ -165,6 +175,120 @@ def test_identity_for_actor_rank_round_robin():
 def test_retry_fingerprint_is_stable():
     body = {"model": "x", "messages": [{"role": "user", "content": "q"}]}
     assert request_fingerprint(body) == request_fingerprint(dict(body))
+
+
+def test_parse_rejects_corrupted_tool_name():
+    parsed = parse_chat_completion(
+        {
+            "choices": [
+                {
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "tool_calls": [
+                            {
+                                "id": "c1",
+                                "function": {
+                                    "name": "search_corpus<|channel|>commentary",
+                                    "arguments": '{"query": "test"}',
+                                },
+                            }
+                        ]
+                    },
+                }
+            ]
+        }
+    )
+    assert parsed.ok is False
+    assert parsed.protocol_error is not None
+    assert "Corrupted tool name" in parsed.protocol_error
+
+
+def test_parse_length_truncation_not_implicit_end():
+    parsed = parse_chat_completion(
+        {
+            "choices": [
+                {
+                    "finish_reason": "length",
+                    "message": {"content": "partial answer text"},
+                }
+            ]
+        }
+    )
+    assert parsed.ok is False
+    assert parsed.protocol_error == "length_truncated"
+    assert parsed.tool_calls == []
+
+
+def test_parse_tool_call_in_content_without_structured_calls():
+    parsed = parse_chat_completion(
+        {
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {
+                        "content": '{"name": "search_corpus", "arguments": {"query": "foo"}}'
+                    },
+                }
+            ]
+        }
+    )
+    assert parsed.ok is False
+    assert parsed.protocol_error == "tool_call_in_content"
+
+
+def test_explicit_end_search_finish_reason():
+    parsed = parse_chat_completion(
+        {
+            "choices": [
+                {
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "tool_calls": [
+                            {
+                                "id": "c1",
+                                "function": {"name": "end_search", "arguments": "{}"},
+                            }
+                        ]
+                    },
+                }
+            ]
+        }
+    )
+    assert parsed.ok
+    assert parsed.episode_finish_reason == "explicit_end_search"
+
+
+def test_implicit_user_text_finish_reason():
+    parsed = parse_chat_completion(
+        {
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {"content": "I am done searching."},
+                }
+            ]
+        }
+    )
+    assert parsed.ok
+    assert parsed.episode_finish_reason == "implicit_user_text"
+
+
+def test_harmony_retry_prompt_differs_from_qwen():
+    assert is_harmony_chat_model("gpt-oss-20b")
+    assert is_harmony_chat_model("harness-1")
+    assert not is_harmony_chat_model("Qwen3-4B-Instruct")
+    assert GPT_OSS_FORMAT_RETRY_PROMPT != QWEN_FORMAT_RETRY_PROMPT
+    assert "analysis channel" in format_retry_prompt(model="gpt-oss-20b")
+    assert "analysis channel" not in format_retry_prompt(model="Qwen3-4B")
+
+
+def test_classify_harmony_http_500_as_server_parse_error():
+    err = ServerParseError(
+        "HTTP 500",
+        status=500,
+        body='{"error": {"message": "HarmonyError: unexpected tokens remaining in message header"}}',
+    )
+    assert err.category == "model_output_parse_error"
 
 
 def test_train_all_student_zero_teacher_ten():

@@ -229,14 +229,35 @@ def openai_tools_from_env(env: Any, mods: Mapping[str, Any]) -> list[dict[str, A
     return chat_tools_from_upstream_schemas(raw)
 
 
-# Harmony commentary/analysis channels are not valid chat.completions tool calls.
-API_FORMAT_RETRY_PROMPT = (
+# Qwen / generic Chat Completions retry (no Harmony channel requirements).
+QWEN_FORMAT_RETRY_PROMPT = (
     "Your previous response could not be parsed as a valid tool call. "
     "Please output a valid function call using the chat.completions tools interface "
     "(JSON arguments on a named tool). "
-    "Do not emit Harmony channel markup such as commentary or analysis; "
-    "put any reasoning in the assistant message, then call a tool."
+    "Put any reasoning in the assistant message, then call a tool."
 )
+
+# GPT-OSS / Harness-1 Harmony-native retry: allow analysis channel, forbid API wrapper talk.
+GPT_OSS_FORMAT_RETRY_PROMPT = (
+    "Continue the current retrieval task. Use one of the provided functions with valid JSON "
+    "arguments. Put analysis in the analysis channel and function calls in the commentary "
+    "channel. When the retrieval task is complete, call end_search with a brief reason."
+)
+
+# Backward-compatible alias used by existing tests.
+API_FORMAT_RETRY_PROMPT = QWEN_FORMAT_RETRY_PROMPT
+
+
+def is_harmony_chat_model(model: str | None) -> bool:
+    name = str(model or "").lower()
+    return "gpt-oss" in name or "harness-1" in name or name.startswith("openai/gpt-oss")
+
+
+def format_retry_prompt(*, model: str | None = None, error_hint: str | None = None) -> str:
+    base = GPT_OSS_FORMAT_RETRY_PROMPT if is_harmony_chat_model(model) else QWEN_FORMAT_RETRY_PROMPT
+    if error_hint:
+        return f"{base}\n\nSpecific issue: {error_hint}"
+    return base
 DEFAULT_CURATE_NUDGE_PROMPT = (
     "IMPORTANT: You just searched without curating. Follow the search → curate rhythm: "
     "review the results from your last search and call curate NOW to add ALL plausibly "
@@ -258,6 +279,10 @@ def clip_observation_text(text: str, max_chars: int = DEFAULT_MAX_OBS_CHARS) -> 
 def flatten_message_text(messages: Sequence[Mapping[str, Any]]) -> str:
     parts: list[str] = []
     for msg in messages:
+        for key in ("reasoning", "reasoning_content"):
+            value = msg.get(key)
+            if isinstance(value, str) and value:
+                parts.append(value)
         content = msg.get("content")
         if isinstance(content, str):
             parts.append(content)
@@ -272,6 +297,64 @@ def flatten_message_text(messages: Sequence[Mapping[str, Any]]) -> str:
         for call in msg.get("tool_calls") or []:
             parts.append(json.dumps(call, ensure_ascii=False))
     return "\n".join(parts)
+
+
+def trajectory_to_chat_messages(traj: Any, *, include_reasoning: bool) -> list[dict[str, Any]]:
+    """OpenAI chat messages from a Trajectory, optionally preserving action reasoning."""
+    UserTextTool = None
+    try:
+        from harness.tools import UserTextTool as _UserTextTool  # type: ignore[import-not-found]
+
+        UserTextTool = _UserTextTool
+    except Exception:
+        pass
+
+    messages: list[dict[str, Any]] = []
+    for action_or_observation in traj.actions_and_observations:
+        if hasattr(action_or_observation, "as_iter"):
+            action = action_or_observation
+            assistant_message: dict[str, Any] = {"role": "assistant", "content": ""}
+            tool_calls: list[dict[str, Any]] = []
+            text_parts: list[str] = []
+            for tool, params, source in action.as_iter():
+                is_user_text = UserTextTool is not None and isinstance(tool, UserTextTool)
+                if is_user_text:
+                    text_parts.append(str((params or {}).get("text") or ""))
+                else:
+                    tool_calls.append(
+                        {
+                            "id": str(source),
+                            "type": "function",
+                            "function": {
+                                "name": tool.tool_schema.name,
+                                "arguments": json.dumps(params or {}),
+                            },
+                        }
+                    )
+            if text_parts:
+                assistant_message["content"] = "\n".join(text_parts)
+            if tool_calls:
+                assistant_message["tool_calls"] = tool_calls
+            if include_reasoning and getattr(action, "reasoning", None):
+                assistant_message["reasoning"] = str(action.reasoning)
+            messages.append(assistant_message)
+        else:
+            observation = action_or_observation
+            for observation_text, source in zip(
+                getattr(observation, "observations", []) or [],
+                getattr(observation, "sources", []) or [],
+            ):
+                if source == "user":
+                    messages.append({"role": "user", "content": str(observation_text or "")})
+                else:
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": str(source),
+                            "content": str(observation_text or ""),
+                        }
+                    )
+    return messages
 
 
 def _nudge_prompt_for_env(env: Any) -> str | None:
@@ -341,6 +424,8 @@ def openai_messages_from_env(
     mods: Mapping[str, Any],
     *,
     retry: bool = False,
+    retry_error: str | None = None,
+    model: str | None = None,
     token_counter: Any | None = None,
     max_obs_chars: int | None = None,
     prompt_token_budget: int | None = None,
@@ -372,7 +457,7 @@ def openai_messages_from_env(
         if nudge:
             extra.append(nudge)
     else:
-        extra.append(API_FORMAT_RETRY_PROMPT)
+        extra.append(format_retry_prompt(model=model, error_hint=retry_error))
 
     wm_text = window.get("wm_text")
     obs_limit = int(obs_limit)
@@ -401,7 +486,8 @@ def openai_messages_from_env(
                     Observation(observations=[sums[i]], sources=["user"], tool_metadata=[None])
                 )
         traj = Trajectory(actions_and_observations=entries, id=uuid.uuid4())
-        messages = traj.to_openai_format()
+        include_reasoning = is_harmony_chat_model(model)
+        messages = trajectory_to_chat_messages(traj, include_reasoning=include_reasoning)
         for text in extra:
             messages.append({"role": "user", "content": text})
         return messages
@@ -453,21 +539,46 @@ def openai_messages_from_env(
     return messages
 
 
+def _allowed_tool_names(env: Any) -> set[str]:
+    toolset = env._build_full_toolset()
+    names: set[str] = set()
+    for tool in getattr(toolset, "tools", []) or []:
+        schema = getattr(tool, "tool_schema", None)
+        if schema is not None and getattr(schema, "name", None):
+            names.add(str(schema.name))
+    return names
+
+
 def action_from_parsed(parsed: Any, env: Any, mods: Mapping[str, Any]) -> Any:
     ActionBuilder = mods["ActionBuilder"]
     UserTextTool = mods["UserTextTool"]
     toolset = env._build_full_toolset()
-    builder = ActionBuilder()
-    if parsed.reasoning:
-        builder.add_reasoning(parsed.reasoning)
+    allowed = _allowed_tool_names(env)
     if parsed.parse_error:
         raise ValueError(parsed.parse_error)
+    if getattr(parsed, "protocol_error", None):
+        raise ValueError(str(parsed.protocol_error))
+
+    pending: list[tuple[str, dict[str, Any], str]] = []
     for call in parsed.tool_calls:
         name = str(call.get("name") or "")
         params = dict(call.get("arguments") or {})
         source = str(call.get("id") or "agent")
         if name in {"user_text", "UserTextTool"}:
-            builder.add_tool_call(UserTextTool(), params if "text" in params else {"text": json.dumps(params)}, source)
+            pending.append(("__user_text__", params if "text" in params else {"text": json.dumps(params)}, source))
+            continue
+        if name not in allowed:
+            raise ValueError(f"Model requested unknown tool or tool not in toolset: {name}")
+        if not isinstance(params, dict):
+            raise ValueError(f"Tool {name} arguments must be a JSON object")
+        pending.append((name, params, source))
+
+    builder = ActionBuilder()
+    if parsed.reasoning:
+        builder.add_reasoning(parsed.reasoning)
+    for name, params, source in pending:
+        if name == "__user_text__":
+            builder.add_tool_call(UserTextTool(), params, source)
             continue
         tool = toolset.get_tool(name)
         if tool is None:

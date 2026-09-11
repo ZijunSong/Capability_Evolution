@@ -40,8 +40,10 @@ def main(argv: list[str] | None = None) -> int:
         assert_fresh_eval_dir,
         run_one_query_api,
         summarize_api_traces,
+        write_infra_error_query,
         write_run_manifest,
     )
+    from trim.upstream_harness1.api_adapter import ConfigError
     from trim.eval.tool_health import build_tool_health_payload, write_tool_health
     from trim.upstream_harness1.api_adapter import ChatCompletionsClient
     from trim.upstream_harness1.env_bridge import build_eval_toolset, load_scoring_dataset, load_upstream_modules
@@ -96,6 +98,7 @@ def main(argv: list[str] | None = None) -> int:
         },
     )
     traces: list[dict] = []
+    infra_errors: list[str] = []
 
     async def _run() -> None:
         for row in rows:
@@ -117,28 +120,41 @@ def main(argv: list[str] | None = None) -> int:
             }
             if pack.verifier_client is not None:
                 env_kwargs["openai_client"] = pack.verifier_client
-            env = Env(**env_kwargs)
-            result = await run_one_query_api(
-                env=env,
-                mods=mods,
-                client=client,
-                query_row={**row, "query": query_text or row.get("query")},
-                trace_dir=out,
-                max_turns=int(cfg.get("max_turns") or 40),
-                token_counter=token_counter,
-            )
-            traces.append(result["metrics"])
+            try:
+                env = Env(**env_kwargs)
+                result = await run_one_query_api(
+                    env=env,
+                    mods=mods,
+                    client=client,
+                    query_row={**row, "query": query_text or row.get("query")},
+                    trace_dir=out,
+                    max_turns=int(cfg.get("max_turns") or 40),
+                    token_counter=token_counter,
+                )
+                traces.append(result["metrics"])
+            except ConfigError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                infra_errors.append(qid)
+                traces.append(
+                    write_infra_error_query(trace_dir=out, query_row=row, exc=exc)
+                )
 
-    asyncio.run(_run())
+    try:
+        asyncio.run(_run())
+    finally:
+        tool_health = build_tool_health_payload(
+            pack.capability_log,
+            worker_rank=cfg.get("rank"),
+            phase="partial" if infra_errors else "final",
+        )
+        write_tool_health(out / "TOOL_HEALTH.json", tool_health)
+
     summary = summarize_api_traces(traces)
+    summary["n_infra_error"] = len(infra_errors)
+    summary["infra_error_query_ids"] = infra_errors
     summary["eval_profile"] = retrieval.eval_profile()
     (out / "SUMMARY.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
-    tool_health = build_tool_health_payload(
-        pack.capability_log,
-        worker_rank=cfg.get("rank"),
-        phase="final",
-    )
-    write_tool_health(out / "TOOL_HEALTH.json", tool_health)
     write_run_manifest(
         out,
         mask=mask,
@@ -154,7 +170,18 @@ def main(argv: list[str] | None = None) -> int:
             "tool_health_path": "TOOL_HEALTH.json",
         },
     )
-    (out / "DONE.json").write_text(json.dumps({"ok": True, "n_queries": len(traces)}) + "\n", encoding="utf-8")
+    (out / "DONE.json").write_text(
+        json.dumps(
+            {
+                "ok": True,
+                "n_queries": len(traces),
+                "n_infra_error": len(infra_errors),
+                "partial": bool(infra_errors),
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     return 0
 
 
