@@ -168,6 +168,24 @@ def test_clip_observation_preserves_document_boundaries():
     assert "more document(s) not shown" in clipped
 
 
+def test_review_docs_then_clip_preserves_first_document_without_leading_newline():
+    """Regression: review_docs() starts with '# DOCUMENT ID:' — must not drop the first doc."""
+    wm = WorkingMemory(query="clip integration")
+    doc_ids = [f"{100 + i}_0" for i in range(5)]
+    for doc_id in doc_ids:
+        wm.doc_store[doc_id] = {"full_text": "x" * 5000, "snippet": "x" * 5000}
+    review_text = wm.review_docs(doc_ids)
+    assert review_text.startswith("# DOCUMENT ID:")
+    assert review_text.count("# DOCUMENT ID:") == 5
+
+    clipped = clip_observation_text(review_text, 15000)
+    visible = parse_doc_ids_from_observation(clipped)
+    assert "100_0" in visible
+    assert visible[0] == "100_0"
+    assert "more document(s) not shown" in clipped
+    assert len(visible) < len(doc_ids)
+
+
 def test_merge_tool_health_sums_verify_length_retries(tmp_path):
     def write_shard(name: str, retries: int) -> Path:
         path = tmp_path / name

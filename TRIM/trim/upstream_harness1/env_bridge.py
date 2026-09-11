@@ -271,7 +271,7 @@ PROMPT_BUDGET_SAFETY_MARGIN = 512
 DEFAULT_CURATE_NUDGE_INTERVAL = 1
 
 
-_DOC_HEADER_RE = re.compile(r"\n# DOCUMENT ID:\s*\S+")
+_DOC_HEADER_RE = re.compile(r"# DOCUMENT ID:\s*\S+")
 
 
 def clip_observation_text(text: str, max_chars: int = DEFAULT_MAX_OBS_CHARS) -> str:
@@ -282,22 +282,22 @@ def clip_observation_text(text: str, max_chars: int = DEFAULT_MAX_OBS_CHARS) -> 
 
     matches = list(_DOC_HEADER_RE.finditer(raw))
     if len(matches) >= 2:
+        preamble = raw[: matches[0].start()]
         blocks: list[str] = []
         for idx, match in enumerate(matches):
             start = match.start()
             end = matches[idx + 1].start() if idx + 1 < len(matches) else len(raw)
             blocks.append(raw[start:end])
         kept: list[str] = []
-        running = 0
+        running = len(preamble)
         for block in blocks:
-            sep = 0 if not kept else 0
             if running + len(block) <= limit:
                 kept.append(block)
                 running += len(block)
                 continue
             break
-        if kept:
-            clipped = "".join(kept).rstrip()
+        if kept or preamble:
+            clipped = (preamble + "".join(kept)).rstrip()
             hidden_docs = len(blocks) - len(kept)
             suffix = f"\n... (truncated, {len(raw)} chars total"
             if hidden_docs:

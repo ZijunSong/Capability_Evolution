@@ -84,9 +84,12 @@ class LocalVerifierClient:
         usage = response.get("usage")
         record = {
             "model": request.get("model") or self.model,
+            "requested_model": request.get("model") or self.model,
+            "effective_model": response.get("model") or self._http.model,
             "requested_max_tokens": request.get("max_tokens"),
             "finish_reason": finish_reason,
             "usage": usage,
+            "transport_attempts": response.get("_transport_attempts"),
             "content_present": bool(message.get("content")),
             "reasoning_present": bool(message.get("reasoning_content") or message.get("reasoning")),
             "parsed_text_present": bool(parsed_text),
@@ -133,7 +136,9 @@ class LocalVerifierClient:
         response: dict[str, Any] | None = None
         parsed: str | None = None
         used_budget = max_tokens
+        http_attempts = 0
         for attempt, budget in enumerate(retry_budgets):
+            http_attempts += 1
             response = self._http.complete(
                 list(messages),
                 list(tools) if tools else None,
@@ -159,6 +164,9 @@ class LocalVerifierClient:
             "model": kwargs.get("model") or self.model,
             "max_tokens": used_budget,
         }
+        self.capability_log["verify_http_requests"] = int(
+            self.capability_log.get("verify_http_requests") or 0
+        ) + http_attempts
         self._record_verify_call(request=request_meta, response=response, parsed_text=parsed)
         if parsed is None:
             raise RuntimeError(

@@ -80,3 +80,39 @@ def test_validate_tool_params_requires_add_ids():
 def test_env_turn_count_does_not_fallback_to_generation_attempts():
     assert _env_turn_count({"num_turns": 0, "n_turns": 6}) == 0.0
     assert _env_turn_count({"num_turns": 3}) == 3.0
+
+
+def _assert_rejects_toolish_content(content: str) -> None:
+    parsed = parse_chat_completion(
+        {"choices": [{"finish_reason": "stop", "message": {"content": content}}]}
+    )
+    assert parsed.ok is False
+    assert parsed.protocol_error == "tool_call_in_content"
+
+
+def test_parse_rejects_bare_curate_json():
+    _assert_rejects_toolish_content(json.dumps({"add_ids": ["123_0"], "remove_ids": []}))
+
+
+def test_parse_rejects_bare_queries_json():
+    _assert_rejects_toolish_content(json.dumps({"queries": ["foo", "bar"]}))
+
+
+def test_parse_rejects_search_corpus_colon_prefix():
+    _assert_rejects_toolish_content('search_corpus: {"query": "example query"}')
+
+
+def test_parse_rejects_curate_function_call_syntax():
+    _assert_rejects_toolish_content("curate({add_ids: ['123_0', '456_0']})")
+
+
+def test_parse_rejects_harmony_call_marker_only():
+    _assert_rejects_toolish_content("<|call|>")
+
+
+def test_parse_rejects_functions_pkg_search_corpus():
+    _assert_rejects_toolish_content("pkgs=functions search_corpus query=foo<|call|>")
+
+
+def test_parse_rejects_add_ids_only_codeblock():
+    _assert_rejects_toolish_content("```json\n{\"add_ids\": [\"123_0\"]}\n```")

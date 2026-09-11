@@ -185,17 +185,40 @@ _KNOWN_TOOL_NAMES = frozenset(
     }
 )
 
+_TOOL_NAMES_PATTERN = (
+    r"search_corpus|curate|end_search|grep_corpus|read_document|verify|fan_out_search|review_docs|prune_chunks"
+)
+
 _TOOL_CALL_IN_CONTENT_RE = re.compile(
-    r'(?:<tool_call\b'
-    r'|"name"\s*:\s*"(?:search_corpus|curate|end_search|grep_corpus|read_document|verify|fan_out_search|review_docs|prune_chunks)"'
-    r'|"(?:type|operation|function)"\s*:\s*"(?:search_corpus|curate|end_search|grep_corpus|read_document|verify|fan_out_search|review_docs|prune_chunks)"'
-    r'|<\|channel\|>|functions[\.\-](?:search_corpus|curate|end_search|grep_corpus|read_document|verify|fan_out_search|review_docs|prune_chunks))',
+    r"(?:<tool_call\b"
+    r'|"name"\s*:\s*"(?:' + _TOOL_NAMES_PATTERN + r')"'
+    r'|"(?:type|operation|function)"\s*:\s*"(?:' + _TOOL_NAMES_PATTERN + r')"'
+    r"|<\|channel\|>|<\|call\|>"
+    r"|(?:^|[\s{])(?:" + _TOOL_NAMES_PATTERN + r")\s*[:({]"
+    r"|functions[\.\-\s](?:" + _TOOL_NAMES_PATTERN + r")"
+    r"|\b(?:" + _TOOL_NAMES_PATTERN + r")\s*\(\s*\{"
+    r")",
     re.IGNORECASE,
 )
 
 _TOOL_ARG_HINT_RE = re.compile(
-    r'"(?:query|queries|doc_id|doc_ids|add_ids|remove_ids|pattern|claim|chunk_ids)"\s*:',
+    r'"(?:query|queries|doc_id|doc_ids|add_ids|remove_ids|pattern|claim|chunk_ids|importance)"\s*:',
     re.IGNORECASE,
+)
+
+_TOOL_ARG_ONLY_KEYS = frozenset(
+    {
+        "query",
+        "queries",
+        "doc_id",
+        "doc_ids",
+        "add_ids",
+        "remove_ids",
+        "pattern",
+        "claim",
+        "chunk_ids",
+        "importance",
+    }
 )
 
 
@@ -228,6 +251,9 @@ def _json_obj_looks_like_tool_call(obj: Mapping[str, Any], names: frozenset[str]
     if ("arguments" in obj or "parameters" in obj) and any(
         k in obj for k in ("name", "type", "function", "operation")
     ):
+        return True
+    keys = {str(k) for k in obj.keys()}
+    if keys and keys <= _TOOL_ARG_ONLY_KEYS:
         return True
     return False
 
@@ -459,6 +485,7 @@ class ChatCompletionsClient:
             headers["Authorization"] = f"Bearer {self.api_key}"
         timeout = self.timeout_s if timeout_s is None else float(timeout_s)
         last_error: ApiError | None = None
+        retry_events: list[dict[str, Any]] = []
         max_attempts = max(1, int(self.max_retries))
         for attempt in range(max_attempts):
             req = urllib.request.Request(url, data=body, headers=headers, method="POST")
@@ -469,6 +496,8 @@ class ChatCompletionsClient:
                 raw["_protocol"] = self.protocol
                 raw["_request_payload"] = payload
                 raw["_transport_attempts"] = attempt + 1
+                if retry_events:
+                    raw["_transport_retry_events"] = list(retry_events)
                 return raw
             except urllib.error.HTTPError as exc:
                 err_body, request_id = _read_error_body(exc)
@@ -480,6 +509,7 @@ class ChatCompletionsClient:
                     request_id=request_id,
                     attempt=attempt + 1,
                 )
+                retry_events.append(last_error.to_dict())
                 if err_cls is ConfigError:
                     raise last_error
                 if int(exc.code) not in _TRANSPORT_RETRY_STATUS and int(exc.code) < 500:
@@ -492,6 +522,7 @@ class ChatCompletionsClient:
                     f"Transport failure on chat/completions attempt {attempt + 1}: {exc}",
                     attempt=attempt + 1,
                 )
+                retry_events.append(last_error.to_dict())
                 if attempt + 1 >= max_attempts:
                     raise last_error
                 time.sleep(min(2**attempt, 8))

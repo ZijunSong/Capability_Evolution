@@ -52,6 +52,29 @@ def _env_turn_count(trace: Mapping[str, Any]) -> float:
     return 0.0
 
 
+def _count_transport_retry_events(turn: Mapping[str, Any]) -> tuple[int, int]:
+    """Return (server_parse_errors, transport_errors) from recovered retry events."""
+    server_parse = 0
+    transport = 0
+    response = turn.get("api_response") or {}
+    for event in response.get("_transport_retry_events") or []:
+        category = str(event.get("category") or "")
+        if category == "model_output_parse_error":
+            server_parse += 1
+        elif category in {"transport_error", "server_error_unclassified"}:
+            transport += 1
+    return server_parse, transport
+
+
+def _classify_env_exception(exc: BaseException) -> str:
+    msg = str(exc).lower()
+    if "missing required parameter" in msg or "parameter" in msg and "expected" in msg:
+        return "schema_error"
+    if "unknown tool" in msg:
+        return "invalid_tool_name"
+    return "tool_error"
+
+
 def count_tool_calls_from_turns(turns: Sequence[Mapping[str, Any]]) -> dict[str, float]:
     n_api = 0
     n_search = 0
@@ -61,13 +84,22 @@ def count_tool_calls_from_turns(turns: Sequence[Mapping[str, Any]]) -> dict[str,
     server_parse_errors = 0
     invalid_tool_names = 0
     length_truncations = 0
+    schema_errors = 0
+    transport_errors = 0
     for turn in turns:
         if turn.get("api_error_category") == "model_output_parse_error":
             server_parse_errors += 1
+        elif turn.get("api_error_category") == "transport_error":
+            transport_errors += 1
+        retry_server, retry_transport = _count_transport_retry_events(turn)
+        server_parse_errors += retry_server
+        transport_errors += retry_transport
+        if turn.get("error_kind") == "schema_error":
+            schema_errors += 1
         if turn.get("protocol_error") == "length_truncated" or turn.get("api_finish_reason") == "length":
             length_truncations += 1
         exc = str(turn.get("env_exception") or "")
-        if "unknown tool" in exc.lower():
+        if turn.get("error_kind") == "invalid_tool_name" or "unknown tool" in exc.lower():
             invalid_tool_names += 1
         response = turn.get("api_response") or {}
         choices = response.get("choices") or []
@@ -96,6 +128,8 @@ def count_tool_calls_from_turns(turns: Sequence[Mapping[str, Any]]) -> dict[str,
         "server_parse_error_count": float(server_parse_errors),
         "invalid_tool_name_count": float(invalid_tool_names),
         "length_truncation_count": float(length_truncations),
+        "schema_error_count": float(schema_errors),
+        "transport_error_count": float(transport_errors),
     }
 
 
@@ -215,11 +249,31 @@ def normalize_query_metrics(
     return out
 
 
+def _snapshot_state_quality(env: Any) -> dict[str, Any]:
+    """Measure retrieval state at episode end, independent of format-failure imputation."""
+    out: dict[str, Any] = {}
+    wm = getattr(env, "wm", None)
+    if wm is not None:
+        out["terminal_curated_ids"] = list(getattr(wm, "curated_ids", []) or [])
+        out["terminal_pool_size"] = len(getattr(wm, "pool_ids", []) or [])
+    evaluate = getattr(env, "_evaluate_and_compute_reward", None)
+    if callable(evaluate):
+        try:
+            _, state = evaluate(is_terminal=False)
+            for key in ("recall", "precision", "final_answer_recall", "trajectory_recall"):
+                if key in state and state[key] is not None:
+                    out[f"state_{key}"] = float(state[key])
+        except Exception:
+            pass
+    return out
+
+
 def _terminal_metrics(env: Any) -> dict[str, Any]:
     metrics = dict(getattr(env, "_terminal_metrics", None) or {})
     metrics.setdefault("reward", float(getattr(env, "_terminal_reward", 0.0) or 0.0))
     metrics.setdefault("num_turns", int(getattr(env, "_current_turn", 0) or 0))
     metrics.setdefault("n_curated", len(getattr(getattr(env, "wm", None), "curated_ids", []) or []))
+    metrics.update(_snapshot_state_quality(env))
     return metrics
 
 
@@ -258,6 +312,8 @@ async def run_one_query_api(
     last_step_metrics: dict[str, Any] = {}
     n_generation_attempts = 0
     protocol_error_attempts = 0
+    transport_error_attempts = 0
+    schema_error_attempts = 0
     while not done and env._current_turn < max_turns:
         attempt_id = len(turns)
         messages = openai_messages_from_env(
@@ -338,6 +394,7 @@ async def run_one_query_api(
                     "usage": usage,
                     "request_fingerprint": response.get("_request_fingerprint"),
                     "transport_attempts": response.get("_transport_attempts"),
+                    "transport_retry_events": response.get("_transport_retry_events"),
                 }
             )
 
@@ -346,7 +403,12 @@ async def run_one_query_api(
         n_executed = 0
         try:
             if api_error is not None:
-                protocol_error_attempts += 1
+                if isinstance(api_error, TransportError):
+                    transport_error_attempts += 1
+                    turn_rec["error_kind"] = "transport_error"
+                else:
+                    protocol_error_attempts += 1
+                    turn_rec["error_kind"] = api_error.category
                 if isinstance(api_error, ServerParseError):
                     retry_error_hint = "Server could not parse model output as Harmony/tool call"
                 else:
@@ -355,6 +417,7 @@ async def run_one_query_api(
                 awaiting_retry = not bool(result.episode_done)
             elif parsed is not None and (parsed.parse_error or parsed.protocol_error):
                 protocol_error_attempts += 1
+                turn_rec["error_kind"] = parsed.protocol_error or "parse_error"
                 retry_error_hint = parsed.protocol_error or parsed.parse_error
                 result = env._handle_format_error(parsed.parse_error or parsed.protocol_error or "parse_error")
                 awaiting_retry = not bool(result.episode_done)
@@ -383,6 +446,15 @@ async def run_one_query_api(
             turn_rec["n_executed_tool_calls"] = n_executed
             turn_rec["explicit_end_search"] = episode_finish_reason == "explicit_end_search"
         except Exception as exc:  # noqa: BLE001
+            error_kind = _classify_env_exception(exc)
+            turn_rec["error_kind"] = error_kind
+            if error_kind == "schema_error":
+                schema_error_attempts += 1
+                protocol_error_attempts += 1
+            elif error_kind == "invalid_tool_name":
+                protocol_error_attempts += 1
+            else:
+                protocol_error_attempts += 1
             retry_error_hint = str(exc)
             result = env._handle_format_error(str(exc))
             last_step_metrics = dict(result.metrics or {})
@@ -426,7 +498,9 @@ async def run_one_query_api(
             "evaluation_path": EVALUATION_PATH_UPSTREAM_API,
             "n_generation_attempts": n_generation_attempts,
             "protocol_error_attempts": protocol_error_attempts,
-            "format_retry_attempts": protocol_error_attempts,
+            "transport_error_attempts": transport_error_attempts,
+            "schema_error_attempts": schema_error_attempts,
+            "format_retry_attempts": protocol_error_attempts + transport_error_attempts,
             "recovered_format_error": recovered_format_error,
         }
     )
@@ -549,8 +623,16 @@ def summarize_api_traces(traces: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         "server_parse_error_total": sum(float(t.get("server_parse_error_count") or 0.0) for t in traces),
         "invalid_tool_name_total": sum(float(t.get("invalid_tool_name_count") or 0.0) for t in traces),
         "length_truncation_total": sum(float(t.get("length_truncation_count") or 0.0) for t in traces),
+        "schema_error_total": sum(float(t.get("schema_error_count") or 0.0) for t in traces),
+        "transport_error_total": sum(float(t.get("transport_error_count") or 0.0) for t in traces),
         "protocol_error_attempts_total": sum(int(t.get("protocol_error_attempts") or 0) for t in traces),
+        "transport_error_attempts_total": sum(int(t.get("transport_error_attempts") or 0) for t in traces),
+        "schema_error_attempts_total": sum(int(t.get("schema_error_attempts") or 0) for t in traces),
         "format_retry_attempts_total": sum(int(t.get("format_retry_attempts") or 0) for t in traces),
+        "state_recall_mean": _cohort_stat([t.get("state_recall") for t in traces], n_expected=n)["mean"],
+        "state_trajectory_recall_mean": _cohort_stat(
+            [t.get("state_trajectory_recall") for t in traces], n_expected=n
+        )["mean"],
         "queries_with_recovered_format_error": sum(
             1 for t in traces if float(t.get("recovered_format_error") or 0.0) >= 1.0
         ),
