@@ -10,6 +10,7 @@ micro-batches instead of one 20B forward/backward per datum.
 
 from __future__ import annotations
 
+import math
 import time
 from typing import Any, Sequence
 
@@ -18,20 +19,17 @@ import torch
 from trim.training.hf_rl_batch import (
     HF_DEFAULT_HEARTBEAT_EVERY,
     HF_DEFAULT_MICRO_BATCH,
+    HF_MAX_FULL_TOKENS,
     iter_length_microbatches,
     log_train,
     sample_groups_for_step,
+    truncate_teacher_forced_pair,
 )
 from trim.training.tinker_opd_datum import TinkerOPDDatum
 
-# Truncation shared with vLLM behavior-policy logprobs so CISPO ratios match.
-CISPO_MAX_PROMPT_TOKENS = 384
-CISPO_MAX_ACTION_TOKENS = 128
-
 __all__ = [
-    "CISPO_MAX_ACTION_TOKENS",
-    "CISPO_MAX_PROMPT_TOKENS",
     "HFDebugTrainingClient",
+    "episode_relative_advantages",
     "group_relative_advantages",
     "restore_trainable",
     "sample_groups_for_step",
@@ -48,14 +46,18 @@ class HFDebugTrainingClient:
         self,
         backend: Any,
         *,
+        clip_low: float = 0.0,
         clip_high: float = 5.0,
         micro_batch_size: int = HF_DEFAULT_MICRO_BATCH,
         heartbeat_every: int = HF_DEFAULT_HEARTBEAT_EVERY,
+        max_full_tokens: int = HF_MAX_FULL_TOKENS,
     ) -> None:
         self.backend = backend
+        self.clip_low = float(clip_low)
         self.clip_high = float(clip_high)
         self.micro_batch_size = max(1, int(micro_batch_size))
         self.heartbeat_every = max(1, int(heartbeat_every))
+        self.max_full_tokens = int(max_full_tokens)
         self.calls: list[tuple] = []
         self._accumulating = False
         self._step_tag = 0
@@ -65,13 +67,12 @@ class HFDebugTrainingClient:
             self.backend.optimizer.zero_grad(set_to_none=True)
             self._accumulating = True
 
-    def _truncate_pair(self, prompt_ids: list[int], action_ids: list[int]) -> tuple[list[int], list[int]]:
-        # Long Harmony prefixes + full logits OOM on gpt-oss MoE during backward.
-        if len(prompt_ids) > CISPO_MAX_PROMPT_TOKENS:
-            prompt_ids = prompt_ids[-CISPO_MAX_PROMPT_TOKENS:]
-        if len(action_ids) > CISPO_MAX_ACTION_TOKENS:
-            action_ids = action_ids[:CISPO_MAX_ACTION_TOKENS]
-        return prompt_ids, action_ids
+    def _align_context(
+        self, prompt_ids: list[int], action_ids: list[int]
+    ) -> tuple[list[int], list[int]]:
+        return truncate_teacher_forced_pair(
+            prompt_ids, action_ids, max_full=self.max_full_tokens
+        )
 
     def _logprobs_many(
         self,
@@ -123,31 +124,63 @@ class HFDebugTrainingClient:
             payload.update(extra)
         log_train("hf_fb", **payload)
 
-    def _cispo_backward(self, rows: Sequence[Any]) -> dict[str, float]:
+    def _prepare_cispo_row(self, row: Any) -> dict[str, Any] | None:
+        prompt_ids = list(
+            row.get("effective_prompt_ids")
+            or row.get("prompt_ids")
+            or self.backend.encode(row["prompt"])
+        )
+        action_ids = list(row.get("action_ids") or self.backend.encode(row["action_text"]))
+        if not action_ids:
+            return None
+        token_logprobs = row.get("token_logprobs")
+        action_mask = list(row.get("action_mask") or [1] * len(action_ids))
+        if token_logprobs is None:
+            raise ValueError(f"CISPO row missing token_logprobs for query={row.get('query_id')}")
+        if len(token_logprobs) != len(action_ids):
+            raise ValueError(
+                f"CISPO token_logprobs length {len(token_logprobs)} != action_ids {len(action_ids)}"
+            )
+        if len(action_mask) != len(action_ids):
+            raise ValueError(
+                f"CISPO action_mask length {len(action_mask)} != action_ids {len(action_ids)}"
+            )
+        prompt_ids, action_ids = self._align_context(prompt_ids, action_ids)
+        if len(action_ids) != len(token_logprobs):
+            raise ValueError("context alignment changed action length without matching logprobs")
+        return {
+            "prompt_ids": prompt_ids,
+            "action_ids": action_ids,
+            "token_logprobs": [float(x) for x in token_logprobs],
+            "action_mask": action_mask,
+            "advantage": float(row.get("advantage") or 0.0),
+        }
+
+    def _cispo_backward(
+        self, rows: Sequence[Any], *, loss_fn_config: dict[str, Any] | None = None
+    ) -> dict[str, float]:
+        cfg = dict(loss_fn_config or {})
+        clip_low = float(cfg.get("clip_low_threshold", self.clip_low))
+        clip_high = float(cfg.get("clip_high_threshold", self.clip_high))
         device = self.backend._device
         prepared: list[dict[str, Any]] = []
         for row in rows:
-            prompt_ids = list(row.get("prompt_ids") or self.backend.encode(row["prompt"]))
-            action_ids = list(row.get("action_ids") or self.backend.encode(row["action_text"]))
-            if not action_ids:
-                continue
-            prompt_ids, action_ids = self._truncate_pair(prompt_ids, action_ids)
-            prepared.append(
-                {
-                    "prompt_ids": prompt_ids,
-                    "action_ids": action_ids,
-                    "logprob_old": row.get("logprob_old"),
-                    "advantage": float(row.get("advantage") or 0.0),
-                }
-            )
-        scale = max(1, len(rows))
+            item = self._prepare_cispo_row(row)
+            if item is not None:
+                prepared.append(item)
         if not prepared:
             return {"loss": 0.0, "n_datums": 0, "n_microbatches": 0, "micro_batch_size": self.micro_batch_size}
-        total = 0.0
+        global_tokens = sum(
+            sum(1 for m in row["action_mask"] if m) for row in prepared
+        )
+        global_tokens = max(1, global_tokens)
+        loss_sum = 0.0
         n = 0
         n_mb = 0
         t0 = time.perf_counter()
         t_fwd = 0.0
+        ratio_clip_hits = 0
+        ratio_total = 0
         for chunk in iter_length_microbatches(
             prepared,
             size=self.micro_batch_size,
@@ -160,26 +193,32 @@ class HFDebugTrainingClient:
                 require_grad=True,
             )
             t_fwd += time.perf_counter() - t_fwd0
-            losses = []
-            for row, logp in zip(chunk, logps):
-                if logp.numel() == 0:
+            chunk_losses = []
+            for row, new_lp in zip(chunk, logps):
+                if new_lp.numel() == 0:
                     continue
-                old = row["logprob_old"]
-                if old is None:
-                    ratio = torch.ones((), device=device, dtype=logp.dtype)
-                else:
-                    old_t = torch.tensor(float(old), device=device, dtype=logp.dtype)
-                    ratio = torch.exp((logp.detach().mean() - old_t).clamp(-20, 20))
-                weight = ratio.clamp(0.0, self.clip_high)
-                losses.append(-(weight * float(row["advantage"]) * logp.mean()) / scale)
+                if new_lp.numel() != len(row["action_ids"]):
+                    raise ValueError("new logprob length mismatch")
+                new_lp = new_lp.float()
+                old_lp = torch.tensor(row["token_logprobs"], device=device, dtype=torch.float32)
+                mask = torch.tensor(row["action_mask"], device=device, dtype=torch.float32)
+                if not torch.isfinite(new_lp).all() or not torch.isfinite(old_lp).all():
+                    raise ValueError("non-finite logprobs in CISPO row")
+                ratio = (new_lp - old_lp).exp()
+                weight = ratio.clamp(min=clip_low, max=clip_high).detach()
+                ratio_clip_hits += int((ratio != weight).sum().item())
+                ratio_total += int(mask.sum().item())
+                adv = float(row["advantage"])
+                per_tok = -(weight * adv * new_lp * mask)
+                chunk_losses.append(per_tok.sum() / global_tokens)
                 n += 1
-            if losses:
-                loss = torch.stack(losses).sum()
+            if chunk_losses:
+                loss = torch.stack(chunk_losses).sum()
                 if loss.requires_grad:
                     loss.backward()
-                total += float(loss.detach().item()) * scale
+                loss_sum += float(loss.detach().item())
                 del loss
-            del logps, losses
+            del logps, chunk_losses
             self._heartbeat(
                 phase="cispo",
                 done=n,
@@ -188,11 +227,13 @@ class HFDebugTrainingClient:
                 extra={"n_microbatches": n_mb, "student_fwd_s": round(t_fwd, 3)},
             )
         return {
-            "loss": total / max(1, n),
+            "loss": loss_sum,
             "n_datums": n,
             "n_microbatches": n_mb,
             "micro_batch_size": self.micro_batch_size,
             "student_fwd_s": round(t_fwd, 3),
+            "n_effective_tokens": global_tokens,
+            "ratio_clip_fraction": (ratio_clip_hits / max(1, ratio_total)),
         }
 
     def _opd_loss(self, datums: Sequence[Any]) -> dict[str, float]:
@@ -211,7 +252,9 @@ class HFDebugTrainingClient:
                 weights = list(raw.get("weights") or [1.0] * len(resp_ids))
             if not resp_ids:
                 continue
-            prompt_ids, resp_ids = self._truncate_pair(prompt_ids, resp_ids)
+            prompt_ids, resp_ids = self._align_context(prompt_ids, resp_ids)
+            if len(weights) != len(resp_ids):
+                raise ValueError("OPD CE weights length mismatch")
             prepared.append((prompt_ids, resp_ids, weights))
         if not prepared:
             return {"loss": 0.0, "n_datums": 0, "n_microbatches": 0, "micro_batch_size": self.micro_batch_size}
@@ -233,10 +276,10 @@ class HFDebugTrainingClient:
             for (_p, _r, weights), logp in zip(chunk, logps):
                 if logp.numel() == 0:
                     continue
-                w = torch.tensor(weights[: len(logp)], device=device, dtype=logp.dtype)
+                w = torch.tensor(weights[: len(logp)], device=device, dtype=torch.float32)
                 if w.numel() != logp.numel():
-                    w = torch.ones_like(logp)
-                losses.append(-(logp * w).sum())
+                    raise ValueError("OPD CE weight/logprob length mismatch")
+                losses.append(-(logp.float() * w).sum())
                 n += 1
             if losses:
                 loss = torch.stack(losses).sum()
@@ -273,6 +316,8 @@ class HFDebugTrainingClient:
             meta = dict(raw.metadata or {})
             meta.setdefault("lambda_opd", 0.01)
             meta.setdefault("gate_beta", 5.0)
+            weights = list(raw.weights[n_p:]) if len(raw.weights) > n_p else [1.0] * len(resp_ids)
+            meta["_supervision_weights"] = weights
             return prompt_ids, resp_ids, teacher_ids, meta
         prompt_ids = list(raw.get("prompt_ids") or self.backend.encode(raw["prompt"]))
         resp_ids = list(raw.get("target_ids") or self.backend.encode(raw["target_text"]))
@@ -284,34 +329,33 @@ class HFDebugTrainingClient:
             meta["lambda_opd"] = float(raw["lambda_opd"])
         if raw.get("gate_beta") is not None:
             meta["gate_beta"] = float(raw["gate_beta"])
+        meta["_supervision_weights"] = list(raw.get("weights") or [1.0] * len(resp_ids))
         return prompt_ids, resp_ids, teacher_ids, meta
 
     def _opd_sampled_gap(self, datums: Sequence[Any]) -> dict[str, float]:
-        """SEED: λ × token-mean[g · (sg[ℓ^T] − ℓ^S)] on CISPO sampled tokens.
-
-        Student prefix is the same Harmony ids CISPO used when present.
-        Teacher prefix is the privileged DualView sidecar. Gradients only
-        through student logprobs of the sampled action.
-        """
+        """SEED: λ × token-mean[g · (sg[ℓ^T] − ℓ^S)] on CISPO sampled tokens."""
         from trim.training.sr_opd_loss import gated_sampled_gap_per_token
 
-        prepared: list[tuple[list[int], list[int], list[int], float, float]] = []
+        prepared: list[tuple[list[int], list[int], list[int], list[float], float, float]] = []
         n_total = 0
         for raw in datums:
             prompt_ids, resp_ids, teacher_ids, meta = self._unpack_opd_row(raw)
             if not resp_ids:
                 continue
-            prompt_ids, resp_ids = self._truncate_pair(prompt_ids, resp_ids)
+            weights = list(meta.get("_supervision_weights") or [1.0] * len(resp_ids))
+            if len(weights) != len(resp_ids):
+                raise ValueError("OPD gap supervision weights length mismatch")
+            prompt_ids, resp_ids = self._align_context(prompt_ids, resp_ids)
             if teacher_ids:
-                teacher_ids, _resp_t = self._truncate_pair(teacher_ids, resp_ids)
+                teacher_ids, _resp_t = self._align_context(teacher_ids, resp_ids)
             else:
                 teacher_ids = list(prompt_ids)
-            if not resp_ids:
-                continue
+            if len(resp_ids) != len(weights):
+                raise ValueError("OPD gap post-alignment length mismatch")
             lam = float(meta.get("lambda_opd") if meta.get("lambda_opd") is not None else 0.01)
             beta = float(meta.get("gate_beta") if meta.get("gate_beta") is not None else 5.0)
-            prepared.append((prompt_ids, resp_ids, teacher_ids, lam, beta))
-            n_total += len(resp_ids)
+            prepared.append((prompt_ids, resp_ids, teacher_ids, weights, lam, beta))
+            n_total += sum(1 for w in weights if w)
         if not prepared or n_total <= 0:
             return {"loss": 0.0, "n_datums": 0, "n_microbatches": 0, "micro_batch_size": self.micro_batch_size}
 
@@ -329,17 +373,22 @@ class HFDebugTrainingClient:
         ):
             n_mb += 1
             t_s0 = time.perf_counter()
-            student_lps = self._logprobs_many([(p, r) for p, r, _t, _lam, _b in chunk], require_grad=True)
+            student_lps = self._logprobs_many([(p, r) for p, r, _t, _w, _lam, _b in chunk], require_grad=True)
             t_student += time.perf_counter() - t_s0
             t_t0 = time.perf_counter()
-            teacher_lps = self._logprobs_many([(t, r) for _p, r, t, _lam, _b in chunk], require_grad=False)
+            teacher_lps = self._logprobs_many([(t, r) for _p, r, t, _w, _lam, _b in chunk], require_grad=False)
             t_teacher += time.perf_counter() - t_t0
             losses = []
-            for (_p, _r, _tid, lam, beta), student_lp, teacher_lp in zip(chunk, student_lps, teacher_lps):
+            for (_p, _r, _tid, weights, lam, beta), student_lp, teacher_lp in zip(
+                chunk, student_lps, teacher_lps
+            ):
                 if student_lp.numel() == 0:
                     continue
-                gap = gated_sampled_gap_per_token(student_lp, teacher_lp, gate_beta=beta)
-                losses.append(gap.sum() * (float(lam) / denom))
+                if student_lp.numel() != teacher_lp.numel():
+                    raise ValueError("teacher/student target length mismatch in OPD gap")
+                w = torch.tensor(weights[: len(student_lp)], device=student_lp.device, dtype=torch.float32)
+                gap = gated_sampled_gap_per_token(student_lp.float(), teacher_lp.float(), gate_beta=beta)
+                losses.append((gap * w).sum() * (float(lam) / denom))
                 n += 1
             if losses:
                 loss = torch.stack(losses).sum()
@@ -374,9 +423,7 @@ class HFDebugTrainingClient:
         loss_fn: str,
         loss_fn_config: dict[str, Any] | None = None,
     ) -> dict[str, float]:
-        del loss_fn_config
         self._ensure_accum()
-        self.backend.model.train()
         rows = list(data)
         t0 = time.perf_counter()
         if loss_fn == "cross_entropy":
@@ -384,7 +431,7 @@ class HFDebugTrainingClient:
         elif loss_fn in {"sampled_gap", "reverse_kl"}:
             payload = self._opd_sampled_gap(rows)
         else:
-            payload = self._cispo_backward(rows)
+            payload = self._cispo_backward(rows, loss_fn_config=loss_fn_config)
         payload = dict(payload)
         payload["elapsed_s"] = round(time.perf_counter() - t0, 3)
         payload["loss_fn"] = str(loss_fn)
@@ -400,12 +447,16 @@ class HFDebugTrainingClient:
             elapsed_s=payload["elapsed_s"],
             student_fwd_s=payload.get("student_fwd_s"),
             teacher_fwd_s=payload.get("teacher_fwd_s"),
+            n_effective_tokens=payload.get("n_effective_tokens"),
         )
         return payload
 
     async def optim_step_async(self, adam_params: Any) -> dict[str, float]:
         del adam_params
         t0 = time.perf_counter()
+        for p in self.backend.model.parameters():
+            if p.requires_grad and p.grad is not None and not torch.isfinite(p.grad).all():
+                raise RuntimeError("non-finite gradient before optimizer step")
         self.backend.optimizer.step()
         self.backend.optimizer.zero_grad(set_to_none=True)
         self._accumulating = False
@@ -415,19 +466,44 @@ class HFDebugTrainingClient:
         return {"ok": 1.0, "elapsed_s": elapsed}
 
 
-def group_relative_advantages(rewards: list[float], group_ids: list[str]) -> list[float]:
-    buckets: dict[str, list[int]] = {}
-    for i, gid in enumerate(group_ids):
-        buckets.setdefault(gid, []).append(i)
-    out = [0.0] * len(rewards)
-    for idxs in buckets.values():
-        vals = [float(rewards[i]) for i in idxs]
+def episode_relative_advantages(rl_rows: Sequence[dict[str, Any]]) -> list[float]:
+    """Normalize terminal rewards per query group at episode granularity."""
+    by_query: dict[str, list[dict[str, Any]]] = {}
+    for row in rl_rows:
+        by_query.setdefault(str(row.get("query_id")), []).append(row)
+    adv_by_row: dict[int, float] = {}
+    for rows in by_query.values():
+        episodes: dict[str, float] = {}
+        for row in rows:
+            ep = str(
+                row.get("episode_id")
+                or f"{row.get('query_id')}_r{row.get('rollout_idx', 0)}"
+            )
+            episodes[ep] = float(row.get("reward") or 0.0)
+        vals = list(episodes.values())
         mean = sum(vals) / max(1, len(vals))
         var = sum((v - mean) ** 2 for v in vals) / max(1, len(vals))
-        std = var**0.5
-        for i in idxs:
-            out[i] = 0.0 if std < 1e-8 else (float(rewards[i]) - mean) / std
-    return out
+        std = math.sqrt(var)
+        ep_adv = {
+            ep: (0.0 if std < 1e-8 else (float(r) - mean) / std)
+            for ep, r in episodes.items()
+        }
+        for row in rows:
+            ep = str(
+                row.get("episode_id")
+                or f"{row.get('query_id')}_r{row.get('rollout_idx', 0)}"
+            )
+            adv_by_row[id(row)] = ep_adv[ep]
+    return [adv_by_row[id(row)] for row in rl_rows]
+
+
+def group_relative_advantages(rewards: list[float], group_ids: list[str]) -> list[float]:
+    """Backward-compatible wrapper; prefer episode_relative_advantages for RL rows."""
+    rows = [
+        {"reward": r, "query_id": gid, "rollout_idx": i}
+        for i, (r, gid) in enumerate(zip(rewards, group_ids))
+    ]
+    return episode_relative_advantages(rows)
 
 
 def snapshot_trainable(model: Any) -> dict[str, torch.Tensor]:

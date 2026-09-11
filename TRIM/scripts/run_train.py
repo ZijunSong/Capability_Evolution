@@ -119,6 +119,12 @@ def _main(argv: list[str] | None = None) -> int:
         "out": str(spec.out),
         "train_only": True,
         "official_eval": False,
+        "max_new_tokens": int(args.max_new_tokens),
+        "max_model_len": int(getattr(args, "max_model_len", 8192) or 8192),
+        "max_num_seqs": int(getattr(args, "max_num_seqs", 256) or 256),
+        "vllm_generate_timeout_s": float(getattr(args, "vllm_generate_timeout_s", 3600.0) or 3600.0),
+        "vllm_disable_custom_all_reduce": getattr(args, "vllm_disable_custom_all_reduce", None),
+        "rollout_backend": str(getattr(args, "rollout_backend", "vllm") or "vllm"),
     }
     (spec.out / "LAUNCH.json").write_text(json.dumps(launch, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(launch, indent=2), flush=True)

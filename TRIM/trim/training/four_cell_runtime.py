@@ -72,9 +72,18 @@ from trim.training.action_codec import (
 )
 from trim.training.hf_rl_opd_client import (
     HFDebugTrainingClient,
-    group_relative_advantages,
+    episode_relative_advantages,
     sample_groups_for_step,
 )
+from trim.training.policy_digest import adapter_digest, policy_digest_record
+from trim.training.train_checkpoint import (
+    append_metrics_jsonl,
+    load_optimizer_bundle,
+    publish_step_checkpoint,
+    save_optimizer_bundle,
+    save_rng_state,
+)
+from trim.training.train_query_sampler import QuerySampler
 from trim.training.hf_rl_batch import (
     HF_DEFAULT_GROUPS_PER_STEP,
     HF_DEFAULT_HEARTBEAT_EVERY,
@@ -457,6 +466,40 @@ def uses_bcplus_830_eval(args: argparse.Namespace) -> bool:
     return uses_sec_train_data(args)
 
 
+def _git_provenance() -> dict[str, Any]:
+    import subprocess
+
+    root = Path(__file__).resolve().parents[2]
+    out: dict[str, Any] = {"repo_root": str(root)}
+    try:
+        out["sha"] = (
+            subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True, stderr=subprocess.DEVNULL)
+            .strip()
+        )
+        dirty = subprocess.check_output(["git", "status", "--porcelain"], cwd=root, text=True, stderr=subprocess.DEVNULL)
+        out["dirty"] = bool(dirty.strip())
+        if dirty.strip():
+            out["dirty_diff_lines"] = len(dirty.strip().splitlines())
+    except Exception:
+        out["sha"] = None
+        out["dirty"] = None
+    return out
+
+
+def _resolved_vllm_config(args: argparse.Namespace, *, tp: int) -> dict[str, Any]:
+    return {
+        "rollout_backend": str(getattr(args, "rollout_backend", "vllm") or "vllm"),
+        "tensor_parallel_size": int(tp),
+        "max_model_len": int(getattr(args, "max_model_len", 8192) or 8192),
+        "max_new_tokens": int(getattr(args, "max_new_tokens", 2048) or 2048),
+        "max_num_seqs": int(getattr(args, "max_num_seqs", 256) or 256),
+        "gpu_memory_utilization": float(getattr(args, "gpu_memory_utilization", 0.90) or 0.90),
+        "enforce_eager": bool(getattr(args, "enforce_eager", True)),
+        "generate_timeout_s": float(getattr(args, "vllm_generate_timeout_s", 3600.0) or 3600.0),
+        "disable_custom_all_reduce": getattr(args, "vllm_disable_custom_all_reduce", None),
+    }
+
+
 def build_manifest(args: argparse.Namespace, *, extra: dict[str, Any] | None = None) -> dict[str, Any]:
     mode = getattr(args, "training_mode", "four_cell")
     lam = 0.0 if mode == TRAINING_MODE_RL else float(args.lambda_opd)
@@ -532,6 +575,10 @@ def build_manifest(args: argparse.Namespace, *, extra: dict[str, Any] | None = N
         else None,
         "legacy_adapters_not_used": True,
         "train_only": bool(getattr(args, "train_only", False)),
+        "max_new_tokens": int(getattr(args, "max_new_tokens", 2048) or 2048),
+        "max_model_len": int(getattr(args, "max_model_len", 8192) or 8192),
+        "rollout_query_batch_size": getattr(args, "rollout_query_batch_size", None),
+        "git": _git_provenance(),
         **dict(extra or {}),
     }
 
@@ -931,13 +978,21 @@ def one_episode(
                     pass
         action_ids = list(gen["action_ids"]) or backend.encode(render_action(action) if valid else "to=unknown\n{}\n")
         prompt_ids = list(gen["prompt_ids"])
+        from trim.eval.harmony_runtime import fit_prompt_ids_to_context
+
+        effective_prompt_ids = fit_prompt_ids_to_context(
+            list(prompt_ids),
+            max_model_len=int(getattr(enc, "max_model_len", 8192) or 8192),
+            max_new_tokens=len(action_ids) or 1,
+        )
         with timed_section(timing, "model"):
             with torch.no_grad():
-                old_prompt = prompt_ids[-384:] if len(prompt_ids) > 384 else prompt_ids
-                old_act = action_ids[:128]
-                old_lp = backend._teacher_forced_logprobs(old_prompt, old_act, require_grad=False)
+                old_lp = backend._teacher_forced_logprobs(
+                    effective_prompt_ids, action_ids, require_grad=False
+                )
         token_logprobs = [float(x) for x in old_lp.detach().cpu().tolist()] if old_lp.numel() else []
         old_mean = float(old_lp.mean().item()) if old_lp.numel() else 0.0
+        prompt_ids = effective_prompt_ids
         with timed_section(timing, "harness"):
             post = snap_from_state(qid, st, component_id, harness_mask=harness_mask)
             points.append(
@@ -962,8 +1017,11 @@ def one_episode(
         rows.append(
             {
                 "query_id": qid,
+                "episode_id": f"{qid}_r{rollout_idx}",
+                "rollout_idx": rollout_idx,
                 "prompt": gen.get("prompt_text") or student_prefix,
                 "prompt_ids": prompt_ids,
+                "effective_prompt_ids": list(prompt_ids),
                 "action_text": gen["text"],
                 "action_ids": action_ids,
                 "token_logprobs": token_logprobs,
@@ -1029,7 +1087,10 @@ def rollout_group(backend, *, row, component_id, group_size, max_turns, max_new,
         rl_rows.extend(ep_rows)
         rewards.append(reward)
         tool_seqs.append(list(stats["names"]))
-    adv = group_relative_advantages([r["reward"] for r in rl_rows], [r["query_id"] for r in rl_rows])
+    for rec in rl_rows:
+        rec.setdefault("episode_id", f"{row['query_id']}_r{rollout_idx}")
+        rec.setdefault("rollout_idx", rollout_idx)
+    adv = episode_relative_advantages(rl_rows)
     for rec, a in zip(rl_rows, adv):
         rec["advantage"] = a
     return HybridRolloutGroup(
@@ -1070,6 +1131,10 @@ async def train_cell(
     groups_per_step: int = HF_DEFAULT_GROUPS_PER_STEP,
     micro_batch_size: int = HF_DEFAULT_MICRO_BATCH,
     heartbeat_every: int = HF_DEFAULT_HEARTBEAT_EVERY,
+    skip_group_sampling: bool = False,
+    global_optimizer_step: int = 0,
+    base_seed: int = 0,
+    model_enc: Any | None = None,
 ) -> dict[str, Any]:
     if name in {"teacher", "before"} or train_steps <= 0:
         return {
@@ -1090,13 +1155,24 @@ async def train_cell(
     step_samples: list[dict[str, Any]] = []
     pool_n = len(groups)
     for step in range(train_steps):
-        step_groups, sample_meta = sample_groups_for_step(
-            groups, groups_per_step, seed=int(step) + 17
-        )
+        step_seed = int(base_seed) + int(global_optimizer_step) + int(step)
+        if skip_group_sampling or groups_per_step <= 0 or groups_per_step >= len(groups):
+            step_groups, sample_meta = groups, {
+                "sampled": False,
+                "n_groups": len(groups),
+                "n_pool": len(groups),
+                "query_ids": [str(g.query_id) for g in groups],
+                "seed": step_seed,
+                "preselected": True,
+            }
+        else:
+            step_groups, sample_meta = sample_groups_for_step(
+                groups, groups_per_step, seed=step_seed
+            )
         rl_by_q = {
             g.query_id: list((g.trajectory_group or {}).get("rl_rows") or []) for g in step_groups
         }
-        client._step_tag = step + 1
+        client._step_tag = int(global_optimizer_step) + step + 1
         t0 = time.perf_counter()
         log_train(
             "optim_step_start",
@@ -1117,9 +1193,10 @@ async def train_cell(
             component_id=component_id,
             teacher_event_fn=teacher,
             encode_fn=backend.encode,
+            model_enc=model_enc,
             opd_states_per_trajectory=opd_states_per_trajectory,
             seed=step,
-            remove_constant_reward_groups=False,
+            remove_constant_reward_groups=True,
             include_format_errors=True,
             opd_loss=opd_loss,
             opd_gate_beta=opd_gate_beta,
@@ -1140,21 +1217,30 @@ async def train_cell(
             n_rl_tokens=int(batch.n_rl_tokens),
             n_opd_tokens=int(batch.n_opd_tokens),
         )
-        m = await hybrid_train_substep(
-            training_client=client,
-            rl_datums=rl_use,
-            opd_datums=opd_use,
-            rl_loss_fn="cispo",
-            rl_loss_fn_config={"clip_low_threshold": 0, "clip_high_threshold": 5},
-            lambda_opd=lambda_opd,
-            adam_params={},
-            policy_version=policy_version,
-            projection_coverage=float(batch.projection_stats.get("projection_coverage") or 0.0),
-            reject_rate=float(batch.projection_stats.get("reject_rate") or 0.0),
-            opd_loss=opd_loss,
-        )
+        if not rl_use and not opd_use:
+            md = {
+                "update_type": "skipped_no_signal",
+                "n_optimizer_steps": 0,
+                "n_rl_forward_backward": 0,
+                "n_opd_forward_backward": 0,
+                "skipped_no_signal": True,
+            }
+        else:
+            m = await hybrid_train_substep(
+                training_client=client,
+                rl_datums=rl_use,
+                opd_datums=opd_use,
+                rl_loss_fn="cispo",
+                rl_loss_fn_config={"clip_low_threshold": 0, "clip_high_threshold": 5},
+                lambda_opd=lambda_opd,
+                adam_params={},
+                policy_version=policy_version,
+                projection_coverage=float(batch.projection_stats.get("projection_coverage") or 0.0),
+                reject_rate=float(batch.projection_stats.get("reject_rate") or 0.0),
+                opd_loss=opd_loss,
+            )
+            md = m.to_dict()
         elapsed = round(time.perf_counter() - t0, 3)
-        md = m.to_dict()
         md["elapsed_s"] = elapsed
         md["step_sample"] = sample_meta
         metrics_acc.append(md)
@@ -1173,8 +1259,9 @@ async def train_cell(
     from trim.training.tinker_rl_opd_trainer import HybridLoopState
 
     loop = HybridLoopState(policy_version=policy_version)
-    for _ in metrics_acc:
-        loop.bump_after_update()
+    for md in metrics_acc:
+        if int(md.get("n_optimizer_steps") or 0) > 0:
+            loop.bump_after_update()
     return {
         "call_log": list(client.calls),
         "n_optimizer_steps": sum(1 for c in client.calls if c[0] == "opt"),
@@ -1751,6 +1838,7 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
             "updates_per_rollout": int(getattr(args, "updates_per_rollout", 1) or 1),
             "tensor_parallel_size": tp,
             "train_device_map": device_map,
+            "resolved_vllm": _resolved_vllm_config(args, tp=tp),
         },
     )
     (out / "RUN_MANIFEST.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
@@ -1792,6 +1880,7 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
         runtime.attach_hf(backend)
 
     enc = load_model_encoding(str(getattr(args, "base_model", None) or getattr(args, "model_name", None) or ""))
+    setattr(enc, "max_model_len", int(getattr(args, "max_model_len", 8192) or 8192))
     chosen_cells = cells_for_mode(
         getattr(args, "training_mode", "four_cell"),
         train_only=train_only,
@@ -1815,20 +1904,30 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
         path.mkdir(parents=True, exist_ok=True)
         return path
 
-    def vllm_lora(path: str | None) -> str | None:
+    def vllm_lora(path: str | None, *, required: bool = False) -> str | None:
         if not path:
+            if required:
+                raise FileNotFoundError("vLLM rollout requested but no adapter path provided")
             return None
-        weight = Path(path) / "adapter_model.safetensors"
-        return path if weight.is_file() else None
+        root = Path(path)
+        weight = root / "adapter_model.safetensors"
+        if weight.is_file():
+            return str(root)
+        if required or (root.is_dir() and any(root.iterdir())):
+            raise FileNotFoundError(f"adapter weights missing: {weight}")
+        return None
 
     def open_vllm(lora_path: str | None, tag: str) -> VLLMGenerateClient:
         keepalive.pause()
         wait_gpus_quiet()
-        # vLLM 0.19 successfully loads the Harness-1 PEFT adapters directly;
-        # keep the base checkpoint sharded and avoid materializing a 39 GiB
-        # single-file merge on network storage.
         model_for_vllm = vllm_base
-        vllm_adapter = vllm_lora(lora_path) if lora_path and Path(lora_path).name != "theta0" else None
+        has_adapter = bool(lora_path and (Path(lora_path) / "adapter_model.safetensors").is_file())
+        vllm_adapter = vllm_lora(lora_path, required=has_adapter)
+        digest = policy_digest_record(
+            adapter_dir=vllm_adapter,
+            base_model=model_for_vllm,
+            policy_version=tag,
+        )
         client = VLLMGenerateClient(
             model_path=model_for_vllm,
             session_dir=next_session(tag),
@@ -1839,10 +1938,23 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
             enforce_eager=bool(getattr(args, "enforce_eager", True)),
             python_exe=str(getattr(args, "vllm_python", "") or "") or None,
             startup_timeout_s=3600.0,
+            generate_timeout_s=float(getattr(args, "vllm_generate_timeout_s", 3600.0) or 3600.0),
+            max_num_seqs=int(getattr(args, "max_num_seqs", 0) or 0) or None,
+            extra_env={},
         )
+        disable_ar = getattr(args, "vllm_disable_custom_all_reduce", None)
+        if disable_ar is not None:
+            client._disable_custom_all_reduce = bool(disable_ar)
         runtime.attach_vllm(client)
-        print(f"[{log_tag}] vLLM start tp={tp} lora={client.lora_path} tag={tag}", flush=True)
+        print(
+            f"[{log_tag}] vLLM start backend=vllm tp={tp} lora={client.lora_path} "
+            f"digest={digest.get('policy_digest')} tag={tag}",
+            flush=True,
+        )
         client.start()
+        (client.session_dir / "policy_digest.json").write_text(
+            json.dumps(digest, indent=2) + "\n", encoding="utf-8"
+        )
         return client
 
     def close_vllm() -> None:
@@ -1850,8 +1962,12 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
         wait_gpus_quiet()
         keepalive.resume()
 
+    optimizer_path = out / "tmp" / "optimizer_latest.pt"
+
     def ensure_hf(adapter_path: str | None):
         nonlocal backend
+        import torch
+
         keepalive.pause()
         if backend is None:
             adapter_file = Path(adapter_path) / "adapter_model.safetensors" if adapter_path else None
@@ -1859,6 +1975,13 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
             backend = runtime.attach_hf(
                 load_hf_backend(args, device_map, adapter_dir=adapter_path if adapter_ok else None)
             )
+            if backend.optimizer is None:
+                backend.optimizer = torch.optim.AdamW(
+                    [p for p in backend.model.parameters() if p.requires_grad],
+                    lr=float(getattr(backend, "learning_rate", 1e-5) or 1e-5),
+                )
+            if optimizer_path.is_file():
+                load_optimizer_bundle(backend, optimizer_path)
             if not theta0_saved["n"]:
                 print(f"[{log_tag}] save theta0 HF LoRA after first attach", flush=True)
                 theta0_dir.mkdir(parents=True, exist_ok=True)
@@ -1866,15 +1989,19 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
                 theta0_saved["n"] = True
             return backend
         load_adapter_weights(backend, adapter_path)
-        backend.optimizer = torch.optim.AdamW(
-            [p for p in backend.model.parameters() if p.requires_grad], lr=1e-5
-        )
+        if backend.optimizer is None:
+            backend.optimizer = torch.optim.AdamW(
+                [p for p in backend.model.parameters() if p.requires_grad],
+                lr=float(getattr(backend, "learning_rate", 1e-5) or 1e-5),
+            )
+            if optimizer_path.is_file():
+                load_optimizer_bundle(backend, optimizer_path)
         return backend
 
     def release_hf() -> None:
         nonlocal backend
         if scheme_a and backend is not None:
-            runtime.detach_hf()
+            runtime.detach_hf(optimizer_path=optimizer_path)
             backend = None
             wait_gpus_quiet()
             keepalive.resume()
@@ -1889,9 +2016,7 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
         group_size: int,
         teacher_mode: bool = False,
     ):
-        # Current vLLM cannot apply Harness-1 PEFT target modules. Use the
-        # HF-trained adapter for After-policy rollouts while retaining vLLM
-        # for base/Before generation and the same hybrid train contract.
+        rollout_backend = str(getattr(args, "rollout_backend", "vllm") or "vllm").lower()
         rollout_kw = dict(
             component_id=args.component,
             group_size=group_size,
@@ -1912,19 +2037,23 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
             doc_store_workers=int(getattr(args, "doc_store_workers", 8) or 8),
             train_env=train_env,
             train_session=train_session,
+            rollout_backend=rollout_backend,
         )
-        if vllm_on and not (lora_path and Path(lora_path).name != "theta0"):
+        if rollout_backend == "vllm":
+            if backend is not None:
+                release_hf()
             client = open_vllm(lora_path, tag)
             try:
                 return rollout_queries_batched(client.generate_batch, rows, **rollout_kw)
             finally:
                 close_vllm()
-        gen = HFGenerateClient(ensure_hf(lora_path), enc=enc)
-        return rollout_queries_batched(gen.generate_batch, rows, **rollout_kw)
+        if rollout_backend == "hf":
+            gen = HFGenerateClient(ensure_hf(lora_path), enc=enc)
+            rollout_kw["rollout_backend"] = "hf"
+            return rollout_queries_batched(gen.generate_batch, rows, **rollout_kw)
+        raise RuntimeError(f"unsupported rollout_backend={rollout_backend!r}")
 
     def eval_now(lora_path: str | None, tag: str, *, teacher_mode: bool = False):
-        # See collect_groups: PEFT After policies use HF generation because
-        # this vLLM release cannot load Harness-1 attention LoRA targets.
         eval_kw = dict(
             component_id=args.component,
             max_new=int(getattr(args, "eval_max_new_tokens", args.max_new_tokens)),
@@ -1945,7 +2074,10 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
             train_env=train_env,
             train_session=train_session,
         )
-        if vllm_on and not (lora_path and Path(lora_path).name != "theta0"):
+        rollout_backend = str(getattr(args, "rollout_backend", "vllm") or "vllm").lower()
+        if rollout_backend == "vllm":
+            if backend is not None:
+                release_hf()
             client = open_vllm(lora_path, tag)
             try:
                 return eval_closed_loop(
@@ -1956,13 +2088,15 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
                 )
             finally:
                 close_vllm()
-        gen = HFGenerateClient(ensure_hf(lora_path), enc=enc)
-        return eval_closed_loop(
-            backend,
-            ev_rows,
-            generate_batch=gen.generate_batch,
-            **eval_kw,
-        )
+        if rollout_backend == "hf":
+            gen = HFGenerateClient(ensure_hf(lora_path), enc=enc)
+            return eval_closed_loop(
+                backend,
+                ev_rows,
+                generate_batch=gen.generate_batch,
+                **eval_kw,
+            )
+        raise RuntimeError(f"unsupported rollout_backend={rollout_backend!r}")
 
     def save_and_audit(cell: str, adapter_dir: Path) -> dict[str, Any]:
         adapter_dir.mkdir(parents=True, exist_ok=True)
@@ -1994,14 +2128,29 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
         if use_frozen:
             groups = frozen_groups
         elif refresh:
+            query_sampler = QuerySampler(
+                train_rows,
+                base_seed=int(args.seed),
+                groups_per_step=int(
+                    getattr(args, "train_groups_per_step", HF_DEFAULT_GROUPS_PER_STEP)
+                    or HF_DEFAULT_GROUPS_PER_STEP
+                ),
+            )
+            metrics_path = out / cell / "metrics.jsonl"
             for step in range(n_train):
-                print(f"[{log_tag}] cell={cell} on-policy rollout step={step} policy={loop.policy_version}", flush=True)
+                step_rows, sample_meta = query_sampler.sample_for_rollout()
+                query_sampler.note_rollout_start()
+                print(
+                    f"[{log_tag}] cell={cell} on-policy rollout step={step} "
+                    f"policy={loop.policy_version} queries={sample_meta.get('query_ids')}",
+                    flush=True,
+                )
                 groups = collect_groups(
                     adapter_live,
                     loop.policy_version,
                     f"{cell}_rollout{step}",
                     sample=True,
-                    rows=train_rows,
+                    rows=step_rows,
                     group_size=args.group_size,
                     teacher_mode=cell == "teacher",
                 )
@@ -2026,19 +2175,72 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
                         groups_per_step=int(getattr(args, "train_groups_per_step", HF_DEFAULT_GROUPS_PER_STEP) or 0),
                         micro_batch_size=int(getattr(args, "train_micro_batch_size", HF_DEFAULT_MICRO_BATCH) or HF_DEFAULT_MICRO_BATCH),
                         heartbeat_every=int(getattr(args, "train_heartbeat_every", HF_DEFAULT_HEARTBEAT_EVERY) or HF_DEFAULT_HEARTBEAT_EVERY),
+                        skip_group_sampling=True,
+                        global_optimizer_step=query_sampler.state.global_optimizer_step,
+                        base_seed=int(args.seed),
+                        model_enc=enc,
                     )
                 )
                 rewards_after = [r for g in groups for r in g.terminal_rewards]
                 if rewards_before != rewards_after:
                     raise RuntimeError("Teacher shadow mutated RL rewards")
-                adapter_dir = out / "adapters" / cell
-                adapter_dir.mkdir(parents=True, exist_ok=True)
-                backend.save_pretrained(str(adapter_dir))
-                adapter_live = str(adapter_dir)
-                if step == n_train - 1:
-                    adapter_audits.append(save_and_audit(cell, adapter_dir))
+                n_opt = int(part.get("n_optimizer_steps") or 0)
+                step_num = query_sampler.state.global_optimizer_step + (1 if n_opt > 0 else 0)
+                ckpt_tmp = out / "checkpoints" / cell / f".tmp_step_{step_num:06d}"
+                ckpt_final = out / "checkpoints" / cell / f"step_{step_num:06d}"
+                adapter_step_dir = ckpt_tmp / "adapter"
+                adapter_step_dir.mkdir(parents=True, exist_ok=True)
+                backend.save_pretrained(str(adapter_step_dir))
+                save_optimizer_bundle(backend, ckpt_tmp / "optimizer.pt")
+                save_rng_state(ckpt_tmp / "rng.json")
+                (ckpt_tmp / "sampler.json").write_text(
+                    json.dumps(query_sampler.state.to_dict(), indent=2) + "\n", encoding="utf-8"
+                )
+                digest = policy_digest_record(
+                    adapter_dir=adapter_step_dir,
+                    base_model=vllm_base,
+                    policy_version=loop.policy_version,
+                )
+                step_manifest = {
+                    "cell": cell,
+                    "step": step_num,
+                    "policy_version": loop.policy_version,
+                    "sample_meta": sample_meta,
+                    "train": part,
+                    "policy_digest": digest,
+                    "n_optimizer_steps": n_opt,
+                }
+                append_metrics_jsonl(
+                    metrics_path,
+                    {
+                        "step": step_num,
+                        "cell": cell,
+                        "policy_version": loop.policy_version,
+                        "sample_meta": sample_meta,
+                        "n_optimizer_steps": n_opt,
+                        "update_type": (part.get("substeps") or [{}])[-1].get("update_type")
+                        if part.get("substeps")
+                        else part.get("update_type"),
+                    },
+                )
+                if n_opt > 0:
+                    publish_step_checkpoint(ckpt_tmp, ckpt_final, manifest=step_manifest)
+                    query_sampler.note_update_complete()
+                    loop.bump_after_update()
+                    adapter_live = str(adapter_step_dir)
+                    adapter_dir = out / "adapters" / cell
+                    adapter_dir.mkdir(parents=True, exist_ok=True)
+                    backend.save_pretrained(str(adapter_dir))
+                    adapter_live = str(adapter_dir)
+                    if step == n_train - 1:
+                        adapter_audits.append(save_and_audit(cell, adapter_dir))
+                else:
+                    import shutil
+
+                    if ckpt_tmp.exists():
+                        shutil.rmtree(ckpt_tmp)
+                    part["skipped_no_signal"] = True
                 train_parts.append(part)
-                loop.bump_after_update()
                 release_hf()
         else:
             print(f"[{log_tag}] cell={cell} rollout", flush=True)
@@ -2077,6 +2279,7 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
                         groups_per_step=int(getattr(args, "train_groups_per_step", HF_DEFAULT_GROUPS_PER_STEP) or 0),
                         micro_batch_size=int(getattr(args, "train_micro_batch_size", HF_DEFAULT_MICRO_BATCH) or HF_DEFAULT_MICRO_BATCH),
                         heartbeat_every=int(getattr(args, "train_heartbeat_every", HF_DEFAULT_HEARTBEAT_EVERY) or HF_DEFAULT_HEARTBEAT_EVERY),
+                        model_enc=enc,
                     )
                 )
             )
@@ -2241,6 +2444,10 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
     (out / summary_name).write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     if train_only:
         (out / "FOUR_CELL_SUMMARY.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+    (out / "RUN_COMPLETE").write_text(
+        json.dumps({"ok": True, "elapsed_sec": summary.get("elapsed_sec"), "train_only": train_only}) + "\n",
+        encoding="utf-8",
+    )
     return summary
 
 
@@ -2262,7 +2469,7 @@ def coerce_runtime_args(args: argparse.Namespace) -> argparse.Namespace:
     if not getattr(args, "score_split", None):
         args.score_split = SCORE_SPLIT_830 if uses_sec_train_data(args) else SCORE_SPLIT_166
     if not hasattr(args, "max_new_tokens"):
-        args.max_new_tokens = 384
+        args.max_new_tokens = 2048
     if not hasattr(args, "gpu"):
         args.gpu = "0"
     if not hasattr(args, "sft_adapter"):
@@ -2334,6 +2541,12 @@ def coerce_runtime_args(args: argparse.Namespace) -> argparse.Namespace:
         args.enforce_eager = True
     if not hasattr(args, "vllm_python"):
         args.vllm_python = ""
+    if not hasattr(args, "max_num_seqs"):
+        args.max_num_seqs = 256
+    if not hasattr(args, "vllm_generate_timeout_s"):
+        args.vllm_generate_timeout_s = 3600.0
+    if not hasattr(args, "vllm_disable_custom_all_reduce"):
+        args.vllm_disable_custom_all_reduce = None
     if not hasattr(args, "train_groups_per_step"):
         args.train_groups_per_step = HF_DEFAULT_GROUPS_PER_STEP
     if not hasattr(args, "train_micro_batch_size"):

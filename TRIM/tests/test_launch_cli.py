@@ -556,7 +556,7 @@ def test_train_horizon_stays_short():
         ]
     )
     assert args.max_turns == 6
-    assert args.max_new_tokens == 384
+    assert args.max_new_tokens == 2048
     assert args.eval_max_turns == 40
     assert args.eval_max_new_tokens == 2048
     assert args.eval_temperature == 1.0

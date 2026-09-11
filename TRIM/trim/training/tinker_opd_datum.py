@@ -148,6 +148,7 @@ def build_projected_seed_datums(
     policy_version: str,
     gate_beta: float = SCAPE_RL_OPD_GATE_BETA,
     opd_loss: str = OPD_LOSS_PROJECTED_GAP,
+    model_enc: Any | None = None,
 ) -> list[TinkerOPDDatum]:
     """SEED-scale OPD on projected student-legal actions.
 
@@ -162,17 +163,49 @@ def build_projected_seed_datums(
     lam = float(lambda_opd)
     beta = float(gate_beta)
     datums: list[TinkerOPDDatum] = []
+    from trim.state.snapshot import EnvironmentSnapshot
+    from trim.training.opd_prompt_encoding import encode_rollout_style_action, encode_rollout_style_prompt
+
     for step in steps:
+        meta = dict(step.metadata or {})
         if prompt_has_teacher_leak(step.prompt_reduced):
             raise ValueError("teacher-only observation leaked into Student prefix")
-        prompt_ids = encode(step.prompt_reduced)
-        target_ids = encode(step.target_text)
+        if meta.get("student_prompt_token_ids"):
+            prompt_ids = list(meta["student_prompt_token_ids"])
+        elif model_enc is not None and step.student_snapshot:
+            snap = EnvironmentSnapshot.from_dict(step.student_snapshot)
+            prompt_ids, _ = encode_rollout_style_prompt(
+                model_enc, snap, component_id=str(meta.get("component_id") or "")
+            )
+        else:
+            prompt_ids = encode(step.prompt_reduced)
+        if meta.get("target_token_ids"):
+            target_ids = list(meta["target_token_ids"])
+        elif model_enc is not None:
+            target_ids, _ = encode_rollout_style_action(model_enc, step.target_action)
+        else:
+            target_ids = encode(step.target_text)
         if not target_ids:
             continue
-        teacher_prompt = str((step.metadata or {}).get("prompt_full") or "")
-        teacher_ids = encode(teacher_prompt) if teacher_prompt else []
+        teacher_prompt = str(meta.get("prompt_full") or "")
+        if meta.get("teacher_prompt_token_ids"):
+            teacher_ids = list(meta["teacher_prompt_token_ids"])
+        elif teacher_prompt and model_enc is not None and step.student_snapshot:
+            snap = EnvironmentSnapshot.from_dict(step.student_snapshot)
+            teacher_ids, _ = encode_rollout_style_prompt(
+                model_enc,
+                snap,
+                component_id=str(meta.get("component_id") or ""),
+            )
+        elif teacher_prompt:
+            teacher_ids = encode(teacher_prompt)
+        else:
+            teacher_ids = []
         if not teacher_ids:
             continue
+        if len(target_ids) != len(list(step.token_mask or [True] * len(target_ids))):
+            if step.token_mask is not None:
+                raise ValueError("projected target/mask length mismatch")
         n_tok = len(target_ids)
         try:
             parsed = parse_action(step.target_text)

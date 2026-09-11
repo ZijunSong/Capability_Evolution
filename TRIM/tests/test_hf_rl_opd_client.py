@@ -36,8 +36,11 @@ def _rows(n: int) -> list[dict]:
     return [
         {
             "prompt_ids": [1, 2, 3, 4],
+            "effective_prompt_ids": [1, 2, 3, 4],
             "action_ids": [5, 6],
-            "logprob_old": 0.0,
+            "token_logprobs": [-1.0, -2.0],
+            "action_mask": [1, 1],
+            "logprob_old": -1.5,
             "advantage": 1.0 if i % 2 == 0 else -0.5,
         }
         for i in range(n)

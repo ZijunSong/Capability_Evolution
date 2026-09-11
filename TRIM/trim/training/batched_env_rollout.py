@@ -171,13 +171,21 @@ def _apply_generation(
                 pass
         action_ids = list(gen.token_ids)
         prompt_ids = list(ep.pending_pids)
+        from trim.eval.harmony_runtime import fit_prompt_ids_to_context
+
+        effective_prompt_ids = fit_prompt_ids_to_context(
+            prompt_ids,
+            max_model_len=int(getattr(enc, "max_model_len", 8192) or 8192),
+            max_new_tokens=len(action_ids) or 1,
+        )
         prompt_text = ""
         if enc is not None:
             try:
-                prompt_text = decode_ids(enc, prompt_ids)
+                prompt_text = decode_ids(enc, effective_prompt_ids)
             except Exception:
                 prompt_text = ""
         prompt_text = prompt_text or ep.pending_prefix
+        truncated = str(getattr(gen, "finish_reason", "") or "") == "length"
         post = snap_from_state(qid, ep.st, ep.component_id, harness_mask=ep.harness_mask)
     ep.points.append(
         StudentDecisionPoint(
@@ -200,13 +208,17 @@ def _apply_generation(
     )
     rec = cispo_row_from_generation(
         query_id=qid,
-        prompt_ids=prompt_ids,
+        prompt_ids=effective_prompt_ids,
         prompt_text=prompt_text,
         gen=gen,
         policy_version=ep.policy_version,
         turn_id=ep.points[-1].turn_id,
-        valid=valid,
+        valid=valid and not truncated,
     )
+    rec["episode_id"] = f"{qid}_r{ep.rollout_idx}"
+    rec["rollout_idx"] = ep.rollout_idx
+    if truncated:
+        rec["truncated_generation"] = True
     ep.rl_rows.append(rec)
 
 
@@ -361,7 +373,6 @@ def _groups_from_episodes(
     max_turns: int,
     terminal_reward,
     curated_recall,
-    group_relative_advantages,
 ) -> list[HybridRolloutGroup]:
     by_q: dict[str, list[LiveEpisode]] = {}
     for ep in episodes:
@@ -412,7 +423,9 @@ def _groups_from_episodes(
                 }
             )
             episode_stats.append(quality)
-        adv = group_relative_advantages([r["reward"] for r in rl_rows], [r["query_id"] for r in rl_rows])
+        from trim.training.hf_rl_opd_client import episode_relative_advantages
+
+        adv = episode_relative_advantages(rl_rows)
         for rec, a in zip(rl_rows, adv):
             rec["advantage"] = a
         groups.append(
@@ -459,6 +472,7 @@ def rollout_queries_batched(
     doc_store_workers: int = DEFAULT_DOC_STORE_WORKERS,
     train_env: str = "local_legacy",
     train_session: Any | None = None,
+    rollout_backend: str = "vllm",
 ) -> list[HybridRolloutGroup]:
     """Batch across queries and group members; step the env between turns.
 
@@ -474,7 +488,7 @@ def rollout_queries_batched(
         snap_from_state,
         terminal_reward,
     )
-    from trim.training.hf_rl_opd_client import group_relative_advantages
+    from trim.training.hf_rl_opd_client import episode_relative_advantages
     from trim.training.upstream_train_env import canonical_train_env, new_state_fn
 
     rows = list(rows)
@@ -521,12 +535,11 @@ def rollout_queries_batched(
             episodes, prep_s = next_fut.result()
             if i + 1 < len(chunks):
                 next_fut = prefetch.submit(prepare, chunks[i + 1])
-            if len(chunks) > 1:
-                print(
-                    f"[rollout] chunk {i + 1}/{len(chunks)} queries={len(chunk)} "
-                    f"episodes={len(episodes)} prep={prep_s:.1f}s -> vLLM",
-                    flush=True,
-                )
+            print(
+                f"[rollout] chunk {i + 1}/{len(chunks)} queries={len(chunk)} "
+                f"episodes={len(episodes)} prep={prep_s:.1f}s backend={rollout_backend}",
+                flush=True,
+            )
             _run_episode_turns(
                 episodes,
                 generate_batch,
@@ -550,7 +563,6 @@ def rollout_queries_batched(
                     max_turns=max_turns,
                     terminal_reward=terminal_reward,
                     curated_recall=curated_recall,
-                    group_relative_advantages=group_relative_advantages,
                 )
             )
     return groups

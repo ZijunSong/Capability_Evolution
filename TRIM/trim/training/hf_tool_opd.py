@@ -210,7 +210,7 @@ class ScapeHFToolOPD:
                     r=self.lora_r,
                     lora_alpha=self.lora_alpha,
                     target_modules=[m for m in ("q_proj", "k_proj", "v_proj", "o_proj") if m in {n.split(".")[-1] for n, _ in self.model.named_modules()}] or ["q_proj"],
-                    lora_dropout=0.05,
+                    lora_dropout=0.0,
                     bias="none",
                     task_type="CAUSAL_LM",
                 )
@@ -233,7 +233,7 @@ class ScapeHFToolOPD:
                 r=self.lora_r,
                 lora_alpha=self.lora_alpha,
                 target_modules=targets,
-                lora_dropout=0.05,
+                lora_dropout=0.0,
                 bias="none",
                 task_type="CAUSAL_LM",
             )
@@ -362,10 +362,9 @@ class ScapeHFToolOPD:
         keep_kwargs = {"logits_to_keep": n_response + 1}
 
         def _forward(kwargs: dict[str, Any]) -> torch.Tensor:
-            if require_grad:
-                self.model.train()
-                return self.model(inp, **kwargs).logits[0]
             self.model.eval()
+            if require_grad:
+                return self.model(inp, **kwargs).logits[0]
             with torch.no_grad():
                 return self.model(inp, **kwargs).logits[0]
 
@@ -422,10 +421,9 @@ class ScapeHFToolOPD:
         kwargs = {"attention_mask": packed.attention_mask, "logits_to_keep": keep}
 
         def _forward(extra: dict[str, Any]) -> torch.Tensor:
-            if require_grad:
-                self.model.train()
-                return self.model(packed.input_ids, **extra).logits
             self.model.eval()
+            if require_grad:
+                return self.model(packed.input_ids, **extra).logits
             with torch.no_grad():
                 return self.model(packed.input_ids, **extra).logits
 

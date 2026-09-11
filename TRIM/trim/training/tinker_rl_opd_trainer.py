@@ -204,6 +204,10 @@ def project_on_policy_decisions(
         for step in mat:
             step.metadata["source_policy_version"] = point.policy_version
             step.metadata["decision_point_id"] = point.decision_point_id
+            if point.student_prompt_token_ids:
+                step.metadata["student_prompt_token_ids"] = list(point.student_prompt_token_ids)
+            if point.student_action_tokens:
+                step.metadata["target_token_ids"] = list(point.student_action_tokens)
             if point.student_action_text and step.target_text:
                 overlap_total += 1
                 if point.student_action_text.strip() == step.target_text.strip() or (
@@ -228,6 +232,7 @@ def prepare_hybrid_batch(
     component_id: str,
     teacher_event_fn: TeacherEventFn | None,
     encode_fn: EncodeFn | None = None,
+    model_enc: Any | None = None,
     opd_states_per_trajectory: int = 3,
     seed: int = 0,
     include_valid_failures: bool = True,
@@ -307,6 +312,7 @@ def prepare_hybrid_batch(
                     policy_version=policy_version,
                     gate_beta=opd_gate_beta,
                     opd_loss=opd_loss,
+                    model_enc=model_enc,
                 )
             else:
                 opd_datums = build_tinker_opd_datums(

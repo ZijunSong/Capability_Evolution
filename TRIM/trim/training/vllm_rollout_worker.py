@@ -136,15 +136,27 @@ def main() -> int:
         llm_kwargs["max_num_seqs"] = int(max_num_seqs)
     if cfg.get("enforce_eager", True):
         llm_kwargs["enforce_eager"] = True
+    disable_ar = cfg.get("disable_custom_all_reduce")
+    if disable_ar is not None:
+        llm_kwargs["disable_custom_all_reduce"] = bool(disable_ar)
     lora_path = cfg.get("lora_path") or None
     lora_request = None
     if lora_path:
         llm_kwargs["enable_lora"] = True
         llm_kwargs["max_loras"] = 1
-        llm_kwargs["max_lora_rank"] = 16
+        rank = 16
+        lora_cfg_path = Path(str(lora_path)) / "adapter_config.json"
+        if lora_cfg_path.is_file():
+            lora_cfg = json.loads(lora_cfg_path.read_text(encoding="utf-8"))
+            rank = int(lora_cfg.get("r") or lora_cfg.get("lora_alpha") or rank)
+            rank_pattern = lora_cfg.get("rank_pattern") or {}
+            if rank_pattern:
+                rank = max(int(rank), max(int(v) for v in rank_pattern.values()))
+        llm_kwargs["max_lora_rank"] = rank
         from vllm.lora.request import LoRARequest
 
         lora_request = LoRARequest("policy", 1, str(lora_path))
+        print(json.dumps({"event": "lora_load", "path": lora_path, "max_lora_rank": rank}), flush=True)
 
     print(json.dumps({"event": "loading_llm", **{k: llm_kwargs[k] for k in ("model", "tensor_parallel_size", "max_model_len") if k in llm_kwargs}, "lora": lora_path}), flush=True)
     llm = LLM(**llm_kwargs)

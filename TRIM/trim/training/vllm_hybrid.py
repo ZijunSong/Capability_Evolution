@@ -24,7 +24,6 @@ from trim.eval.harmony_runtime import (
     decode_ids,
     fit_prompt_ids_to_context,
 )
-from trim.training.hf_rl_opd_client import CISPO_MAX_ACTION_TOKENS
 
 WORKER_MODULE = "trim.training.vllm_rollout_worker"
 FORBIDDEN_TOKENIZER_MARKERS = ("cl100k", "r50k", "p50k", "gpt2")
@@ -57,13 +56,9 @@ class GenerateResult:
             self.action_mask = [1] * len(self.token_ids)
 
 
-def mean_behavior_logprob(
-    token_logprobs: Sequence[float],
-    *,
-    max_action: int = CISPO_MAX_ACTION_TOKENS,
-) -> float:
-    """Mean sampled-token logprob on the same action window CISPO truncates to."""
-    window = [float(x) for x in list(token_logprobs)[: max(1, int(max_action))]]
+def mean_behavior_logprob(token_logprobs: Sequence[float]) -> float:
+    """Mean sampled-token logprob over the full generated action."""
+    window = [float(x) for x in token_logprobs]
     if not window:
         return 0.0
     return float(sum(window) / len(window))
@@ -88,6 +83,7 @@ def cispo_row_from_generation(
         "query_id": query_id,
         "prompt": prompt_text,
         "prompt_ids": list(prompt_ids),
+        "effective_prompt_ids": list(prompt_ids),
         "action_text": gen.text,
         "action_ids": action_ids,
         "token_logprobs": list(gen.token_logprobs),
@@ -98,6 +94,8 @@ def cispo_row_from_generation(
         "policy_version": policy_version,
         "valid": valid,
         "turn_id": turn_id,
+        "finish_reason": str(getattr(gen, "finish_reason", "") or ""),
+        "truncated_generation": str(getattr(gen, "finish_reason", "") or "") == "length",
     }
 
 
@@ -257,6 +255,7 @@ class SchemeARuntime:
     def __init__(self) -> None:
         self.hf: Any = None
         self.vllm: VLLMGenerateClient | None = None
+        self.optimizer_bundle_path: Path | None = None
 
     @property
     def vllm_active(self) -> bool:
@@ -273,11 +272,16 @@ class SchemeARuntime:
         self.assert_exclusive()
         return backend
 
-    def detach_hf(self) -> None:
+    def detach_hf(self, *, optimizer_path: Path | None = None) -> None:
         backend = self.hf
         self.hf = None
         if backend is None:
             return
+        if optimizer_path is not None:
+            from trim.training.train_checkpoint import save_optimizer_bundle
+
+            save_optimizer_bundle(backend, optimizer_path)
+            self.optimizer_bundle_path = optimizer_path
         try:
             if getattr(backend, "model", None) is not None:
                 del backend.model
@@ -382,6 +386,7 @@ class VLLMGenerateClient:
         self.generate_timeout_s = float(generate_timeout_s)
         self.extra_env = dict(extra_env or {})
         self.max_num_seqs = int(max_num_seqs) if max_num_seqs else None
+        self.disable_custom_all_reduce: bool | None = None
         self.process: subprocess.Popen[bytes] | None = None
         self.tokenizer_audit: dict[str, Any] = {}
         self.n_generate_calls = 0
@@ -410,6 +415,7 @@ class VLLMGenerateClient:
             "encoding": enc_cfg["encoding"],
             "family": enc_cfg["family"],
             "max_num_seqs": self.max_num_seqs,
+            "disable_custom_all_reduce": self.disable_custom_all_reduce,
         }
         (self.session_dir / "config.json").write_text(
             json.dumps(cfg, indent=2) + "\n", encoding="utf-8"
@@ -530,8 +536,9 @@ class VLLMGenerateClient:
 
     def _wait_flag(self, name: str, timeout_s: float, *, what: str) -> None:
         flag = self.session_dir / name
-        deadline = time.time() + timeout_s
-        while time.time() < deadline:
+        deadline = time.monotonic() + timeout_s
+        last_hb = 0.0
+        while time.monotonic() < deadline:
             if self.process is not None and self.process.poll() is not None:
                 raise RuntimeError(
                     f"{what}: worker exited with code {self.process.returncode}.\n"
@@ -539,6 +546,21 @@ class VLLMGenerateClient:
                 )
             if flag.is_file():
                 return
+            now = time.monotonic()
+            if now - last_hb >= 45.0:
+                print(
+                    json.dumps(
+                        {
+                            "event": "vllm_wait",
+                            "what": what,
+                            "session": str(self.session_dir),
+                            "elapsed_s": round(now - (deadline - timeout_s), 1),
+                            "backend": "vllm",
+                        }
+                    ),
+                    flush=True,
+                )
+                last_hb = now
             time.sleep(0.25)
         raise TimeoutError(f"{what} timed out after {timeout_s}s.\nLog tail:\n{_tail(self.log_path)}")
 
@@ -565,7 +587,21 @@ class HFGenerateClient:
 
         family = str(getattr(self.enc, "family", "") or "")
         out: list[GenerateResult] = []
-        for req in requests:
+        total = len(requests)
+        for i, req in enumerate(requests):
+            if total > 1 and (i == 0 or (i + 1) % 8 == 0 or i + 1 == total):
+                print(
+                    json.dumps(
+                        {
+                            "event": "hf_generate_progress",
+                            "backend": "hf",
+                            "done": i + 1,
+                            "total": total,
+                            "request_id": req.request_id,
+                        }
+                    ),
+                    flush=True,
+                )
             prompt_ids = assert_family_prompt_ids(
                 req.prompt_token_ids,
                 family=family,
@@ -586,14 +622,20 @@ class HFGenerateClient:
             if self.logprob_from_hf and token_ids:
                 import torch
 
-                old_prompt = prompt_ids[-384:] if len(prompt_ids) > 384 else prompt_ids
-                old_act = token_ids[:CISPO_MAX_ACTION_TOKENS]
+                from trim.eval.harmony_runtime import fit_prompt_ids_to_context
+
+                eff_prompt = fit_prompt_ids_to_context(
+                    list(prompt_ids),
+                    max_model_len=int(getattr(self.backend, "max_model_len", 8192) or 8192),
+                    max_new_tokens=len(token_ids),
+                )
                 with torch.no_grad():
                     old_lp = self.backend._teacher_forced_logprobs(
-                        old_prompt, old_act, require_grad=False
+                        eff_prompt, token_ids, require_grad=False
                     )
                 logprobs = [float(x) for x in old_lp.detach().cpu().tolist()]
                 logprob_old = mean_behavior_logprob(logprobs)
+                prompt_ids = eff_prompt
             out.append(
                 GenerateResult(
                     request_id=req.request_id,
@@ -616,18 +658,25 @@ def load_adapter_weights(backend: Any, adapter_dir: Path | str | None) -> dict[s
     weight_file = path / "adapter_model.safetensors"
     if not weight_file.is_file():
         raise FileNotFoundError(f"adapter missing: {weight_file}")
+    import torch
     from safetensors.torch import load_file
     from trim.eval.adapter_reload_audit import remap_lora_state
 
     weights = remap_lora_state(load_file(str(weight_file)))
     missing, unexpected = backend.model.load_state_dict(weights, strict=False)
     lora_missing = [x for x in missing if "lora_" in x]
+    lora_unexpected = [x for x in unexpected if "lora_" in x]
     if lora_missing:
-        raise RuntimeError(f"adapter reload failed: {lora_missing[:8]}")
+        raise RuntimeError(f"adapter reload failed missing: {lora_missing[:8]}")
+    if lora_unexpected:
+        raise RuntimeError(f"adapter reload failed unexpected: {lora_unexpected[:8]}")
+    for name, tensor in weights.items():
+        if not torch.isfinite(tensor).all():
+            raise RuntimeError(f"adapter tensor {name} has non-finite values")
     return {
         "loaded": True,
         "adapter_dir": str(path),
-        "unexpected_lora": [x for x in unexpected if "lora_" in x],
+        "unexpected_lora": lora_unexpected,
     }
 
 

@@ -626,7 +626,7 @@ def add_train_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
         help="Threads used to build doc_store_for_row inside each query batch. 1 is serial.",
     )
     parser.add_argument("--max-turns", type=int, default=6)
-    parser.add_argument("--max-new-tokens", type=int, default=384)
+    parser.add_argument("--max-new-tokens", type=int, default=2048)
     parser.add_argument(
         "--opd-states-per-trajectory",
         type=int,
@@ -702,6 +702,24 @@ def add_train_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
         type=int,
         default=1,
         help="Optimizer steps allowed on one sampled batch when on-policy refresh is off.",
+    )
+    parser.add_argument(
+        "--max-num-seqs",
+        type=int,
+        default=256,
+        help="vLLM max_num_seqs for training rollouts (passed to worker LLM kwargs).",
+    )
+    parser.add_argument(
+        "--vllm-generate-timeout-s",
+        type=float,
+        default=3600.0,
+        help="Per-batch vLLM generate wait timeout in seconds.",
+    )
+    parser.add_argument(
+        "--vllm-disable-custom-all-reduce",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Pass disable_custom_all_reduce to vLLM LLM() when set (not via env var).",
     )
     return parser
 
