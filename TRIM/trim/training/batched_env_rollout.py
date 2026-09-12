@@ -81,7 +81,11 @@ def _build_prompt_ids(ep: LiveEpisode, enc) -> list[int]:
         from trim.eval.harness_g_runtime import build_prompt_ids as build_g_prompt_ids
 
         return build_g_prompt_ids(
-            query, wm_text(ep.st), enc, harness_mask=ep.harness_mask
+            query,
+            wm_text(ep.st),
+            enc,
+            harness_mask=ep.harness_mask,
+            actions_obs=ep.acts,
         )
     wm = wm_text_for_train_state(ep.st) if is_upstream_state(ep.st) else None
     if wm is None:
@@ -127,6 +131,8 @@ def _apply_generation(
         enc,
         harness_mask=ep.harness_mask,
         teacher_mode=bool(ep.teacher_mode),
+        action_map=ep.st.get("action_map"),
+        finish_reason=str(getattr(gen, "finish_reason", "") or ""),
     )
     ep.valids.append(valid)
     ep.actions.append(action)
@@ -144,13 +150,14 @@ def _apply_generation(
                     execute_local=execute_tool,
                 )
             elif is_harness_g(mask=ep.harness_mask, component_ids=ep.component_id):
-                ep.st, obs, _ok = execute_tool(
+                ep.st, obs, exec_ok = execute_tool(
                     ep.st,
                     action.get("name") if valid else None,
                     action.get("arguments"),
                     searcher=searcher,
                     search_k=search_k,
                 )
+                _ok = bool(valid and exec_ok)
             else:
                 ep.st, obs, _ok = apply_train_action(
                     ep.st,
@@ -164,7 +171,7 @@ def _apply_generation(
             ep.st["invalid_tools"] = int(ep.st.get("invalid_tools") or 0) + 1
             obs = f"ERROR: tool failed ({type(exc).__name__})."
             _ok = False
-        if valid:
+        if valid and _ok:
             try:
                 ep.acts.append((make_action(action["name"], action.get("arguments") or {}), make_observation(obs)))
             except Exception:
@@ -611,6 +618,12 @@ def traces_from_groups(
                 leak += 1
         search_q = str(row.get("query") or "")
         sm = search_metrics(searcher, search_q, list(row.get("evidence_docids") or [])) if searcher is not None else {}
+        if sm:
+            sm = {
+                **sm,
+                "initial_bm25_recall_at_5": sm.get("evidence_recall_at_5"),
+                "initial_bm25_recall_at_100": sm.get("evidence_recall_at_100"),
+            }
         traces.append(
             {
                 "query_id": row["query_id"],

@@ -67,8 +67,14 @@ def _count_transport_retry_events(turn: Mapping[str, Any]) -> tuple[int, int]:
 
 
 def _classify_env_exception(exc: BaseException) -> str:
+    from trim.upstream_harness1.env_bridge import SchemaValidationError
+
+    if isinstance(exc, SchemaValidationError):
+        return "schema_error"
     msg = str(exc).lower()
-    if "missing required parameter" in msg or "parameter" in msg and "expected" in msg:
+    if "missing required parameter" in msg or ("parameter" in msg and "expected" in msg):
+        return "schema_error"
+    if "must not be null" in msg:
         return "schema_error"
     if "unknown tool" in msg:
         return "invalid_tool_name"
@@ -89,17 +95,26 @@ def count_tool_calls_from_turns(turns: Sequence[Mapping[str, Any]]) -> dict[str,
     for turn in turns:
         if turn.get("api_error_category") == "model_output_parse_error":
             server_parse_errors += 1
-        elif turn.get("api_error_category") == "transport_error":
+        elif turn.get("api_error_category") in {"transport_error", "server_error_unclassified"}:
             transport_errors += 1
         retry_server, retry_transport = _count_transport_retry_events(turn)
         server_parse_errors += retry_server
         transport_errors += retry_transport
+        for event in turn.get("transport_retry_events") or []:
+            category = str(event.get("category") or "")
+            if category == "model_output_parse_error":
+                server_parse_errors += 1
+            elif category in {"transport_error", "server_error_unclassified"}:
+                transport_errors += 1
         if turn.get("error_kind") == "schema_error":
             schema_errors += 1
         if turn.get("protocol_error") == "length_truncated" or turn.get("api_finish_reason") == "length":
             length_truncations += 1
         exc = str(turn.get("env_exception") or "")
         if turn.get("error_kind") == "invalid_tool_name" or "unknown tool" in exc.lower():
+            invalid_tool_names += 1
+        protocol_err = str(turn.get("protocol_error") or "")
+        if "corrupted tool name" in protocol_err.lower():
             invalid_tool_names += 1
         response = turn.get("api_response") or {}
         choices = response.get("choices") or []
@@ -283,6 +298,14 @@ def _append_jsonl(path: Path, row: Mapping[str, Any]) -> None:
         handle.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
+def _query_sampling_seed(base_seed: int | None, qid: str) -> int | None:
+    if base_seed is None:
+        return None
+    import zlib
+
+    return (int(base_seed) + zlib.adler32(str(qid).encode("utf-8"))) & 0x7FFFFFFF
+
+
 async def run_one_query_api(
     *,
     env: Any,
@@ -293,6 +316,8 @@ async def run_one_query_api(
     max_turns: int,
     token_counter: Any | None = None,
     prompt_token_budget: int | None = None,
+    base_seed: int | None = None,
+    api_extra: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     from trim.upstream_harness1.env_bridge import (
         action_from_parsed,
@@ -302,6 +327,10 @@ async def run_one_query_api(
 
     await env.initial_observation()
     qid = str(query_row.get("query_id") or env.query_id)
+    request_extra: dict[str, Any] = dict(api_extra or {})
+    query_seed = _query_sampling_seed(base_seed, qid)
+    if query_seed is not None:
+        request_extra.setdefault("seed", query_seed)
     turns: list[dict[str, Any]] = []
     started = time.time()
     done = False
@@ -338,6 +367,7 @@ async def run_one_query_api(
                 "temperature": client.temperature,
                 "max_tokens": client.max_tokens,
                 "model": client.model,
+                "seed": query_seed,
             },
         }
         _append_jsonl(trace_dir / "TURNS.jsonl", turn_rec)
@@ -346,7 +376,7 @@ async def run_one_query_api(
         response: dict[str, Any] | None = None
         api_error: ApiError | None = None
         try:
-            response = client.complete(messages, tools)
+            response = client.complete(messages, tools, extra=request_extra or None)
             n_generation_attempts += 1
         except ConfigError:
             raise
@@ -377,6 +407,7 @@ async def run_one_query_api(
             turn_rec["api_error_category"] = api_error.category
             turn_rec["parse_error"] = str(api_error)
             turn_rec["transport_attempts"] = getattr(api_error, "attempt", None)
+            turn_rec["transport_retry_events"] = list(getattr(api_error, "retry_events", None) or [])
         else:
             assert response is not None
             parsed = parse_chat_completion(response)
@@ -403,8 +434,12 @@ async def run_one_query_api(
         n_executed = 0
         try:
             if api_error is not None:
-                if isinstance(api_error, TransportError):
-                    transport_error_attempts += 1
+                from trim.upstream_harness1.api_adapter import ServerErrorUnclassified
+
+                if isinstance(api_error, (TransportError, ServerErrorUnclassified)):
+                    transport_error_attempts += max(
+                        1, len(getattr(api_error, "retry_events", None) or [])
+                    )
                     turn_rec["error_kind"] = "transport_error"
                 else:
                     protocol_error_attempts += 1
@@ -576,23 +611,50 @@ def _cohort_stat(values: Sequence[float | None], *, n_expected: int) -> dict[str
     }
 
 
-def summarize_api_traces(traces: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    n = len(traces)
+def summarize_api_traces(
+    traces: Sequence[Mapping[str, Any]],
+    *,
+    n_planned: int | None = None,
+) -> dict[str, Any]:
+    n_completed = len(traces)
+    n = int(n_planned) if n_planned is not None else n_completed
+    n = max(n_completed, n)
     denom = max(1, n)
-    recall = _cohort_stat([t.get("recall") for t in traces], n_expected=n)
-    precision = _cohort_stat([t.get("precision") for t in traces], n_expected=n)
-    f1 = _cohort_stat([t.get("f1") for t in traces], n_expected=n)
-    traj = _cohort_stat([t.get("trajectory_recall") for t in traces], n_expected=n)
-    fa = _cohort_stat([t.get("final_answer_recall") for t in traces], n_expected=n)
-    format_err = [float(t.get("format_error") or 0.0) for t in traces]
-    tool_calls = [float(t.get("n_tool_calls") or 0.0) for t in traces]
-    search_calls = [float(t.get("n_search_plus_fan_out") or t.get("n_search_calls") or 0.0) for t in traces]
+    padded_traces = list(traces)
+    if len(padded_traces) < n:
+        padded_traces.extend([{}] * (n - len(padded_traces)))
+    recall = _cohort_stat([t.get("recall") for t in padded_traces], n_expected=n)
+    precision = _cohort_stat([t.get("precision") for t in padded_traces], n_expected=n)
+    f1 = _cohort_stat([t.get("f1") for t in padded_traces], n_expected=n)
+    traj = _cohort_stat([t.get("trajectory_recall") for t in padded_traces], n_expected=n)
+    fa = _cohort_stat([t.get("final_answer_recall") for t in padded_traces], n_expected=n)
+    format_err = [float(t.get("format_error") or 0.0) for t in padded_traces[:n_completed]]
+    if len(format_err) < n:
+        format_err.extend([0.0] * (n - len(format_err)))
+    tool_calls = [float(t.get("n_tool_calls") or 0.0) for t in padded_traces[:n_completed]]
+    if len(tool_calls) < n:
+        tool_calls.extend([0.0] * (n - len(tool_calls)))
+    search_calls = [
+        float(t.get("n_search_plus_fan_out") or t.get("n_search_calls") or 0.0)
+        for t in padded_traces[:n_completed]
+    ]
+    if len(search_calls) < n:
+        search_calls.extend([0.0] * (n - len(search_calls)))
     infra = sum(1 for t in traces if t.get("finish_reason") == "infra_error")
     explicit_end = sum(float(t.get("explicit_end_search_count") or 0.0) for t in traces)
     implicit_text = sum(1 for t in traces if t.get("episode_finish_reason") == "implicit_user_text")
+    n_missing = max(0, n - n_completed)
     return {
         "evaluation_path": EVALUATION_PATH_UPSTREAM_API,
-        "n_queries": n,
+        "n_queries": n_completed,
+        "n_planned": n,
+        "coverage_complete": n_missing == 0 and infra == 0,
+        "coverage": {
+            "planned": n,
+            "completed": n_completed,
+            "missing": n_missing,
+        },
+        "partial": n_missing > 0 or infra > 0,
         "recall": recall["mean"],
         "precision": precision["mean"],
         "f1": f1["mean"],
@@ -613,10 +675,10 @@ def summarize_api_traces(traces: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
             "final_answer_recall": fa,
         },
         "format_error_rate": sum(format_err) / denom,
-        "mean_turns": sum(_env_turn_count(t) for t in traces) / denom,
+        "mean_turns": sum(_env_turn_count(t) for t in padded_traces[:n]) / denom,
         "mean_tool_calls_per_query": sum(tool_calls) / denom,
         "mean_search_and_fan_out_per_query": sum(search_calls) / denom,
-        "dropped_queries": 0,
+        "dropped_queries": n_missing,
         "n_infra_error": infra,
         "explicit_end_search_total": explicit_end,
         "implicit_user_text_total": implicit_text,

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import multiprocessing as mp
 import re
+import sys
 import time
 from typing import Any, Callable, Mapping
 
@@ -107,6 +109,110 @@ class LocalSearchCorpusTool(_LocalToolBase):
         return result
 
 
+def _grep_scan_loop(
+    *,
+    pattern: str,
+    chunks: list[tuple[str, str]],
+    limit: int,
+    timeout_s: float | None,
+) -> dict[str, Any]:
+    """Scan chunk texts with ``re``; check wall-clock between chunks."""
+    try:
+        compiled = re.compile(pattern)
+    except re.error as exc:
+        return {"status": "invalid_regex", "error": str(exc), "ids": [], "docs": []}
+    started = time.perf_counter()
+    ids: list[str] = []
+    docs: list[str] = []
+    timed_out = False
+    for chunk_id, text in chunks:
+        if timeout_s is not None and time.perf_counter() - started >= timeout_s:
+            timed_out = True
+            break
+        if compiled.search(text or ""):
+            ids.append(chunk_id)
+            docs.append(text)
+            if len(ids) >= limit:
+                break
+    if timed_out and ids:
+        status = "partial_scan"
+    elif timed_out:
+        status = "timeout"
+    elif ids:
+        status = "completed"
+    else:
+        status = "completed_empty"
+    return {"status": status, "ids": ids, "docs": docs, "timed_out": timed_out}
+
+
+def _grep_child_worker(
+    pattern: str,
+    chunk_data: list[tuple[str, str]],
+    limit: int,
+    timeout_s: float,
+    shared: Any,
+) -> None:
+    result = _grep_scan_loop(pattern=pattern, chunks=chunk_data, limit=limit, timeout_s=timeout_s)
+    shared["status"] = result["status"]
+    shared["ids"] = list(result["ids"])
+    shared["docs"] = list(result["docs"])
+    shared["timed_out"] = bool(result.get("timed_out"))
+    if result.get("error"):
+        shared["error"] = result["error"]
+
+
+def _grep_scan_isolated(
+    store: LocalCorpusStore,
+    pattern: str,
+    *,
+    limit: int,
+    timeout_s: float,
+) -> dict[str, Any]:
+    """Run grep matching in a child process so catastrophic regex can be terminated."""
+    chunk_data = [(c.chunk_id, c.text) for c in store.iter_chunks()]
+    if sys.platform == "win32":
+        return _grep_scan_loop(
+            pattern=pattern, chunks=chunk_data, limit=limit, timeout_s=max(0.0, timeout_s)
+        )
+    if timeout_s <= 0:
+        return _grep_scan_loop(pattern=pattern, chunks=chunk_data, limit=limit, timeout_s=0.0)
+
+    ctx = mp.get_context("fork")
+    with mp.Manager() as manager:
+        shared = manager.dict({"status": "running", "ids": [], "docs": [], "timed_out": False})
+        proc = ctx.Process(
+            target=_grep_child_worker,
+            args=(pattern, chunk_data, limit, timeout_s, shared),
+        )
+        proc.start()
+        proc.join(timeout=timeout_s + 0.25)
+        killed = False
+        if proc.is_alive():
+            killed = True
+            proc.terminate()
+            proc.join(2.0)
+            if proc.is_alive():
+                proc.kill()
+                proc.join(2.0)
+
+        ids = list(shared.get("ids") or [])
+        docs = list(shared.get("docs") or [])
+        status = str(shared.get("status") or "running")
+        timed_out = bool(shared.get("timed_out"))
+
+        if killed:
+            if ids:
+                status = "partial_scan"
+            else:
+                status = "timeout"
+            timed_out = True
+        elif status == "running":
+            status = "timeout" if not ids else "partial_scan"
+            timed_out = True
+
+        return {"status": status, "ids": ids, "docs": docs, "timed_out": timed_out}
+
+
 class LocalGrepCorpusTool(_LocalToolBase):
     def __init__(
         self,
@@ -131,31 +237,29 @@ class LocalGrepCorpusTool(_LocalToolBase):
         if not isinstance(params, dict) or "pattern" not in params:
             raise ValueError(f"Invalid params type: {type(params)}")
         pattern = str(params["pattern"])
-        try:
-            compiled = re.compile(pattern)
-        except re.error as exc:
-            if isinstance(self.capability_log, dict):
-                self.capability_log["grep_invalid_regex"] = int(
-                    self.capability_log.get("grep_invalid_regex") or 0
-                ) + 1
-            return (f"grep: invalid regex ({exc})", self._metadata_cls(returned_chunk_ids=[]))
         started = time.perf_counter()
-        ids: list[str] = []
-        docs: list[str] = []
-        timed_out = False
-        for chunk in self.store.iter_chunks():
-            if time.perf_counter() - started >= self._timeout_s:
-                timed_out = True
-                break
-            if compiled.search(chunk.text or ""):
-                ids.append(chunk.chunk_id)
-                docs.append(chunk.text)
-                if len(ids) >= self._limit:
-                    break
-        if timed_out:
-            if isinstance(self.capability_log, dict):
-                self.capability_log["grep_timeout"] = int(self.capability_log.get("grep_timeout") or 0) + 1
-        if timed_out and not ids:
+        scan = _grep_scan_isolated(
+            self.store,
+            pattern,
+            limit=self._limit,
+            timeout_s=self._timeout_s,
+        )
+        status = str(scan.get("status") or "completed")
+        ids = list(scan.get("ids") or [])
+        docs = list(scan.get("docs") or [])
+        log = self.capability_log if isinstance(self.capability_log, dict) else None
+        if log is not None:
+            log["grep_last_status"] = status
+            log["grep_last_wall_sec"] = round(time.perf_counter() - started, 4)
+        if status == "invalid_regex":
+            if log is not None:
+                log["grep_invalid_regex"] = int(log.get("grep_invalid_regex") or 0) + 1
+            err = str(scan.get("error") or "invalid pattern")
+            return (f"grep: invalid regex ({err})", self._metadata_cls(returned_chunk_ids=[]))
+        if status in {"timeout", "partial_scan"}:
+            if log is not None:
+                log["grep_timeout"] = int(log.get("grep_timeout") or 0) + 1
+        if status == "timeout" and not ids:
             return (
                 f"grep: scan timed out after {self._timeout_s:.1f}s; not a confirmed empty corpus",
                 self._metadata_cls(returned_chunk_ids=[]),
@@ -163,11 +267,16 @@ class LocalGrepCorpusTool(_LocalToolBase):
         token_counts = [self._token_counter(d) for d in docs] if self._token_counter else [None] * len(docs)
         doc_texts = {cid: doc for cid, doc in zip(ids, docs)}
         text = format_search_observation(ids, docs, token_counts, display_limit=self._limit)
-        if isinstance(self.capability_log, dict):
+        if status == "partial_scan":
+            text += (
+                f"\n... (grep partial scan: timed out after {self._timeout_s:.1f}s; "
+                f"{len(ids)} match(es) from incomplete corpus scan)"
+            )
+        if log is not None:
             if ids:
-                self.capability_log["grep_success"] = int(self.capability_log.get("grep_success") or 0) + 1
-            else:
-                self.capability_log["grep_no_results"] = int(self.capability_log.get("grep_no_results") or 0) + 1
+                log["grep_success"] = int(log.get("grep_success") or 0) + 1
+            elif status == "completed_empty":
+                log["grep_no_results"] = int(log.get("grep_no_results") or 0) + 1
         return (text, self._metadata_cls(returned_chunk_ids=list(ids), doc_texts=doc_texts or None))
 
 

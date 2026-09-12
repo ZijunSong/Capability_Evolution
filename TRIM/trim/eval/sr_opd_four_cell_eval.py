@@ -19,18 +19,27 @@ from trim.eval.official_query_pool import (
     SCORE_SPLIT_830,
     is_full_score_split,
 )
-from trim.training.action_codec import STUDENT_NATIVE_TOOLS
+from trim.training.action_codec import HARNESS_G_STUDENT_NATIVE_TOOLS, STUDENT_NATIVE_TOOLS
 
 
-def legal_rate(tool_names: list[str]) -> float:
+def legal_rate(tool_names: list[str], *, harness_g: bool = False) -> float:
     if not tool_names:
         return 0.0
-    return sum(1 for n in tool_names if n in STUDENT_NATIVE_TOOLS) / len(tool_names)
+    allowed = set(HARNESS_G_STUDENT_NATIVE_TOOLS) if harness_g else set(STUDENT_NATIVE_TOOLS)
+    return sum(1 for n in tool_names if n in allowed) / len(tool_names)
 
 
-def summarize_traces(traces: list[dict[str, Any]], *, setting: str, retrieval_name: str) -> dict[str, Any]:
+def summarize_traces(
+    traces: list[dict[str, Any]],
+    *,
+    setting: str,
+    retrieval_name: str,
+    harness_g: bool = False,
+) -> dict[str, Any]:
     n = max(1, len(traces))
-    legal = [legal_rate(t.get("tool_names") or t.get("names") or []) for t in traces]
+    legal = [
+        legal_rate(t.get("tool_names") or t.get("names") or [], harness_g=harness_g) for t in traces
+    ]
     rec5 = [float(t.get("evidence_recall_at_5") or 0.0) for t in traces]
     rec100 = [float(t.get("evidence_recall_at_100") or 0.0) for t in traces]
     tools = [float(t.get("n_tool_calls") or 0.0) for t in traces]
@@ -45,7 +54,7 @@ def summarize_traces(traces: list[dict[str, Any]], *, setting: str, retrieval_na
         "tool_search_cost": sum(searches) / n,
         "retrieval": retrieval_name,
         "student_inference_privilege": False,
-        "eval_harness": "H_min",
+        "eval_harness": "Harness-G" if harness_g else "H_min",
         "legacy_tool_token_kl_used": False,
         "opd_loss": "sr_opd_ce",
         "rl_loss": "cispo",
@@ -67,14 +76,21 @@ def search_metrics(searcher: RetrievalBackend, query: str, evidence: list[str]) 
     }
 
 
-def split_summaries(traces: list[dict[str, Any]], *, setting: str, retrieval_name: str, eval_rows: list[dict[str, Any]]) -> dict[str, Any]:
+def split_summaries(
+    traces: list[dict[str, Any]],
+    *,
+    setting: str,
+    retrieval_name: str,
+    eval_rows: list[dict[str, Any]],
+    harness_g: bool = False,
+) -> dict[str, Any]:
     by_id = {r["query_id"]: r for r in eval_rows}
     for tr in traces:
         rec = by_id.get(tr["query_id"]) or {}
         tr["official_split"] = rec.get("official_split") or "train"
-    all_pool = summarize_traces(traces, setting=setting, retrieval_name=retrieval_name)
+    all_pool = summarize_traces(traces, setting=setting, retrieval_name=retrieval_name, harness_g=harness_g)
     test_traces = [t for t in traces if t.get("official_split") == "test"]
-    official = summarize_traces(test_traces, setting=setting, retrieval_name=retrieval_name)
+    official = summarize_traces(test_traces, setting=setting, retrieval_name=retrieval_name, harness_g=harness_g)
     official["split"] = "official_test"
     official["n_expected"] = len(test_traces)
     return {"setting": setting, "all_pool": all_pool, "official_test": official, "primary_split": "official_test"}
@@ -102,6 +118,57 @@ def pack_closed_loop_summary(
     payload["n_official_test"] = official_test.get("n_queries")
     if extra:
         payload.update(extra)
+    return payload
+
+
+def write_upstream_api_eval_outputs(
+    out: Path,
+    *,
+    component_id: str,
+    summaries: list[dict[str, Any]],
+    pool_meta: dict[str, Any],
+) -> dict[str, Any]:
+    """Official result schema for base-model upstream_api / Harness-1 API eval."""
+    out.mkdir(parents=True, exist_ok=True)
+    primary = dict(summaries[0]) if summaries else {}
+    coverage = dict(primary.get("coverage") or {})
+    n_planned = int(primary.get("n_planned") or coverage.get("planned") or primary.get("n_queries") or 0)
+    n_missing = int(coverage.get("missing") or primary.get("dropped_queries") or 0)
+    n_infra = int(primary.get("n_infra_error") or 0)
+    coverage_complete = n_planned > 0 and n_missing == 0
+    infra_clean = n_infra == 0
+    execution_complete = bool(primary.get("execution_complete", coverage_complete and infra_clean))
+    formal_eligible = coverage_complete and infra_clean and execution_complete
+    payload = {
+        "status": "UPSTREAM_API_BASELINE_EVAL",
+        "run_kind": "upstream_api_base_model",
+        "component": component_id,
+        "evaluation_path": primary.get("evaluation_path") or "upstream_api",
+        "formal_eligible": formal_eligible,
+        "execution_complete": execution_complete,
+        "coverage_complete": coverage_complete,
+        "infra_clean": infra_clean,
+        "protocol_accounted": True,
+        "claim_usable_for_full_vs_zero": formal_eligible,
+        "claim_status": "FORMAL_ELIGIBLE" if formal_eligible else "PARTIAL_OR_INFRA_INCOMPLETE",
+        "pool": pool_meta,
+        "coverage": {
+            "planned": n_planned,
+            "completed": int(coverage.get("completed") or primary.get("n_queries") or 0),
+            "missing": n_missing,
+        },
+        "settings": summaries,
+        "note": (
+            "Base-model Harness-1 API eval. Not an SR-OPD/CISPO training run. "
+            "final_answer_recall is gold-document recall from curated set, not answer accuracy."
+        ),
+    }
+    (out / "FOUR_CELL_OFFICIAL_SUMMARY.json").write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    for summary in summaries:
+        print(format_summary_table(str(summary.get("setting") or component_id), summary), flush=True)
     return payload
 
 

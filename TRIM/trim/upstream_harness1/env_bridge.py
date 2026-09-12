@@ -296,7 +296,7 @@ def clip_observation_text(text: str, max_chars: int = DEFAULT_MAX_OBS_CHARS) -> 
                 running += len(block)
                 continue
             break
-        if kept or preamble:
+        if kept:
             clipped = (preamble + "".join(kept)).rstrip()
             hidden_docs = len(blocks) - len(kept)
             suffix = f"\n... (truncated, {len(raw)} chars total"
@@ -304,6 +304,18 @@ def clip_observation_text(text: str, max_chars: int = DEFAULT_MAX_OBS_CHARS) -> 
                 suffix += f"; {hidden_docs} more document(s) not shown"
             suffix += ")"
             return clipped + suffix
+        if blocks:
+            suffix_reserve = 72
+            budget = max(0, limit - len(preamble) - suffix_reserve)
+            if budget > 0:
+                first_prefix = blocks[0][:budget]
+                clipped = (preamble + first_prefix).rstrip()
+                hidden_docs = max(0, len(blocks) - 1)
+                suffix = f"\n... (truncated, {len(raw)} chars total"
+                if hidden_docs or len(blocks[0]) > budget:
+                    suffix += "; remaining document(s) not shown"
+                suffix += ")"
+                return clipped + suffix
 
     return raw[:limit] + f"\n... (truncated, {len(raw)} chars total)"
 
@@ -586,6 +598,46 @@ def _allowed_tool_names(env: Any) -> set[str]:
     return names
 
 
+class SchemaValidationError(ValueError):
+    """Structured schema validation failure before any tool side effect."""
+
+    category = "schema_error"
+
+
+def _validate_json_value(
+    val: Any,
+    spec: Mapping[str, Any],
+    *,
+    tool_name: str,
+    path: str,
+) -> None:
+    expected = (spec or {}).get("type")
+    if expected == "array":
+        if not isinstance(val, list):
+            raise SchemaValidationError(f"Tool {tool_name} parameter {path} expected array")
+        item_spec = (spec or {}).get("items") or {}
+        for idx, item in enumerate(val):
+            _validate_json_value(item, item_spec, tool_name=tool_name, path=f"{path}[{idx}]")
+        return
+    if expected == "object":
+        if not isinstance(val, dict):
+            raise SchemaValidationError(f"Tool {tool_name} parameter {path} expected object")
+        props = (spec or {}).get("properties") or {}
+        for key, child in props.items():
+            if key in val and val[key] is not None:
+                _validate_json_value(val[key], child or {}, tool_name=tool_name, path=f"{path}.{key}")
+        return
+    if expected == "string" and not isinstance(val, str):
+        raise SchemaValidationError(f"Tool {tool_name} parameter {path} expected string")
+    if expected in {"integer", "number"} and not isinstance(val, (int, float)):
+        raise SchemaValidationError(f"Tool {tool_name} parameter {path} expected number")
+    enum = (spec or {}).get("enum")
+    if enum and val not in enum:
+        raise SchemaValidationError(
+            f"Tool {tool_name} parameter {path} must be one of {list(enum)}"
+        )
+
+
 def _validate_tool_params(tool: Any, params: Mapping[str, Any]) -> None:
     schema = getattr(tool, "tool_schema", None)
     if schema is None:
@@ -594,21 +646,14 @@ def _validate_tool_params(tool: Any, params: Mapping[str, Any]) -> None:
     name = str(getattr(schema, "name", "") or "tool")
     for key in required:
         if key not in params:
-            raise ValueError(f"Tool {name} missing required parameter: {key}")
+            raise SchemaValidationError(f"Tool {name} missing required parameter: {key}")
         if params[key] is None:
-            raise ValueError(f"Tool {name} parameter {key} must not be null")
+            raise SchemaValidationError(f"Tool {name} parameter {key} must not be null")
     props = getattr(schema, "parameters", None) or {}
     for key, spec in props.items():
         if key not in params or params[key] is None:
             continue
-        expected = (spec or {}).get("type")
-        val = params[key]
-        if expected == "array" and not isinstance(val, list):
-            raise ValueError(f"Tool {name} parameter {key} expected array")
-        if expected == "object" and not isinstance(val, dict):
-            raise ValueError(f"Tool {name} parameter {key} expected object")
-        if expected == "string" and not isinstance(val, str):
-            raise ValueError(f"Tool {name} parameter {key} expected string")
+        _validate_json_value(params[key], spec or {}, tool_name=name, path=key)
 
 
 def action_from_parsed(parsed: Any, env: Any, mods: Mapping[str, Any]) -> Any:

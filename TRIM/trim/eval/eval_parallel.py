@@ -79,18 +79,58 @@ def merge_traces(
     original_rows: Sequence[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     by_id: dict[str, dict[str, Any]] = {}
+    duplicates: list[str] = []
     for traces in shard_traces:
         for tr in traces:
             qid = str(tr.get("query_id") or "")
-            if qid:
-                by_id[qid] = tr
+            if not qid:
+                continue
+            if qid in by_id:
+                duplicates.append(qid)
+                continue
+            by_id[qid] = tr
+    if duplicates:
+        sample = sorted(set(duplicates))[:8]
+        raise RuntimeError(
+            f"merged eval has {len(set(duplicates))} duplicate query_id(s); "
+            f"refusing silent overwrite, e.g. {sample}"
+        )
+    expected = {str(r["query_id"]) for r in original_rows}
     missing = [str(r["query_id"]) for r in original_rows if str(r["query_id"]) not in by_id]
     if missing:
         raise RuntimeError(f"merged eval is missing {len(missing)} queries, e.g. {missing[:8]}")
-    extra = set(by_id) - {str(r["query_id"]) for r in original_rows}
+    extra = set(by_id) - expected
     if extra:
         raise RuntimeError(f"merged eval has {len(extra)} unexpected queries, e.g. {sorted(extra)[:8]}")
+    if len(by_id) != len(expected):
+        raise RuntimeError(
+            f"merged eval expected {len(expected)} unique queries, got {len(by_id)}"
+        )
     return [by_id[str(r["query_id"])] for r in original_rows]
+
+
+def stream_merge_jsonl(sources: Sequence[Path], dest: Path) -> int:
+    """Append JSONL shards to one file without loading all rows into memory."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_suffix(dest.suffix + ".tmp")
+    n_lines = 0
+    with tmp.open("w", encoding="utf-8") as out_handle:
+        for src in sources:
+            if not src.is_file():
+                continue
+            with src.open(encoding="utf-8") as in_handle:
+                for line in in_handle:
+                    if not line.strip():
+                        continue
+                    json.loads(line)
+                    out_handle.write(line if line.endswith("\n") else line + "\n")
+                    n_lines += 1
+    if n_lines == 0:
+        if tmp.is_file():
+            tmp.unlink()
+        return 0
+    tmp.replace(dest)
+    return n_lines
 
 
 def summarize_merged_traces(

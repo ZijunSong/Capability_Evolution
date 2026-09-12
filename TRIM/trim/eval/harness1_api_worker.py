@@ -74,6 +74,11 @@ def main(argv: list[str] | None = None) -> int:
     max_new_tokens = int(_cfg_number(cfg, "max_new_tokens", 2048))
     max_model_len = int(_cfg_number(cfg, "max_model_len", 32768))
     prompt_token_budget = max(1024, max_model_len - max_new_tokens - 512)
+    query_timeout_s = cfg.get("query_timeout_s")
+    query_timeout_s = float(query_timeout_s) if query_timeout_s not in (None, "") else None
+    sampling_extra = dict(cfg.get("sampling_extra") or {})
+    base_seed = cfg.get("seed")
+    base_seed = int(base_seed) if base_seed not in (None, "") else None
     client = ChatCompletionsClient(
         base_url=identity.api_base_url,
         model=identity.api_model,
@@ -96,7 +101,14 @@ def main(argv: list[str] | None = None) -> int:
             "eval_profile": retrieval.eval_profile(),
             "capability_log": pack.capability_log,
             "token_count_mode": token_count_mode,
-            "sampling": {"temperature": temperature, "max_tokens": max_new_tokens, "model": identity.api_model},
+            "sampling": {
+                "temperature": temperature,
+                "max_tokens": max_new_tokens,
+                "model": identity.api_model,
+                "max_model_len": max_model_len,
+                **sampling_extra,
+            },
+            "query_timeout_s": query_timeout_s,
         },
     )
     traces: list[dict] = []
@@ -124,7 +136,7 @@ def main(argv: list[str] | None = None) -> int:
                 env_kwargs["openai_client"] = pack.verifier_client
             try:
                 env = Env(**env_kwargs)
-                result = await run_one_query_api(
+                query_coro = run_one_query_api(
                     env=env,
                     mods=mods,
                     client=client,
@@ -133,10 +145,27 @@ def main(argv: list[str] | None = None) -> int:
                     max_turns=int(cfg.get("max_turns") or 40),
                     token_counter=token_counter,
                     prompt_token_budget=prompt_token_budget,
+                    base_seed=base_seed,
+                    api_extra=sampling_extra,
                 )
+                if query_timeout_s is not None and query_timeout_s > 0:
+                    result = await asyncio.wait_for(query_coro, timeout=query_timeout_s)
+                else:
+                    result = await query_coro
                 traces.append(result["metrics"])
             except ConfigError:
                 raise
+            except asyncio.TimeoutError:
+                infra_errors.append(qid)
+                traces.append(
+                    write_infra_error_query(
+                        trace_dir=out,
+                        query_row=row,
+                        exc=TimeoutError(
+                            f"query {qid} exceeded wall-clock limit of {query_timeout_s:.1f}s"
+                        ),
+                    )
+                )
             except Exception as exc:  # noqa: BLE001
                 infra_errors.append(qid)
                 traces.append(
@@ -153,9 +182,11 @@ def main(argv: list[str] | None = None) -> int:
         )
         write_tool_health(out / "TOOL_HEALTH.json", tool_health)
 
-    summary = summarize_api_traces(traces)
+    summary = summarize_api_traces(traces, n_planned=len(rows))
     summary["n_infra_error"] = len(infra_errors)
     summary["infra_error_query_ids"] = infra_errors
+    summary["execution_complete"] = len(traces) == len(rows)
+    summary["infra_clean"] = not infra_errors
     summary["eval_profile"] = retrieval.eval_profile()
     (out / "SUMMARY.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     write_run_manifest(
@@ -169,23 +200,34 @@ def main(argv: list[str] | None = None) -> int:
             "eval_profile": retrieval.eval_profile(),
             "capability_log": pack.capability_log,
             "token_count_mode": token_count_mode,
-            "sampling": {"temperature": temperature, "max_tokens": max_new_tokens, "model": identity.api_model},
+            "sampling": {
+                "temperature": temperature,
+                "max_tokens": max_new_tokens,
+                "model": identity.api_model,
+                "max_model_len": max_model_len,
+                **sampling_extra,
+            },
+            "query_timeout_s": query_timeout_s,
             "tool_health_path": "TOOL_HEALTH.json",
         },
     )
+    partial = bool(infra_errors)
     (out / "DONE.json").write_text(
         json.dumps(
             {
-                "ok": True,
+                "ok": not partial,
                 "n_queries": len(traces),
+                "n_planned": len(rows),
                 "n_infra_error": len(infra_errors),
-                "partial": bool(infra_errors),
+                "partial": partial,
+                "execution_complete": len(traces) == len(rows),
+                "infra_clean": not infra_errors,
             }
         )
         + "\n",
         encoding="utf-8",
     )
-    return 0
+    return 1 if partial else 0
 
 
 if __name__ == "__main__":

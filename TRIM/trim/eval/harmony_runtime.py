@@ -411,14 +411,26 @@ def parse_harmony_tool_call(
                 ):
                     args = _loads_json(content)
                     legal = name in SCHEMA_TOOLS
+                    needs_args = name in {"select", "lookup", "answer_with"}
+                    json_ok = args is not None and (not needs_args or bool(args))
+                    if channel == "analysis" and not rec_l.startswith("functions."):
+                        return ParsedToolCall(
+                            parsed=False,
+                            legal=False,
+                            tool_name=None,
+                            arguments=None,
+                            parse_method="harmony_parse_messages",
+                            raw_json=content[:2000] if content else None,
+                            error="analysis_only_not_executable",
+                        )
                     return ParsedToolCall(
-                        parsed=True,
-                        legal=legal,
-                        tool_name=name,
-                        arguments=args,
+                        parsed=bool(name and json_ok),
+                        legal=legal and json_ok,
+                        tool_name=name if json_ok else None,
+                        arguments=args if json_ok else None,
                         parse_method="harmony_parse_messages",
                         raw_json=content[:2000] if content else None,
-                        error=None if args is not None else "json_missing_or_invalid",
+                        error=None if json_ok else "json_missing_or_invalid",
                     )
         except Exception as exc:  # noqa: BLE001
             harmony_err = str(exc)[:200]
@@ -442,14 +454,27 @@ def parse_harmony_tool_call(
     args = _loads_json(body) if body else None
     if name:
         legal = name in SCHEMA_TOOLS
+        needs_args = name in {"select", "lookup", "answer_with"}
+        json_ok = args is not None and (not needs_args or bool(args))
+        has_call = "<|call|>" in text or _MESSAGE_JSON_RE.search(text) is not None
+        if not has_call:
+            return ParsedToolCall(
+                parsed=False,
+                legal=False,
+                tool_name=None,
+                arguments=None,
+                parse_method="regex_to_functions",
+                raw_json=(body or "")[:2000] if body else None,
+                error=harmony_err or "no_executable_tool_call_region",
+            )
         return ParsedToolCall(
-            parsed=True,
-            legal=legal,
-            tool_name=name,
-            arguments=args,
+            parsed=bool(json_ok),
+            legal=legal and json_ok,
+            tool_name=name if json_ok else None,
+            arguments=args if json_ok else None,
             parse_method="regex_to_functions",
             raw_json=(body or "")[:2000] if body else None,
-            error=harmony_err or (None if args is not None else "json_missing_or_invalid"),
+            error=harmony_err or (None if json_ok else "json_missing_or_invalid"),
         )
     return ParsedToolCall(
         parsed=False,

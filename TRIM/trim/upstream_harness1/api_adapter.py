@@ -44,6 +44,7 @@ class ApiError(RuntimeError):
         body: str | None = None,
         request_id: str | None = None,
         attempt: int | None = None,
+        retry_events: list[dict[str, Any]] | None = None,
     ) -> None:
         super().__init__(message)
         if category is not None:
@@ -52,9 +53,10 @@ class ApiError(RuntimeError):
         self.body = body
         self.request_id = request_id
         self.attempt = attempt
+        self.retry_events = list(retry_events or [])
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "category": self.category,
             "message": str(self),
             "status": self.status,
@@ -62,6 +64,9 @@ class ApiError(RuntimeError):
             "request_id": self.request_id,
             "attempt": self.attempt,
         }
+        if self.retry_events:
+            payload["retry_events"] = list(self.retry_events)
+        return payload
 
 
 class TransportError(ApiError):
@@ -237,7 +242,7 @@ def _strip_code_fences(text: str) -> str:
 
 def _json_obj_looks_like_tool_call(obj: Mapping[str, Any], names: frozenset[str]) -> bool:
     if "name" in obj and isinstance(obj.get("name"), str):
-        return True
+        return str(obj["name"]) in names
     for key in ("type", "operation", "function"):
         val = obj.get(key)
         if isinstance(val, str) and val in names:
@@ -511,10 +516,13 @@ class ChatCompletionsClient:
                 )
                 retry_events.append(last_error.to_dict())
                 if err_cls is ConfigError:
+                    last_error.retry_events = list(retry_events)
                     raise last_error
                 if int(exc.code) not in _TRANSPORT_RETRY_STATUS and int(exc.code) < 500:
+                    last_error.retry_events = list(retry_events)
                     raise last_error
                 if attempt + 1 >= max_attempts:
+                    last_error.retry_events = list(retry_events)
                     raise last_error
                 time.sleep(min(2**attempt, 8))
             except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
@@ -524,7 +532,9 @@ class ChatCompletionsClient:
                 )
                 retry_events.append(last_error.to_dict())
                 if attempt + 1 >= max_attempts:
+                    last_error.retry_events = list(retry_events)
                     raise last_error
                 time.sleep(min(2**attempt, 8))
         assert last_error is not None
+        last_error.retry_events = list(retry_events)
         raise last_error

@@ -250,7 +250,7 @@ def parse_qwen_tool_call(text: str, completion_ids: Sequence[int] | None = None,
     if raw is None:
         # Some Qwen dumps emit a bare JSON object with name/arguments.
         obj = _loads_json(text)
-        if isinstance(obj, dict) and (obj.get("name") or obj.get("function")):
+        if isinstance(obj, dict) and (obj.get("name") or obj.get("function") or obj.get("tool")):
             raw_obj = obj.get("function") if isinstance(obj.get("function"), dict) else obj
         else:
             return ParsedToolCall(
@@ -274,7 +274,9 @@ def parse_qwen_tool_call(text: str, completion_ids: Sequence[int] | None = None,
             raw_json=(raw or text)[:2000],
             error="json_missing_or_invalid",
         )
-    name = _canonicalize_tool_name(raw_obj.get("name") or raw_obj.get("tool_name"))
+    name = _canonicalize_tool_name(
+        raw_obj.get("name") or raw_obj.get("tool_name") or raw_obj.get("tool")
+    )
     args = raw_obj.get("arguments") or raw_obj.get("parameters") or {}
     if isinstance(args, str):
         args = _loads_json(args) or {}

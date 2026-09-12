@@ -232,6 +232,11 @@ def main(argv: list[str] | None = None) -> int:
         (spec.out / "LAUNCH.json").write_text(json.dumps(launch, indent=2) + "\n", encoding="utf-8")
         summaries = []
         try:
+            worker_extra = {
+                "max_model_len": int(args.max_model_len),
+                "seed": int(args.seed),
+                "sampling_extra": {"seed": int(args.seed)},
+            }
             api_eval_kwargs = dict(
                 rows=rows,
                 out=spec.out / "upstream_api",
@@ -243,6 +248,7 @@ def main(argv: list[str] | None = None) -> int:
                 max_new_tokens=eval_max_new,
                 temperature=eval_temperature,
                 pool_meta=pool_meta,
+                extra=worker_extra,
             )
             if eval_replicas > 1:
                 ev, traces = run_replicated_api_eval(
@@ -262,18 +268,15 @@ def main(argv: list[str] | None = None) -> int:
         finally:
             if held_outer:
                 release_keepalive()
-        payload = write_eval_outputs(
+        from trim.eval.sr_opd_four_cell_eval import write_upstream_api_eval_outputs
+
+        payload = write_upstream_api_eval_outputs(
             spec.out,
             component_id=spec.coalition,
             summaries=summaries,
-            adapter_audits=audits,
             pool_meta=pool_meta,
-            runtime_audit=None,
         )
         payload["evaluation_path"] = EVALUATION_PATH_UPSTREAM_API
-        (spec.out / "FOUR_CELL_OFFICIAL_SUMMARY.json").write_text(
-            json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
-        )
         print(json.dumps(payload, indent=2), flush=True)
         return 0
 

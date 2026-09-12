@@ -888,7 +888,11 @@ def one_episode(
         with timed_section(timing, "harness"):
             if g:
                 pids = build_g_prompt_ids(
-                    query, wm_text(st), enc, harness_mask=harness_mask
+                    query,
+                    wm_text(st),
+                    enc,
+                    harness_mask=harness_mask,
+                    actions_obs=acts,
                 )
             elif enc is not None and hasattr(enc, "build_first_turn_prompt_ids"):
                 if turn == 0:
@@ -956,19 +960,24 @@ def one_episode(
                     enc,
                     harness_mask=harness_mask,
                     teacher_mode=teacher_mode,
+                    action_map=st.get("action_map"),
+                    finish_reason=str(gen.get("finish_reason") or ""),
                 )
         with timed_section(timing, "harness"):
             valids.append(valid)
             actions.append(action)
             names.append(str(action.get("name")))
+            exec_ok = True
             if g:
-                st, obs, _ok = execute_tool(
+                st, obs, exec_ok = execute_tool(
                     st,
                     action.get("name") if valid else None,
                     action.get("arguments"),
                     searcher=searcher,
                     search_k=search_k,
                 )
+                if valid and not exec_ok:
+                    valid = False
             else:
                 st, obs, _ok = apply_train_action(
                     st,
@@ -979,7 +988,7 @@ def one_episode(
                     mods=st.get("_upstream_mods"),
                     execute_local=execute_tool,
                 )
-            if valid:
+            if valid and exec_ok:
                 try:
                     acts.append((make_action(action["name"], action.get("arguments") or {}), make_observation(obs)))
                 except Exception:
@@ -1346,8 +1355,9 @@ def eval_closed_loop(
     harness_mask = resolved_rollout_mask(
         component_id, harness_mask=harness_mask, teacher_mode=teacher_mode
     )
+    g_eval = is_harness_g(mask=harness_mask, component_ids=component_id)
     runtime_audit = None
-    if not is_harness_g(mask=harness_mask, component_ids=component_id):
+    if not g_eval:
         from trim.eval.runtime_effect_audit import audit_mask_wiring, merge_audits, summarize_live_effects
 
         runtime_audit = merge_audits(audit_mask_wiring(harness_mask))
@@ -1387,7 +1397,13 @@ def eval_closed_loop(
             if not live.get("pass"):
                 raise RuntimeError("; ".join(live.get("failures") or ["live effect gate failed"]))
         retrieval_name = searcher.name if searcher is not None else "none"
-        split = split_summaries(traces, setting="closed_loop", retrieval_name=retrieval_name, eval_rows=rows)
+        split = split_summaries(
+            traces,
+            setting="closed_loop",
+            retrieval_name=retrieval_name,
+            eval_rows=rows,
+            harness_g=g_eval,
+        )
         official = pack_closed_loop_summary(
             split,
             leak=leak,
@@ -1403,6 +1419,7 @@ def eval_closed_loop(
                 "teacher_leak_count": int(leak),
                 "runtime_effect_audit": runtime_audit,
                 "claim_usable_for_full_vs_zero": bool((runtime_audit or {}).get("claim_usable_for_full_vs_zero")),
+                "eval_harness": "Harness-G" if g_eval else "H_min",
             },
         )
         return official, traces
@@ -1456,7 +1473,13 @@ def eval_closed_loop(
         runtime_audit = merge_audits(runtime_audit.get("wiring") or runtime_audit, live)
         if not live.get("pass"):
             raise RuntimeError("; ".join(live.get("failures") or ["live effect gate failed"]))
-    split = split_summaries(traces, setting="closed_loop", retrieval_name=retrieval_name, eval_rows=rows)
+    split = split_summaries(
+        traces,
+        setting="closed_loop",
+        retrieval_name=retrieval_name,
+        eval_rows=rows,
+        harness_g=g_eval,
+    )
     official = pack_closed_loop_summary(
         split,
         leak=leak,

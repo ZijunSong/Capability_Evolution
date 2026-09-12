@@ -326,4 +326,4 @@ def evidence_recall(
 
 
 def hits_to_doc_store(hits: list[SearchHit]) -> dict[str, Any]:
-    return {h.docid: {"id": h.docid, "text": h.text[:4000], "score": h.score} for h in hits}
+    return {h.docid: {"id": h.docid, "text": h.text, "score": h.score} for h in hits}

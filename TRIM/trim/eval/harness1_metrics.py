@@ -171,7 +171,11 @@ def episode_quality_metrics(
 ) -> dict[str, Any]:
     curated = _id_set(state.get("curated"))
     pool = _id_set(state.get("pool"))
-    traversed = pool | curated
+    observed = _id_set(state.get("observed_docids"))
+    if observed:
+        traversed = observed | curated
+    else:
+        traversed = pool | curated
     relevant = _id_set(row.get("evidence_docids")) or _id_set(row.get("gold_docids"))
     gold = _id_set(row.get("gold_docids"))
 

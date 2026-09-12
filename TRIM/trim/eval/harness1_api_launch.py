@@ -17,6 +17,7 @@ from trim.eval.eval_parallel import (
     load_jsonl,
     merge_traces,
     shard_rows_round_robin,
+    stream_merge_jsonl,
     write_json,
     write_jsonl,
 )
@@ -145,8 +146,9 @@ def run_isolated_api_eval(
         env=env,
         check=False,
     )
-    if proc.returncode != 0:
-        done = out / "DONE.json"
+    done = out / "DONE.json"
+    done_payload = load_json(done) if done.is_file() else {}
+    if proc.returncode != 0 and not (out / "PER_QUERY.jsonl").is_file():
         detail = done.read_text(encoding="utf-8") if done.is_file() else f"exit={proc.returncode}"
         raise RuntimeError(
             "upstream_api eval worker failed; official path does not fall back to "
@@ -256,13 +258,19 @@ def run_replicated_api_eval(
         )
 
         failures: list[dict[str, Any]] = []
+        shard_partials: list[dict[str, Any]] = []
         for proc, shard_meta in zip(procs, plan):
             rc = proc.wait()
-            if rc != 0:
-                failures.append({**shard_meta, "returncode": rc})
+            shard_dir = Path(shard_meta["out"])
+            done_path = shard_dir / "DONE.json"
+            done = load_json(done_path) if done_path.is_file() else {}
+            if done.get("partial"):
+                shard_partials.append({**shard_meta, "done": done})
+            if rc != 0 or done.get("partial"):
+                failures.append({**shard_meta, "returncode": rc, "done": done})
 
         shard_traces: list[list[dict[str, Any]]] = []
-        merged_turns: list[dict[str, Any]] = []
+        turns_sources: list[Path] = []
         tool_health_paths: list[Path] = []
         shard_status: list[dict[str, Any]] = []
         for shard_meta in plan:
@@ -278,7 +286,7 @@ def run_replicated_api_eval(
                     shard_traces.append(shard_rows)
             turns_path = shard_dir / "TURNS.jsonl"
             if turns_path.is_file():
-                merged_turns.extend(load_jsonl(turns_path))
+                turns_sources.append(turns_path)
             health_path = shard_dir / "TOOL_HEALTH.json"
             if health_path.is_file():
                 tool_health_paths.append(health_path)
@@ -299,24 +307,36 @@ def run_replicated_api_eval(
 
         traces = merge_traces(shard_traces, rows)
         _write_jsonl_atomic(out / "PER_QUERY.jsonl", traces)
-        if merged_turns:
-            _write_jsonl_atomic(out / "TURNS.jsonl", merged_turns)
+        if turns_sources:
+            stream_merge_jsonl(turns_sources, out / "TURNS.jsonl")
 
-        summary = summarize_api_traces(traces)
+        n_planned = len(rows)
+        summary = summarize_api_traces(traces, n_planned=n_planned)
         summary["eval_profile"] = retrieval.eval_profile()
         summary["eval_replicas"] = n_replicas
+        n_infra = sum(int((s.get("done") or {}).get("n_infra_error") or 0) for s in shard_status)
+        summary["n_infra_error"] = n_infra
+        summary["execution_complete"] = len(traces) == n_planned and not failures
+        summary["infra_clean"] = n_infra == 0
         if failures:
             summary["shard_failures"] = failures
             summary["partial"] = True
+        if shard_partials:
+            summary["shard_partials"] = shard_partials
         summary["shard_status"] = shard_status
         (out / "SUMMARY.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+        partial = bool(failures) or len(traces) < n_planned or n_infra > 0
         (out / "DONE.json").write_text(
             json.dumps(
                 {
-                    "ok": not failures,
-                    "partial": bool(failures),
+                    "ok": not partial,
+                    "partial": partial,
                     "n_queries": len(traces),
+                    "n_planned": n_planned,
                     "eval_replicas": n_replicas,
+                    "n_infra_error": n_infra,
+                    "execution_complete": len(traces) == n_planned,
+                    "infra_clean": n_infra == 0,
                     "shard_failures": failures,
                 }
             )

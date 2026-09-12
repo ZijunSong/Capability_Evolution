@@ -34,6 +34,7 @@ class FakeSchema:
 class FakeMeta:
     returned_chunk_ids: list
     pre_rerank_chunk_ids: list | None = None
+    doc_texts: dict | None = None
 
 
 class FakeBm25:
