@@ -141,6 +141,8 @@ def summarize_merged_traces(
     primary_split: str,
     extra: dict[str, Any] | None = None,
     retrieval_name: str | None = None,
+    harness_g: bool = False,
+    answer_with_enabled: bool = False,
 ) -> dict[str, Any]:
     name = retrieval_name
     if not name:
@@ -153,6 +155,8 @@ def summarize_merged_traces(
         setting="closed_loop",
         retrieval_name=name,
         eval_rows=list(rows),
+        harness_g=harness_g,
+        answer_with_enabled=answer_with_enabled,
     )
     payload = pack_closed_loop_summary(
         split,

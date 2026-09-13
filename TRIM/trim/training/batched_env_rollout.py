@@ -116,7 +116,8 @@ def _apply_generation(
 ) -> None:
     from trim.eval.harmony_runtime import decode_ids, make_action, make_observation
     from trim.adapters.harness_profiles import is_harness_g
-    from trim.training.four_cell_runtime import parse_generated_action, snap_from_state
+    from trim.training.parse_rollout_action import parse_generated_action
+    from trim.training.four_cell_runtime import snap_from_state
     from trim.training.upstream_train_env import apply_train_action, is_upstream_state
 
     if is_harness_g(mask=ep.harness_mask, component_ids=ep.component_id):
@@ -150,14 +151,24 @@ def _apply_generation(
                     execute_local=execute_tool,
                 )
             elif is_harness_g(mask=ep.harness_mask, component_ids=ep.component_id):
-                ep.st, obs, exec_ok = execute_tool(
-                    ep.st,
-                    action.get("name") if valid else None,
-                    action.get("arguments"),
-                    searcher=searcher,
-                    search_k=search_k,
-                )
-                _ok = bool(valid and exec_ok)
+                if not valid:
+                    name = str(action.get("name") or "unknown")
+                    if name == "truncated":
+                        code, msg = "truncated_output", "generation hit length limit without a complete tool call."
+                    else:
+                        code, msg = "parse_failed", "could not parse an executable tool call from model output."
+                    ep.st["invalid_tools"] = int(ep.st.get("invalid_tools") or 0) + 1
+                    obs = f"ERROR [{code}]: {msg}"
+                    _ok = False
+                else:
+                    ep.st, obs, exec_ok = execute_tool(
+                        ep.st,
+                        action.get("name"),
+                        action.get("arguments"),
+                        searcher=searcher,
+                        search_k=search_k,
+                    )
+                    _ok = bool(exec_ok)
             else:
                 ep.st, obs, _ok = apply_train_action(
                     ep.st,
@@ -171,11 +182,15 @@ def _apply_generation(
             ep.st["invalid_tools"] = int(ep.st.get("invalid_tools") or 0) + 1
             obs = f"ERROR: tool failed ({type(exc).__name__})."
             _ok = False
-        if valid and _ok:
-            try:
-                ep.acts.append((make_action(action["name"], action.get("arguments") or {}), make_observation(obs)))
-            except Exception:
-                pass
+        try:
+            attempted_name = str(action.get("name") or "unknown")
+            ep.acts.append(
+                (make_action(attempted_name, action.get("arguments") or {}), make_observation(obs))
+            )
+        except Exception:
+            pass
+        if ep.st.get("ended"):
+            ep.timing.mark_finished()
         action_ids = list(gen.token_ids)
         effective_prompt_ids = list(getattr(gen, "effective_prompt_ids", None) or ep.pending_pids)
         prompt_text = ""
@@ -384,6 +399,8 @@ def _run_episode_turns(
 
             with ThreadPoolExecutor(max_workers=min(workers, len(apply_jobs))) as pool:
                 list(pool.map(apply_one, apply_jobs))
+    for ep in episodes:
+        ep.timing.mark_finished()
 
 
 def _groups_from_episodes(

@@ -11,6 +11,7 @@ import asyncio
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 _TRIM = Path(__file__).resolve().parents[2]
@@ -136,7 +137,10 @@ def main(argv: list[str] | None = None) -> int:
                 env_kwargs["openai_client"] = pack.verifier_client
             try:
                 env = Env(**env_kwargs)
-                query_coro = run_one_query_api(
+                deadline = None
+                if query_timeout_s is not None and query_timeout_s > 0:
+                    deadline = time.monotonic() + float(query_timeout_s)
+                result = await run_one_query_api(
                     env=env,
                     mods=mods,
                     client=client,
@@ -147,11 +151,8 @@ def main(argv: list[str] | None = None) -> int:
                     prompt_token_budget=prompt_token_budget,
                     base_seed=base_seed,
                     api_extra=sampling_extra,
+                    deadline=deadline,
                 )
-                if query_timeout_s is not None and query_timeout_s > 0:
-                    result = await asyncio.wait_for(query_coro, timeout=query_timeout_s)
-                else:
-                    result = await query_coro
                 traces.append(result["metrics"])
             except ConfigError:
                 raise

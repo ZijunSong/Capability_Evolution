@@ -145,6 +145,17 @@ class PyseriniBackend(RetrievalBackend):
 
         return int(self._jni.call(_n) or 0)
 
+    def configure_bm25(self, k1: float, b: float) -> None:
+        """Apply BM25 k1/b on the JNI worker thread."""
+
+        def _set() -> None:
+            setter = getattr(self._searcher, "set_bm25", None)
+            if not callable(setter):
+                raise RuntimeError("LuceneSearcher.set_bm25 is not available in this Pyserini build")
+            setter(float(k1), float(b))
+
+        self._jni.call(_set)
+
     def search(self, query: str, k: int = 5) -> list[SearchHit]:
         q = str(query)
         kk = int(k)

@@ -22,11 +22,19 @@ from trim.eval.official_query_pool import (
 from trim.training.action_codec import HARNESS_G_STUDENT_NATIVE_TOOLS, STUDENT_NATIVE_TOOLS
 
 
-def legal_rate(tool_names: list[str], *, harness_g: bool = False) -> float:
+def legal_rate(
+    tool_names: list[str],
+    *,
+    harness_g: bool = False,
+    answer_with_enabled: bool = False,
+) -> float:
     if not tool_names:
         return 0.0
     allowed = set(HARNESS_G_STUDENT_NATIVE_TOOLS) if harness_g else set(STUDENT_NATIVE_TOOLS)
-    return sum(1 for n in tool_names if n in allowed) / len(tool_names)
+    if harness_g and answer_with_enabled:
+        allowed.add("answer_with")
+    invalid = {"unknown", "truncated", "None", None}
+    return sum(1 for n in tool_names if n in allowed and n not in invalid) / len(tool_names)
 
 
 def summarize_traces(
@@ -35,10 +43,16 @@ def summarize_traces(
     setting: str,
     retrieval_name: str,
     harness_g: bool = False,
+    answer_with_enabled: bool = False,
 ) -> dict[str, Any]:
     n = max(1, len(traces))
     legal = [
-        legal_rate(t.get("tool_names") or t.get("names") or [], harness_g=harness_g) for t in traces
+        legal_rate(
+            t.get("tool_names") or t.get("names") or [],
+            harness_g=harness_g,
+            answer_with_enabled=answer_with_enabled or bool((t.get("harness_mask") or {}).get("answer_with")),
+        )
+        for t in traces
     ]
     rec5 = [float(t.get("evidence_recall_at_5") or 0.0) for t in traces]
     rec100 = [float(t.get("evidence_recall_at_100") or 0.0) for t in traces]
@@ -83,14 +97,27 @@ def split_summaries(
     retrieval_name: str,
     eval_rows: list[dict[str, Any]],
     harness_g: bool = False,
+    answer_with_enabled: bool = False,
 ) -> dict[str, Any]:
     by_id = {r["query_id"]: r for r in eval_rows}
     for tr in traces:
         rec = by_id.get(tr["query_id"]) or {}
         tr["official_split"] = rec.get("official_split") or "train"
-    all_pool = summarize_traces(traces, setting=setting, retrieval_name=retrieval_name, harness_g=harness_g)
+    all_pool = summarize_traces(
+        traces,
+        setting=setting,
+        retrieval_name=retrieval_name,
+        harness_g=harness_g,
+        answer_with_enabled=answer_with_enabled,
+    )
     test_traces = [t for t in traces if t.get("official_split") == "test"]
-    official = summarize_traces(test_traces, setting=setting, retrieval_name=retrieval_name, harness_g=harness_g)
+    official = summarize_traces(
+        test_traces,
+        setting=setting,
+        retrieval_name=retrieval_name,
+        harness_g=harness_g,
+        answer_with_enabled=answer_with_enabled,
+    )
     official["split"] = "official_test"
     official["n_expected"] = len(test_traces)
     return {"setting": setting, "all_pool": all_pool, "official_test": official, "primary_split": "official_test"}

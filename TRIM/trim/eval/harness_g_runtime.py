@@ -24,7 +24,8 @@ _TO_RE = re.compile(
     re.I,
 )
 _JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
-_AID_RE = re.compile(r"\b(A\d+)\b", re.I)
+_AID_FULL_RE = re.compile(r"^\s*(A\d+)\s*$", re.I)
+_TOOL_CALL_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
 _SPECIAL_TOKEN_RE = re.compile(r"<\|[^|>]+\|>")
 
 SYSTEM_PROMPT = """You are a Harness-G search agent.
@@ -183,8 +184,6 @@ def _qwen_messages(
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": f"Question: {query}"},
     ]
-    if wm_text:
-        messages.append({"role": "user", "content": str(wm_text)})
     for action, obs in recent_actions_obs(list(actions_obs or []), keep=12):
         name, args = _action_name_args(action)
         messages.append(
@@ -203,6 +202,8 @@ def _qwen_messages(
             }
         )
         messages.append({"role": "tool", "content": _obs_text(obs)})
+    if wm_text:
+        messages.append({"role": "user", "content": str(wm_text)})
     if actions_obs:
         messages.append(
             {
@@ -272,14 +273,16 @@ def build_harness_g_context(
         .with_reasoning_effort(ReasoningEffort.HIGH)
         .with_conversation_start_date("2026-04-01")
     )
-    developer = DeveloperContent.new().with_function_tools(tools)
+    developer = (
+        DeveloperContent.new()
+        .with_instructions(SYSTEM_PROMPT.strip())
+        .with_function_tools(tools)
+    )
     messages = [
         Message.from_role_and_content(Role.SYSTEM, system),
         Message.from_role_and_content(Role.DEVELOPER, developer),
         Message.from_role_and_content(Role.USER, f"Question: {query}"),
     ]
-    if wm_text:
-        messages.append(Message.from_role_and_content(Role.USER, str(wm_text)))
     for action, obs in recent_actions_obs(list(actions_obs or []), keep=12):
         if hasattr(action, "tools"):
             act_obj = action
@@ -289,6 +292,8 @@ def build_harness_g_context(
             act_obj = make_action(name, args)
             obs_obj = obs if hasattr(obs, "observations") else make_observation(_obs_text(obs))
         messages.extend(action_observation_to_messages(act_obj, obs_obj, compress=False))
+    if wm_text:
+        messages.append(Message.from_role_and_content(Role.USER, str(wm_text)))
     if actions_obs:
         messages.append(
             Message.from_role_and_content(
@@ -299,19 +304,7 @@ def build_harness_g_context(
     return Conversation(messages=messages)
 
 
-def _parse_json_harness_g_action(blob: str) -> tuple[dict[str, Any], bool] | None:
-    cleaned = _SPECIAL_TOKEN_RE.sub("", str(blob or "")).strip()
-    if not cleaned:
-        return None
-    jm = _JSON_RE.search(cleaned)
-    if not jm:
-        return None
-    try:
-        obj = json.loads(jm.group(0))
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(obj, dict):
-        return None
+def _action_from_json_obj(obj: dict[str, Any]) -> tuple[dict[str, Any], bool] | None:
     name = obj.get("name") or obj.get("tool") or obj.get("tool_name")
     if not name:
         return None
@@ -323,29 +316,66 @@ def _parse_json_harness_g_action(blob: str) -> tuple[dict[str, Any], bool] | Non
         try:
             args = json.loads(args)
         except json.JSONDecodeError:
-            args = {}
+            return None
     if not isinstance(args, dict):
-        args = {}
+        return None
+    if name in {"select", "lookup", "answer_with"}:
+        key = "sid" if name != "lookup" else "eid"
+        if not str(args.get(key) or "").strip():
+            return None
     return {"name": name, "arguments": args}, True
+
+
+def _parse_json_harness_g_action(blob: str) -> tuple[dict[str, Any], bool] | None:
+    cleaned = _SPECIAL_TOKEN_RE.sub("", str(blob or "")).strip()
+    if not cleaned:
+        return None
+    try:
+        obj = json.loads(cleaned)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(obj, dict):
+        return None
+    return _action_from_json_obj(obj)
 
 
 def parse_harness_g_action(
     text: str,
     *,
     action_map: Mapping[str, Mapping[str, Any]] | None = None,
+    strict: bool = True,
 ) -> tuple[dict[str, Any], bool]:
+    del strict  # strict-only parser; parameter kept for call-site clarity
     blob = str(text or "").strip()
     if not blob:
         return {"name": "unknown", "arguments": {}}, False
-    parsed_json = _parse_json_harness_g_action(blob)
-    if parsed_json is not None:
-        name = str(parsed_json[0].get("name") or "")
-        args = dict(parsed_json[0].get("arguments") or {})
-        if name in {"select", "lookup", "answer_with"}:
-            key = "sid" if name != "lookup" else "eid"
-            if not str(args.get(key) or "").strip():
-                return {"name": "unknown", "arguments": {}}, False
-        return parsed_json
+
+    aid_match = _AID_FULL_RE.match(blob)
+    if aid_match and action_map:
+        mapped = action_map.get(aid_match.group(1)) or action_map.get(aid_match.group(1).upper())
+        if mapped:
+            name = str(mapped.get("name") or mapped.get("type") or "").lower()
+            args: dict[str, Any] = {}
+            if mapped.get("sid"):
+                args["sid"] = mapped["sid"]
+            if mapped.get("eid"):
+                args["eid"] = mapped["eid"]
+            if mapped.get("sids"):
+                args["sids"] = list(mapped["sids"])
+            if name:
+                return {"name": name, "arguments": args}, True
+
+    tool_call_match = _TOOL_CALL_RE.search(blob)
+    if tool_call_match:
+        try:
+            obj = json.loads(tool_call_match.group(1))
+        except json.JSONDecodeError:
+            return {"name": "unknown", "arguments": {}}, False
+        if isinstance(obj, dict):
+            parsed = _action_from_json_obj(obj)
+            if parsed is not None:
+                return parsed
+
     if "<|call|>" in blob:
         try:
             parsed = parse_codec_action(blob)
@@ -359,39 +389,28 @@ def parse_harness_g_action(
                 return {"name": name, "arguments": args}, True
         except Exception:
             pass
-    match = _TO_RE.search(blob)
-    if match and "<|call|>" in blob:
-        name = match.group("name").lower()
-        args: dict[str, Any] | None = None
-        jm = _JSON_RE.search(blob[match.end() :])
-        if jm:
-            try:
-                loaded = json.loads(jm.group(0))
-                if isinstance(loaded, dict):
-                    args = loaded
-            except json.JSONDecodeError:
-                args = None
-        if name in {"select", "lookup", "answer_with"}:
-            key = "sid" if name != "lookup" else "eid"
-            if not args or not str(args.get(key) or "").strip():
+        match = _TO_RE.search(blob)
+        if match:
+            from trim.eval.harmony_runtime import _MESSAGE_JSON_RE
+
+            name = match.group("name").lower()
+            args_loaded: dict[str, Any] | None = None
+            jm = _MESSAGE_JSON_RE.search(blob)
+            if jm:
+                try:
+                    loaded = json.loads(jm.group("body"))
+                    if isinstance(loaded, dict):
+                        args_loaded = loaded
+                except json.JSONDecodeError:
+                    args_loaded = None
+            if name in {"select", "lookup", "answer_with"}:
+                key = "sid" if name != "lookup" else "eid"
+                if not args_loaded or not str(args_loaded.get(key) or "").strip():
+                    return {"name": "unknown", "arguments": {}}, False
+            if args_loaded is None and name not in {"init", "answer"}:
                 return {"name": "unknown", "arguments": {}}, False
-        if args is None and name not in {"init", "answer"}:
-            return {"name": "unknown", "arguments": {}}, False
-        return {"name": name, "arguments": args or {}}, True
-    aid = _AID_RE.search(blob)
-    if aid and action_map:
-        mapped = action_map.get(aid.group(1)) or action_map.get(aid.group(1).upper())
-        if mapped:
-            name = str(mapped.get("name") or mapped.get("type") or "").lower()
-            args = {}
-            if mapped.get("sid"):
-                args["sid"] = mapped["sid"]
-            if mapped.get("eid"):
-                args["eid"] = mapped["eid"]
-            if mapped.get("sids"):
-                args["sids"] = list(mapped["sids"])
-            if name:
-                return {"name": name, "arguments": args}, True
+            return {"name": name, "arguments": args_loaded or {}}, True
+
     return {"name": "unknown", "arguments": {}}, False
 
 

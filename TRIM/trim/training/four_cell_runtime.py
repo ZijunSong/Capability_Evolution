@@ -15,7 +15,7 @@ import re
 import time
 from pathlib import Path
 from dataclasses import replace
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 from trim.adapters.components import (
     all_component_ids,
@@ -738,7 +738,13 @@ def terminal_reward(st: dict[str, Any], *, query: str, gold_ids: list[str], vali
         return -0.2
     rec = float(curated_recall(st, gold_ids) or 0.0)
     legal = sum(1 for v in valids if v) / len(valids)
-    n_unique = len({a.get("name") for a in actions if a.get("name") and a.get("name") != "unknown"})
+    invalid_names = {"unknown", "truncated", "None"}
+    executed = [
+        (a, v)
+        for a, v in zip(actions, valids)
+        if v and str(a.get("name") or "") not in invalid_names
+    ]
+    n_unique = len({a.get("name") for a, _v in executed if a.get("name")})
     overlap = max((_query_overlap(a, query) for a in actions), default=0.0)
     return (
         0.15 * legal
@@ -748,25 +754,6 @@ def terminal_reward(st: dict[str, Any], *, query: str, gold_ids: list[str], vali
         + 0.06 * min(1.0, len(st.get("pool") or {}) / 3)
         + (0.08 if st.get("ended") else 0.0)
         + overlap
-    )
-
-
-def parse_generated_action(
-    text: str,
-    completion_ids: list[int] | None,
-    enc,
-    *,
-    harness_mask: dict[str, bool] | None = None,
-    teacher_mode: bool = False,
-) -> tuple[dict[str, Any], bool]:
-    from trim.training.parse_rollout_action import parse_generated_action as _parse
-
-    return _parse(
-        text,
-        completion_ids,
-        enc,
-        harness_mask=harness_mask,
-        teacher_mode=teacher_mode,
     )
 
 

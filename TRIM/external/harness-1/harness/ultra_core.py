@@ -229,12 +229,18 @@ _CURATE_PARAMS_CORE: Dict[str, Any] = {
     "add_ids": {
         "type": "array",
         "items": {"type": "string"},
-        "description": "Document IDs to add to your curated set.",
+        "description": (
+            "Optional. Document IDs to add to your curated set. "
+            "Omit or pass [] when only removing or retagging."
+        ),
     },
     "remove_ids": {
         "type": "array",
         "items": {"type": "string"},
-        "description": "Document IDs to remove from your curated set.",
+        "description": (
+            "Optional. Document IDs to remove from your curated set. "
+            "Omit or pass [] when only adding or retagging."
+        ),
     },
 }
 
@@ -270,7 +276,7 @@ CURATE_SCHEMA = ToolSchema(
     parameters=(
         _CURATE_PARAMS_WITH_IMPORTANCE if V8D_IMPORTANCE_TAGGING else _CURATE_PARAMS_CORE
     ),
-    required=["add_ids"],
+    required=[],
 )
 
 VERIFY_SCHEMA = ToolSchema(
@@ -850,6 +856,7 @@ class WorkingMemory:
         # Normalize remove_ids too so the model can pass either chunk or doc ids
         remove_set_norm = {self._normalize_id(x) for x in remove_set}
         remove_set_all = remove_set | remove_set_norm
+        removed = [x for x in self.curated_ids if x in remove_set_all]
         self.curated_ids = [x for x in self.curated_ids if x not in remove_set_all]
         for rid in remove_set_all:
             self.curated_notes.pop(rid, None)
@@ -866,18 +873,30 @@ class WorkingMemory:
                     v = "fair"
                 imp_norm[self._normalize_id(k.strip())] = v
 
+        # ── Retag phase (before capacity-sensitive adds) ─────────────────
+        retagged: List[str] = []
+        if imp_norm and V8D_IMPORTANCE_TAGGING:
+            curated_set = set(self.curated_ids)
+            for doc_id, tag in imp_norm.items():
+                if doc_id in curated_set:
+                    prev = self.curated_importance.get(doc_id)
+                    self.curated_importance[doc_id] = tag
+                    if prev != tag:
+                        retagged.append(doc_id)
+
         # ── Add phase ──────────────────────────────────────────────────────
         existing = set(self.curated_ids)
         dropped: List[str] = []
         evicted: List[str] = []
+        added: List[str] = []
+        normalized_add_ids = [
+            self._normalize_id(str(doc_id).strip())
+            for doc_id in add_ids
+            if str(doc_id).strip()
+        ]
 
-        for doc_id in add_ids:
-            doc_id = str(doc_id).strip()
-            doc_id = self._normalize_id(doc_id)
-            if not doc_id or doc_id in existing:
-                # Allow importance re-tagging of an already-curated doc
-                if doc_id in existing and doc_id in imp_norm:
-                    self.curated_importance[doc_id] = imp_norm[doc_id]
+        for doc_id in normalized_add_ids:
+            if doc_id in existing:
                 continue
 
             incoming_tag = imp_norm.get(doc_id, "fair")
@@ -885,6 +904,7 @@ class WorkingMemory:
             if len(self.curated_ids) < MAX_CURATED_DOCS:
                 self.curated_ids.append(doc_id)
                 existing.add(doc_id)
+                added.append(doc_id)
                 if V8D_IMPORTANCE_TAGGING:
                     self.curated_importance[doc_id] = incoming_tag
                 if notes and doc_id in notes:
@@ -913,17 +933,11 @@ class WorkingMemory:
                     # now add
                     self.curated_ids.append(doc_id)
                     existing.add(doc_id)
+                    added.append(doc_id)
                     self.curated_importance[doc_id] = incoming_tag
                     continue
 
             dropped.append(doc_id)
-
-        # Importance-only retags: docs already curated but omitted from add_ids.
-        if imp_norm and V8D_IMPORTANCE_TAGGING:
-            curated_set = set(self.curated_ids)
-            for doc_id, tag in imp_norm.items():
-                if doc_id in curated_set:
-                    self.curated_importance[doc_id] = tag
 
         n = len(self.curated_ids)
         if V8D_IMPORTANCE_TAGGING and self.curated_importance:
@@ -938,6 +952,12 @@ class WorkingMemory:
             rendered = self.curated_ids
         ids_str = ", ".join(rendered) if rendered else "(empty)"
         result = f"Curated set updated ({n}/{MAX_CURATED_DOCS}): {ids_str}"
+        if removed:
+            result += f"\n[REMOVED] {len(removed)} doc(s): {', '.join(removed[:5])}"
+        if retagged:
+            result += f"\n[RETAGGED] {len(retagged)} doc(s): {', '.join(retagged[:5])}"
+        if added:
+            result += f"\n[ADDED] {len(added)} doc(s): {', '.join(added[:5])}"
         if evicted:
             result += (
                 f"\n[EVICTED low-importance] {len(evicted)} doc(s): "

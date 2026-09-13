@@ -8,13 +8,17 @@ from trim.training.parse_rollout_action import parse_generated_action
 
 
 def test_parse_json_tool_key_init():
-    action, ok = parse_harness_g_action('{"tool": "init"}<|im_end|>')
+    action, ok = parse_harness_g_action(
+        '<tool_call>{"tool": "init"}</tool_call><|im_end|>'
+    )
     assert ok is True
     assert action == {"name": "init", "arguments": {}}
 
 
 def test_parse_json_name_arguments_select():
-    action, ok = parse_harness_g_action('{"name":"select","arguments":{"sid":"d1:s0"}}')
+    action, ok = parse_harness_g_action(
+        '<tool_call>{"name":"select","arguments":{"sid":"d1:s0"}}</tool_call>'
+    )
     assert ok is True
     assert action["name"] == "select"
     assert action["arguments"]["sid"] == "d1:s0"
@@ -38,7 +42,12 @@ def test_parse_generated_action_qwen_json_init():
         "lookup_dedup": False,
         "snc_frontier": False,
     }
-    action, ok = parse_generated_action('{"tool":"init"}', None, enc=None, harness_mask=mask)
+    action, ok = parse_generated_action(
+        '<tool_call>{"tool":"init"}</tool_call>',
+        None,
+        enc=None,
+        harness_mask=mask,
+    )
     assert ok is True
     assert action["name"] == "init"
 

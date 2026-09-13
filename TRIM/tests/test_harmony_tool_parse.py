@@ -80,7 +80,9 @@ def test_parse_harness_g_harmony_select_is_legal():
     assert parsed.legal is True
     assert parsed.tool_name == "select"
     assert parsed.arguments == {"sid": "d1:s0"}
-    action, ok = parse_generated_action(text, None, enc=None)
+    from trim.adapters.harness_profiles import zero_mask_for
+
+    action, ok = parse_generated_action(text, None, enc=None, harness_mask=zero_mask_for("Harness-G"))
     assert ok is True
     assert action["name"] == "select"
     assert action["arguments"]["sid"] == "d1:s0"

@@ -120,8 +120,12 @@ def _run_hf(cfg: dict, rows: list[dict], harness_mask: dict) -> tuple[dict, list
 
 
 def _eval_chunks(cfg, rows, *, harness_mask, enc, searcher, generate_batch, backend):
+    from trim.adapters.harness_profiles import is_harness_g
     from trim.eval.eval_parallel import merge_traces, summarize_merged_traces
     from trim.training.four_cell_runtime import eval_closed_loop
+
+    g_eval = is_harness_g(mask=harness_mask, component_ids=cfg.get("component"))
+    answer_with_enabled = bool((harness_mask or {}).get("answer_with"))
 
     chunk = int(cfg.get("eval_chunk_size") or 0)
     parts = [rows] if chunk <= 0 or chunk >= len(rows) else [rows[i : i + chunk] for i in range(0, len(rows), chunk)]
@@ -161,6 +165,8 @@ def _eval_chunks(cfg, rows, *, harness_mask, enc, searcher, generate_batch, back
         leak_count=leak_count,
         primary_split=str(cfg.get("primary_split") or "official_test"),
         extra=extra,
+        harness_g=g_eval,
+        answer_with_enabled=answer_with_enabled,
     )
     return summary, traces
 

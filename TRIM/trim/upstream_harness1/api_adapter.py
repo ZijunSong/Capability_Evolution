@@ -85,6 +85,10 @@ class ServerErrorUnclassified(ApiError):
     category = "server_error_unclassified"
 
 
+class QueryTimeoutError(TransportError):
+    category = "query_timeout"
+
+
 @dataclass
 class ChatMessage:
     role: str
@@ -472,6 +476,7 @@ class ChatCompletionsClient:
         max_tokens: int | None = None,
         temperature: float | None = None,
         timeout_s: float | None = None,
+        deadline: float | None = None,
     ) -> dict[str, Any]:
         url = self.base_url.rstrip("/")
         if not url.endswith("/chat/completions"):
@@ -493,6 +498,16 @@ class ChatCompletionsClient:
         retry_events: list[dict[str, Any]] = []
         max_attempts = max(1, int(self.max_retries))
         for attempt in range(max_attempts):
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    err = QueryTimeoutError(
+                        "Query deadline exceeded before HTTP attempt",
+                        attempt=attempt + 1,
+                        retry_events=list(retry_events),
+                    )
+                    raise err
+                timeout = min(timeout, remaining)
             req = urllib.request.Request(url, data=body, headers=headers, method="POST")
             try:
                 with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -524,7 +539,17 @@ class ChatCompletionsClient:
                 if attempt + 1 >= max_attempts:
                     last_error.retry_events = list(retry_events)
                     raise last_error
-                time.sleep(min(2**attempt, 8))
+                wait_s = min(2**attempt, 8)
+                if deadline is not None:
+                    wait_s = min(wait_s, max(0.0, deadline - time.monotonic()))
+                if wait_s <= 0:
+                    err = QueryTimeoutError(
+                        "Query deadline exceeded during HTTP backoff",
+                        attempt=attempt + 1,
+                        retry_events=list(retry_events),
+                    )
+                    raise err
+                time.sleep(wait_s)
             except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
                 last_error = TransportError(
                     f"Transport failure on chat/completions attempt {attempt + 1}: {exc}",
@@ -534,7 +559,17 @@ class ChatCompletionsClient:
                 if attempt + 1 >= max_attempts:
                     last_error.retry_events = list(retry_events)
                     raise last_error
-                time.sleep(min(2**attempt, 8))
+                wait_s = min(2**attempt, 8)
+                if deadline is not None:
+                    wait_s = min(wait_s, max(0.0, deadline - time.monotonic()))
+                if wait_s <= 0:
+                    err = QueryTimeoutError(
+                        "Query deadline exceeded during HTTP backoff",
+                        attempt=attempt + 1,
+                        retry_events=list(retry_events),
+                    )
+                    raise err
+                time.sleep(wait_s)
         assert last_error is not None
         last_error.retry_events = list(retry_events)
         raise last_error

@@ -124,7 +124,9 @@ def build_eval_toolset(
     if retrieval.backend == RETRIEVAL_LOCAL_BM25:
         from trim.local_backend.factory import build_local_toolset
 
-        pack = build_local_toolset(mods, retrieval, dataset=dataset, token_counter=counter)
+        pack = build_local_toolset(
+            mods, retrieval, dataset=dataset, token_counter=counter, mask=mask
+        )
         if mask and mask.get("verify_tool") and pack.verifier_client is None:
             raise RuntimeError(
                 "component includes verify_tool; local_bm25 requires --verify-base-url "
@@ -254,11 +256,45 @@ def is_harmony_chat_model(model: str | None) -> bool:
     return "gpt-oss" in name or "harness-1" in name or name.startswith("openai/gpt-oss")
 
 
-def format_retry_prompt(*, model: str | None = None, error_hint: str | None = None) -> str:
+def _format_failed_attempt_context(failed: Mapping[str, Any]) -> str:
+    """Summarize a rejected tool batch so the model can fix it without harness replay."""
+    lines = [
+        "Your previous response was rejected before any tool executed.",
+        f"Error category: {failed.get('error_kind') or 'unknown'}",
+    ]
+    detail = str(failed.get("error_detail") or "").strip()
+    if detail:
+        lines.append(f"Reason: {detail}")
+    for call in failed.get("tool_calls") or []:
+        name = str(call.get("name") or "tool")
+        args = call.get("arguments") or {}
+        try:
+            args_text = json.dumps(args, ensure_ascii=False, sort_keys=True)
+        except TypeError:
+            args_text = repr(args)
+        if len(args_text) > 400:
+            args_text = args_text[:400] + "...(truncated)"
+        lines.append(f"- Failed request: {name}({args_text})")
+    lines.append(
+        "Fix that exact request, or explicitly choose a different valid tool. "
+        "The harness will not silently replay the failed operation."
+    )
+    return "\n".join(lines)
+
+
+def format_retry_prompt(
+    *,
+    model: str | None = None,
+    error_hint: str | None = None,
+    failed_attempt: Mapping[str, Any] | None = None,
+) -> str:
     base = GPT_OSS_FORMAT_RETRY_PROMPT if is_harmony_chat_model(model) else QWEN_FORMAT_RETRY_PROMPT
+    parts = [base]
+    if failed_attempt:
+        parts.append(_format_failed_attempt_context(failed_attempt))
     if error_hint:
-        return f"{base}\n\nSpecific issue: {error_hint}"
-    return base
+        parts.append(f"Specific issue: {error_hint}")
+    return "\n\n".join(parts)
 DEFAULT_CURATE_NUDGE_PROMPT = (
     "IMPORTANT: You just searched without curating. Follow the search → curate rhythm: "
     "review the results from your last search and call curate NOW to add ALL plausibly "
@@ -401,6 +437,13 @@ def trajectory_to_chat_messages(traj: Any, *, include_reasoning: bool) -> list[d
     return messages
 
 
+def _curate_nudge_policy() -> str:
+    policy = str(os.environ.get("CURATE_NUDGE_POLICY") or "legacy").strip().lower()
+    if policy not in {"legacy", "state_change"}:
+        return "legacy"
+    return policy
+
+
 def _nudge_prompt_for_env(env: Any) -> str | None:
     interval = DEFAULT_CURATE_NUDGE_INTERVAL
     nudge_text = DEFAULT_CURATE_NUDGE_PROMPT
@@ -419,9 +462,19 @@ def _nudge_prompt_for_env(env: Any) -> str | None:
             pool = int(wm.get_pool_size())
         except Exception:
             pool = 0
-    if turns_since >= interval and pool > 0:
-        return nudge_text
-    return None
+    if turns_since < interval or pool <= 0:
+        return None
+    policy = _curate_nudge_policy()
+    if policy == "state_change":
+        baseline = int(getattr(env, "_pool_size_at_last_curate", 0) or 0)
+        pending_verify = bool(getattr(env, "_pending_verify_since_curate", False))
+        if pool <= baseline and not pending_verify:
+            return None
+        return (
+            "You have new retrieval or verification results since your last curate. "
+            "Review them and call curate if any documents should be added, removed, or retagged."
+        )
+    return nudge_text
 
 
 def _clip_observation(obs: Any, Observation: Any, max_chars: int) -> Any:
@@ -502,7 +555,14 @@ def openai_messages_from_env(
         if nudge:
             extra.append(nudge)
     else:
-        extra.append(format_retry_prompt(model=model, error_hint=retry_error))
+        failed_attempt = getattr(env, "_pending_failed_attempt", None)
+        extra.append(
+            format_retry_prompt(
+                model=model,
+                error_hint=retry_error,
+                failed_attempt=failed_attempt if isinstance(failed_attempt, Mapping) else None,
+            )
+        )
 
     wm_text = window.get("wm_text")
     obs_limit = int(obs_limit)
@@ -651,8 +711,10 @@ def _validate_tool_params(tool: Any, params: Mapping[str, Any]) -> None:
             raise SchemaValidationError(f"Tool {name} parameter {key} must not be null")
     props = getattr(schema, "parameters", None) or {}
     for key, spec in props.items():
-        if key not in params or params[key] is None:
+        if key not in params:
             continue
+        if params[key] is None:
+            raise SchemaValidationError(f"Tool {name} parameter {key} must not be null")
         _validate_json_value(params[key], spec or {}, tool_name=name, path=key)
 
 

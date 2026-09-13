@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from pathlib import Path
@@ -12,11 +13,13 @@ from trim.upstream_harness1.api_adapter import (
     ApiError,
     ChatCompletionsClient,
     ConfigError,
+    QueryTimeoutError,
     ServerParseError,
     TransportError,
     parse_chat_completion,
 )
 from trim.upstream_harness1.model_serve import ServedModelIdentity
+from trim.upstream_harness1.fix_manifest import fix_manifest
 from trim.upstream_harness1.pin import pin_manifest
 from trim.upstream_harness1.retrieval import RetrievalConfig
 from trim.upstream_harness1.v8d_flags import (
@@ -52,12 +55,20 @@ def _env_turn_count(trace: Mapping[str, Any]) -> float:
     return 0.0
 
 
+def _transport_retry_events_for_turn(turn: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Canonical transport retry list: prefer top-level field, fallback to nested mirror."""
+    top = list(turn.get("transport_retry_events") or [])
+    if top:
+        return top
+    response = turn.get("api_response") or {}
+    return list(response.get("_transport_retry_events") or [])
+
+
 def _count_transport_retry_events(turn: Mapping[str, Any]) -> tuple[int, int]:
-    """Return (server_parse_errors, transport_errors) from recovered retry events."""
+    """Return (server_parse_errors, transport_errors) without double-counting mirrors."""
     server_parse = 0
     transport = 0
-    response = turn.get("api_response") or {}
-    for event in response.get("_transport_retry_events") or []:
+    for event in _transport_retry_events_for_turn(turn):
         category = str(event.get("category") or "")
         if category == "model_output_parse_error":
             server_parse += 1
@@ -100,12 +111,6 @@ def count_tool_calls_from_turns(turns: Sequence[Mapping[str, Any]]) -> dict[str,
         retry_server, retry_transport = _count_transport_retry_events(turn)
         server_parse_errors += retry_server
         transport_errors += retry_transport
-        for event in turn.get("transport_retry_events") or []:
-            category = str(event.get("category") or "")
-            if category == "model_output_parse_error":
-                server_parse_errors += 1
-            elif category in {"transport_error", "server_error_unclassified"}:
-                transport_errors += 1
         if turn.get("error_kind") == "schema_error":
             schema_errors += 1
         if turn.get("protocol_error") == "length_truncated" or turn.get("api_finish_reason") == "length":
@@ -129,7 +134,8 @@ def count_tool_calls_from_turns(turns: Sequence[Mapping[str, Any]]) -> dict[str,
         elif turn.get("parse_error") or turn.get("env_exception") or turn.get("api_error"):
             executed = 0
         else:
-            executed = len(api_calls)
+            env_metrics = turn.get("env_metrics") or {}
+            executed = int(env_metrics.get("n_executed_tool_calls") or len(api_calls))
         n_executed += executed
         if turn.get("explicit_end_search"):
             n_explicit_end += 1
@@ -306,6 +312,32 @@ def _query_sampling_seed(base_seed: int | None, qid: str) -> int | None:
     return (int(base_seed) + zlib.adler32(str(qid).encode("utf-8"))) & 0x7FFFFFFF
 
 
+def _recovery_effect_observed(
+    *,
+    failed: Mapping[str, Any] | None,
+    curated_after: Sequence[str],
+) -> str:
+    if not failed:
+        return "unknown"
+    targets = set()
+    for call in failed.get("tool_calls") or []:
+        if str(call.get("name") or "") != "curate":
+            continue
+        args = call.get("arguments") or {}
+        for rid in args.get("remove_ids") or []:
+            targets.add(str(rid))
+    if not targets:
+        return "unknown"
+    before = {str(x) for x in (failed.get("curated_before") or [])}
+    after = {str(x) for x in curated_after}
+    removed = targets & before
+    if removed and not (removed & after):
+        return "true"
+    if removed & after:
+        return "false"
+    return "unknown"
+
+
 async def run_one_query_api(
     *,
     env: Any,
@@ -318,6 +350,7 @@ async def run_one_query_api(
     prompt_token_budget: int | None = None,
     base_seed: int | None = None,
     api_extra: Mapping[str, Any] | None = None,
+    deadline: float | None = None,
 ) -> dict[str, Any]:
     from trim.upstream_harness1.env_bridge import (
         action_from_parsed,
@@ -328,9 +361,10 @@ async def run_one_query_api(
     await env.initial_observation()
     qid = str(query_row.get("query_id") or env.query_id)
     request_extra: dict[str, Any] = dict(api_extra or {})
-    query_seed = _query_sampling_seed(base_seed, qid)
-    if query_seed is not None:
-        request_extra.setdefault("seed", query_seed)
+    request_extra.pop("seed", None)
+    effective_seed = _query_sampling_seed(base_seed, qid)
+    if effective_seed is not None:
+        request_extra["seed"] = effective_seed
     turns: list[dict[str, Any]] = []
     started = time.time()
     done = False
@@ -338,13 +372,26 @@ async def run_one_query_api(
     episode_finish_reason: str | None = None
     awaiting_retry = False
     retry_error_hint: str | None = None
+    pending_failed: dict[str, Any] | None = None
+    env._pending_failed_attempt = None
     last_step_metrics: dict[str, Any] = {}
     n_generation_attempts = 0
+    n_logical_attempts = 0
     protocol_error_attempts = 0
     transport_error_attempts = 0
     schema_error_attempts = 0
+    protocol_recovered = False
+    failed_operation_effect_observed = "unknown"
+    retry_abandoned_or_changed = False
     while not done and env._current_turn < max_turns:
-        attempt_id = len(turns)
+        if deadline is not None and time.monotonic() >= deadline:
+            finish_reason = "query_timeout"
+            done = True
+            last_step_metrics.setdefault("query_timeout", 1.0)
+            break
+        attempt_id = n_logical_attempts
+        n_logical_attempts += 1
+        env._pending_failed_attempt = pending_failed
         messages = openai_messages_from_env(
             env,
             mods,
@@ -367,8 +414,10 @@ async def run_one_query_api(
                 "temperature": client.temperature,
                 "max_tokens": client.max_tokens,
                 "model": client.model,
-                "seed": query_seed,
+                "seed": effective_seed,
+                "effective_seed": effective_seed,
             },
+            "request_extra": dict(request_extra),
         }
         _append_jsonl(trace_dir / "TURNS.jsonl", turn_rec)
 
@@ -376,7 +425,13 @@ async def run_one_query_api(
         response: dict[str, Any] | None = None
         api_error: ApiError | None = None
         try:
-            response = client.complete(messages, tools, extra=request_extra or None)
+            response = await asyncio.to_thread(
+                client.complete,
+                messages,
+                tools,
+                extra=request_extra or None,
+                deadline=deadline,
+            )
             n_generation_attempts += 1
         except ConfigError:
             raise
@@ -398,7 +453,10 @@ async def run_one_query_api(
                 "temperature": client.temperature,
                 "max_tokens": client.max_tokens,
                 "model": client.model,
+                "seed": effective_seed,
+                "effective_seed": effective_seed,
             },
+            "request_extra": dict(request_extra),
         }
 
         parsed = None
@@ -408,6 +466,10 @@ async def run_one_query_api(
             turn_rec["parse_error"] = str(api_error)
             turn_rec["transport_attempts"] = getattr(api_error, "attempt", None)
             turn_rec["transport_retry_events"] = list(getattr(api_error, "retry_events", None) or [])
+            if str(getattr(api_error, "category", "")) == "query_timeout":
+                finish_reason = "query_timeout"
+                done = True
+                last_step_metrics.setdefault("query_timeout", 1.0)
         else:
             assert response is not None
             parsed = parse_chat_completion(response)
@@ -432,14 +494,23 @@ async def run_one_query_api(
         t1 = time.time()
         result: Any = None
         n_executed = 0
+        n_proposed = 0
         try:
             if api_error is not None:
                 from trim.upstream_harness1.api_adapter import ServerErrorUnclassified
 
+                if isinstance(api_error, QueryTimeoutError):
+                    turn_rec["error_kind"] = "query_timeout"
+                    turn_rec["episode_done"] = True
+                    turn_rec["n_executed_tool_calls"] = 0
+                    turn_rec["harness_sec"] = time.time() - t1
+                    turns.append(turn_rec)
+                    _append_jsonl(trace_dir / "TURNS.jsonl", turn_rec)
+                    break
                 if isinstance(api_error, (TransportError, ServerErrorUnclassified)):
-                    transport_error_attempts += max(
-                        1, len(getattr(api_error, "retry_events", None) or [])
-                    )
+                    transport_error_attempts += len(
+                        getattr(api_error, "retry_events", None) or []
+                    ) or 1
                     turn_rec["error_kind"] = "transport_error"
                 else:
                     protocol_error_attempts += 1
@@ -448,21 +519,52 @@ async def run_one_query_api(
                     retry_error_hint = "Server could not parse model output as Harmony/tool call"
                 else:
                     retry_error_hint = str(api_error)
+                pending_failed = {
+                    "attempt_id": attempt_id,
+                    "tool_calls": [],
+                    "error_kind": turn_rec.get("error_kind"),
+                    "error_detail": retry_error_hint,
+                    "curated_before": list(getattr(getattr(env, "wm", None), "curated_ids", []) or []),
+                }
                 result = env._handle_format_error(str(api_error))
                 awaiting_retry = not bool(result.episode_done)
             elif parsed is not None and (parsed.parse_error or parsed.protocol_error):
                 protocol_error_attempts += 1
                 turn_rec["error_kind"] = parsed.protocol_error or "parse_error"
                 retry_error_hint = parsed.protocol_error or parsed.parse_error
+                pending_failed = {
+                    "attempt_id": attempt_id,
+                    "tool_calls": list(parsed.tool_calls),
+                    "error_kind": turn_rec["error_kind"],
+                    "error_detail": retry_error_hint,
+                    "curated_before": list(getattr(getattr(env, "wm", None), "curated_ids", []) or []),
+                }
                 result = env._handle_format_error(parsed.parse_error or parsed.protocol_error or "parse_error")
                 awaiting_retry = not bool(result.episode_done)
             else:
                 assert parsed is not None
                 awaiting_retry = False
                 retry_error_hint = None
+                n_proposed = len(parsed.tool_calls)
                 action = action_from_parsed(parsed, env, mods)
+                if pending_failed:
+                    proposed = [
+                        {"name": str(c.get("name") or ""), "arguments": dict(c.get("arguments") or {})}
+                        for c in parsed.tool_calls
+                    ]
+                    failed_calls = list(pending_failed.get("tool_calls") or [])
+                    if proposed != failed_calls:
+                        retry_abandoned_or_changed = True
                 result = await env.step_action(action)
-                n_executed = len(parsed.tool_calls)
+                n_executed = int((result.metrics or {}).get("n_executed_tool_calls", len(parsed.tool_calls)))
+                if pending_failed and not retry_abandoned_or_changed:
+                    protocol_recovered = True
+                    failed_operation_effect_observed = _recovery_effect_observed(
+                        failed=pending_failed,
+                        curated_after=list(getattr(getattr(env, "wm", None), "curated_ids", []) or []),
+                    )
+                pending_failed = None
+                env._pending_failed_attempt = None
                 if parsed.episode_finish_reason:
                     episode_finish_reason = parsed.episode_finish_reason
             last_step_metrics = dict(result.metrics or {})
@@ -479,6 +581,9 @@ async def run_one_query_api(
             turn_rec["reward"] = float(result.reward)
             turn_rec["episode_done"] = done
             turn_rec["n_executed_tool_calls"] = n_executed
+            turn_rec["n_proposed_tool_calls"] = n_proposed or len(
+                (parsed.tool_calls if parsed is not None else [])
+            )
             turn_rec["explicit_end_search"] = episode_finish_reason == "explicit_end_search"
         except Exception as exc:  # noqa: BLE001
             error_kind = _classify_env_exception(exc)
@@ -491,6 +596,13 @@ async def run_one_query_api(
             else:
                 protocol_error_attempts += 1
             retry_error_hint = str(exc)
+            pending_failed = {
+                "attempt_id": attempt_id,
+                "tool_calls": list((parsed.tool_calls if parsed is not None else [])),
+                "error_kind": error_kind,
+                "error_detail": str(exc),
+                "curated_before": list(getattr(getattr(env, "wm", None), "curated_ids", []) or []),
+            }
             result = env._handle_format_error(str(exc))
             last_step_metrics = dict(result.metrics or {})
             last_step_metrics.setdefault("reward", float(result.reward))
@@ -503,6 +615,8 @@ async def run_one_query_api(
             turn_rec["episode_done"] = done
             turn_rec["env_metrics"] = dict(last_step_metrics)
             turn_rec["n_executed_tool_calls"] = 0
+            turn_rec["n_proposed_tool_calls"] = n_proposed
+        turn_rec["pending_failed_attempt"] = pending_failed
         turn_rec["harness_sec"] = time.time() - t1
         turns.append(turn_rec)
         _append_jsonl(trace_dir / "TURNS.jsonl", turn_rec)
@@ -537,6 +651,11 @@ async def run_one_query_api(
             "schema_error_attempts": schema_error_attempts,
             "format_retry_attempts": protocol_error_attempts + transport_error_attempts,
             "recovered_format_error": recovered_format_error,
+            "protocol_recovered": float(protocol_recovered),
+            "failed_operation_effect_observed": failed_operation_effect_observed,
+            "retry_abandoned_or_changed": float(retry_abandoned_or_changed),
+            "effective_seed": effective_seed,
+            **fix_manifest(),
         }
     )
     _append_jsonl(trace_dir / "PER_QUERY.jsonl", {k: v for k, v in metrics.items()})
@@ -577,6 +696,7 @@ def write_run_manifest(
     payload = {
         "evaluation_path": EVALUATION_PATH_UPSTREAM_API,
         "upstream": pin_manifest(),
+        "fix_manifest": fix_manifest(),
         "component_mask": describe_mask(mask),
         "v8d_env": v8d_env_from_mask(mask),
         "served_model": identity.to_dict(),
@@ -646,6 +766,7 @@ def summarize_api_traces(
     n_missing = max(0, n - n_completed)
     return {
         "evaluation_path": EVALUATION_PATH_UPSTREAM_API,
+        **fix_manifest(),
         "n_queries": n_completed,
         "n_planned": n,
         "coverage_complete": n_missing == 0 and infra == 0,

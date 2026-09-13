@@ -235,7 +235,6 @@ def main(argv: list[str] | None = None) -> int:
             worker_extra = {
                 "max_model_len": int(args.max_model_len),
                 "seed": int(args.seed),
-                "sampling_extra": {"seed": int(args.seed)},
             }
             api_eval_kwargs = dict(
                 rows=rows,

@@ -14,8 +14,11 @@ from trim.adapters.harness_g_components import RUNTIME_TOOLS
 from trim.adapters.harness_profiles import is_harness_g, zero_mask_for
 from trim.eval.local_search_env import _doc_text, _tokenize
 
-_SENT_SPLIT = re.compile(r"(?<=[.!?])\s+")
-_ENTITY_RE = re.compile(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})\b")
+_SENT_SPLIT = re.compile(r"(?<=[.!?])[ \t]+")
+_ENTITY_RE = re.compile(
+    r"\b(?:[A-Z]{2,}|[A-Z][a-z]+(?:[-'][A-Za-z]+)?(?:[ \t]+[A-Z][a-z]+(?:[-'][A-Za-z]+)?){0,3})\b"
+)
+_YAML_FRONT_RE = re.compile(r"^---\s*\n.*?\n---\s*\n?", re.DOTALL)
 _BAD_LOOKUP = re.compile(
     r"^(\d+|january|february|march|april|may|june|july|august|september|"
     r"october|november|december|american|british|french|german|chinese|"
@@ -26,18 +29,31 @@ _FRONT_MATTER_RE = re.compile(
     r"^(title|author|date|published|copyright|table of contents|references)\b",
     re.I,
 )
-_MAX_SENTS_PER_DOC = 48
+_WM_PREVIEW_CHARS = 120
+_SELECT_PREVIEW_CHARS = 240
+
+
+def _strip_yaml_front_matter(text: str) -> str:
+    return _YAML_FRONT_RE.sub("", str(text or ""), count=1)
+
+
+def _sort_sids_by_idx(sids: list[str], sentences: Mapping[str, Mapping[str, Any]]) -> list[str]:
+    def _key(sid: str) -> tuple[int, str]:
+        sent = sentences.get(sid) or {}
+        return (int(sent.get("idx", 0)), sid)
+
+    return sorted(sids, key=_key)
 
 
 def _sentences_from_store(doc_store: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
     sentences: dict[str, dict[str, Any]] = {}
     for did, rec in (doc_store or {}).items():
-        text = _doc_text(rec)
+        text = _strip_yaml_front_matter(_doc_text(rec))
         parts = [p.strip() for p in _SENT_SPLIT.split(text) if p.strip()]
         if not parts:
             parts = [text.strip()] if text.strip() else []
         kept = [p for p in parts if not _FRONT_MATTER_RE.match(p.strip())] or parts
-        for i, sent in enumerate(kept[:_MAX_SENTS_PER_DOC]):
+        for i, sent in enumerate(kept):
             sid = f"{did}:s{i}"
             sentences[sid] = {
                 "sid": sid,
@@ -47,7 +63,7 @@ def _sentences_from_store(doc_store: Mapping[str, Any]) -> dict[str, dict[str, A
                 "neighbors": [
                     f"{did}:s{j}"
                     for j in (i - 1, i + 1)
-                    if 0 <= j < min(_MAX_SENTS_PER_DOC, len(kept))
+                    if 0 <= j < len(kept)
                 ],
             }
     return sentences
@@ -67,15 +83,6 @@ def _entities_from_sentences(sentences: Mapping[str, Mapping[str, Any]]) -> dict
             )
             if sid not in rec["sids"]:
                 rec["sids"].append(sid)
-    by_token: dict[str, list[str]] = {}
-    for eid, rec in entities.items():
-        tok = rec["surface"].split()[0].lower()
-        by_token.setdefault(tok, []).append(eid)
-    for group in by_token.values():
-        if len(group) < 2:
-            continue
-        for eid in group:
-            entities[eid]["synonyms"] = [x for x in group if x != eid]
     return entities
 
 
@@ -119,8 +126,14 @@ def _rank_sids(query: str, sentences: Mapping[str, Mapping[str, Any]], k: int) -
 def _rrf_fuse(lists: list[list[str]], *, k: int = 60) -> list[str]:
     scores: dict[str, float] = {}
     for lst in lists:
-        for rank, sid in enumerate(lst):
+        seen: set[str] = set()
+        rank = 0
+        for sid in lst:
+            if sid in seen:
+                continue
+            seen.add(sid)
             scores[sid] = scores.get(sid, 0.0) + 1.0 / (k + rank + 1)
+            rank += 1
     return sorted(scores.keys(), key=lambda s: (-scores[s], s))
 
 
@@ -144,7 +157,7 @@ def _hybrid_rank_sids(
         for sid, sent in sentences.items():
             by_doc.setdefault(str(sent.get("doc_id")), []).append(sid)
         for did in doc_order:
-            bm25_sids.extend(sorted(by_doc.get(did) or []))
+            bm25_sids.extend(_sort_sids_by_idx(list(by_doc.get(did) or []), sentences))
     fused = _rrf_fuse([lexical, entity_hits, bm25_sids])
     return fused[:k]
 
@@ -295,8 +308,8 @@ def _sync_curated(state: dict[str, Any]) -> None:
     store = state.get("doc_store") or {}
     sentences = state.get("sentences") or {}
     pool: dict[str, Any] = {}
-    observed_docids: set[str] = set()
-    observed_sids: set[str] = set()
+    observed_docids: set[str] = set(state.get("observed_docids") or [])
+    observed_sids: set[str] = set(state.get("observed_sids") or [])
     selected_docids: set[str] = set()
     selected_sids: set[str] = set()
 
@@ -344,7 +357,9 @@ def wm_text(state: dict[str, Any], *, auto_on: bool = False) -> str:
         lines.append(f"  - sid=\"{sid}\": {str((sentences.get(sid) or {}).get('text') or '')[:160]}")
     lines.append("visible:")
     for sid in (state.get("visible_sids") or [])[:8]:
-        lines.append(f"  - sid=\"{sid}\": {str((sentences.get(sid) or {}).get('text') or '')[:120]}")
+        lines.append(
+            f"  - sid=\"{sid}\": {str((sentences.get(sid) or {}).get('text') or '')[:_WM_PREVIEW_CHARS]}"
+        )
     lines.append("actions:")
     for aid, action in (state.get("action_map") or {}).items():
         if action.get("sid"):
@@ -401,8 +416,28 @@ def _init_visible(state: dict[str, Any], *, searcher: Any | None, search_k: int)
             by_doc.setdefault(str(sent.get("doc_id")), []).append(sid)
         ordered: list[str] = []
         for did in doc_order:
-            ordered.extend(sorted(by_doc.get(did) or []))
+            ordered.extend(_sort_sids_by_idx(list(by_doc.get(did) or []), sentences))
         if ordered:
+            # Round-robin one sentence per doc before filling the window.
+            per_doc = [list(by_doc.get(did) or []) for did in doc_order]
+            per_doc = [_sort_sids_by_idx(sids, sentences) for sids in per_doc if sids]
+            picked: list[str] = []
+            idx = 0
+            while len(picked) < k and per_doc:
+                progressed = False
+                for doc_sids in per_doc:
+                    if idx < len(doc_sids):
+                        sid = doc_sids[idx]
+                        if sid not in picked:
+                            picked.append(sid)
+                            progressed = True
+                        if len(picked) >= k:
+                            break
+                if not progressed:
+                    break
+                idx += 1
+            if picked:
+                return picked[:k]
             return ordered[:k]
     return _rank_sids(query, sentences, k)
 
@@ -411,32 +446,33 @@ def _lookup_sids(state: dict[str, Any], eid: str, *, new_doc_order: list[str] | 
     entities = state.get("entities") or {}
     sentences = state.get("sentences") or {}
     rec = entities.get(eid) or {}
-    sids = list(rec.get("sids") or [])
+    old_sids: list[str] = list(rec.get("sids") or [])
     if _mask_on(state, "entity_synonyms"):
         for syn in rec.get("synonyms") or []:
-            sids.extend((entities.get(syn) or {}).get("sids") or [])
+            old_sids.extend((entities.get(syn) or {}).get("sids") or [])
             _note_effect(state, "entity_synonyms_expanded")
     if _mask_on(state, "sentence_neighbors"):
         extra: list[str] = []
-        for sid in list(sids):
+        for sid in list(old_sids):
             extra.extend((sentences.get(sid) or {}).get("neighbors") or [])
-        sids.extend(extra)
+        old_sids.extend(extra)
         _note_effect(state, "sentence_neighbors_added", len(extra))
+    new_sids: list[str] = []
     if new_doc_order:
         by_doc: dict[str, list[str]] = {}
         for sid, sent in sentences.items():
             by_doc.setdefault(str(sent.get("doc_id")), []).append(sid)
         for did in new_doc_order:
-            for sid in sorted(by_doc.get(did) or []):
-                if sid not in sids:
-                    sids.append(sid)
-    out: list[str] = []
-    for sid in sids:
-        if sid in sentences and sid not in out:
-            out.append(sid)
-        if len(out) >= 6:
+            for sid in _sort_sids_by_idx(list(by_doc.get(did) or []), sentences):
+                if sid not in new_sids:
+                    new_sids.append(sid)
+    combined: list[str] = []
+    for sid in new_sids + old_sids:
+        if sid in sentences and sid not in combined:
+            combined.append(sid)
+        if len(combined) >= 6:
             break
-    return out
+    return combined
 
 
 def _tool_history_append(
@@ -489,7 +525,7 @@ def _fail(
     include_answer = bool(state.get("initialized"))
     state["action_map"] = build_action_map(state, include_answer=include_answer)
     _sync_curated(state)
-    obs = f"ERROR [{code}]: {msg}\n" + wm_text(state)
+    obs = f"ERROR [{code}]: {msg}"
     return state, obs, False
 
 
@@ -562,7 +598,10 @@ def execute_tool(
                     execution_ok=True,
                 )
                 _sync_curated(st)
-                return st, "INIT retrieved visible sentences.\n" + wm_text(st), True
+                return st, "INIT retrieved visible sentences.", True
+
+    if name == "init" and st.get("initialized"):
+        return _fail(st, name, args, code="already_initialized", msg="environment already initialized.")
 
     if name == "select":
         sid = str(args.get("sid") or args.get("id") or "")
@@ -579,7 +618,7 @@ def execute_tool(
             if sid in (rec.get("sids") or []) and eid not in frontier:
                 frontier.append(eid)
         st["frontier_eids"] = frontier
-        obs = f"SELECT sid=\"{sid}\": {str(sent.get('text') or '')[:240]}"
+        obs = f"SELECT sid=\"{sid}\": {str(sent.get('text') or '')[:_SELECT_PREVIEW_CHARS]}"
         exec_ok = True
     elif name == "lookup":
         eid = str(args.get("eid") or args.get("id") or "")
@@ -680,7 +719,7 @@ def execute_tool(
         execution_ok=exec_ok,
     )
     _sync_curated(st)
-    return st, obs + "\n" + wm_text(st), exec_ok
+    return st, obs, exec_ok
 
 
 def curated_recall(state: dict[str, Any], gold_ids: list[str]) -> float | None:

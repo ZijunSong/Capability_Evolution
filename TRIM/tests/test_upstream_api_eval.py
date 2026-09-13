@@ -34,7 +34,7 @@ def test_pin_records_upstream_commit_and_interface_patches():
     assert pin["vendored_exists"] is True
     assert pin["is_git_submodule"] is False
     kinds = {p["kind"] for p in pin["interface_patches"]}
-    assert kinds == {"io_boundary"}
+    assert kinds >= {"io_boundary", "behavior"}
 
 
 def test_eval_all_default_zero_are_actual_switches():

@@ -45,6 +45,18 @@ INTERFACE_PATCHES: tuple[dict[str, str], ...] = (
         "kind": "io_boundary",
         "reason": "Tool schema/metadata importable without chromadb or harness.rerank/get_config.",
     },
+    {
+        "file": "harness/ultra_core.py",
+        "symbol": "WorkingMemory.curate",
+        "kind": "behavior",
+        "reason": "Partial-update schema, retag-before-evict ordering, and explicit change sets.",
+    },
+    {
+        "file": "training/train_rl.py",
+        "symbol": "SlidingWindowSearchEnv.step_action terminal batch contract",
+        "kind": "behavior",
+        "reason": "Execute trailing curate before end_search settlement; reject illegal terminal order.",
+    },
 )
 
 

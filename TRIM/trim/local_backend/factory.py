@@ -12,6 +12,7 @@ from trim.local_backend.corpus_validate import validate_corpus_against_index
 from trim.local_backend.id_map import IdMap
 from trim.local_backend.tools import LocalGrepCorpusTool, LocalReadDocumentTool, LocalSearchCorpusTool
 from trim.upstream_harness1.retrieval import RetrievalConfig
+from trim.upstream_harness1.v8d_flags import V8D_COMPONENT_FLAGS
 
 
 EVAL_PROFILE_LOCAL_BM25 = "upstream_core_local_bm25"
@@ -73,6 +74,36 @@ def load_local_store(retrieval: RetrievalConfig) -> LocalCorpusStore:
     return store
 
 
+def _component_capability_matrix(
+    mask: Mapping[str, bool] | None,
+    *,
+    retrieval: RetrievalConfig,
+    chunk_strategy: str,
+) -> dict[str, Any]:
+    reranker_none = retrieval.reranker in {"", None, "none"}
+    single_chunk = chunk_strategy == "document_as_single_chunk"
+    out: dict[str, Any] = {}
+    for cid in V8D_COMPONENT_FLAGS:
+        requested = bool((mask or {}).get(cid, False))
+        supported = True
+        reason = ""
+        if cid == "adaptive_rerank_instruction" and reranker_none:
+            supported = False
+            reason = "reranker=none"
+        if cid == "chunk_neighbors" and single_chunk:
+            supported = False
+            reason = "document_as_single_chunk"
+        out[cid] = {
+            "requested": requested,
+            "enabled": requested,
+            "supported": supported,
+            "triggered_count": 0,
+            "effect_count": 0,
+            "unsupported_reason": reason or None,
+        }
+    return out
+
+
 def build_local_toolset(
     mods: Mapping[str, Any],
     retrieval: RetrievalConfig,
@@ -80,6 +111,7 @@ def build_local_toolset(
     dataset: Any = None,
     require_loopback: bool = True,
     token_counter: Any | None = None,
+    mask: Mapping[str, bool] | None = None,
 ) -> LocalToolPack:
     retrieval.assert_local_bm25()
     from trim.upstream_harness1.token_count import whitespace_token_counter
@@ -122,6 +154,19 @@ def build_local_toolset(
     )
     capability_log["corpus_validation"] = corpus_validation
     capability_log["index_num_docs"] = corpus_validation["index_num_docs"]
+    capability_log["bm25"] = {
+        "requested_k1": backend.k1,
+        "requested_b": backend.b,
+        "configure_ok": bool(getattr(backend, "bm25_configure_ok", False)),
+        "index_version": backend.index_version,
+    }
+    capability_log["components"] = _component_capability_matrix(
+        mask,
+        retrieval=retrieval,
+        chunk_strategy=str(store.manifest.chunk_strategy),
+    )
+    capability_log["reranker_supported"] = retrieval.reranker not in {"", None, "none"}
+    capability_log["reranker_enabled"] = capability_log["reranker_supported"]
     reranker = None
     if retrieval.reranker not in {"none", "", None}:
         if retrieval.reranker in {"local", "local_model"}:

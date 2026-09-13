@@ -124,6 +124,7 @@ def f_beta_score(precision: float, recall: float, *, beta: float = RECALL_BETA) 
 @dataclass
 class EpisodeTiming:
     e2e_start: float = field(default_factory=time.perf_counter)
+    finished_at: float | None = None
     model_sec: float = 0.0
     harness_sec: float = 0.0
 
@@ -133,8 +134,13 @@ class EpisodeTiming:
     def add_harness(self, dt: float) -> None:
         self.harness_sec += max(0.0, float(dt))
 
+    def mark_finished(self) -> None:
+        if self.finished_at is None:
+            self.finished_at = time.perf_counter()
+
     def snapshot(self) -> dict[str, float]:
-        e2e = max(0.0, time.perf_counter() - self.e2e_start)
+        end = self.finished_at if self.finished_at is not None else time.perf_counter()
+        e2e = max(0.0, end - self.e2e_start)
         return {
             "e2e_sec": e2e,
             "model_sec": self.model_sec,

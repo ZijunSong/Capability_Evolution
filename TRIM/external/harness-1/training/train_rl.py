@@ -299,6 +299,8 @@ class SlidingWindowSearchEnv(Env):
         self._current_turn: int = 0
         self._format_retries: int = 0
         self._turns_since_curate: int = 0
+        self._pool_size_at_last_curate: int = 0
+        self._pending_verify_since_curate: bool = False
         self._total_curate_calls: int = 0
         self._tool_types_used: Set[str] = set()
         self._prev_recall: float = 0.0
@@ -370,17 +372,32 @@ class SlidingWindowSearchEnv(Env):
         TRIM API eval and token training must call this rather than
         ``_execute_tools`` so format retries, summaries, WM, and terminal
         metrics stay on the upstream path.
-        """
-        # Check for episode end
-        has_end_search = any(
-            t.tool_schema.name == "end_search" for t in action.tools
-        )
-        has_user_text = any(isinstance(t, UserTextTool) for t in action.tools)
 
-        if has_end_search or has_user_text:
-            self._terminal_reward, self._terminal_metrics = (
-                self._compute_terminal_reward()
+        Batch contract (TRIM patch): at most one terminal action and it must be
+        last. ``curate → end_search`` executes curate before settlement.
+        """
+        terminal_indices: List[int] = []
+        for idx, tool in enumerate(action.tools):
+            if isinstance(tool, UserTextTool):
+                terminal_indices.append(idx)
+            elif getattr(getattr(tool, "tool_schema", None), "name", "") == "end_search":
+                terminal_indices.append(idx)
+
+        if len(terminal_indices) > 1:
+            return self._handle_format_error(
+                "Multiple terminal actions in one response; only one end_search or final answer is allowed."
             )
+
+        terminal_idx = terminal_indices[0] if terminal_indices else None
+        if terminal_idx is not None and terminal_idx != len(action.tools) - 1:
+            return self._handle_format_error(
+                "Terminal action must be last in the tool-call batch."
+            )
+
+        def _finalize_episode(*, executed_count: int) -> StepResult:
+            self._terminal_reward, self._terminal_metrics = self._compute_terminal_reward()
+            self._terminal_metrics["n_proposed_tool_calls"] = float(len(action.tools))
+            self._terminal_metrics["n_executed_tool_calls"] = float(executed_count)
             self._episode_ended = True
             self._save_trajectory()
             logger.info(
@@ -399,12 +416,25 @@ class SlidingWindowSearchEnv(Env):
                 metrics=self._terminal_metrics,
             )
 
+        if terminal_idx is not None and len(action.tools) == 1:
+            return _finalize_episode(executed_count=0)
+
+        exec_action = action
+        if terminal_idx is not None:
+            exec_action = Action(
+                tools=action.tools[:terminal_idx],
+                params=action.params[:terminal_idx],
+                sources=action.sources[:terminal_idx],
+                reasoning=action.reasoning,
+            )
+
         # Capture pool size BEFORE tool execution (for novel_count in result summary)
         pool_size_before = self.wm.get_pool_size()
 
         # Execute tools
+        executed_count = len(exec_action.tools)
         try:
-            observation = await asyncio.to_thread(self._execute_tools, action)
+            observation = await asyncio.to_thread(self._execute_tools, exec_action)
         except Exception as e:
             logger.error("tool_exec_error", error=str(e)[:300], qid=self.query_id)
             self._terminal_reward = FORMAT_ERROR_PENALTY
@@ -413,8 +443,30 @@ class SlidingWindowSearchEnv(Env):
                 episode_done=True,
                 next_observation=tinker.ModelInput.empty(),
                 next_stop_condition=self.stop_condition,
-                metrics={"no_error": 0.0, "tool_error": 1.0, "max_turns_reached": 0.0},
+                metrics={
+                    "no_error": 0.0,
+                    "tool_error": 1.0,
+                    "max_turns_reached": 0.0,
+                    "n_proposed_tool_calls": float(len(action.tools)),
+                    "n_executed_tool_calls": float(executed_count),
+                },
             )
+
+        if terminal_idx is not None:
+            if executed_count > 0:
+                self._all_actions.append(action)
+                self._all_observations.append(observation)
+                if any(t.tool_schema.name == "curate" for t in exec_action.tools):
+                    self._turns_since_curate = 0
+                    self._total_curate_calls += 1
+                    self._pool_size_at_last_curate = self.wm.get_pool_size()
+                    self._pending_verify_since_curate = False
+                if any(getattr(getattr(t, "tool_schema", None), "name", "") == "verify" for t in exec_action.tools):
+                    self._pending_verify_since_curate = True
+                self.wm.advance_turn()
+                self._current_turn += 1
+                self._wm_snapshots.append(self.wm.snapshot())
+            return _finalize_episode(executed_count=executed_count)
 
         self._format_retries = 0
 
@@ -423,8 +475,13 @@ class SlidingWindowSearchEnv(Env):
         if has_curate:
             self._turns_since_curate = 0
             self._total_curate_calls += 1
+            self._pool_size_at_last_curate = self.wm.get_pool_size()
+            self._pending_verify_since_curate = False
         else:
             self._turns_since_curate += 1
+
+        if any(getattr(getattr(t, "tool_schema", None), "name", "") == "verify" for t in action.tools):
+            self._pending_verify_since_curate = True
 
         for t in action.tools:
             self._tool_types_used.add(t.tool_schema.name)

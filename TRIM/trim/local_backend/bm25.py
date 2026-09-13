@@ -36,12 +36,13 @@ class LocalBm25Backend:
         self.k1 = float(k1)
         self.b = float(b)
         self._lucene = PyseriniBackend(self.index_path)
-        setter = getattr(self._lucene._searcher, "set_bm25", None)
-        if callable(setter):
-            try:
-                self._lucene._jni.call(lambda: setter(self.k1, self.b))
-            except Exception:
-                pass
+        try:
+            self._lucene.configure_bm25(self.k1, self.b)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Failed to configure BM25 parameters k1={self.k1} b={self.b}: {exc}"
+            ) from exc
+        self.bm25_configure_ok = True
         self.index_version = f"lucene:{self.index_path.resolve()}#docs={self._lucene.num_docs()}"
         self.store.manifest.index_path = str(self.index_path)
         self.store.manifest.index_version = self.index_version

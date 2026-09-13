@@ -191,6 +191,7 @@ def main() -> int:
                 generate_kwargs["lora_request"] = lora_request
             outputs = llm.generate(prompts, params, **generate_kwargs)
             rows = []
+            events_path = session / "events.jsonl"
             for req, output in zip(requests, outputs):
                 token_ids = _completion_token_ids(output)
                 raw_lp = getattr(output.outputs[0], "logprobs", None)
@@ -199,15 +200,26 @@ def main() -> int:
                     text = tokenizer.decode(token_ids, skip_special_tokens=False)
                 except Exception:
                     text = ""
-                rows.append(
-                    {
-                        "request_id": req.get("request_id"),
-                        "token_ids": token_ids,
-                        "token_logprobs": token_logprobs,
-                        "finish_reason": getattr(output.outputs[0], "finish_reason", None),
-                        "text": str(text),
-                    }
-                )
+                finish_reason = getattr(output.outputs[0], "finish_reason", None)
+                row = {
+                    "request_id": req.get("request_id"),
+                    "token_ids": token_ids,
+                    "token_logprobs": token_logprobs,
+                    "finish_reason": finish_reason,
+                    "text": str(text),
+                }
+                rows.append(row)
+                event = {
+                    "request_id": req.get("request_id"),
+                    "seed": req.get("seed"),
+                    "max_new_tokens": req.get("max_new_tokens"),
+                    "finish_reason": finish_reason,
+                    "completion_text": str(text),
+                    "prompt_token_count": len(req.get("prompt_token_ids") or []),
+                    "completion_token_count": len(token_ids),
+                }
+                with events_path.open("a", encoding="utf-8") as event_handle:
+                    event_handle.write(json.dumps(event, ensure_ascii=False) + "\n")
             (session / "result.json").write_text(
                 json.dumps({"ok": True, "outputs": rows}) + "\n", encoding="utf-8"
             )
