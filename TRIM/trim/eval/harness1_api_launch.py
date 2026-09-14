@@ -9,7 +9,12 @@ import time
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from trim.eval.harness1_api_eval import assert_fresh_eval_dir, summarize_api_traces, write_run_manifest
+from trim.eval.harness1_api_eval import (
+    assert_fresh_eval_dir,
+    summarize_api_traces,
+    write_eval_readme,
+    write_run_manifest,
+)
 from trim.eval.tool_health import merge_tool_health, write_tool_health
 from trim.eval.eval_parallel import (
     effective_replica_count,
@@ -353,6 +358,7 @@ def run_replicated_api_eval(
             write_tool_health(out / "TOOL_HEALTH.json", merged_health)
             manifest_extra["capability_log"] = merged_health.get("capability_log") or {}
             manifest_extra["tool_health_path"] = "TOOL_HEALTH.json"
+        write_eval_readme(out, summary=summary, tool_health=merged_health)
         write_run_manifest(
             out,
             mask=harness_mask,

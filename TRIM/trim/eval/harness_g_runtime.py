@@ -26,7 +26,18 @@ _TO_RE = re.compile(
 _JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
 _AID_FULL_RE = re.compile(r"^\s*(A\d+)\s*$", re.I)
 _TOOL_CALL_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
+_HARMONY_CALL_RE = re.compile(
+    r"to=functions\.(?P<name>init|select|lookup|answer|answer_with)\b"
+    r"(?P<body>.*?)(?=<\|call\|>)",
+    re.I | re.DOTALL,
+)
+_ASSISTANT_START_RE = re.compile(r"<\|start\|>assistant")
+_METADATA_ONLY_RE = re.compile(
+    r"^(title|author|date|published|copyright|table of contents|references):\s*.+\s*$",
+    re.I,
+)
 _SPECIAL_TOKEN_RE = re.compile(r"<\|[^|>]+\|>")
+PROTOCOL_FEEDBACK_KEY = "__protocol_feedback__"
 
 SYSTEM_PROMPT = """You are a Harness-G search agent.
 Basic runtime tools (always available):
@@ -149,7 +160,17 @@ def qwen_harness_g_tool_schemas(*, include_answer_with: bool = False) -> list[di
     return out
 
 
+def is_protocol_feedback(action: Any) -> bool:
+    return isinstance(action, dict) and bool(action.get(PROTOCOL_FEEDBACK_KEY))
+
+
+def make_protocol_feedback(message: str) -> dict[str, Any]:
+    return {PROTOCOL_FEEDBACK_KEY: True, "content": str(message or "")}
+
+
 def _action_name_args(action: Any) -> tuple[str, dict[str, Any]]:
+    if is_protocol_feedback(action):
+        return "", {}
     if isinstance(action, dict):
         return str(action.get("name") or ""), dict(action.get("arguments") or {})
     tools = getattr(action, "tools", None) or []
@@ -185,6 +206,9 @@ def _qwen_messages(
         {"role": "user", "content": f"Question: {query}"},
     ]
     for action, obs in recent_actions_obs(list(actions_obs or []), keep=12):
+        if is_protocol_feedback(action):
+            messages.append({"role": "user", "content": _obs_text(obs)})
+            continue
         name, args = _action_name_args(action)
         messages.append(
             {
@@ -284,6 +308,9 @@ def build_harness_g_context(
         Message.from_role_and_content(Role.USER, f"Question: {query}"),
     ]
     for action, obs in recent_actions_obs(list(actions_obs or []), keep=12):
+        if is_protocol_feedback(action):
+            messages.append(Message.from_role_and_content(Role.USER, _obs_text(obs)))
+            continue
         if hasattr(action, "tools"):
             act_obj = action
             obs_obj = obs
@@ -339,15 +366,84 @@ def _parse_json_harness_g_action(blob: str) -> tuple[dict[str, Any], bool] | Non
     return _action_from_json_obj(obj)
 
 
+def _harmony_executable_region(blob: str) -> str | None:
+    call_pos = blob.rfind("<|call|>")
+    if call_pos < 0:
+        return None
+    region_start = 0
+    for match in _ASSISTANT_START_RE.finditer(blob):
+        if match.start() < call_pos:
+            region_start = match.start()
+    return blob[region_start : call_pos + len("<|call|>")]
+
+
+def _parse_harmony_call_region(region: str) -> tuple[dict[str, Any], bool] | None:
+    from trim.eval.harmony_runtime import _MESSAGE_JSON_RE
+
+    _HARMONY_MSG_JSON_RE = re.compile(r"<\|message\|>(?P<body>\{.*?\})", re.DOTALL)
+
+    calls = list(_HARMONY_CALL_RE.finditer(region))
+    if len(calls) != 1:
+        return None
+    call = calls[0]
+    name = str(call.group("name") or "").lower()
+    if name not in _HARNESS_G_TOOL_NAMES:
+        return None
+    body = call.group("body") or ""
+    args_loaded: dict[str, Any] | None = None
+    jm = _MESSAGE_JSON_RE.search(region) or _HARMONY_MSG_JSON_RE.search(body)
+    if jm:
+        try:
+            loaded = json.loads(jm.group("body"))
+            if isinstance(loaded, dict):
+                args_loaded = loaded
+        except json.JSONDecodeError:
+            return None
+    if name in {"select", "lookup", "answer_with"}:
+        key = "sid" if name != "lookup" else "eid"
+        if not args_loaded or not str(args_loaded.get(key) or "").strip():
+            return None
+    if args_loaded is None and name not in {"init", "answer"}:
+        return None
+    return {"name": name, "arguments": args_loaded or {}}, True
+
+
 def parse_harness_g_action(
     text: str,
     *,
     action_map: Mapping[str, Mapping[str, Any]] | None = None,
     strict: bool = True,
+    finish_reason: str | None = None,
 ) -> tuple[dict[str, Any], bool]:
-    del strict  # strict-only parser; parameter kept for call-site clarity
+    del strict
     blob = str(text or "").strip()
     if not blob:
+        return {"name": "unknown", "arguments": {}}, False
+
+    if str(finish_reason or "") == "length":
+        return {"name": "truncated", "arguments": {"finish_reason": "length"}}, False
+
+    tool_calls = list(_TOOL_CALL_RE.finditer(blob))
+    if len(tool_calls) > 1:
+        return {"name": "unknown", "arguments": {}}, False
+    if len(tool_calls) == 1:
+        try:
+            obj = json.loads(tool_calls[0].group(1))
+        except json.JSONDecodeError:
+            return {"name": "unknown", "arguments": {}}, False
+        if isinstance(obj, dict):
+            parsed = _action_from_json_obj(obj)
+            if parsed is not None:
+                return parsed
+        return {"name": "unknown", "arguments": {}}, False
+
+    if "<|call|>" in blob:
+        region = _harmony_executable_region(blob)
+        if region is None:
+            return {"name": "unknown", "arguments": {}}, False
+        parsed_region = _parse_harmony_call_region(region)
+        if parsed_region is not None:
+            return parsed_region
         return {"name": "unknown", "arguments": {}}, False
 
     aid_match = _AID_FULL_RE.match(blob)
@@ -364,52 +460,6 @@ def parse_harness_g_action(
                 args["sids"] = list(mapped["sids"])
             if name:
                 return {"name": name, "arguments": args}, True
-
-    tool_call_match = _TOOL_CALL_RE.search(blob)
-    if tool_call_match:
-        try:
-            obj = json.loads(tool_call_match.group(1))
-        except json.JSONDecodeError:
-            return {"name": "unknown", "arguments": {}}, False
-        if isinstance(obj, dict):
-            parsed = _action_from_json_obj(obj)
-            if parsed is not None:
-                return parsed
-
-    if "<|call|>" in blob:
-        try:
-            parsed = parse_codec_action(blob)
-            name = str(parsed.get("name") or "").lower()
-            args = dict(parsed.get("arguments") or {})
-            if name in _HARNESS_G_TOOL_NAMES:
-                if name in {"select", "lookup", "answer_with"}:
-                    key = "sid" if name != "lookup" else "eid"
-                    if not str(args.get(key) or "").strip():
-                        return {"name": "unknown", "arguments": {}}, False
-                return {"name": name, "arguments": args}, True
-        except Exception:
-            pass
-        match = _TO_RE.search(blob)
-        if match:
-            from trim.eval.harmony_runtime import _MESSAGE_JSON_RE
-
-            name = match.group("name").lower()
-            args_loaded: dict[str, Any] | None = None
-            jm = _MESSAGE_JSON_RE.search(blob)
-            if jm:
-                try:
-                    loaded = json.loads(jm.group("body"))
-                    if isinstance(loaded, dict):
-                        args_loaded = loaded
-                except json.JSONDecodeError:
-                    args_loaded = None
-            if name in {"select", "lookup", "answer_with"}:
-                key = "sid" if name != "lookup" else "eid"
-                if not args_loaded or not str(args_loaded.get(key) or "").strip():
-                    return {"name": "unknown", "arguments": {}}, False
-            if args_loaded is None and name not in {"init", "answer"}:
-                return {"name": "unknown", "arguments": {}}, False
-            return {"name": name, "arguments": args_loaded or {}}, True
 
     return {"name": "unknown", "arguments": {}}, False
 

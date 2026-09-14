@@ -338,6 +338,23 @@ def _recovery_effect_observed(
     return "unknown"
 
 
+def _classify_retry_action_change(
+    *,
+    failed_calls: Sequence[Mapping[str, Any]],
+    proposed: Sequence[Mapping[str, Any]],
+) -> str:
+    """Whether the retry abandoned/changed the failed action: true / false / unknown."""
+    if not failed_calls:
+        return "unknown"
+    normalized_failed = [
+        {"name": str(c.get("name") or ""), "arguments": dict(c.get("arguments") or {})}
+        for c in failed_calls
+    ]
+    if list(proposed) == normalized_failed:
+        return "false"
+    return "true"
+
+
 async def run_one_query_api(
     *,
     env: Any,
@@ -382,7 +399,7 @@ async def run_one_query_api(
     schema_error_attempts = 0
     protocol_recovered = False
     failed_operation_effect_observed = "unknown"
-    retry_abandoned_or_changed = False
+    retry_abandoned_or_changed = "unknown"
     while not done and env._current_turn < max_turns:
         if deadline is not None and time.monotonic() >= deadline:
             finish_reason = "query_timeout"
@@ -553,11 +570,13 @@ async def run_one_query_api(
                         for c in parsed.tool_calls
                     ]
                     failed_calls = list(pending_failed.get("tool_calls") or [])
-                    if proposed != failed_calls:
-                        retry_abandoned_or_changed = True
+                    retry_abandoned_or_changed = _classify_retry_action_change(
+                        failed_calls=failed_calls,
+                        proposed=proposed,
+                    )
                 result = await env.step_action(action)
                 n_executed = int((result.metrics or {}).get("n_executed_tool_calls", len(parsed.tool_calls)))
-                if pending_failed and not retry_abandoned_or_changed:
+                if pending_failed:
                     protocol_recovered = True
                     failed_operation_effect_observed = _recovery_effect_observed(
                         failed=pending_failed,
@@ -653,7 +672,7 @@ async def run_one_query_api(
             "recovered_format_error": recovered_format_error,
             "protocol_recovered": float(protocol_recovered),
             "failed_operation_effect_observed": failed_operation_effect_observed,
-            "retry_abandoned_or_changed": float(retry_abandoned_or_changed),
+            "retry_abandoned_or_changed": retry_abandoned_or_changed,
             "effective_seed": effective_seed,
             **fix_manifest(),
         }
@@ -819,4 +838,53 @@ def summarize_api_traces(
         "queries_with_recovered_format_error": sum(
             1 for t in traces if float(t.get("recovered_format_error") or 0.0) >= 1.0
         ),
+        "recovered_protocol_error_attempts_total": sum(
+            int(t.get("protocol_error_attempts") or 0)
+            for t in traces
+            if float(t.get("recovered_format_error") or 0.0) >= 1.0
+        ),
     }
+
+
+def write_eval_readme(
+    out: Path,
+    *,
+    summary: Mapping[str, Any],
+    tool_health: Mapping[str, Any] | None = None,
+) -> None:
+    """Human-readable run summary for bundle attachments (offline-safe)."""
+    n_planned = int(summary.get("n_planned") or summary.get("n_queries") or 0)
+    format_error_rate = float(summary.get("format_error_rate") or 0.0)
+    recovered_queries = int(summary.get("queries_with_recovered_format_error") or 0)
+    recovered_attempts = int(summary.get("recovered_protocol_error_attempts_total") or 0)
+
+    counters = dict((tool_health or {}).get("counters") or {})
+    cap = dict((tool_health or {}).get("capability_log") or {})
+    verify_http = int(counters.get("verify_http_requests") or cap.get("verify_http_requests") or 0)
+    verify_requests = int(counters.get("verify_requests") or cap.get("verify_requests") or 0)
+
+    text = "\n".join(
+        [
+            "# Harness-1 upstream_api eval",
+            "",
+            "## 覆盖与协议诊断（以 `SUMMARY.json` 为准）",
+            "",
+            f"- 计划题数：{n_planned}",
+            f"- 最终格式错误率（题级 terminate，固定分母）：{format_error_rate:g}",
+            f"- 发生过可恢复协议错误的题数：{recovered_queries}",
+            f"- 可恢复协议错误尝试合计：{recovered_attempts} 次",
+            "",
+            "说明：最终格式错误率只统计以 format_error 结束的题目；中途发生并已恢复的重试",
+            "不计入该比率，但计入上列可恢复协议错误次数。",
+            "",
+            "## 工具健康（以 `TOOL_HEALTH.json` 为准）",
+            "",
+            f"- verify HTTP 请求合计：{verify_http}",
+            f"- verify 工具调用合计：{verify_requests}",
+            "- 各 v8d 组件 `triggered_count` / `effect_count` 当前为「未统计」，",
+            "  不能用于组件使用率分析。",
+            "",
+        ]
+    )
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "README.md").write_text(text, encoding="utf-8")

@@ -97,8 +97,8 @@ def _component_capability_matrix(
             "requested": requested,
             "enabled": requested,
             "supported": supported,
-            "triggered_count": 0,
-            "effect_count": 0,
+            "triggered_count": "未统计",
+            "effect_count": "未统计",
             "unsupported_reason": reason or None,
         }
     return out

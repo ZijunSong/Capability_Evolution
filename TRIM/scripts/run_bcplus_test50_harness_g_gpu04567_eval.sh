@@ -153,6 +153,24 @@ run_eval() {
   log "DONE model=${model_slug} component=${component}"
 }
 
+capture_git_launch_record() {
+  GIT_COMMIT="$(git -C "${TRIM_ROOT}" rev-parse HEAD 2>/dev/null || echo unknown)"
+  GIT_DIRTY="$(git -C "${TRIM_ROOT}" status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
+  GIT_DIRTY_FILES="$(git -C "${TRIM_ROOT}" status --porcelain 2>/dev/null || true)"
+  {
+    echo "run_id=${RUN_ID}"
+    echo "started_at=$(date -Is)"
+    echo "git_commit=${GIT_COMMIT}"
+    echo "git_dirty_files=${GIT_DIRTY}"
+    if [[ -n "${GIT_DIRTY_FILES}" ]]; then
+      echo "--- dirty files ---"
+      echo "${GIT_DIRTY_FILES}"
+    fi
+  } > "${PKG}/results/${RUN_ID}/LAUNCH_RECORD.txt"
+  cp "${PKG}/results/${RUN_ID}/LAUNCH_RECORD.txt" "${REL_LOGS}/LAUNCH_RECORD.txt"
+  log "LAUNCH_RECORD git_commit=${GIT_COMMIT} git_dirty_files=${GIT_DIRTY}"
+}
+
 main() {
   csv_to_array "${EVAL_GPUS}" _gpus
   ((${#_gpus[@]} == TP)) || {
@@ -160,6 +178,7 @@ main() {
     exit 1
   }
   [[ -x "${PY}" ]] || { log "missing python ${PY}"; exit 1; }
+  capture_git_launch_record
 
   local comps=()
   if [[ -n "${COMPONENTS:-}" ]]; then
@@ -193,8 +212,6 @@ main() {
     done
   done
 
-  GIT_COMMIT="$(git -C . rev-parse HEAD 2>/dev/null || echo unknown)"
-  GIT_DIRTY="$(git -C . status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
   cat > "${PKG}/results/${RUN_ID}/MANIFEST.json" <<EOF
 {
   "run_id": "${RUN_ID}",

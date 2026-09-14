@@ -76,7 +76,7 @@ def test_lookup_prioritizes_new_retrieval_docs():
             "synonyms": [],
         }
     }
-    visible = _lookup_sids(st, "e:test", new_doc_order=["new"])
+    visible = _lookup_sids(st, "e:test", new_doc_ids=["new"])
     assert any(sid.startswith("new:") for sid in visible)
 
 
@@ -113,9 +113,10 @@ def test_failed_lookup_is_recorded_in_history():
         {"d1": {"id": "d1", "text": "Alice Smith visited Paris."}},
         harness_mask=_mask(),
     )
+    st, _, _ = execute_tool(st, "init", {})
     st2, obs, ok = execute_tool(st, "lookup", {"eid": "e:missing_entity"})
     assert ok is False
-    assert "eid_not_found" in obs
+    assert "target_not_in_menu" in obs or "eid_not_found" in obs
     assert "ERROR" in obs
     assert "Harness-G Working Memory" not in obs
 

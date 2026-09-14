@@ -13,6 +13,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 _TRIM = Path(__file__).resolve().parents[2]
 if str(_TRIM) not in sys.path:
@@ -41,6 +42,7 @@ def main(argv: list[str] | None = None) -> int:
         assert_fresh_eval_dir,
         run_one_query_api,
         summarize_api_traces,
+        write_eval_readme,
         write_infra_error_query,
         write_run_manifest,
     )
@@ -173,6 +175,7 @@ def main(argv: list[str] | None = None) -> int:
                     write_infra_error_query(trace_dir=out, query_row=row, exc=exc)
                 )
 
+    tool_health: dict[str, Any] | None = None
     try:
         asyncio.run(_run())
     finally:
@@ -190,6 +193,7 @@ def main(argv: list[str] | None = None) -> int:
     summary["infra_clean"] = not infra_errors
     summary["eval_profile"] = retrieval.eval_profile()
     (out / "SUMMARY.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+    write_eval_readme(out, summary=summary, tool_health=tool_health)
     write_run_manifest(
         out,
         mask=mask,

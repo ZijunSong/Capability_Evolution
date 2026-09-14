@@ -25,8 +25,8 @@ _BAD_LOOKUP = re.compile(
     r"japanese|russian|indian|canadian)$",
     re.I,
 )
-_FRONT_MATTER_RE = re.compile(
-    r"^(title|author|date|published|copyright|table of contents|references)\b",
+_METADATA_ONLY_RE = re.compile(
+    r"^(title|author|date|published|copyright|table of contents|references):\s*.+\s*$",
     re.I,
 )
 _WM_PREVIEW_CHARS = 120
@@ -45,14 +45,37 @@ def _sort_sids_by_idx(sids: list[str], sentences: Mapping[str, Mapping[str, Any]
     return sorted(sids, key=_key)
 
 
+def _is_metadata_only_line(text: str) -> bool:
+    line = str(text or "").strip()
+    if not line:
+        return True
+    if _METADATA_ONLY_RE.match(line):
+        return True
+    return False
+
+
+def _text_to_sentence_parts(text: str) -> list[str]:
+    text = _strip_yaml_front_matter(text)
+    parts: list[str] = []
+    for block in re.split(r"\n+", text):
+        block = block.strip()
+        if not block:
+            continue
+        for piece in _SENT_SPLIT.split(block):
+            piece = piece.strip()
+            if piece:
+                parts.append(piece)
+    if not parts and text.strip():
+        parts = [text.strip()]
+    kept = [p for p in parts if not _is_metadata_only_line(p)]
+    return kept or parts
+
+
 def _sentences_from_store(doc_store: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
     sentences: dict[str, dict[str, Any]] = {}
     for did, rec in (doc_store or {}).items():
-        text = _strip_yaml_front_matter(_doc_text(rec))
-        parts = [p.strip() for p in _SENT_SPLIT.split(text) if p.strip()]
-        if not parts:
-            parts = [text.strip()] if text.strip() else []
-        kept = [p for p in parts if not _FRONT_MATTER_RE.match(p.strip())] or parts
+        text = _doc_text(rec)
+        kept = _text_to_sentence_parts(text)
         for i, sent in enumerate(kept):
             sid = f"{did}:s{i}"
             sentences[sid] = {
@@ -222,6 +245,23 @@ def _note_effect(state: dict[str, Any], key: str, n: int = 1) -> None:
     effects = dict(state.get("runtime_effects") or {})
     effects[key] = int(effects.get(key) or 0) + int(n)
     state["runtime_effects"] = effects
+
+
+def allowed_menu_targets(state: Mapping[str, Any]) -> tuple[set[str], set[str]]:
+    """Executable sid/eid targets from the current action menu."""
+    sids: set[str] = set()
+    eids: set[str] = set()
+    for action in (state.get("action_map") or {}).values():
+        typ = str(action.get("type") or action.get("name") or "").upper()
+        if action.get("sid"):
+            sids.add(str(action["sid"]))
+        if action.get("eid"):
+            eids.add(str(action["eid"]))
+        if typ == "SELECT" and action.get("sid"):
+            sids.add(str(action["sid"]))
+        if typ == "LOOKUP" and action.get("eid"):
+            eids.add(str(action["eid"]))
+    return sids, eids
 
 
 def build_action_map(state: dict[str, Any], *, include_answer: bool) -> dict[str, dict[str, Any]]:
@@ -442,7 +482,12 @@ def _init_visible(state: dict[str, Any], *, searcher: Any | None, search_k: int)
     return _rank_sids(query, sentences, k)
 
 
-def _lookup_sids(state: dict[str, Any], eid: str, *, new_doc_order: list[str] | None = None) -> list[str]:
+def _lookup_sids(
+    state: dict[str, Any],
+    eid: str,
+    *,
+    new_doc_ids: list[str] | None = None,
+) -> list[str]:
     entities = state.get("entities") or {}
     sentences = state.get("sentences") or {}
     rec = entities.get(eid) or {}
@@ -458,21 +503,39 @@ def _lookup_sids(state: dict[str, Any], eid: str, *, new_doc_order: list[str] | 
         old_sids.extend(extra)
         _note_effect(state, "sentence_neighbors_added", len(extra))
     new_sids: list[str] = []
-    if new_doc_order:
+    seen_new: set[str] = set()
+    if new_doc_ids:
         by_doc: dict[str, list[str]] = {}
         for sid, sent in sentences.items():
             by_doc.setdefault(str(sent.get("doc_id")), []).append(sid)
-        for did in new_doc_order:
+        for did in new_doc_ids:
             for sid in _sort_sids_by_idx(list(by_doc.get(did) or []), sentences):
-                if sid not in new_sids:
+                if sid not in seen_new:
+                    seen_new.add(sid)
                     new_sids.append(sid)
+    old_seen: set[str] = set()
+    old_unique: list[str] = []
+    for sid in old_sids:
+        if sid in sentences and sid not in old_seen:
+            old_seen.add(sid)
+            old_unique.append(sid)
+    window = 6
+    new_quota = min(max(1, window // 2), len(new_sids))
     combined: list[str] = []
-    for sid in new_sids + old_sids:
-        if sid in sentences and sid not in combined:
+    for sid in new_sids[:new_quota]:
+        if sid not in combined:
             combined.append(sid)
-        if len(combined) >= 6:
+    for sid in old_unique:
+        if len(combined) >= window:
             break
-    return combined
+        if sid not in combined:
+            combined.append(sid)
+    for sid in new_sids[new_quota:]:
+        if len(combined) >= window:
+            break
+        if sid not in combined:
+            combined.append(sid)
+    return combined[:window]
 
 
 def _tool_history_append(
@@ -578,36 +641,52 @@ def execute_tool(
             schema_ok=False,
         )
 
-    include_answer = True
-    if name in {"init"} or not st.get("initialized"):
-        if name in {"init", "select", "lookup", "answer", "answer_with"} and not st.get("initialized"):
-            st["initialized"] = True
-            st["visible_sids"] = _init_visible(st, searcher=searcher, search_k=search_k)
-            st["n_search_calls"] = int(st.get("n_search_calls") or 0) + 1
-            st["search_count"] = int(st.get("search_count") or 0) + 1
-            include_answer = False
-            if name == "init":
-                st["action_map"] = build_action_map(st, include_answer=False)
-                _tool_history_append(
-                    st,
-                    name="init",
-                    args={},
-                    parse_ok=True,
-                    schema_ok=True,
-                    target_ok=True,
-                    execution_ok=True,
-                )
-                _sync_curated(st)
-                return st, "INIT retrieved visible sentences.", True
+    if name == "init":
+        if st.get("initialized"):
+            return _fail(st, name, args, code="already_initialized", msg="environment already initialized.")
+        st["initialized"] = True
+        st["visible_sids"] = _init_visible(st, searcher=searcher, search_k=search_k)
+        st["n_search_calls"] = int(st.get("n_search_calls") or 0) + 1
+        st["search_count"] = int(st.get("search_count") or 0) + 1
+        st["action_map"] = build_action_map(st, include_answer=False)
+        _tool_history_append(
+            st,
+            name="init",
+            args={},
+            parse_ok=True,
+            schema_ok=True,
+            target_ok=True,
+            execution_ok=True,
+        )
+        _sync_curated(st)
+        return st, "INIT retrieved visible sentences.", True
 
-    if name == "init" and st.get("initialized"):
-        return _fail(st, name, args, code="already_initialized", msg="environment already initialized.")
+    if not st.get("initialized"):
+        return _fail(
+            st,
+            name,
+            args,
+            code="not_initialized",
+            msg="call init before other tools.",
+            target_ok=False,
+        )
+
+    menu_sids, menu_eids = allowed_menu_targets(st)
 
     if name == "select":
         sid = str(args.get("sid") or args.get("id") or "")
         visible = set(st.get("visible_sids") or [])
         if not sid or sid not in st["sentences"]:
             return _fail(st, name, args, code="sid_not_found", msg=f"sid `{sid}` is not a known sentence.")
+        if sid not in menu_sids:
+            return _fail(
+                st,
+                name,
+                args,
+                code="target_not_in_menu",
+                msg=f"sid `{sid}` is not an allowed menu target.",
+                target_ok=False,
+            )
         if sid not in visible:
             return _fail(st, name, args, code="sid_not_visible", msg=f"sid `{sid}` is not currently visible.")
         if sid not in st["selected_sids"]:
@@ -625,6 +704,15 @@ def execute_tool(
         entities = st.get("entities") or {}
         if not eid:
             return _fail(st, name, args, code="missing_eid", msg="lookup requires eid.")
+        if eid not in menu_eids:
+            return _fail(
+                st,
+                name,
+                args,
+                code="target_not_in_menu",
+                msg=f"eid `{eid}` is not an allowed menu target.",
+                target_ok=False,
+            )
         if eid not in entities:
             return _fail(st, name, args, code="eid_not_found", msg=f"eid `{eid}` is not a known entity.")
         if _mask_on(st, "lookup_dedup") and eid in set(st.get("visited_eids") or []):
@@ -638,19 +726,24 @@ def execute_tool(
             )
         if eid not in st["visited_eids"]:
             st["visited_eids"].append(eid)
-        new_doc_order: list[str] = []
+        new_doc_ids: list[str] = []
         added = 0
+        observed_before = set(st.get("observed_docids") or [])
         if searcher is not None and getattr(searcher, "name", "none") != "none":
             lookup_q = _lookup_query(st, eid)
             hits = searcher.search(lookup_q, int(search_k))
+            for hit in hits or []:
+                did = str(getattr(hit, "docid", "") or "")
+                if did and did not in observed_before and did not in new_doc_ids:
+                    new_doc_ids.append(did)
             added = _merge_search_hits(st, hits)
             st["real_search_calls"] = int(st.get("real_search_calls") or 0) + 1
-            new_doc_order = [str(h.docid) for h in hits]
             _note_effect(st, "lookup_retrieval_hits", len(hits))
             _note_effect(st, "lookup_new_docs", added)
+            _note_effect(st, "lookup_new_docids", len(new_doc_ids))
         st["n_search_calls"] = int(st.get("n_search_calls") or 0) + 1
         st["search_count"] = int(st.get("search_count") or 0) + 1
-        st["visible_sids"] = _lookup_sids(st, eid, new_doc_order=new_doc_order or None)
+        st["visible_sids"] = _lookup_sids(st, eid, new_doc_ids=new_doc_ids or None)
         rec = st["entities"].get(eid) or {}
         if not st["visible_sids"]:
             obs = (
@@ -670,6 +763,15 @@ def execute_tool(
         selected = set(st.get("selected_sids") or [])
         if not sid or sid not in st["sentences"]:
             return _fail(st, name, args, code="sid_not_found", msg=f"answer_with sid `{sid}` is not valid.")
+        if sid not in menu_sids:
+            return _fail(
+                st,
+                name,
+                args,
+                code="target_not_in_menu",
+                msg=f"answer_with sid `{sid}` is not an allowed menu target.",
+                target_ok=False,
+            )
         if sid not in visible and sid not in selected:
             return _fail(st, name, args, code="sid_not_selectable", msg=f"answer_with sid `{sid}` is not selectable.")
         if sid not in st["selected_sids"]:
@@ -708,7 +810,7 @@ def execute_tool(
         return _fail(st, name, args, code="unhandled_tool", msg=f"unhandled tool `{name}`.")
 
     if not st.get("ended"):
-        st["action_map"] = build_action_map(st, include_answer=include_answer)
+        st["action_map"] = build_action_map(st, include_answer=True)
     _tool_history_append(
         st,
         name=name,

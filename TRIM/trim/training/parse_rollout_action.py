@@ -51,10 +51,43 @@ def parse_generated_action(
     finish_reason: str | None = None,
 ) -> tuple[dict[str, Any], bool]:
     from trim.adapters.harness_profiles import is_harness_g
-    from trim.eval.harmony_runtime import parse_harmony_tool_call
 
     g_mode = is_harness_g(mask=harness_mask)
     legal = _legal_names(harness_mask, teacher_mode=teacher_mode, g_mode=g_mode)
+    finish = str(finish_reason or "")
+
+    if g_mode and finish == "length":
+        return {"name": "truncated", "arguments": {"finish_reason": "length"}}, False
+
+    if g_mode:
+        from trim.eval.harness_g_runtime import parse_harness_g_action
+
+        if enc is not None and hasattr(enc, "parse_tool_call"):
+            parsed = enc.parse_tool_call(text, completion_ids=completion_ids)
+            name = parsed.tool_name
+            args = dict(parsed.arguments or {}) if parsed.arguments is not None else {}
+            schema_ok = _schema_ok(str(name or ""), args)
+            if (
+                parsed.parsed
+                and parsed.legal
+                and name in legal
+                and schema_ok
+                and parsed.error is None
+            ):
+                return {"name": name, "arguments": args}, True
+
+        g_action, g_ok = parse_harness_g_action(
+            text,
+            action_map=action_map,
+            finish_reason=finish_reason,
+        )
+        g_name = str(g_action.get("name") or "")
+        g_args = dict(g_action.get("arguments") or {})
+        if g_ok and _schema_ok(g_name, g_args) and g_name in legal:
+            return g_action, True
+        return {"name": g_name or "unknown", "arguments": g_args}, False
+
+    from trim.eval.harmony_runtime import parse_harmony_tool_call
 
     if enc is not None and hasattr(enc, "parse_tool_call"):
         parsed = enc.parse_tool_call(text, completion_ids=completion_ids)
@@ -74,18 +107,8 @@ def parse_generated_action(
     if harmony_ok:
         return {"name": name, "arguments": args}, True
 
-    from trim.eval.harness_g_runtime import parse_harness_g_action
-
-    g_action, g_ok = parse_harness_g_action(text, action_map=action_map, strict=True)
-    g_name = str(g_action.get("name") or "")
-    g_args = dict(g_action.get("arguments") or {})
-    g_schema_ok = _schema_ok(g_name, g_args)
-    if g_ok and g_schema_ok and g_name in legal:
-        return g_action, True
-
-    if str(finish_reason or "") == "length":
+    if finish == "length":
         return {"name": "truncated", "arguments": {"finish_reason": "length"}}, False
 
-    fallback_name = name or g_name or "unknown"
-    fallback_args = args if name else g_args
-    return {"name": fallback_name, "arguments": fallback_args}, False
+    fallback_name = name or "unknown"
+    return {"name": fallback_name, "arguments": args}, False

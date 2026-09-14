@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -21,11 +22,17 @@ from harness.trajectory import Action, ActionBuilder  # noqa: E402
 from harness.ultra_core import CURATE_SCHEMA, MAX_CURATED_DOCS, WorkingMemory  # noqa: E402
 from training.train_rl import CurateTool, EndSearchTool  # noqa: E402
 from trim.eval.harness1_api_eval import (  # noqa: E402
+    _classify_retry_action_change,
     _count_transport_retry_events,
     _query_sampling_seed,
     _transport_retry_events_for_turn,
     count_tool_calls_from_turns,
+    summarize_api_traces,
+    write_eval_readme,
 )
+from trim.eval.tool_health import merge_tool_health  # noqa: E402
+from trim.local_backend.factory import _component_capability_matrix  # noqa: E402
+from trim.upstream_harness1.retrieval import RetrievalConfig  # noqa: E402
 from trim.upstream_harness1.env_bridge import (  # noqa: E402
     SchemaValidationError,
     _validate_tool_params,
@@ -230,3 +237,70 @@ def test_action_from_parsed_accepts_remove_only_curate():
 
 def test_public_fix_version_stamp():
     assert PUBLIC_FIX_VERSION == "harness1-bm25-fix-20260913"
+
+
+def test_retry_action_change_unknown_when_failed_call_unparsed():
+    assert (
+        _classify_retry_action_change(
+            failed_calls=[],
+            proposed=[{"name": "curate", "arguments": {"remove_ids": ["25036"]}}],
+        )
+        == "unknown"
+    )
+
+
+def test_retry_action_change_false_when_same_call_replayed():
+    call = [{"name": "curate", "arguments": {"remove_ids": ["25036"]}}]
+    assert _classify_retry_action_change(failed_calls=call, proposed=call) == "false"
+
+
+def test_merge_tool_health_sums_verify_http_requests(tmp_path):
+    def shard(name: str, http: int) -> Path:
+        path = tmp_path / name
+        payload = {
+            "counters": {"verify_http_requests": http},
+            "capability_log": {"verify_http_requests": http},
+        }
+        path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+        return path
+
+    merged = merge_tool_health([shard("a.json", 344), shard("b.json", 2173)])
+    assert merged["counters"]["verify_http_requests"] == 2517
+    assert merged["capability_log"]["verify_http_requests"] == 2517
+
+
+def test_component_matrix_marks_uninstrumented_counts():
+    retrieval = RetrievalConfig.from_mapping(
+        {
+            "backend": "local_bm25",
+            "index_path": "/tmp/index",
+            "corpus_path": "/tmp/corpus.jsonl",
+            "reranker": "none",
+        }
+    )
+    matrix = _component_capability_matrix({"verify_tool": True}, retrieval=retrieval, chunk_strategy="document_as_single_chunk")
+    assert matrix["verify_tool"]["triggered_count"] == "未统计"
+    assert matrix["verify_tool"]["effect_count"] == "未统计"
+
+
+def test_write_eval_readme_uses_terminal_format_error_rate(tmp_path):
+    summary = summarize_api_traces(
+        [
+            {
+                "format_error": 0.0,
+                "recovered_format_error": 1.0,
+                "protocol_error_attempts": 8,
+                "finish_reason": "explicit_end_search",
+            }
+        ],
+        n_planned=830,
+    )
+    assert summary["format_error_rate"] == 0.0
+    assert summary["recovered_protocol_error_attempts_total"] == 8
+    write_eval_readme(tmp_path, summary=summary, tool_health={"counters": {"verify_http_requests": 2517}})
+    text = (tmp_path / "README.md").read_text(encoding="utf-8")
+    assert "0" in text
+    assert "0.001204819" not in text
+    assert "8 次" in text
+    assert "2517" in text
+    assert "未统计" in text

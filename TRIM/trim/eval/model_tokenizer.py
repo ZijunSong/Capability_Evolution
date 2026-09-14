@@ -245,28 +245,22 @@ def parse_qwen_tool_call(text: str, completion_ids: Sequence[int] | None = None,
     from trim.eval.harmony_runtime import ParsedToolCall
 
     text = text or ""
-    match = _TOOL_CALL_RE.search(text)
-    raw = match.group(1) if match else None
-    if raw is None:
-        # Some Qwen dumps emit a bare JSON object with name/arguments.
-        obj = _loads_json(text)
-        if isinstance(obj, dict) and (obj.get("name") or obj.get("function") or obj.get("tool")):
-            raw_obj = obj.get("function") if isinstance(obj.get("function"), dict) else obj
-        else:
-            return ParsedToolCall(
-                parsed=False,
-                legal=False,
-                tool_name=None,
-                arguments=None,
-                parse_method="none",
-                raw_json=None,
-                error="no_qwen_tool_call",
-            )
-    else:
-        raw_obj = _loads_json(raw)
+    matches = list(_TOOL_CALL_RE.finditer(text))
+    if len(matches) != 1:
+        return ParsedToolCall(
+            parsed=False,
+            legal=False,
+            tool_name=None,
+            arguments=None,
+            parse_method="qwen_tool_call",
+            raw_json=text[:2000] if text else None,
+            error="no_qwen_tool_call" if not matches else "multiple_qwen_tool_calls",
+        )
+    raw = matches[0].group(1)
+    raw_obj = _loads_json(raw)
     if not isinstance(raw_obj, dict):
         return ParsedToolCall(
-            parsed=True,
+            parsed=False,
             legal=False,
             tool_name=None,
             arguments=None,
@@ -279,9 +273,28 @@ def parse_qwen_tool_call(text: str, completion_ids: Sequence[int] | None = None,
     )
     args = raw_obj.get("arguments") or raw_obj.get("parameters") or {}
     if isinstance(args, str):
-        args = _loads_json(args) or {}
+        loaded = _loads_json(args)
+        if not isinstance(loaded, dict):
+            return ParsedToolCall(
+                parsed=False,
+                legal=False,
+                tool_name=name,
+                arguments=None,
+                parse_method="qwen_tool_call",
+                raw_json=(raw or text)[:2000],
+                error="json_missing_or_invalid",
+            )
+        args = loaded
     if not isinstance(args, dict):
-        args = {}
+        return ParsedToolCall(
+            parsed=False,
+            legal=False,
+            tool_name=name,
+            arguments=None,
+            parse_method="qwen_tool_call",
+            raw_json=(raw or text)[:2000],
+            error="json_missing_or_invalid",
+        )
     legal = bool(name) and name in SCHEMA_TOOLS
     return ParsedToolCall(
         parsed=True,

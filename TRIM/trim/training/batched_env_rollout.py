@@ -182,13 +182,30 @@ def _apply_generation(
             ep.st["invalid_tools"] = int(ep.st.get("invalid_tools") or 0) + 1
             obs = f"ERROR: tool failed ({type(exc).__name__})."
             _ok = False
-        try:
-            attempted_name = str(action.get("name") or "unknown")
-            ep.acts.append(
-                (make_action(attempted_name, action.get("arguments") or {}), make_observation(obs))
-            )
-        except Exception:
-            pass
+        if is_harness_g(mask=ep.harness_mask, component_ids=ep.component_id):
+            from trim.eval.harness_g_runtime import make_protocol_feedback
+
+            if valid:
+                try:
+                    attempted_name = str(action.get("name") or "unknown")
+                    ep.acts.append(
+                        (
+                            make_action(attempted_name, action.get("arguments") or {}),
+                            make_observation(obs),
+                        )
+                    )
+                except Exception:
+                    ep.acts.append((make_protocol_feedback(str(obs)), str(obs)))
+            else:
+                ep.acts.append((make_protocol_feedback(str(obs)), str(obs)))
+        else:
+            try:
+                attempted_name = str(action.get("name") or "unknown")
+                ep.acts.append(
+                    (make_action(attempted_name, action.get("arguments") or {}), make_observation(obs))
+                )
+            except Exception:
+                pass
         if ep.st.get("ended"):
             ep.timing.mark_finished()
         action_ids = list(gen.token_ids)

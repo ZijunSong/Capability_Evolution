@@ -20,6 +20,7 @@ _COUNTER_KEYS = (
     "verify_parse_failures",
     "verify_length_truncated",
     "verify_length_retries",
+    "verify_http_requests",
 )
 
 
@@ -61,10 +62,13 @@ def merge_tool_health(paths: Sequence[Path]) -> dict[str, Any]:
             continue
         payload = json.loads(path.read_text(encoding="utf-8"))
         shards.append(payload)
+        log = payload.get("capability_log")
         counters = payload.get("counters") or {}
         for key in _COUNTER_KEYS:
-            merged_counters[key] += int(counters.get(key) or 0)
-        log = payload.get("capability_log")
+            shard_val = int(counters.get(key) or 0)
+            if shard_val == 0 and isinstance(log, dict):
+                shard_val = int(log.get(key) or 0)
+            merged_counters[key] += shard_val
         if isinstance(log, dict):
             for key, value in log.items():
                 if key in _COUNTER_KEYS or key == "verify_calls":

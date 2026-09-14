@@ -289,12 +289,19 @@ def run_replicated_eval(
             "teacher_leak_count": leak_count,
             **{k: spec_out_env[k] for k in ("max_turns", "max_new_tokens", "temperature", "search_k") if k in spec_out_env},
         }
+        from trim.adapters.harness_profiles import is_harness_g
+
+        harness_mask = spec_out_env.get("harness_mask")
+        g_eval = is_harness_g(mask=harness_mask, component_ids=spec_out_env.get("component"))
+        answer_with_enabled = bool((harness_mask or {}).get("answer_with"))
         summary = summarize_merged_traces(
             traces,
             rows,
             leak_count=leak_count,
             primary_split=str(spec_out_env.get("primary_split") or "official_test"),
             extra=extra,
+            harness_g=g_eval,
+            answer_with_enabled=answer_with_enabled,
         )
         return summary, traces
     finally:
