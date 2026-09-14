@@ -278,6 +278,8 @@ def test_harmony_retry_prompt_differs_from_qwen():
     assert is_harmony_chat_model("gpt-oss-20b")
     assert is_harmony_chat_model("harness-1")
     assert not is_harmony_chat_model("Qwen3-4B-Instruct")
+    assert not is_harmony_chat_model("THUDM/glm-4-9b-chat")
+    assert not is_harmony_chat_model("google/gemma-3-4b-it")
     assert GPT_OSS_FORMAT_RETRY_PROMPT != QWEN_FORMAT_RETRY_PROMPT
     assert "analysis channel" in format_retry_prompt(model="gpt-oss-20b")
     assert "analysis channel" not in format_retry_prompt(model="Qwen3-4B")

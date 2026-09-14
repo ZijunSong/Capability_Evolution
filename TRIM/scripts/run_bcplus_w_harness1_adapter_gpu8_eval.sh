@@ -289,19 +289,12 @@ PY
   [[ -d "${BASE_MODEL}" ]] || { log "missing BASE_MODEL dir ${BASE_MODEL}"; exit 1; }
 }
 
+# shellcheck source=scripts/vllm_model_extra.sh
+source "${SCRIPT_DIR}/vllm_model_extra.sh"
+
 vllm_extra_for_base() {
   local base="$1"
-  case "${base}" in
-    *Qwen3-4B*|*qwen3-4b*)
-      echo "--enable-auto-tool-choice --tool-call-parser hermes --max-model-len 32768 --trust-remote-code"
-      ;;
-    *gpt-oss*|*harness-1*)
-      echo "--enable-auto-tool-choice --tool-call-parser openai --max-model-len 32768 --trust-remote-code --moe-backend triton"
-      ;;
-    *)
-      echo "--enable-auto-tool-choice --tool-call-parser openai --max-model-len 32768 --trust-remote-code"
-      ;;
-  esac
+  vllm_extra_for_model "${base}"
 }
 
 lora_vllm_flags() {

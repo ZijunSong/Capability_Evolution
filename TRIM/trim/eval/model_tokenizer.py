@@ -1,7 +1,8 @@
 """Model-family tokenizer / prompt runtime for TRIM eval.
 
 gpt-oss uses Harmony (o200k) token IDs and ``to=functions.*`` tool calls.
-Qwen3 uses the HF chat template, ``<|im_end|>`` stops, and ``<tool_call>`` XML.
+Qwen3 / Qwen3.5 / GLM-4 / Gemma-3 and other HF instruct models use the chat
+template, model-specific stop tokens, and ``<tool_call>``-style tool output.
 """
 
 from __future__ import annotations
@@ -11,6 +12,14 @@ import re
 from dataclasses import dataclass
 from typing import Any, Sequence
 
+from trim.eval.model_profiles import (
+    FAMILY_GPTOSS,
+    FAMILY_HF_CHAT,
+    FAMILY_QWEN3,
+    STACK_HARMONY,
+    is_hf_chat_family,
+    resolve_model_profile,
+)
 from trim.eval.harmony_runtime import (
     CANONICAL_STOP_TOKEN_IDS,
     HARMONY_START_ID,
@@ -27,9 +36,8 @@ from trim.eval.harmony_runtime import (
 
 FORBIDDEN_TOKENIZER_MARKERS = ("cl100k", "r50k", "p50k", "gpt2")
 
-FAMILY_GPTOSS = "gpt-oss"
-FAMILY_QWEN3 = "qwen3"
 QWEN3_CHAT = "qwen3_chat"
+HF_CHAT_TOOLS = "hf_chat_tools"
 QWEN3_IM_END_ID = 151645
 QWEN3_IM_START_ID = 151644
 
@@ -53,62 +61,64 @@ def patch_transformers_tokenizer_compat() -> None:
 
 
 def detect_model_family(source: str, tokenizer: Any | None = None) -> str:
-    name = str(source or "").lower()
-    if "qwen" in name:
-        return FAMILY_QWEN3
-    if tokenizer is not None:
-        im_end = tokenizer.convert_tokens_to_ids("<|im_end|>")
-        call = tokenizer.convert_tokens_to_ids("<|call|>")
-        vocab = int(getattr(tokenizer, "vocab_size", 0) or 0)
-        try:
-            vocab = max(vocab, int(len(tokenizer) or 0))
-        except (TypeError, AttributeError):
-            pass
-        if im_end in {QWEN3_IM_END_ID} and call not in {200012}:
-            return FAMILY_QWEN3
-        if vocab and vocab < 180000 and im_end not in {None, -1}:
-            return FAMILY_QWEN3
-        if call == 200012:
-            return FAMILY_GPTOSS
-    return FAMILY_GPTOSS
+    return resolve_model_profile(source, tokenizer).family
 
 
 def encoding_config_for_model(model_path: str) -> dict[str, Any]:
-    family = detect_model_family(model_path)
-    if family == FAMILY_QWEN3:
+    profile = resolve_model_profile(model_path)
+    if profile.stack == STACK_HARMONY:
+        return {
+            "family": FAMILY_GPTOSS,
+            "encoding": O200K_HARMONY,
+            "stop_token_ids": list(CANONICAL_STOP_TOKEN_IDS),
+        }
+    if profile.family == FAMILY_QWEN3:
         return {
             "family": FAMILY_QWEN3,
             "encoding": QWEN3_CHAT,
             "stop_token_ids": [QWEN3_IM_END_ID],
         }
     return {
-        "family": FAMILY_GPTOSS,
-        "encoding": O200K_HARMONY,
-        "stop_token_ids": list(CANONICAL_STOP_TOKEN_IDS),
+        "family": FAMILY_HF_CHAT,
+        "encoding": HF_CHAT_TOOLS,
+        "stop_token_ids": [],
     }
 
 
-def assert_qwen3_prompt_ids(ids: Sequence[int], *, what: str = "prompt") -> list[int]:
-    """Refuse Harmony / ASCII-fallback IDs on the Qwen3 chat path."""
+def _reject_harmony_or_ascii_fallback(ids: Sequence[int], *, what: str) -> list[int]:
     tokens = [int(x) for x in ids]
     if not tokens:
-        raise RuntimeError(f"{what} is empty; Qwen3 chat prompt IDs are required")
+        raise RuntimeError(f"{what} is empty; HF chat prompt IDs are required")
     if prompt_ids_are_character_fallback(tokens):
         raise RuntimeError(
             f"{what} looks like the local Harmony character fallback "
-            f"(first20={tokens[:20]}). Qwen3 eval must use the chat-template tokenizer, "
+            f"(first20={tokens[:20]}). HF chat eval must use the chat-template tokenizer, "
             f"not ord('[Role.SYSTEM]...')."
         )
     has_im_start = QWEN3_IM_START_ID in tokens
-    has_im_end = QWEN3_IM_END_ID in tokens
     looks_harmony = tokens[0] == HARMONY_START_ID or (
         HARMONY_START_ID in tokens[:8] and not has_im_start
     )
     if looks_harmony:
         raise RuntimeError(
-            f"{what} looks like gpt-oss Harmony IDs sent to Qwen3 "
-            f"(first20={tokens[:20]}). Expected <|im_start|>={QWEN3_IM_START_ID}."
+            f"{what} looks like gpt-oss Harmony IDs sent to an HF chat model "
+            f"(first20={tokens[:20]})."
         )
+    return tokens
+
+
+def assert_hf_chat_prompt_ids(
+    ids: Sequence[int],
+    *,
+    what: str = "prompt",
+    strict_qwen: bool = False,
+) -> list[int]:
+    """Refuse Harmony / ASCII-fallback IDs on HF chat-template paths."""
+    tokens = _reject_harmony_or_ascii_fallback(ids, what=what)
+    if not strict_qwen:
+        return tokens
+    has_im_start = QWEN3_IM_START_ID in tokens
+    has_im_end = QWEN3_IM_END_ID in tokens
     if not has_im_start and not has_im_end:
         raise RuntimeError(
             f"{what} is not a Qwen3 chat prompt: first20={tokens[:20]}. "
@@ -117,19 +127,64 @@ def assert_qwen3_prompt_ids(ids: Sequence[int], *, what: str = "prompt") -> list
     return tokens
 
 
+def assert_qwen3_prompt_ids(ids: Sequence[int], *, what: str = "prompt") -> list[int]:
+    """Backward-compatible alias: strict Qwen3 chat prompt validation."""
+    return assert_hf_chat_prompt_ids(ids, what=what, strict_qwen=True)
+
+
 def assert_family_prompt_ids(
     ids: Sequence[int],
     *,
     family: str,
     what: str = "prompt",
+    source: str = "",
 ) -> list[int]:
     name = str(family or "").lower()
-    if name in {FAMILY_QWEN3, QWEN3_CHAT, "qwen"}:
-        return assert_qwen3_prompt_ids(ids, what=what)
+    if is_hf_chat_family(name):
+        profile = resolve_model_profile(source or name)
+        return assert_hf_chat_prompt_ids(
+            ids,
+            what=what,
+            strict_qwen=profile.strict_qwen_prompt_ids,
+        )
     return assert_o200k_harmony_token_ids(ids, what=what)
 
 
+def _effective_vocab_size(tokenizer: Any) -> int:
+    vocab_size = int(getattr(tokenizer, "vocab_size", 0) or 0)
+    try:
+        tokenizer_len = int(len(tokenizer) or 0)
+    except (TypeError, AttributeError):
+        tokenizer_len = 0
+    return max(vocab_size, tokenizer_len)
+
+
+def _resolve_stop_token_ids(tokenizer: Any) -> list[int]:
+    for attr in ("eos_token_id", "pad_token_id"):
+        tid = getattr(tokenizer, attr, None)
+        if tid not in {None, -1}:
+            return [int(tid)]
+    for tok in ("<|im_end|>", "<|im_end|>", "<|endoftext|>"):
+        try:
+            tid = tokenizer.convert_tokens_to_ids(tok)
+        except Exception:
+            tid = None
+        if tid not in {None, -1}:
+            return [int(tid)]
+    return []
+
+
 def assert_qwen3_tokenizer(tokenizer: Any, *, source: str) -> dict[str, Any]:
+    return assert_hf_chat_tokenizer(tokenizer, source=source, strict_qwen=True)
+
+
+def assert_hf_chat_tokenizer(
+    tokenizer: Any,
+    *,
+    source: str,
+    strict_qwen: bool = False,
+) -> dict[str, Any]:
+    profile = resolve_model_profile(source, tokenizer)
     name = str(
         getattr(tokenizer, "name_or_path", None)
         or getattr(tokenizer, "name", None)
@@ -139,42 +194,74 @@ def assert_qwen3_tokenizer(tokenizer: Any, *, source: str) -> dict[str, Any]:
     for marker in FORBIDDEN_TOKENIZER_MARKERS:
         if marker in name:
             raise RuntimeError(
-                f"tokenizer {name!r} looks like {marker}; Qwen3 chat tokenizer is required"
+                f"tokenizer {name!r} looks like {marker}; HF chat tokenizer is required"
             )
+    try:
+        call = tokenizer.convert_tokens_to_ids("<|call|>")
+    except Exception:
+        call = None
+    if call == 200012:
+        raise RuntimeError(
+            f"tokenizer {source!r} looks like gpt-oss Harmony (<|call|>=200012); "
+            "HF chat tokenizer is required"
+        )
     im_end = tokenizer.convert_tokens_to_ids("<|im_end|>")
     im_start = tokenizer.convert_tokens_to_ids("<|im_start|>")
-    if im_end in {None, -1} or im_start in {None, -1}:
-        raise RuntimeError(
-            f"tokenizer {source!r} is missing Qwen <|im_start|>/<|im_end|> specials"
-        )
-    vocab_size = int(getattr(tokenizer, "vocab_size", 0) or 0)
-    try:
-        tokenizer_len = int(len(tokenizer) or 0)
-    except (TypeError, AttributeError):
-        tokenizer_len = 0
-    effective = max(vocab_size, tokenizer_len)
-    if effective < 100000 or effective > 200000:
-        raise RuntimeError(
-            f"tokenizer effective_vocab_size={effective} does not look like Qwen3. source={source}"
-        )
+    effective = _effective_vocab_size(tokenizer)
+    if strict_qwen or profile.strict_qwen_prompt_ids:
+        if im_end in {None, -1} or im_start in {None, -1}:
+            raise RuntimeError(
+                f"tokenizer {source!r} is missing Qwen <|im_start|>/<|im_end|> specials"
+            )
+        if effective < 100000 or effective > 200000:
+            raise RuntimeError(
+                f"tokenizer effective_vocab_size={effective} does not look like Qwen3. source={source}"
+            )
+        stop_token_ids = [int(im_end)]
+        special_token_ids = {
+            "<|im_end|>": int(im_end),
+            "<|im_start|>": int(im_start),
+        }
+        encoding = QWEN3_CHAT
+        family = FAMILY_QWEN3
+    else:
+        if effective < 32000:
+            raise RuntimeError(
+                f"tokenizer effective_vocab_size={effective} is too small for HF chat. source={source}"
+            )
+        stop_token_ids = _resolve_stop_token_ids(tokenizer)
+        if not stop_token_ids and im_end not in {None, -1}:
+            stop_token_ids = [int(im_end)]
+        special_token_ids = {}
+        if im_end not in {None, -1}:
+            special_token_ids["<|im_end|>"] = int(im_end)
+        if im_start not in {None, -1}:
+            special_token_ids["<|im_start|>"] = int(im_start)
+        encoding = HF_CHAT_TOOLS
+        family = FAMILY_HF_CHAT
     return {
-        "encoding": QWEN3_CHAT,
-        "family": FAMILY_QWEN3,
+        "encoding": encoding,
+        "family": family,
         "source": source,
-        "vocab_size": vocab_size,
+        "vocab_size": int(getattr(tokenizer, "vocab_size", 0) or 0),
         "effective_vocab_size": effective,
-        "special_token_ids": {"<|im_end|>": int(im_end), "<|im_start|>": int(im_start)},
-        "stop_token_ids": [int(im_end)],
+        "special_token_ids": special_token_ids,
+        "stop_token_ids": stop_token_ids,
+        "profile_label": profile.label,
     }
 
 
 def assert_model_tokenizer(tokenizer: Any, *, source: str) -> dict[str, Any]:
     from trim.training.vllm_hybrid import assert_gptoss_tokenizer
 
-    family = detect_model_family(source, tokenizer)
-    if family == FAMILY_QWEN3:
-        return assert_qwen3_tokenizer(tokenizer, source=source)
-    return assert_gptoss_tokenizer(tokenizer, source=source)
+    profile = resolve_model_profile(source, tokenizer)
+    if profile.stack == STACK_HARMONY:
+        return assert_gptoss_tokenizer(tokenizer, source=source)
+    return assert_hf_chat_tokenizer(
+        tokenizer,
+        source=source,
+        strict_qwen=profile.strict_qwen_prompt_ids,
+    )
 
 
 def qwen_tool_schemas() -> list[dict[str, Any]]:
@@ -356,7 +443,7 @@ class ModelEncoding:
 
     def decode_tokens(self, ids: Sequence[int]) -> str:
         tokens = [int(x) for x in ids]
-        if self.family == FAMILY_QWEN3 and self.tokenizer is not None:
+        if is_hf_chat_family(self.family) and self.tokenizer is not None:
             text = self.tokenizer.decode(tokens, skip_special_tokens=False)
             return str(text).encode("utf-8", "replace").decode("utf-8")
         enc = self.harmony
@@ -365,9 +452,9 @@ class ModelEncoding:
         return decode_ids(enc, tokens)
 
     def encode(self, text: str, **kwargs: Any) -> list[int]:
-        if self.family == FAMILY_QWEN3:
+        if is_hf_chat_family(self.family):
             if self.tokenizer is None:
-                raise RuntimeError("Qwen3 encoding is missing a Hugging Face tokenizer")
+                raise RuntimeError("HF chat encoding is missing a Hugging Face tokenizer")
             try:
                 return _to_token_ids(
                     self.tokenizer.encode(str(text), add_special_tokens=False)
@@ -383,8 +470,8 @@ class ModelEncoding:
             return [int(x) for x in enc.encode(str(text), **kwargs)]
 
     def build_first_turn_prompt_ids(self, query: str) -> list[int]:
-        if self.family == FAMILY_QWEN3:
-            return self._qwen_prompt_ids(query, [])
+        if is_hf_chat_family(self.family):
+            return self._hf_chat_prompt_ids(query, [])
         from trim.eval.harmony_runtime import build_first_turn_prompt_ids
 
         return build_first_turn_prompt_ids(query, enc=self.harmony)
@@ -396,8 +483,8 @@ class ModelEncoding:
         actions_obs: list[tuple[Any, Any]],
         wm_text: str | None = None,
     ) -> list[int]:
-        if self.family == FAMILY_QWEN3:
-            return self._qwen_prompt_ids(query, actions_obs, wm_text=wm_text)
+        if is_hf_chat_family(self.family):
+            return self._hf_chat_prompt_ids(query, actions_obs, wm_text=wm_text)
         from trim.eval.harmony_runtime import build_continuation_prompt_ids
 
         return build_continuation_prompt_ids(
@@ -405,13 +492,13 @@ class ModelEncoding:
         )
 
     def parse_tool_call(self, text: str, completion_ids: Sequence[int] | None = None):
-        if self.family == FAMILY_QWEN3:
+        if is_hf_chat_family(self.family):
             return parse_qwen_tool_call(text)
         return parse_harmony_tool_call(
             text, completion_ids=completion_ids, enc=self.harmony
         )
 
-    def _qwen_prompt_ids(
+    def _hf_chat_prompt_ids(
         self,
         query: str,
         actions_obs: list[tuple[Any, Any]],
@@ -425,7 +512,8 @@ class ModelEncoding:
 
         tokenizer = self.tokenizer
         if tokenizer is None:
-            raise RuntimeError("Qwen3 encoding is missing a Hugging Face tokenizer")
+            raise RuntimeError("HF chat encoding is missing a Hugging Face tokenizer")
+        profile = resolve_model_profile(self.source, tokenizer)
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": "Follow the retrieval-subagent instructions and call tools."},
             {"role": "user", "content": get_system_prompt(query)},
@@ -460,24 +548,32 @@ class ModelEncoding:
         except TypeError:
             kwargs.pop("tools", None)
             raw = tokenizer.apply_chat_template(messages, **kwargs)
-        return assert_qwen3_prompt_ids(_to_token_ids(raw), what="Qwen3 chat prompt")
+        return assert_hf_chat_prompt_ids(
+            _to_token_ids(raw),
+            what=f"{profile.label} chat prompt",
+            strict_qwen=profile.strict_qwen_prompt_ids,
+        )
 
 
 def load_model_encoding(model_path: str | None = None) -> ModelEncoding:
     source = str(model_path or "")
-    family = detect_model_family(source)
-    if family == FAMILY_QWEN3:
+    profile = resolve_model_profile(source)
+    if profile.stack != STACK_HARMONY:
         if not source:
-            raise RuntimeError("Qwen3 eval requires --model_name / a local checkpoint path")
+            raise RuntimeError("HF chat eval requires --model_name / a local checkpoint path")
         patch_transformers_tokenizer_compat()
         from transformers import AutoTokenizer
 
         tokenizer = AutoTokenizer.from_pretrained(source, trust_remote_code=True)
-        audit = assert_qwen3_tokenizer(tokenizer, source=source)
-        return ModelEncoding(
-            family=FAMILY_QWEN3,
+        audit = assert_hf_chat_tokenizer(
+            tokenizer,
             source=source,
-            encoding_name=QWEN3_CHAT,
+            strict_qwen=profile.strict_qwen_prompt_ids,
+        )
+        return ModelEncoding(
+            family=str(audit["family"]),
+            source=source,
+            encoding_name=str(audit["encoding"]),
             stop_token_ids=list(audit["stop_token_ids"]),
             tokenizer=tokenizer,
         )

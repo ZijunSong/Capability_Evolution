@@ -5,11 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any, Sequence
 
-KNOWN_BASE_MODELS: tuple[str, ...] = (
-    "openai/gpt-oss-20b",
-    "Qwen/Qwen3-4B-Instruct-2507",
-    "pat-jj/harness-1",
-)
+from trim.eval.model_profiles import KNOWN_BASE_MODELS, resolve_model_profile
 
 PROTOCOL_CHAT_COMPLETIONS_V1 = "chat_completions_v1"
 
@@ -79,30 +75,40 @@ def identity_for_actor_rank(identity: ServedModelIdentity, urls: Sequence[str], 
 def identity_from_args(args: Any) -> ServedModelIdentity:
     raw_url = str(getattr(args, "api_base_url", None) or "")
     urls = parse_actor_base_urls(raw_url)
+    api_model = str(getattr(args, "api_model", None) or getattr(args, "model_name", "") or "")
+    base_model = str(getattr(args, "base_model", None) or getattr(args, "model_name", "") or "") or None
+    tool_parser = str(getattr(args, "tool_parser", None) or "") or None
+    reasoning_parser = str(getattr(args, "reasoning_parser", None) or "") or None
+    if not tool_parser:
+        profile = resolve_model_profile(api_model or base_model or "")
+        tool_parser = profile.tool_call_parser
+        if not reasoning_parser and profile.reasoning_parser:
+            reasoning_parser = profile.reasoning_parser
     identity = ServedModelIdentity(
         api_base_url=urls[0] if urls else raw_url,
-        api_model=str(getattr(args, "api_model", None) or getattr(args, "model_name", "") or ""),
-        base_model=str(getattr(args, "base_model", None) or getattr(args, "model_name", "") or "") or None,
+        api_model=api_model,
+        base_model=base_model,
         adapter_path=str(getattr(args, "adapter", None) or "") or None,
         export_method=str(getattr(args, "adapter_export", None) or "") or None,
         revision=str(getattr(args, "model_revision", None) or "") or None,
-        tool_parser=str(getattr(args, "tool_parser", None) or "") or None,
+        tool_parser=tool_parser,
+        reasoning_parser=reasoning_parser or None,
         quantization=str(getattr(args, "quantization", None) or "") or None,
         supports_tool_calls=bool(getattr(args, "supports_tool_calls", True)),
     )
     if not identity.api_base_url:
+        examples = ", ".join(KNOWN_BASE_MODELS[:5]) + ", …"
         raise RuntimeError(
             "Harness-1 official eval requires --api-base-url (OpenAI-compatible "
-            "chat/completions with tools). Start a server for openai/gpt-oss-20b, "
-            "Qwen/Qwen3-4B-Instruct-2507, pat-jj/harness-1, or a trained checkpoint, "
-            "then pass that URL. --run-dir / --adapter only identify weights."
+            f"chat/completions with tools). Start a server for a supported base model "
+            f"({examples}), then pass that URL. --run-dir / --adapter only identify weights."
         )
     identity.assert_tool_calling()
     return identity
 
 
 def vllm_serve_hint(model: str) -> str:
-    return (
-        "vllm serve {model} --enable-auto-tool-choice "
-        "--tool-call-parser openai --served-model-name {model}"
-    ).format(model=model)
+    from trim.eval.model_profiles import vllm_extra_shell
+
+    extra = vllm_extra_shell(model)
+    return f"vllm serve {{model}} {extra} --served-model-name {{model}}".format(model=model)

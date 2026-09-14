@@ -200,20 +200,8 @@ csv_to_array() {
   read -ra _arr <<< "${csv}"
 }
 
-vllm_extra_for_model() {
-  local slug="$1"
-  case "${slug}" in
-    gpt-oss-20b|harness-1)
-      echo "--enable-auto-tool-choice --tool-call-parser openai --max-model-len 32768 --trust-remote-code --moe-backend triton"
-      ;;
-    Qwen3-4B-Instruct-2507)
-      echo "--enable-auto-tool-choice --tool-call-parser hermes --max-model-len 32768 --trust-remote-code"
-      ;;
-    *)
-      echo "--enable-auto-tool-choice --tool-call-parser openai --max-model-len 32768 --trust-remote-code"
-      ;;
-  esac
-}
+# shellcheck source=scripts/vllm_model_extra.sh
+source "${SCRIPT_DIR}/vllm_model_extra.sh"
 
 smoke_test_tool_call() {
   local port="$1" model="$2"
@@ -274,7 +262,7 @@ start_zero_stack() {
   pid="$(start_vllm_bg "${GPU}" "${ZERO_ACTOR_PORT}" "${model_path}" "${api_model}" \
     "${extra}" "${REL_LOGS}/actor_${model_slug}_zero.log")"
   ACTOR_PIDS=("$(normalize_pid "${pid}")")
-  if [[ "${model_slug}" == "Qwen3-4B-Instruct-2507" ]]; then
+  if model_needs_smoke_test "${model_slug}"; then
     smoke_test_tool_call "${ZERO_ACTOR_PORT}" "${api_model}"
   fi
 }
@@ -296,7 +284,7 @@ start_all_stack() {
       "${extra}" "${REL_LOGS}/actor_${model_slug}_all_gpu${gpu}.log")"
     ACTOR_PIDS+=("$(normalize_pid "${pid}")")
   done
-  if [[ "${model_slug}" == "Qwen3-4B-Instruct-2507" ]]; then
+  if model_needs_smoke_test "${model_slug}"; then
     smoke_test_tool_call "${actor_ports[0]}" "${api_model}"
   fi
   VERIFY_PID="$(start_vllm_bg "${ALL_VERIFY_GPU}" "${ALL_VERIFY_PORT}" "${VERIFY_MODEL_PATH}" \

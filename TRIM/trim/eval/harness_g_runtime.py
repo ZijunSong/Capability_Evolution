@@ -114,9 +114,15 @@ def render_prompt(query: str, wm_text: str) -> str:
     )
 
 
+def _is_hf_chat_family(enc: Any) -> bool:
+    from trim.eval.model_profiles import is_hf_chat_family
+
+    return is_hf_chat_family(getattr(enc, "family", ""))
+
+
 def _is_qwen_family(enc: Any) -> bool:
-    family = str(getattr(enc, "family", "") or "").lower()
-    return family in {"qwen3", "qwen3_chat", "qwen"}
+    """Backward-compatible alias."""
+    return _is_hf_chat_family(enc)
 
 
 def _harmony_backend(enc: Any) -> Any | None:
@@ -476,7 +482,7 @@ def build_prompt_ids(
     if enc is None:
         return []
     tokenizer = getattr(enc, "tokenizer", None)
-    if _is_qwen_family(enc) and tokenizer is not None:
+    if _is_hf_chat_family(enc) and tokenizer is not None:
         messages = _qwen_messages(
             query,
             wm_text,
@@ -493,9 +499,15 @@ def build_prompt_ids(
         except TypeError:
             kwargs.pop("tools", None)
             raw = tokenizer.apply_chat_template(messages, **kwargs)
-        from trim.eval.model_tokenizer import _to_token_ids, assert_qwen3_prompt_ids
+        from trim.eval.model_profiles import resolve_model_profile
+        from trim.eval.model_tokenizer import _to_token_ids, assert_hf_chat_prompt_ids
 
-        return assert_qwen3_prompt_ids(_to_token_ids(raw), what="Harness-G Qwen3 prompt")
+        profile = resolve_model_profile(getattr(enc, "source", "") or "", tokenizer)
+        return assert_hf_chat_prompt_ids(
+            _to_token_ids(raw),
+            what=f"Harness-G {profile.label} prompt",
+            strict_qwen=profile.strict_qwen_prompt_ids,
+        )
     harmony = _harmony_backend(enc)
     if harmony is None:
         raise RuntimeError(

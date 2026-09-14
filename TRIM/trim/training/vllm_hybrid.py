@@ -473,6 +473,7 @@ class VLLMGenerateClient:
                 prompt_ids,
                 family=family,
                 what=f"vLLM prompt {req.request_id}",
+                source=self.model_path,
             )
             prompt_rows.append(
                 {
@@ -617,6 +618,7 @@ class HFGenerateClient:
                 req.prompt_token_ids,
                 family=family,
                 what=f"HF prompt {req.request_id}",
+                source=self.model_path,
             )
             from trim.eval.harmony_runtime import fit_prompt_ids_to_context
 

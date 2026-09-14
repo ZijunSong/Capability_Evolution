@@ -252,8 +252,9 @@ API_FORMAT_RETRY_PROMPT = QWEN_FORMAT_RETRY_PROMPT
 
 
 def is_harmony_chat_model(model: str | None) -> bool:
-    name = str(model or "").lower()
-    return "gpt-oss" in name or "harness-1" in name or name.startswith("openai/gpt-oss")
+    from trim.eval.model_profiles import is_harmony_model
+
+    return is_harmony_model(model)
 
 
 def _format_failed_attempt_context(failed: Mapping[str, Any]) -> str:

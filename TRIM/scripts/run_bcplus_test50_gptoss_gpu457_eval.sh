@@ -156,19 +156,8 @@ csv_to_array() {
   read -ra _arr <<< "${csv}"
 }
 
-vllm_extra_for_model() {
-  case "${1}" in
-    gpt-oss-20b)
-      echo "--enable-auto-tool-choice --tool-call-parser openai --max-model-len 32768 --trust-remote-code --moe-backend triton"
-      ;;
-    Qwen3-4B-Instruct-2507)
-      echo "--enable-auto-tool-choice --tool-call-parser hermes --max-model-len 32768 --trust-remote-code"
-      ;;
-    *)
-      echo "--enable-auto-tool-choice --tool-call-parser openai --max-model-len 32768 --trust-remote-code"
-      ;;
-  esac
-}
+# shellcheck source=scripts/vllm_model_extra.sh
+source "${SCRIPT_DIR}/vllm_model_extra.sh"
 
 smoke_test_tool_call() {
   local port="$1" model="$2"

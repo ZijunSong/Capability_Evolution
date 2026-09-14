@@ -1,29 +1,38 @@
-"""Sanity checks for bcplus_full GPU8 launch script."""
+"""Sanity checks for bcplus GPU8 launch script vLLM flags."""
 
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
 
 
-SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "run_bcplus_full_gpu8_eval.sh"
+LIB = Path(__file__).resolve().parents[1] / "scripts" / "lib_bcplus_w_harness1_gpu8_eval.sh"
+VLLM_EXTRA = Path(__file__).resolve().parents[1] / "scripts" / "vllm_model_extra.sh"
 
 
-def _bash_fn(name: str, *args: str) -> str:
-    cmd = f'source "{SCRIPT}" >/dev/null 2>&1; {name} {" ".join(args)}'
-    out = subprocess.check_output(["bash", "-c", cmd], text=True)
-    return out.strip()
+def _bash_vllm_extra(slug: str) -> str:
+    cmd = (
+        f'export SCRIPT_DIR="{LIB.parent}" TRIM_ROOT="{LIB.parent.parent}" PY="{sys.executable}"; '
+        f'source "{VLLM_EXTRA}"; vllm_extra_for_model "{slug}"'
+    )
+    return subprocess.check_output(["bash", "-c", cmd], text=True).strip()
 
 
 def test_vllm_extra_qwen_uses_hermes_parser():
-    extra = _bash_fn("vllm_extra_for_model", "Qwen3-4B-Instruct-2507")
+    extra = _bash_vllm_extra("Qwen3-4B-Instruct-2507")
     assert "--tool-call-parser hermes" in extra
     assert "openai" not in extra.split("--tool-call-parser")[1].split()[0]
 
 
 def test_vllm_extra_harness_uses_openai_parser():
-    extra = _bash_fn("vllm_extra_for_model", "harness-1")
+    extra = _bash_vllm_extra("harness-1")
     assert "--tool-call-parser openai" in extra
+
+
+def test_vllm_extra_glm_uses_glm45_parser():
+    extra = _bash_vllm_extra("glm-4-9b-chat")
+    assert "--tool-call-parser glm45" in extra
 
 
 def test_normalize_pid_strips_log_noise():
@@ -31,19 +40,9 @@ def test_normalize_pid_strips_log_noise():
         [
             "bash",
             "-c",
-            f'source "{SCRIPT}" >/dev/null 2>&1; normalize_pid $\'[2026-09-10T07:16:00+08:00] starting vLLM\\n12345\\n\'',
+            f'export SCRIPT_DIR="{LIB.parent}"; source "{LIB}" >/dev/null 2>&1; '
+            f"normalize_pid $'[2026-09-10T07:16:00+08:00] starting vLLM\\n12345\\n'",
         ],
         text=True,
     )
     assert out.strip() == "12345"
-
-
-def test_default_all_actor_count_is_six():
-    out = subprocess.check_output(
-        [
-            "env", "-i", "bash", "-c",
-            f'source "{SCRIPT}" >/dev/null 2>&1; echo "$ALL_TP"',
-        ],
-        text=True,
-    )
-    assert out.strip() == "6"

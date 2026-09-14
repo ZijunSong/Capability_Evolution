@@ -12,8 +12,10 @@ from trim.training.action_codec import canonicalize_action, render_action
 def render_rollout_action_text(enc: Any, action: dict[str, Any]) -> str:
     """Render an action in the same surface form rollout sampling uses."""
     canon = canonicalize_action(action)
+    from trim.eval.model_profiles import is_hf_chat_family
+
     family = str(getattr(enc, "family", "") or "")
-    if family == "qwen3":
+    if is_hf_chat_family(family):
         payload = {"name": canon["name"], "arguments": canon["arguments"]}
         return f"<tool_call>{json.dumps(payload, ensure_ascii=False)}</tool_call>"
     return render_action(canon)
@@ -39,6 +41,19 @@ def _snapshot_acts_and_wm(snapshot: EnvironmentSnapshot) -> tuple[list[tuple[Any
     return [], wm
 
 
+def _harmony_safe_actions_obs(
+    acts: Sequence[tuple[Any, Any]] | None,
+) -> list[tuple[Any, Any]]:
+    """Drop Harness-G protocol feedback dicts; Harmony expects Action objects."""
+    if not acts:
+        return []
+    try:
+        from trim.eval.harness_g_runtime import is_protocol_feedback
+    except ImportError:
+        return list(acts)
+    return [(a, o) for a, o in acts if not is_protocol_feedback(a)]
+
+
 def encode_rollout_style_prompt(
     enc: Any,
     snapshot: EnvironmentSnapshot,
@@ -52,7 +67,9 @@ def encode_rollout_style_prompt(
     from trim.training.opd_dataset import snapshot_query_text
 
     query = snapshot_query_text(snapshot)
-    use_acts = list(acts) if acts is not None else _snapshot_acts_and_wm(snapshot)[0]
+    use_acts = _harmony_safe_actions_obs(
+        list(acts) if acts is not None else _snapshot_acts_and_wm(snapshot)[0]
+    )
     use_wm = wm_text or _snapshot_acts_and_wm(snapshot)[1]
     if enc is not None and hasattr(enc, "build_first_turn_prompt_ids"):
         if not use_acts:
@@ -75,18 +92,19 @@ def encode_teacher_rollout_style_prompt(
     wm_text: str = "",
 ) -> tuple[list[int], str]:
     """Full-harness teacher prefix at the same decision timestep as the student."""
+    use_acts = _harmony_safe_actions_obs(acts)
     if enc is not None and hasattr(enc, "build_first_turn_prompt_ids"):
-        if not acts:
+        if not use_acts:
             return list(enc.build_first_turn_prompt_ids(query)), query
         return list(
-            enc.build_continuation_prompt_ids(query, actions_obs=list(acts), wm_text=wm_text)
+            enc.build_continuation_prompt_ids(query, actions_obs=use_acts, wm_text=wm_text)
         ), query
     from trim.eval.harmony_runtime import build_continuation_prompt_ids, build_first_turn_prompt_ids
 
-    if not acts:
+    if not use_acts:
         return build_first_turn_prompt_ids(query, enc=enc), query
     return build_continuation_prompt_ids(
-        query, actions_obs=list(acts), wm_text=wm_text, enc=enc
+        query, actions_obs=use_acts, wm_text=wm_text, enc=enc
     ), query
 
 

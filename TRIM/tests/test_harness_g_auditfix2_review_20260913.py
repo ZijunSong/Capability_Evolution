@@ -114,6 +114,34 @@ def test_protocol_feedback_is_not_a_tool_call():
     assert "name" not in fb
 
 
+def test_teacher_prompt_skips_protocol_feedback_dicts():
+    from trim.eval.harness_g_runtime import make_protocol_feedback
+    from trim.eval.harmony_runtime import make_action, make_observation
+    from trim.training.opd_prompt_encoding import encode_teacher_rollout_style_prompt
+
+    class _FakeEnc:
+        def build_first_turn_prompt_ids(self, query: str) -> list[int]:
+            return [1]
+
+        def build_continuation_prompt_ids(
+            self,
+            query: str,
+            *,
+            actions_obs: list[tuple[object, object]],
+            wm_text: str | None = None,
+        ) -> list[int]:
+            for action, _obs in actions_obs:
+                assert not isinstance(action, dict)
+            return [1, 2, 3]
+
+    acts = [
+        (make_action("init", {}), make_observation("INIT ok")),
+        (make_protocol_feedback("ERROR [parse_failed]: bad output"), "ERROR [parse_failed]: bad"),
+    ]
+    ids, _ = encode_teacher_rollout_style_prompt(_FakeEnc(), "Who?", acts=acts, wm_text="wm")
+    assert ids == [1, 2, 3]
+
+
 def test_allowed_menu_targets_match_action_map():
     mask = zero_mask_for("Harness-G")
     st = new_state("query", {"d": {"text": "Alice Smith wrote the report."}}, harness_mask=mask)

@@ -2,7 +2,7 @@
 """Long-lived vLLM worker for Scheme A batched rollouts.
 
 Reads session_dir/config.json, loads the model tokenizer (gpt-oss Harmony or
-Qwen3 chat), then waits for JOB / SHUTDOWN flags. Each JOB is a batch of
+HF chat + tools), then waits for JOB / SHUTDOWN flags. Each JOB is a batch of
 prompt_token_ids. Returns sampled token IDs, decoded text, and per-token
 logprobs so CISPO can be constructed without a second HF generate() pass.
 """
@@ -81,6 +81,7 @@ def main() -> int:
     )
     from trim.eval.model_tokenizer import (
         FAMILY_GPTOSS,
+        HF_CHAT_TOOLS,
         QWEN3_CHAT,
         assert_model_tokenizer,
         patch_transformers_tokenizer_compat,
@@ -89,7 +90,7 @@ def main() -> int:
 
     encoding = str(cfg.get("encoding") or "")
     family = str(cfg.get("family") or "")
-    allowed = {O200K_HARMONY, QWEN3_CHAT, ""}
+    allowed = {O200K_HARMONY, QWEN3_CHAT, HF_CHAT_TOOLS, ""}
     if encoding and encoding not in allowed:
         raise SystemExit(f"worker encoding={encoding} is not supported")
     if family == FAMILY_GPTOSS or encoding == O200K_HARMONY:
@@ -112,7 +113,7 @@ def main() -> int:
     if family and audit_family and family != audit_family:
         raise SystemExit(
             f"worker config family={family} != tokenizer family={audit_family}. "
-            "gpt-oss Harmony IDs and Qwen3 chat IDs are not interchangeable."
+            "gpt-oss Harmony IDs and HF chat IDs are not interchangeable."
         )
     stop_token_ids = [int(x) for x in (audit.get("stop_token_ids") or stop_token_ids)]
     (session / "tokenizer_audit.json").write_text(
