@@ -58,7 +58,9 @@ def test_pack_and_gather_left_pad_window():
     assert torch.isfinite(logps[1]).all()
 
 
-def test_truncate_pair_keeps_tail_of_prompt():
+def test_truncate_pair_keeps_prefix_and_tail_of_prompt():
     prompt, resp = truncate_teacher_forced_pair(list(range(20)), [100, 101], max_full=8)
     assert len(prompt) + len(resp) == 8
     assert resp == [100, 101]
+    assert prompt[0] == 0
+    assert prompt[-1] == 19

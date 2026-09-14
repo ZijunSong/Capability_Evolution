@@ -467,6 +467,8 @@ def parse_harmony_tool_call(
                 raw_json=(body or "")[:2000] if body else None,
                 error=harmony_err or "no_executable_tool_call_region",
             )
+        # Encoder parse of dummy/partial token ids may raise; a recovered
+        # regex tool call is still valid and must not inherit that error.
         return ParsedToolCall(
             parsed=bool(json_ok),
             legal=legal and json_ok,
@@ -474,7 +476,7 @@ def parse_harmony_tool_call(
             arguments=args if json_ok else None,
             parse_method="regex_to_functions",
             raw_json=(body or "")[:2000] if body else None,
-            error=harmony_err or (None if json_ok else "json_missing_or_invalid"),
+            error=None if json_ok else (harmony_err or "json_missing_or_invalid"),
         )
     return ParsedToolCall(
         parsed=False,
@@ -516,6 +518,19 @@ def recent_actions_obs(actions_obs: list[tuple[Any, Any]], *, keep: int = 12) ->
     return list(actions_obs[-int(keep) :])
 
 
+HARMONY_BOUNDARY_TOKEN_IDS = frozenset({200006, 200007, 200008, 200012, 200002})
+
+
+def _snap_cut_to_boundary(tokens: list[int], idx: int, *, forward: bool) -> int:
+    if idx <= 0 or idx >= len(tokens):
+        return idx
+    window = range(idx, min(len(tokens), idx + 32)) if forward else range(idx, max(0, idx - 32), -1)
+    for i in window:
+        if tokens[i] in HARMONY_BOUNDARY_TOKEN_IDS:
+            return i
+    return idx
+
+
 def fit_prompt_ids_to_context(
     ids: list[int] | tuple[int, ...],
     *,
@@ -523,7 +538,7 @@ def fit_prompt_ids_to_context(
     max_new_tokens: int = 1,
     keep_prefix: int = 4096,
 ) -> list[int]:
-    """Drop the middle of an overlong Harmony prompt; keep system prefix + recent tail."""
+    """Keep system prefix + recent tail; snap cuts to Harmony message tokens when present."""
     tokens = [int(x) for x in ids]
     budget = max(1, int(max_model_len) - max(1, int(max_new_tokens)))
     if len(tokens) <= budget:
@@ -532,7 +547,33 @@ def fit_prompt_ids_to_context(
     tail = budget - prefix
     if prefix <= 0 or tail <= 0:
         return tokens[-budget:]
-    return tokens[:prefix] + tokens[-tail:]
+    prefix_end = _snap_cut_to_boundary(tokens, prefix, forward=True)
+    tail_start = len(tokens) - tail
+    tail_start = _snap_cut_to_boundary(tokens, tail_start, forward=False)
+    if prefix_end + (len(tokens) - tail_start) > budget:
+        overflow = prefix_end + (len(tokens) - tail_start) - budget
+        tail_start += overflow
+    if prefix_end >= tail_start:
+        return tokens[-budget:]
+    return tokens[:prefix_end] + tokens[tail_start:]
+
+
+def fit_actions_obs_to_budget(
+    actions_obs: list[tuple[Any, Any]],
+    *,
+    encode_fn,
+    max_model_len: int,
+    max_new_tokens: int,
+) -> list[tuple[Any, Any]]:
+    """Drop oldest complete action/observation pairs until the encoded prompt fits."""
+    budget = max(1, int(max_model_len) - max(1, int(max_new_tokens)))
+    kept = list(actions_obs)
+    while len(kept) > 1:
+        ids = encode_fn(kept)
+        if len(ids) <= budget:
+            return kept
+        kept = kept[1:]
+    return kept
 
 
 def build_first_turn_prompt_ids(query: str, enc=None) -> list[int]:

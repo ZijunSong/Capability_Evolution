@@ -97,6 +97,7 @@ def truncate_teacher_forced_pair(
     response_ids: Sequence[int],
     *,
     max_full: int = HF_MAX_FULL_TOKENS,
+    keep_prefix: int = 512,
 ) -> tuple[list[int], list[int]]:
     prompt = list(prompt_ids)
     response = list(response_ids)
@@ -105,7 +106,13 @@ def truncate_teacher_forced_pair(
         return prompt, response
     overflow = full_len - max_full
     if overflow < len(prompt):
-        prompt = prompt[overflow:]
+        budget_prompt = len(prompt) - overflow
+        prefix = min(max(0, int(keep_prefix)), max(0, budget_prompt // 3))
+        tail = budget_prompt - prefix
+        if prefix > 0 and tail > 0:
+            prompt = prompt[:prefix] + prompt[-tail:]
+        else:
+            prompt = prompt[overflow:]
     else:
         keep = max(1, max_full - 1)
         response = response[-keep:]

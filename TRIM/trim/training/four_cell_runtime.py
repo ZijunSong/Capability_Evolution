@@ -79,9 +79,12 @@ from trim.training.policy_digest import adapter_digest, policy_digest_record
 from trim.training.train_checkpoint import (
     append_metrics_jsonl,
     load_optimizer_bundle,
+    load_rng_state,
+    load_training_resume,
     publish_step_checkpoint,
     save_optimizer_bundle,
     save_rng_state,
+    training_output_occupied,
 )
 from trim.training.train_query_sampler import QuerySampler
 from trim.training.hf_rl_batch import (
@@ -654,10 +657,19 @@ def snap_from_state(qid: str, st: dict[str, Any], component_id: str, *, harness_
     documents = []
     observed_store: dict[str, Any] = {}
     for did in observed_ids:
-        rec = (st.get("pool") or {}).get(did) or (st.get("curated") or {}).get(did) or store.get(did)
+        rec = None
+        for src in (st.get("pool") or {}, st.get("curated") or {}, store):
+            if not isinstance(src, dict) or did not in src:
+                continue
+            cand = src.get(did)
+            if isinstance(cand, dict) and (cand.get("text") or cand.get("content") or cand.get("snippet")):
+                rec = cand
+                break
+            if rec is None:
+                rec = cand
         if rec is None:
             continue
-        text = str(rec.get("text") or "") if isinstance(rec, dict) else str(rec)
+        text = str(rec.get("text") or rec.get("content") or rec.get("snippet") or "") if isinstance(rec, dict) else str(rec)
         documents.append({"id": str(did), "text": text})
         observed_store[str(did)] = {
             "id": str(did),
@@ -685,6 +697,17 @@ def snap_from_state(qid: str, st: dict[str, Any], component_id: str, *, harness_
         "step": int(st.get("step") or 0),
         "rng_state": st.get("rng_state"),
         "first_search_done": st.get("first_search_done"),
+        "first_search_pending": bool(st.get("first_search_pending", st.get("first_search_done") is not True)),
+        "search_count": int(st.get("search_count") or 0),
+        "n_search_calls": int(st.get("n_search_calls") or 0),
+        "n_tool_calls": int(st.get("n_tool_calls") or 0),
+        "ended": bool(st.get("ended")),
+        "last_tool_name": (
+            str((st.get("tool_history") or [{}])[-1].get("name") or "")
+            if st.get("tool_history")
+            else ""
+        ),
+        "tool_history": list(st.get("tool_history") or []),
         "content_dedup_state": st.get("content_dedup_state"),
     }
     if g:
@@ -728,15 +751,97 @@ def _query_overlap(action: dict[str, Any], query: str) -> float:
     aset = set(re.findall(r"[a-z0-9]+", blob))
     if not qset or not aset:
         return 0.0
-    return 0.1 * len(qset & aset) / len(qset)
+    return len(qset & aset) / len(qset)
 
 
-def terminal_reward(st: dict[str, Any], *, query: str, gold_ids: list[str], valids: list[bool], actions: list[dict[str, Any]]) -> float:
+TASK_REWARD_WEIGHT = 0.80
+LEGAL_REWARD_WEIGHT = 0.10
+SHAPING_CAP = 0.10
+
+
+def freeze_train_state(st: Mapping[str, Any]) -> dict[str, Any]:
+    """Shallow-copy live env state so teacher prompts can freeze s_t."""
+    out = dict(st)
+    for key in (
+        "pool",
+        "curated",
+        "importance",
+        "doc_store",
+        "harness_mask",
+        "runtime_effects",
+        "evidence_graph",
+        "sentences",
+        "entities",
+        "action_map",
+    ):
+        val = st.get(key)
+        if isinstance(val, dict):
+            out[key] = dict(val)
+    out["tool_history"] = list(st.get("tool_history") or [])
+    return out
+
+
+def encode_aligned_teacher_prompt(
+    enc,
+    query: str,
+    *,
+    frozen_st: Mapping[str, Any],
+    frozen_acts: list[tuple[Any, Any]],
+    component_id: str,
+) -> tuple[list[int], str]:
+    """Teacher prefix at the same pre-action decision as the student.
+
+    Flipping the mask to H_full does not replay hidden capability effects.
+    Extra teacher evidence must come from an independent side branch.
+    """
+    from trim.training.opd_prompt_encoding import encode_teacher_rollout_style_prompt
+    from trim.training.upstream_train_env import is_upstream_state, wm_text_for_train_state
+
+    teacher_st = freeze_train_state(frozen_st)
+    teacher_st["harness_mask"] = teacher_mask_for(component_id)
+    if is_upstream_state(teacher_st):
+        wm = wm_text_for_train_state(teacher_st)
+    else:
+        from trim.eval.local_search_env import wm_text as local_wm_text
+
+        wm = local_wm_text(teacher_st)
+    ids, _ = encode_teacher_rollout_style_prompt(
+        enc,
+        query,
+        acts=list(frozen_acts),
+        wm_text=wm,
+    )
+    return list(ids), str(wm)
+
+
+def terminal_reward_breakdown(
+    st: dict[str, Any],
+    *,
+    query: str,
+    gold_ids: list[str],
+    valids: list[bool],
+    actions: list[dict[str, Any]],
+    exec_oks: list[bool] | None = None,
+) -> dict[str, Any]:
+    """Task recall is the primary signal; non-task shaping is capped."""
     from trim.eval.local_search_env import curated_recall
 
-    if not valids or not any(valids):
-        return -0.2
     rec = float(curated_recall(st, gold_ids) or 0.0)
+    if not valids or not any(valids):
+        return {
+            "total": -0.2,
+            "task_recall": rec,
+            "task": 0.0,
+            "legal": 0.0,
+            "shaping": 0.0,
+            "ended": 0.0,
+            "query_overlap": 0.0,
+            "n_unique_tools": 0.0,
+            "n_curated": 0.0,
+            "n_pool": 0.0,
+            "n_exec_ok": 0,
+            "invalid_episode": True,
+        }
     legal = sum(1 for v in valids if v) / len(valids)
     invalid_names = {"unknown", "truncated", "None"}
     executed = [
@@ -745,15 +850,42 @@ def terminal_reward(st: dict[str, Any], *, query: str, gold_ids: list[str], vali
         if v and str(a.get("name") or "") not in invalid_names
     ]
     n_unique = len({a.get("name") for a, _v in executed if a.get("name")})
-    overlap = max((_query_overlap(a, query) for a in actions), default=0.0)
-    return (
-        0.15 * legal
-        + 0.55 * rec
-        + 0.08 * min(3, n_unique)
-        + 0.08 * min(1.0, len(st.get("curated") or {}) / 2)
-        + 0.06 * min(1.0, len(st.get("pool") or {}) / 3)
-        + (0.08 if st.get("ended") else 0.0)
-        + overlap
+    overlap_ratio = max((_query_overlap(a, query) for a in actions), default=0.0)
+    n_exec = sum(1 for ok in (exec_oks or []) if ok)
+    shaping_raw = (
+        0.03 * min(3, n_unique) / 3
+        + 0.02 * min(1.0, len(st.get("curated") or {}) / 2)
+        + 0.02 * min(1.0, len(st.get("pool") or {}) / 3)
+        + (0.03 if st.get("ended") else 0.0)
+        + 0.03 * overlap_ratio
+    )
+    shaping = min(float(SHAPING_CAP), float(shaping_raw))
+    task = float(TASK_REWARD_WEIGHT) * rec
+    legal_term = float(LEGAL_REWARD_WEIGHT) * legal
+    total = task + legal_term + shaping
+    return {
+        "total": float(total),
+        "task_recall": rec,
+        "task": task,
+        "legal": legal_term,
+        "shaping": shaping,
+        "shaping_raw": float(shaping_raw),
+        "ended": 0.03 if st.get("ended") else 0.0,
+        "query_overlap": 0.03 * overlap_ratio,
+        "n_unique_tools": float(n_unique),
+        "n_curated": float(len(st.get("curated") or {})),
+        "n_pool": float(len(st.get("pool") or {})),
+        "n_exec_ok": n_exec,
+        "invalid_episode": False,
+        "protocol": "local_legacy_capped_shaping",
+    }
+
+
+def terminal_reward(st: dict[str, Any], *, query: str, gold_ids: list[str], valids: list[bool], actions: list[dict[str, Any]]) -> float:
+    return float(
+        terminal_reward_breakdown(
+            st, query=query, gold_ids=gold_ids, valids=valids, actions=actions
+        )["total"]
     )
 
 
@@ -950,6 +1082,19 @@ def one_episode(
                     action_map=st.get("action_map"),
                     finish_reason=str(gen.get("finish_reason") or ""),
                 )
+        frozen_st = freeze_train_state(st)
+        frozen_acts = list(acts)
+        teacher_prompt_ids: list[int] = []
+        teacher_snapshot_hash = ""
+        if enc is not None and not teacher_mode:
+            teacher_prompt_ids, _ = encode_aligned_teacher_prompt(
+                enc,
+                query,
+                frozen_st=frozen_st,
+                frozen_acts=frozen_acts,
+                component_id=component_id,
+            )
+            teacher_snapshot_hash = pre.content_hash()
         with timed_section(timing, "harness"):
             valids.append(valid)
             actions.append(action)
@@ -966,7 +1111,7 @@ def one_episode(
                 if valid and not exec_ok:
                     valid = False
             else:
-                st, obs, _ok = apply_train_action(
+                st, obs, exec_ok = apply_train_action(
                     st,
                     action,
                     valid,
@@ -999,24 +1144,6 @@ def one_episode(
         prompt_ids = effective_prompt_ids
         with timed_section(timing, "harness"):
             post = snap_from_state(qid, st, component_id, harness_mask=harness_mask)
-            teacher_prompt_ids: list[int] = []
-            if enc is not None and not teacher_mode:
-                from trim.training.opd_prompt_encoding import encode_teacher_rollout_style_prompt
-
-                teacher_st = dict(st)
-                teacher_st["harness_mask"] = teacher_mask_for(component_id)
-                if is_upstream_state(teacher_st):
-                    teacher_wm = wm_text_for_train_state(teacher_st)
-                else:
-                    from trim.eval.local_search_env import wm_text as local_wm_text
-
-                    teacher_wm = local_wm_text(teacher_st)
-                teacher_prompt_ids, _ = encode_teacher_rollout_style_prompt(
-                    enc,
-                    query,
-                    acts=acts,
-                    wm_text=teacher_wm,
-                )
             points.append(
                 StudentDecisionPoint(
                     episode_id=f"{qid}_r{rollout_idx}",
@@ -1033,8 +1160,12 @@ def one_episode(
                     post_action_snapshot=post,
                     reward=None,
                     structurally_valid=valid,
+                    executed_ok=bool(exec_ok),
                     student_prompt_token_ids=list(prompt_ids),
                     teacher_prompt_token_ids=list(teacher_prompt_ids),
+                    teacher_snapshot_hash=teacher_snapshot_hash,
+                    teacher_decision_turn=turn,
+                    history_end_turn=len(frozen_acts),
                 )
             )
         rows.append(
@@ -1057,11 +1188,16 @@ def one_episode(
                 "turn_id": turn,
             }
         )
-    reward = terminal_reward(st, query=query, gold_ids=gold_ids, valids=valids, actions=actions)
+    reward_parts = terminal_reward_breakdown(
+        st, query=query, gold_ids=gold_ids, valids=valids, actions=actions
+    )
+    reward = float(reward_parts["total"])
     for point in points:
         point.reward = reward
+        point.reward_parts = dict(reward_parts)
     for row_i in rows:
         row_i["reward"] = reward
+        row_i["reward_parts"] = dict(reward_parts)
     stats = episode_quality_metrics(
         st,
         row,
@@ -1077,6 +1213,8 @@ def one_episode(
             "names": names,
             "generated_actions": actions,
             "tool_cost": float(st.get("n_tool_calls") or 0),
+            "reward_parts": dict(reward_parts),
+            "task_recall": float(reward_parts.get("task_recall") or 0.0),
         }
     )
     return points, rows, reward, stats
@@ -1812,6 +1950,11 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
     )
 
     out = Path(args.out)
+    resume_run = bool(getattr(args, "resume", False))
+    if training_output_occupied(out) and not resume_run:
+        raise SystemExit(
+            f"output dir {out} already has training state. Pass --resume or use a new --out."
+        )
     out.mkdir(parents=True, exist_ok=True)
     train_only = bool(getattr(args, "train_only", False))
     log_tag = "train" if train_only else "four_cell"
@@ -2162,12 +2305,16 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
             refresh = False
         n_train = 0 if cell in {"teacher", "before"} else int(args.train_steps)
         updates_per_rollout = int(getattr(args, "updates_per_rollout", 1) or 1)
+        cell_reward_unchanged = True
         if refresh:
             updates_per_rollout = 1
 
         if use_frozen:
             groups = frozen_groups
         elif refresh:
+            from trim.training.train_query_sampler import QuerySamplerState
+
+            pending_optimizer: Path | None = None
             query_sampler = QuerySampler(
                 train_rows,
                 base_seed=int(args.seed),
@@ -2176,8 +2323,33 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
                     or HF_DEFAULT_GROUPS_PER_STEP
                 ),
             )
+            if resume_run:
+                resume_state = load_training_resume(out / "checkpoints" / cell)
+                if resume_state is None:
+                    raise SystemExit(f"--resume set but no checkpoint under {out / 'checkpoints' / cell}")
+                query_sampler = QuerySampler(
+                    train_rows,
+                    base_seed=int(args.seed),
+                    groups_per_step=int(
+                        getattr(args, "train_groups_per_step", HF_DEFAULT_GROUPS_PER_STEP)
+                        or HF_DEFAULT_GROUPS_PER_STEP
+                    ),
+                    state=QuerySamplerState.from_dict(resume_state["sampler_state"]),
+                )
+                loop.policy_version = str(resume_state["updated_policy_version"] or "v0")
+                adapter_live = str(resume_state["adapter_dir"])
+                pending_optimizer = Path(resume_state["optimizer_path"])
+                if resume_state.get("rng_path"):
+                    load_rng_state(Path(resume_state["rng_path"]))
+                print(
+                    f"[{log_tag}] resume cell={cell} step={resume_state['step']} "
+                    f"policy={loop.policy_version} adapter={adapter_live}",
+                    flush=True,
+                )
+            already = int(query_sampler.state.global_optimizer_step)
+            remaining = max(0, n_train - already)
             metrics_path = out / cell / "metrics.jsonl"
-            for step in range(n_train):
+            for step in range(remaining):
                 step_rows, sample_meta = query_sampler.sample_for_rollout()
                 query_sampler.note_rollout_start()
                 print(
@@ -2196,6 +2368,9 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
                 )
                 rewards_before = [r for g in groups for r in g.terminal_rewards]
                 ensure_hf(adapter_live)
+                if pending_optimizer is not None:
+                    load_optimizer_bundle(backend, pending_optimizer)
+                    pending_optimizer = None
                 part = asyncio.run(
                     train_cell(
                         name=cell,
@@ -2222,10 +2397,16 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
                     )
                 )
                 rewards_after = [r for g in groups for r in g.terminal_rewards]
-                if rewards_before != rewards_after:
+                reward_unchanged = rewards_before == rewards_after
+                if not reward_unchanged:
                     raise RuntimeError("Teacher shadow mutated RL rewards")
+                cell_reward_unchanged = cell_reward_unchanged and reward_unchanged
                 n_opt = int(part.get("n_optimizer_steps") or 0)
-                step_num = query_sampler.state.global_optimizer_step + (1 if n_opt > 0 else 0)
+                source_policy_version = loop.policy_version
+                if n_opt > 0:
+                    query_sampler.note_update_complete()
+                    loop.bump_after_update()
+                step_num = int(query_sampler.state.global_optimizer_step)
                 ckpt_tmp = out / "checkpoints" / cell / f".tmp_step_{step_num:06d}"
                 ckpt_final = out / "checkpoints" / cell / f"step_{step_num:06d}"
                 adapter_step_dir = ckpt_tmp / "adapter"
@@ -2241,23 +2422,47 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
                     base_model=vllm_base,
                     policy_version=loop.policy_version,
                 )
+                ep_stats = [
+                    s
+                    for g in groups
+                    for s in ((g.trajectory_group or {}).get("episode_stats") or [])
+                ]
+                task_recalls = [float(s.get("task_recall") or s.get("gold_recall") or 0.0) for s in ep_stats]
+                reward_parts = [dict(s.get("reward_parts") or {}) for s in ep_stats if s.get("reward_parts")]
                 step_manifest = {
                     "cell": cell,
                     "step": step_num,
+                    "source_policy_version": source_policy_version,
+                    "updated_policy_version": loop.policy_version,
                     "policy_version": loop.policy_version,
                     "sample_meta": sample_meta,
                     "train": part,
                     "policy_digest": digest,
                     "n_optimizer_steps": n_opt,
+                    "reward_unchanged_by_teacher": reward_unchanged,
                 }
                 append_metrics_jsonl(
                     metrics_path,
                     {
                         "step": step_num,
                         "cell": cell,
+                        "source_policy_version": source_policy_version,
+                        "updated_policy_version": loop.policy_version,
                         "policy_version": loop.policy_version,
+                        "policy_digest": digest,
                         "sample_meta": sample_meta,
                         "n_optimizer_steps": n_opt,
+                        "n_rl_datums": part.get("n_rl_datums"),
+                        "n_opd_datums": part.get("n_opd_datums"),
+                        "n_rl_tokens": part.get("n_rl_tokens"),
+                        "n_opd_tokens": part.get("n_opd_tokens"),
+                        "rl_loss_proxy": part.get("rl_loss_proxy"),
+                        "opd_nll": part.get("opd_nll"),
+                        "projection_stats": part.get("projection_stats"),
+                        "task_recall_mean": (sum(task_recalls) / len(task_recalls)) if task_recalls else None,
+                        "reward_mean": (sum(rewards_before) / len(rewards_before)) if rewards_before else None,
+                        "reward_parts_last": reward_parts[-1] if reward_parts else {},
+                        "reward_unchanged_by_teacher": reward_unchanged,
                         "update_type": (part.get("substeps") or [{}])[-1].get("update_type")
                         if part.get("substeps")
                         else part.get("update_type"),
@@ -2265,14 +2470,12 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
                 )
                 if n_opt > 0:
                     publish_step_checkpoint(ckpt_tmp, ckpt_final, manifest=step_manifest)
-                    query_sampler.note_update_complete()
-                    loop.bump_after_update()
                     adapter_live = str(adapter_step_dir)
                     adapter_dir = out / "adapters" / cell
                     adapter_dir.mkdir(parents=True, exist_ok=True)
                     backend.save_pretrained(str(adapter_dir))
                     adapter_live = str(adapter_dir)
-                    if step == n_train - 1:
+                    if step == remaining - 1:
                         adapter_audits.append(save_and_audit(cell, adapter_dir))
                 else:
                     import shutil
@@ -2326,6 +2529,7 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
             rewards_after = [r for g in groups for r in g.terminal_rewards]
             if rewards_before != rewards_after:
                 raise RuntimeError("Teacher shadow mutated RL rewards")
+            cell_reward_unchanged = True
             if cell != "before":
                 adapter_dir = out / "adapters" / cell
                 adapter_audits.append(save_and_audit(cell, adapter_dir))
@@ -2387,7 +2591,11 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
             "rollout": gstat,
             "n_decision_points": gstat["n_decision_points"],
             "n_component_states": len(collected),
-            "reward_unchanged_by_teacher": cell in {"teacher", "before"},
+            "reward_unchanged_by_teacher": (
+                bool(cell_reward_unchanged)
+                if refresh and cell not in {"teacher", "before"}
+                else True
+            ),
             "adapter": adapter_map.get(cell),
             "on_policy_refresh": refresh,
             "rollout_backend": "vllm" if vllm_on else "hf",
@@ -2587,6 +2795,8 @@ def coerce_runtime_args(args: argparse.Namespace) -> argparse.Namespace:
         args.vllm_generate_timeout_s = 3600.0
     if not hasattr(args, "vllm_disable_custom_all_reduce"):
         args.vllm_disable_custom_all_reduce = None
+    if not hasattr(args, "resume"):
+        args.resume = False
     if not hasattr(args, "train_groups_per_step"):
         args.train_groups_per_step = HF_DEFAULT_GROUPS_PER_STEP
     if not hasattr(args, "train_micro_batch_size"):

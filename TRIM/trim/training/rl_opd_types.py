@@ -71,9 +71,14 @@ class StudentDecisionPoint:
     post_action_snapshot: EnvironmentSnapshot | None = None
     reward: float | None = None
     structurally_valid: bool = True
+    executed_ok: bool | None = None
     decision_point_id: str = ""
     student_prompt_token_ids: list[int] = field(default_factory=list)
     teacher_prompt_token_ids: list[int] = field(default_factory=list)
+    teacher_snapshot_hash: str = ""
+    teacher_decision_turn: int | None = None
+    history_end_turn: int | None = None
+    reward_parts: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.decision_point_id:
@@ -92,7 +97,11 @@ class StudentDecisionPoint:
             "action_tool_names": list(self.action_tool_names),
             "reward": self.reward,
             "structurally_valid": self.structurally_valid,
+            "executed_ok": self.executed_ok,
             "decision_point_id": self.decision_point_id,
+            "teacher_snapshot_hash": self.teacher_snapshot_hash,
+            "teacher_decision_turn": self.teacher_decision_turn,
+            "history_end_turn": self.history_end_turn,
         }
 
 

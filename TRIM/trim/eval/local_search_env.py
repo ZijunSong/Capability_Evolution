@@ -310,7 +310,6 @@ def execute_tool(
         hits_all: dict[str, tuple[str, float]] = {}
         live = searcher is not None and getattr(searcher, "name", "none") != "none"
         for q in queries:
-            got_live = False
             if live:
                 for hit in searcher.search(str(q), int(search_k)):
                     did = str(getattr(hit, "docid", "") or "")
@@ -319,9 +318,11 @@ def execute_tool(
                     if not did:
                         continue
                     _merge_hit(hits_all, did, text, score)
-                    got_live = True
-            # Do not fall back to the episode doc_store (which must not contain
-            # gold-label prefetch). Empty live retrieval stays empty.
+            elif store:
+                # Named local_legacy substitute only when no live searcher is attached.
+                # A live searcher that returns nothing must stay empty (no gold prefetch).
+                for did, text, score in rank_docs(str(q), store, k=search_k):
+                    _merge_hit(hits_all, did, text, score)
         ranked = sorted(hits_all.items(), key=lambda item: -item[1][1])
         ranked = filter_dedup_hits(st, ranked)
         for did, (text, score) in ranked:

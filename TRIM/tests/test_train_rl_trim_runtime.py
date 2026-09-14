@@ -137,6 +137,9 @@ def test_parse_train_rl_vs_trim_and_cell_lambda():
 def test_teacher_action_differs_by_component():
     mask = teacher_mask_for("sentence_compress")
     st = new_state("Alice Smith Paris 2019", dict(STORE), harness_mask=mask)
+    # Compress curates from already-observed pool; auto-populate is still bound
+    # to the first-search trigger and must search, not reuse leftover pool docs.
+    st["pool"] = dict(STORE)
     point = _point_from_state("sentence_compress", st, mask=mask)
     compress = teacher_action_from_point(point, "sentence_compress")
     auto = teacher_action_from_point(point, "auto_populate_first_search")

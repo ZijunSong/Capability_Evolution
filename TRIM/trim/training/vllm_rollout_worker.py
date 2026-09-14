@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -138,6 +139,12 @@ def main() -> int:
     if cfg.get("enforce_eager", True):
         llm_kwargs["enforce_eager"] = True
     disable_ar = cfg.get("disable_custom_all_reduce")
+    if disable_ar is None:
+        env = str(os.environ.get("DISABLE_CUSTOM_ALL_REDUCE") or "").strip().lower()
+        if env in {"1", "true", "yes"}:
+            disable_ar = True
+        elif env in {"0", "false", "no"}:
+            disable_ar = False
     if disable_ar is not None:
         llm_kwargs["disable_custom_all_reduce"] = bool(disable_ar)
     lora_path = cfg.get("lora_path") or None

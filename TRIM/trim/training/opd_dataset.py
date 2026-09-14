@@ -18,8 +18,11 @@ from trim.training.opd_projection import (
     StudentActionSpaceProjector,
 )
 from trim.training.opd_realizability import (
+    REJECT_CURATED_CAPACITY,
+    apply_curate_via_real_env,
     apply_student_action,
     check_action_realizability,
+    curated_ids_of,
     fork_snapshot,
 )
 from trim.training.tool_mask import legal_tool_names
@@ -63,8 +66,14 @@ class ProjectionAudit:
     n_macro: int = 0
     n_skip_events: int = 0
     n_reject: int = 0
+    n_skip: int = 0
+    n_illegal: int = 0
+    n_no_anchor: int = 0
+    n_capacity_fail: int = 0
+    n_materialize: int = 0
     n_projected_training_steps: int = 0
     n_supervised_tokens: int = 0
+    component_stats: dict[str, dict[str, int]] = field(default_factory=dict)
     illegal_target_rate: float = 0.0
     inaccessible_reference_rate: float = 0.0
     future_leakage_rate: float = 0.0
@@ -200,6 +209,19 @@ def materialize(
             break
         if not validate_roundtrip(action):
             break
+        if action.name == "curate":
+            before = set(curated_ids_of(shadow))
+            try:
+                actual_after, dropped, _obs = apply_curate_via_real_env(shadow, action)
+            except Exception:
+                break
+            expected_after = (before - {str(x) for x in (action.arguments.get("remove_ids") or [])}) | {
+                str(x) for x in (action.arguments.get("add_ids") or [])
+            }
+            if dropped or set(actual_after) != expected_after:
+                report.transition_reproducible = False
+                report.reason_codes.append(REJECT_CURATED_CAPACITY)
+                break
         prompt = render_student_prompt(shadow, component_id=cid)
         if prompt_has_teacher_leak(prompt):
             break
@@ -313,18 +335,85 @@ def project_and_materialize(
     if projection.kind == ProjectionKind.DIRECT:
         steps = materialize(projection, student_snapshot, component_id=component_id)
     if audit is not None:
-        audit.n_teacher_segments += 1
-        audit.component_id = component_id or projection.component_id
-        audit.n_skip_events += len(projection.skipped_event_ids)
-        if projection.kind == ProjectionKind.DIRECT:
-            audit.n_direct += 1
-        else:
-            reason = projection.reject_reason or "SKIP"
-            audit.reject_reasons[reason] = audit.reject_reasons.get(reason, 0) + 1
-        if projection.anchor_distance is not None:
-            audit.mean_anchor_distance += float(projection.anchor_distance)
-        audit.n_projected_training_steps += len(steps)
+        record_projection_outcome(audit, projection, steps, component_id=component_id)
     return projection, steps
+
+
+def _component_bucket(audit: ProjectionAudit, component_id: str) -> dict[str, int]:
+    cid = component_id or "unknown"
+    bucket = audit.component_stats.setdefault(
+        cid,
+        {
+            "trigger_count": 0,
+            "align_count": 0,
+            "skip_count": 0,
+            "reject_count": 0,
+            "capacity_fail": 0,
+            "supervised_tokens": 0,
+        },
+    )
+    return bucket
+
+
+def record_projection_outcome(
+    audit: ProjectionAudit,
+    projection: ProjectionResult,
+    steps: list[ProjectedTrainingStep],
+    *,
+    component_id: str = "",
+) -> None:
+    from trim.training.opd_projection import (
+        REJECT_ILLEGAL_TOOL,
+        REJECT_INVALID_ARGUMENT_SCHEMA,
+        REJECT_NO_SEMANTIC_ANCHOR,
+    )
+
+    audit.n_teacher_segments += 1
+    cid = component_id or projection.component_id or ""
+    audit.component_id = cid
+    audit.n_skip_events += len(projection.skipped_event_ids)
+    bucket = _component_bucket(audit, cid)
+    bucket["trigger_count"] += 1
+    reason = projection.reject_reason or ""
+    if projection.kind == ProjectionKind.DIRECT and steps:
+        audit.n_direct += 1
+        audit.n_materialize += len(steps)
+        bucket["align_count"] += 1
+        n_tok = 0
+        for step in steps:
+            n_tok += int(len(step.target_text.split()) if step.target_text else 0)
+        bucket["supervised_tokens"] += n_tok
+        audit.n_supervised_tokens += n_tok
+    elif projection.kind == ProjectionKind.DIRECT and not steps:
+        audit.n_reject += 1
+        fail_reason = reason or "MATERIALIZE_FAILED"
+        if REJECT_CURATED_CAPACITY in fail_reason or "CAPACITY" in fail_reason:
+            audit.n_capacity_fail += 1
+            bucket["capacity_fail"] += 1
+        audit.reject_reasons[fail_reason] = audit.reject_reasons.get(fail_reason, 0) + 1
+        bucket["reject_count"] += 1
+    else:
+        fail_reason = reason or "SKIP"
+        audit.reject_reasons[fail_reason] = audit.reject_reasons.get(fail_reason, 0) + 1
+        if fail_reason in {REJECT_NO_SEMANTIC_ANCHOR, "SKIP", "skip_untriggered", "skip_unregistered"}:
+            audit.n_skip += 1
+            audit.n_no_anchor += 1 if fail_reason == REJECT_NO_SEMANTIC_ANCHOR else 0
+            bucket["skip_count"] += 1
+        elif fail_reason in {REJECT_ILLEGAL_TOOL, REJECT_INVALID_ARGUMENT_SCHEMA}:
+            audit.n_illegal += 1
+            audit.n_reject += 1
+            bucket["reject_count"] += 1
+        elif "CAPACITY" in fail_reason or fail_reason == REJECT_CURATED_CAPACITY:
+            audit.n_capacity_fail += 1
+            audit.n_reject += 1
+            bucket["capacity_fail"] += 1
+            bucket["reject_count"] += 1
+        else:
+            audit.n_skip += 1
+            bucket["skip_count"] += 1
+    if projection.anchor_distance is not None:
+        audit.mean_anchor_distance += float(projection.anchor_distance)
+    audit.n_projected_training_steps += len(steps)
 
 
 def finalize_audit(audit: ProjectionAudit) -> ProjectionAudit:

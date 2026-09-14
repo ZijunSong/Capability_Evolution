@@ -134,7 +134,7 @@ def test_batched_rollout_passes_mask_into_new_state():
         searcher=None,
         doc_store_k=8,
         doc_store_workers=1,
-        new_state=lambda q, store: new_state(q, store, harness_mask=mask),
+        new_state=lambda q, store, query_id="": new_state(q, store, harness_mask=mask),
         doc_store_for_row=doc_store_for_row,
     )
     del doc_store_for_row

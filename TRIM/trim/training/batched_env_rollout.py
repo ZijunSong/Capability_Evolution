@@ -60,6 +60,7 @@ class LiveEpisode:
     points: list[StudentDecisionPoint] = field(default_factory=list)
     rl_rows: list[dict[str, Any]] = field(default_factory=list)
     valids: list[bool] = field(default_factory=list)
+    exec_oks: list[bool] = field(default_factory=list)
     actions: list[dict[str, Any]] = field(default_factory=list)
     names: list[str] = field(default_factory=list)
     pending_pre: Any = None
@@ -79,31 +80,56 @@ def _build_prompt_ids(ep: LiveEpisode, enc) -> list[int]:
     if is_harness_g(mask=ep.harness_mask, component_ids=ep.component_id):
         from trim.eval.harness_g_env import wm_text
         from trim.eval.harness_g_runtime import build_prompt_ids as build_g_prompt_ids
+        from trim.eval.harmony_runtime import fit_prompt_ids_to_context
 
-        return build_g_prompt_ids(
-            query,
-            wm_text(ep.st),
-            enc,
-            harness_mask=ep.harness_mask,
-            actions_obs=ep.acts,
+        acts = list(ep.acts)
+        max_model_len = int(getattr(enc, "max_model_len", 8192) or 8192) if enc is not None else 8192
+        max_new = int(getattr(enc, "max_new_tokens", 2048) or 2048) if enc is not None else 2048
+        budget = max(1, max_model_len - max(1, max_new))
+        ids = build_g_prompt_ids(
+            query, wm_text(ep.st), enc, harness_mask=ep.harness_mask, actions_obs=acts
         )
+        while len(ids) > budget and len(acts) > 1:
+            acts = acts[1:]
+            ids = build_g_prompt_ids(
+                query, wm_text(ep.st), enc, harness_mask=ep.harness_mask, actions_obs=acts
+            )
+        if len(ids) > budget:
+            ids = fit_prompt_ids_to_context(ids, max_model_len=max_model_len, max_new_tokens=max_new)
+        return ids
     wm = wm_text_for_train_state(ep.st) if is_upstream_state(ep.st) else None
     if wm is None:
         from trim.eval.local_search_env import wm_text
 
         wm = wm_text(ep.st)
-    if enc is not None and hasattr(enc, "build_first_turn_prompt_ids"):
-        if not ep.acts:
-            return enc.build_first_turn_prompt_ids(query)
-        return enc.build_continuation_prompt_ids(query, actions_obs=ep.acts, wm_text=wm)
-    if not ep.acts:
-        return build_first_turn_prompt_ids(query, enc=enc)
-    return build_continuation_prompt_ids(
-        query,
-        actions_obs=ep.acts,
-        wm_text=wm,
-        enc=enc,
-    )
+    acts = list(ep.acts)
+    max_model_len = int(getattr(enc, "max_model_len", 8192) or 8192) if enc is not None else 8192
+    max_new = int(getattr(enc, "max_new_tokens", 2048) or 2048) if enc is not None else 2048
+
+    def _encode(use_acts: list) -> list[int]:
+        if enc is not None and hasattr(enc, "build_first_turn_prompt_ids"):
+            if not use_acts:
+                return list(enc.build_first_turn_prompt_ids(query))
+            return list(enc.build_continuation_prompt_ids(query, actions_obs=use_acts, wm_text=wm))
+        if not use_acts:
+            return build_first_turn_prompt_ids(query, enc=enc)
+        return build_continuation_prompt_ids(
+            query,
+            actions_obs=use_acts,
+            wm_text=wm,
+            enc=enc,
+        )
+
+    ids = _encode(acts)
+    budget = max(1, max_model_len - max(1, max_new))
+    while len(ids) > budget and len(acts) > 1:
+        acts = acts[1:]
+        ids = _encode(acts)
+    if len(ids) > budget:
+        from trim.eval.harmony_runtime import fit_prompt_ids_to_context
+
+        ids = fit_prompt_ids_to_context(ids, max_model_len=max_model_len, max_new_tokens=max_new)
+    return ids
 
 
 def _apply_generation(
@@ -117,7 +143,11 @@ def _apply_generation(
     from trim.eval.harmony_runtime import decode_ids, make_action, make_observation
     from trim.adapters.harness_profiles import is_harness_g
     from trim.training.parse_rollout_action import parse_generated_action
-    from trim.training.four_cell_runtime import snap_from_state
+    from trim.training.four_cell_runtime import (
+        encode_aligned_teacher_prompt,
+        freeze_train_state,
+        snap_from_state,
+    )
     from trim.training.upstream_train_env import apply_train_action, is_upstream_state
 
     if is_harness_g(mask=ep.harness_mask, component_ids=ep.component_id):
@@ -126,6 +156,21 @@ def _apply_generation(
         from trim.eval.local_search_env import execute_tool
 
     qid = str(ep.row["query_id"])
+    frozen_st = freeze_train_state(ep.st)
+    frozen_acts = list(ep.acts)
+    teacher_prompt_ids: list[int] = []
+    teacher_snapshot_hash = ""
+    if enc is not None and not ep.teacher_mode:
+        teacher_prompt_ids, _ = encode_aligned_teacher_prompt(
+            enc,
+            str(ep.row["query"]),
+            frozen_st=frozen_st,
+            frozen_acts=frozen_acts,
+            component_id=ep.component_id,
+        )
+        teacher_snapshot_hash = snap_from_state(
+            qid, frozen_st, ep.component_id, harness_mask=ep.harness_mask
+        ).content_hash()
     action, valid = parse_generated_action(
         gen.text,
         gen.token_ids,
@@ -138,6 +183,7 @@ def _apply_generation(
     ep.valids.append(valid)
     ep.actions.append(action)
     ep.names.append(str(action.get("name")))
+    _ok = False
     with timed_section(ep.timing, "harness"):
         try:
             if is_upstream_state(ep.st):
@@ -217,26 +263,7 @@ def _apply_generation(
             except Exception:
                 prompt_text = ""
         prompt_text = prompt_text or ep.pending_prefix
-        teacher_prompt_ids: list[int] = []
-        if enc is not None and not ep.teacher_mode:
-            from trim.training.four_cell_runtime import teacher_mask_for
-            from trim.training.opd_prompt_encoding import encode_teacher_rollout_style_prompt
-            from trim.training.upstream_train_env import is_upstream_state, wm_text_for_train_state
-
-            teacher_st = dict(ep.st)
-            teacher_st["harness_mask"] = teacher_mask_for(ep.component_id)
-            if is_upstream_state(teacher_st):
-                wm = wm_text_for_train_state(teacher_st)
-            else:
-                from trim.eval.local_search_env import wm_text
-
-                wm = wm_text(teacher_st)
-            teacher_prompt_ids, _ = encode_teacher_rollout_style_prompt(
-                enc,
-                str(ep.row["query"]),
-                acts=ep.acts,
-                wm_text=wm,
-            )
+        ep.exec_oks.append(bool(_ok))
         truncated = str(getattr(gen, "finish_reason", "") or "") == "length"
         post = snap_from_state(qid, ep.st, ep.component_id, harness_mask=ep.harness_mask)
     ep.points.append(
@@ -255,8 +282,12 @@ def _apply_generation(
             post_action_snapshot=post,
             reward=None,
             structurally_valid=valid,
+            executed_ok=bool(_ok),
             student_prompt_token_ids=list(effective_prompt_ids),
             teacher_prompt_token_ids=list(teacher_prompt_ids),
+            teacher_snapshot_hash=teacher_snapshot_hash,
+            teacher_decision_turn=len(ep.points),
+            history_end_turn=len(frozen_acts),
         )
     )
     rec = cispo_row_from_generation(
@@ -445,11 +476,20 @@ def _groups_from_episodes(
         query = str(row["query"])
         episode_stats: list[dict[str, Any]] = []
         for ep in members:
-            reward = terminal_reward(
-                ep.st, query=query, gold_ids=gold_ids, valids=ep.valids, actions=ep.actions
+            from trim.training.four_cell_runtime import terminal_reward_breakdown
+
+            parts = terminal_reward_breakdown(
+                ep.st,
+                query=query,
+                gold_ids=gold_ids,
+                valids=ep.valids,
+                actions=ep.actions,
+                exec_oks=ep.exec_oks,
             )
+            reward = float(parts["total"])
             for point in ep.points:
                 point.reward = reward
+                point.reward_parts = dict(parts)
             for rec in ep.rl_rows:
                 rec["reward"] = reward
             points.extend(ep.points)
@@ -475,6 +515,10 @@ def _groups_from_episodes(
                     "n_tool_calls": int(ep.st.get("n_tool_calls") or 0),
                     "n_search_calls": int(ep.st.get("n_search_calls") or 0),
                     "search_query": quality.get("search_query") or query,
+                    "reward_parts": dict(parts),
+                    "task_recall": float(parts.get("task_recall") or 0.0),
+                    "n_exec_ok": int(parts.get("n_exec_ok") or 0),
+                    "n_structurally_valid": sum(1 for v in ep.valids if v),
                 }
             )
             episode_stats.append(quality)

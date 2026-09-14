@@ -86,6 +86,74 @@ def load_optimizer_bundle(backend: Any, path: Path) -> bool:
     return True
 
 
+def load_rng_state(path: Path) -> bool:
+    if not path.is_file():
+        return False
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    py = payload.get("python")
+    if isinstance(py, list) and len(py) >= 3:
+        random.setstate((py[0], tuple(py[1]), py[2]))
+    torch_state = payload.get("torch")
+    if torch_state:
+        torch.random.set_rng_state(torch.tensor(torch_state, dtype=torch.uint8))
+    cuda_states = payload.get("cuda") or []
+    if torch.cuda.is_available():
+        for i, state in enumerate(cuda_states):
+            if i < torch.cuda.device_count() and state:
+                torch.cuda.set_rng_state(torch.tensor(state, dtype=torch.uint8), i)
+    return True
+
+
+def training_output_occupied(out: Path) -> bool:
+    if (out / "TRAIN_SUMMARY.json").is_file() or (out / "RUN_COMPLETE").is_file():
+        return True
+    ckpt = out / "checkpoints"
+    if ckpt.is_dir() and any(ckpt.iterdir()):
+        return True
+    if (out / "optimizer_latest.pt").is_file():
+        return True
+    return False
+
+
+def find_latest_checkpoint(cell_ckpt_dir: Path) -> Path | None:
+    latest = cell_ckpt_dir / "latest"
+    if latest.exists() and (latest / "STEP_COMPLETE").is_file():
+        return latest.resolve() if latest.is_symlink() else latest
+    if not cell_ckpt_dir.is_dir():
+        return None
+    steps = sorted(
+        [p for p in cell_ckpt_dir.iterdir() if p.is_dir() and p.name.startswith("step_")],
+        key=lambda p: p.name,
+    )
+    for path in reversed(steps):
+        if (path / "STEP_COMPLETE").is_file():
+            return path
+    return None
+
+
+def load_training_resume(cell_ckpt_dir: Path) -> dict[str, Any] | None:
+    ckpt = find_latest_checkpoint(cell_ckpt_dir)
+    if ckpt is None:
+        return None
+    manifest_path = ckpt / "STEP_MANIFEST.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.is_file() else {}
+    sampler_path = ckpt / "sampler.json"
+    sampler = json.loads(sampler_path.read_text(encoding="utf-8")) if sampler_path.is_file() else {}
+    return {
+        "checkpoint_dir": ckpt,
+        "adapter_dir": ckpt / "adapter",
+        "optimizer_path": ckpt / "optimizer.pt",
+        "rng_path": ckpt / "rng.json",
+        "sampler_state": sampler,
+        "manifest": manifest,
+        "step": int(manifest.get("step") or sampler.get("global_optimizer_step") or 0),
+        "source_policy_version": str(manifest.get("source_policy_version") or ""),
+        "updated_policy_version": str(
+            manifest.get("updated_policy_version") or manifest.get("policy_version") or "v0"
+        ),
+    }
+
+
 def save_rng_state(path: Path) -> None:
     payload = {
         "python": random.getstate(),

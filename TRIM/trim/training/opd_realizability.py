@@ -6,12 +6,15 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
+from trim.eval.h1_component_runtime import MAX_CURATED_DOCS
 from trim.state.snapshot import EnvironmentSnapshot, capture_snapshot
 from trim.training.action_codec import TEACHER_ONLY_TOOLS, canonicalize_action
 from trim.training.tool_mask import (
     legal_tool_names,
     validate_action_arguments,
 )
+
+REJECT_CURATED_CAPACITY = "CURATED_CAPACITY_EXCEEDED"
 
 
 @dataclass(frozen=True)
@@ -152,6 +155,110 @@ def decision_state_signature(snapshot: EnvironmentSnapshot) -> DecisionStateSign
     )
 
 
+def apply_curate_with_capacity(
+    curated_ids: list[str],
+    *,
+    add_ids: list[str],
+    remove_ids: list[str],
+    max_docs: int = MAX_CURATED_DOCS,
+) -> tuple[list[str], list[str]]:
+    """Apply curate add/remove with the real student capacity rule.
+
+    Removes first, then adds until the cap. Add-only overflow is dropped.
+    """
+    curated = [str(x) for x in curated_ids if str(x)]
+    remove = {str(x) for x in remove_ids if str(x)}
+    curated = [x for x in curated if x not in remove]
+    dropped: list[str] = []
+    seen = set(curated)
+    for raw in add_ids:
+        did = str(raw)
+        if not did or did in seen:
+            continue
+        if len(curated) < int(max_docs):
+            curated.append(did)
+            seen.add(did)
+        else:
+            dropped.append(did)
+    return curated, dropped
+
+
+def expected_curated_after(
+    curated_ids: list[str],
+    *,
+    add_ids: list[str],
+    remove_ids: list[str],
+) -> list[str]:
+    after = [str(x) for x in curated_ids if str(x) and str(x) not in set(remove_ids)]
+    for did in add_ids:
+        key = str(did)
+        if key and key not in after:
+            after.append(key)
+    return after
+
+
+def curated_capacity_holds(
+    snapshot: EnvironmentSnapshot | Mapping[str, Any],
+    arguments: Mapping[str, Any],
+    *,
+    max_docs: int = MAX_CURATED_DOCS,
+) -> tuple[bool, str | None, list[str]]:
+    before = curated_ids_of(snapshot)
+    add_ids = _as_id_list(arguments.get("add_ids"))
+    remove_ids = _as_id_list(arguments.get("remove_ids"))
+    actual, dropped = apply_curate_with_capacity(
+        before, add_ids=add_ids, remove_ids=remove_ids, max_docs=max_docs
+    )
+    expected = expected_curated_after(before, add_ids=add_ids, remove_ids=remove_ids)
+    if dropped or set(actual) != set(expected):
+        return False, REJECT_CURATED_CAPACITY, actual
+    return True, None, actual
+
+
+def apply_curate_via_real_env(
+    snapshot: EnvironmentSnapshot,
+    action: Mapping[str, Any],
+) -> tuple[list[str], list[str], str]:
+    """Replay curate on a forked local env copy and return (after, dropped, obs)."""
+    from trim.eval.h1_component_runtime import curate_with_mask
+
+    canon = canonicalize_action(action)
+    wm = snapshot.working_memory
+    curated_ids = curated_ids_of(snapshot)
+    pool = dict(wm.get("pool") or {})
+    store = dict(wm.get("doc_store") or {})
+    curated: dict[str, Any] = {}
+    for did in curated_ids:
+        curated[did] = pool.get(did) or store.get(did) or {"id": did, "text": ""}
+        if did not in store:
+            store[did] = curated[did]
+        if did not in pool:
+            pool[did] = curated[did]
+    for did in _as_id_list(canon["arguments"].get("add_ids")):
+        if did not in store:
+            rec = pool.get(did) or {"id": did, "text": ""}
+            store[did] = rec
+            pool[did] = rec
+    st = {
+        "curated": curated,
+        "pool": pool,
+        "importance": dict(wm.get("curated_importance") or wm.get("importance") or {}),
+        "harness_mask": dict(snapshot.harness_mask),
+        "doc_store": store,
+        "runtime_effects": {},
+    }
+    obs = curate_with_mask(
+        st,
+        add_ids=_as_id_list(canon["arguments"].get("add_ids")),
+        remove_ids=_as_id_list(canon["arguments"].get("remove_ids")),
+        importance=None,
+        store=store,
+    )
+    after = [str(x) for x in (st.get("curated") or {})]
+    dropped = [str(x) for x in _as_id_list(canon["arguments"].get("add_ids")) if str(x) not in set(after)]
+    return after, dropped, str(obs)
+
+
 def curated_set_delta(
     before: EnvironmentSnapshot | Mapping[str, Any],
     after: EnvironmentSnapshot | Mapping[str, Any],
@@ -231,6 +338,13 @@ def check_action_realizability(
         if not set(str(x) for x in teacher_needed).issubset(set(str(x) for x in student_search) | accessible):
             transition_ok = False
             reasons.append("TRANSITION_NOT_REPRODUCIBLE")
+    if canon["name"] == "curate":
+        cap_ok, cap_reason, _after = curated_capacity_holds(
+            student_snapshot, canon["arguments"]
+        )
+        if not cap_ok:
+            transition_ok = False
+            reasons.append(cap_reason or REJECT_CURATED_CAPACITY)
 
     return RealizabilityReport(
         legal_tool=legal_tool,
@@ -257,10 +371,13 @@ def apply_student_action(
     name = canon["name"]
     args = canon["arguments"]
     if name == "curate":
-        curated = set(curated_ids_of(snapshot))
-        curated |= set(_as_id_list(args.get("add_ids")))
-        curated -= set(_as_id_list(args.get("remove_ids")))
-        wm["curated_ids"] = sorted(curated)
+        after, dropped = apply_curate_with_capacity(
+            curated_ids_of(snapshot),
+            add_ids=_as_id_list(args.get("add_ids")),
+            remove_ids=_as_id_list(args.get("remove_ids")),
+        )
+        wm["curated_ids"] = list(after)
+        wm["capacity_dropped"] = list(dropped)
         if "importance" in args:
             raise ValueError("student shadow must not store importance arguments")
     elif name in {"review_docs", "read_document"}:

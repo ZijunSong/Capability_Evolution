@@ -488,6 +488,11 @@ def add_common_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     )
     parser.add_argument("--out", type=Path, default=None, help="Output directory.")
     parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume adapter/optimizer/sampler/RNG/step from the latest checkpoint in --out.",
+    )
+    parser.add_argument(
         "--base-model",
         default="",
         help="Optional override of --model_name. Prefer passing the checkpoint path as --model_name.",

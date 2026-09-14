@@ -76,7 +76,7 @@ class _EmptyLive:
         return []
 
 
-def test_execute_tool_live_empty_falls_back_to_seeded_store():
+def test_execute_tool_live_empty_does_not_use_seeded_store():
     st = new_state(
         "capital of France",
         {
@@ -92,8 +92,8 @@ def test_execute_tool_live_empty_falls_back_to_seeded_store():
         search_k=10,
     )
     assert ok is True
-    assert "d1" in st["pool"]
-    assert "Paris" in obs
+    assert "d1" not in st["pool"]
+    assert "Paris" not in obs
 
 
 def test_wm_text_shows_recent_pool_and_older_ids():

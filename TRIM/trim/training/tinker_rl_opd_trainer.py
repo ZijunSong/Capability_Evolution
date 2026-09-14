@@ -177,6 +177,14 @@ def sample_decision_points(
     return picked
 
 
+def _group_events_by_component(events: Sequence[Any]) -> dict[str, list[Any]]:
+    groups: dict[str, list[Any]] = {}
+    for event in events:
+        cid = str(getattr(event, "component_id", None) or "")
+        groups.setdefault(cid, []).append(event)
+    return groups
+
+
 def project_on_policy_decisions(
     points: Sequence[StudentDecisionPoint],
     *,
@@ -184,28 +192,48 @@ def project_on_policy_decisions(
     component_id: str,
     projector: StudentActionSpaceProjector | None = None,
 ) -> tuple[list[ProjectedTrainingStep], ProjectionAudit, dict[str, Any]]:
-    """Teacher is a side branch: events only. RL snapshots are not mutated."""
+    """Teacher is a side branch: events only. RL snapshots are not mutated.
+
+    Independent component branches are projected separately against the same
+    student snapshot. Same-state candidates share equal weight.
+    """
     proj = projector or StudentActionSpaceProjector()
     audit = ProjectionAudit()
     steps: list[ProjectedTrainingStep] = []
     same_tool_hits = 0
     same_canonical_hits = 0
-    same_token_hits = 0
     overlap_total = 0
     for point in points:
         events = list(teacher_event_fn(point) or [])
-        projection, mat = project_and_materialize(
-            student_snapshot=point.pre_action_snapshot,
-            teacher_events=events,
-            student_mask=point.pre_action_snapshot.harness_mask,
-            component_id=component_id,
-            projector=proj,
-            audit=audit,
-        )
-        del projection
-        for step in mat:
+        grouped = _group_events_by_component(events)
+        if not grouped:
+            grouped = {component_id: []}
+        point_steps: list[ProjectedTrainingStep] = []
+        for cid, branch_events in grouped.items():
+            use_cid = cid or component_id
+            _projection, mat = project_and_materialize(
+                student_snapshot=point.pre_action_snapshot,
+                teacher_events=branch_events,
+                student_mask=point.pre_action_snapshot.harness_mask,
+                component_id=use_cid,
+                projector=proj,
+                audit=audit,
+            )
+            point_steps.extend(mat)
+        n_keep = len(point_steps)
+        for step in point_steps:
+            if n_keep > 1:
+                step.weight = float(step.weight) / n_keep
             step.metadata["source_policy_version"] = point.policy_version
             step.metadata["decision_point_id"] = point.decision_point_id
+            step.metadata["teacher_snapshot_hash"] = getattr(point, "teacher_snapshot_hash", "") or ""
+            step.metadata["teacher_decision_turn"] = getattr(point, "teacher_decision_turn", None)
+            step.metadata["history_end_turn"] = getattr(point, "history_end_turn", None)
+            step.metadata["student_pre_snapshot_hash"] = point.pre_action_snapshot_hash
+            step.metadata["n_same_state_candidates"] = n_keep
+            step.metadata["selection_rule"] = (
+                "independent_branch_equal_weight" if n_keep > 1 else "single_triggered_branch"
+            )
             if point.student_prompt_token_ids:
                 step.metadata["student_prompt_token_ids"] = list(point.student_prompt_token_ids)
             if point.teacher_prompt_token_ids:
@@ -226,16 +254,25 @@ def project_on_policy_decisions(
                         same_canonical_hits += 1
                 except Exception:
                     pass
-                if list(point.student_action_tokens) == list(step.metadata.get("projected_action_token_ids") or []):
-                    same_token_hits += 1
-        steps.extend(mat)
+        steps.extend(point_steps)
     finalize_audit(audit)
     extras = {
         "rl_opd_same_tool_rate": (same_tool_hits / overlap_total) if overlap_total else 0.0,
         "rl_opd_same_canonical_action_rate": (same_canonical_hits / overlap_total) if overlap_total else 0.0,
-        "rl_opd_same_supervised_token_rate": (same_token_hits / overlap_total) if overlap_total else 0.0,
-        "rl_opd_exact_target_overlap_rate": (same_tool_hits / overlap_total) if overlap_total else 0.0,
+        "rl_opd_same_supervised_token_rate": 0.0,
+        "rl_opd_exact_target_overlap_rate": 0.0,
         "n_sampled_decision_points": len(points),
+        "component_stats": dict(audit.component_stats),
+        "n_skip": audit.n_skip,
+        "n_illegal": audit.n_illegal,
+        "n_no_anchor": audit.n_no_anchor,
+        "n_capacity_fail": audit.n_capacity_fail,
+        "n_materialize": audit.n_materialize,
+        "uncovered_components": [
+            cid
+            for cid, stats in audit.component_stats.items()
+            if stats.get("align_count", 0) == 0 and stats.get("trigger_count", 0) > 0
+        ],
     }
     return steps, audit, extras
 
@@ -340,15 +377,33 @@ def prepare_hybrid_batch(
                     opd_loss=opd_loss,
                 )
             skipped_teacher = False
+            token_hits = 0
+            token_total = 0
+            for datum in opd_datums:
+                sampled_ids = list((datum.metadata or {}).get("sampled_action_token_ids") or [])
+                projected_ids = list((datum.metadata or {}).get("projected_action_token_ids") or [])
+                if sampled_ids and projected_ids:
+                    token_total += 1
+                    if sampled_ids == projected_ids:
+                        token_hits += 1
+            token_rate = (token_hits / token_total) if token_total else 0.0
+            extras["rl_opd_same_supervised_token_rate"] = token_rate
+            extras["rl_opd_exact_target_overlap_rate"] = token_rate
             projection_stats = {
                 "skipped_teacher": False,
                 "projector_used": True,
                 "sampled_action_opd": False,
                 "projection_coverage": audit.projection_coverage,
                 "reject_rate": audit.n_reject / max(1, audit.n_teacher_segments),
+                "skip_rate": audit.n_skip / max(1, audit.n_teacher_segments),
                 "n_direct": audit.n_direct,
                 "n_macro": audit.n_macro,
                 "n_reject": audit.n_reject,
+                "n_skip": audit.n_skip,
+                "n_illegal": audit.n_illegal,
+                "n_no_anchor": audit.n_no_anchor,
+                "n_capacity_fail": audit.n_capacity_fail,
+                "n_materialize": audit.n_materialize,
                 "n_projected_training_steps": audit.n_projected_training_steps,
                 **extras,
             }
