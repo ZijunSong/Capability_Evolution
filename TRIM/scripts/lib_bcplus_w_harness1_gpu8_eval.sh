@@ -1,5 +1,5 @@
 # Shared helpers for bcplus_full Harness-1 upstream_api eval (8×GPU layout).
-# Source from run_bcplus_w_harness1_{qwen,gptoss}_{zero,all}_gpu8_eval.sh — do not execute directly.
+# Source from run_bcplus_w_harness1_{qwen,gptoss,gemma}_{zero,all}_gpu8_eval.sh — do not execute directly.
 
 lib_bcplus_gpu8_init() {
   : "${SCRIPT_DIR:?SCRIPT_DIR must be set before sourcing lib}"
@@ -22,6 +22,8 @@ lib_bcplus_gpu8_init() {
   GPU="${GPU:-7}"
   TP="${TP:-64}"
   ZERO_ACTOR_PORT="${ZERO_ACTOR_PORT:-8040}"
+  ZERO_ACTOR_GPUS="${ZERO_ACTOR_GPUS:-${GPU}}"
+  ZERO_ACTOR_PORTS="${ZERO_ACTOR_PORTS:-${ZERO_ACTOR_PORT}}"
 
   ALL_ACTOR_GPUS="${ALL_ACTOR_GPUS:-0,1,2,3,4,5}"
   ALL_ACTOR_PORTS="${ALL_ACTOR_PORTS:-8042,8044,8046,8048,8052,8054}"
@@ -216,13 +218,26 @@ start_vllm_bg() {
 start_zero_stack() {
   stop_all_actors
   stop_verify
-  local extra pid
-  extra="$(vllm_extra_for_model "${MODEL_SLUG}")"
-  pid="$(start_vllm_bg "${GPU}" "${ZERO_ACTOR_PORT}" "${MODEL_PATH}" "${API_MODEL}" \
-    "${extra}" "${REL_LOGS}/actor_${MODEL_SLUG}_zero.log")"
-  ACTOR_PIDS=("$(normalize_pid "${pid}")")
+  local actor_gpus=() actor_ports=() extra pid i gpu port log_path
+  csv_to_array "${ZERO_ACTOR_GPUS}" actor_gpus
+  csv_to_array "${ZERO_ACTOR_PORTS}" actor_ports
+  ((${#actor_gpus[@]} == ${#actor_ports[@]})) || { log "ZERO_ACTOR_GPUS count != ZERO_ACTOR_PORTS"; exit 1; }
+  extra="$(vllm_extra_for_model "${MODEL_SLUG}") ${VLLM_EXTRA:-}"
+  ACTOR_PIDS=()
+  for i in "${!actor_gpus[@]}"; do
+    gpu="${actor_gpus[$i]}"
+    port="${actor_ports[$i]}"
+    if ((${#actor_gpus[@]} > 1)); then
+      log_path="${REL_LOGS}/actor_${MODEL_SLUG}_zero_gpu${gpu}.log"
+    else
+      log_path="${REL_LOGS}/actor_${MODEL_SLUG}_zero.log"
+    fi
+    pid="$(start_vllm_bg "${gpu}" "${port}" "${MODEL_PATH}" "${API_MODEL}" \
+      "${extra}" "${log_path}")"
+    ACTOR_PIDS+=("$(normalize_pid "${pid}")")
+  done
   if model_needs_smoke_test "${MODEL_SLUG}"; then
-    smoke_test_tool_call "${ZERO_ACTOR_PORT}" "${API_MODEL}"
+    smoke_test_tool_call "${actor_ports[0]}" "${API_MODEL}"
   fi
 }
 
@@ -235,7 +250,7 @@ start_all_stack() {
   ((${#actor_gpus[@]} == ALL_TP)) || { log "ALL_ACTOR_GPUS count != ALL_TP"; exit 1; }
   ((${#actor_ports[@]} == ALL_TP)) || { log "ALL_ACTOR_PORTS count != ALL_TP"; exit 1; }
   local extra pid i gpu port
-  extra="$(vllm_extra_for_model "${MODEL_SLUG}")"
+  extra="$(vllm_extra_for_model "${MODEL_SLUG}") ${VLLM_EXTRA:-}"
   ACTOR_PIDS=()
   for i in "${!actor_gpus[@]}"; do
     gpu="${actor_gpus[$i]}"
@@ -297,7 +312,7 @@ run_eval_cell() {
     --offline \
     --max-turns 40 \
     --max-new-tokens 2048 \
-    --temperature 1.0 \
+    --temperature "${TEMPERATURE:-1.0}" \
     --tp "${tp}" \
     --eval-stagger-s "${WORKER_STAGGER}" \
     --component "${COMPONENT}" \
@@ -365,16 +380,19 @@ lib_bcplus_gpu8_run_zero() {
   assert_local_retrieval_ready
   ensure_full_corpus
 
-  local actor_url="http://127.0.0.1:${ZERO_ACTOR_PORT}/v1"
-  log "RUN_ID=${RUN_ID} model=${MODEL_SLUG} component=zero gpu=${GPU} tp=${TP} actor_port=${ZERO_ACTOR_PORT}"
+  local actor_ports=() actor_urls out_suffix
+  csv_to_array "${ZERO_ACTOR_PORTS}" actor_ports
+  actor_urls="$(join_urls "${actor_ports[@]}")"
+  out_suffix="gpu${ZERO_ACTOR_GPUS//,/}"
+  log "RUN_ID=${RUN_ID} model=${MODEL_SLUG} component=zero actors=${ZERO_ACTOR_GPUS} ports=${ZERO_ACTOR_PORTS} tp=${TP}"
 
   start_zero_stack
-  run_eval_cell "${actor_url}" "${TP}" "gpu${GPU}"
+  run_eval_cell "${actor_urls}" "${TP}" "${out_suffix}"
   lib_bcplus_gpu8_cleanup
   trap - EXIT
 
-  write_cell_manifest "${actor_url}" "gpu${GPU}" "${TP}"
-  log "finished zero; output ${REL_OUT}/eval_h1_${BENCHMARK}_${MODEL_SLUG}_zero_gpu${GPU}_${RUN_ID}"
+  write_cell_manifest "${actor_urls}" "${out_suffix}" "${TP}"
+  log "finished zero; output ${REL_OUT}/eval_h1_${BENCHMARK}_${MODEL_SLUG}_zero_${out_suffix}_${RUN_ID}"
 }
 
 lib_bcplus_gpu8_run_all() {

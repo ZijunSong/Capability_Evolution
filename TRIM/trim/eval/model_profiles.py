@@ -12,6 +12,7 @@ import argparse
 import re
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Sequence
 
 FAMILY_GPTOSS = "gpt-oss"
@@ -48,6 +49,7 @@ class ModelProfile:
     moe_backend: str | None = None
     needs_tool_smoke_test: bool = False
     strict_qwen_prompt_ids: bool = False
+    extra_vllm_args: tuple[str, ...] = ()
     label: str = ""
 
     @property
@@ -102,11 +104,22 @@ GLM45_PROFILE = ModelProfile(
     label="GLM-4",
 )
 
+_GEMMA3_PYTHONIC_CHAT_TEMPLATE = str(
+    Path(__file__).resolve().parent / "templates" / "tool_chat_template_gemma3_pythonic.jinja"
+)
+
 GEMMA_PROFILE = ModelProfile(
     family=FAMILY_HF_CHAT,
     stack=STACK_HF_CHAT,
     tool_call_parser="pythonic",
     needs_tool_smoke_test=True,
+    extra_vllm_args=(
+        "--language-model-only",
+        "--generation-config",
+        "vllm",
+        "--chat-template",
+        _GEMMA3_PYTHONIC_CHAT_TEMPLATE,
+    ),
     label="Gemma",
 )
 
@@ -210,6 +223,8 @@ def vllm_extra_args(
         args.extend(["--reasoning-parser", profile.reasoning_parser])
     if profile.moe_backend:
         args.extend(["--moe-backend", profile.moe_backend])
+    if profile.extra_vllm_args:
+        args.extend(profile.extra_vllm_args)
     return args
 
 

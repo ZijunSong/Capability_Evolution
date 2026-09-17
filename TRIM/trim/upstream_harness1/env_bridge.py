@@ -240,6 +240,15 @@ QWEN_FORMAT_RETRY_PROMPT = (
     "Put any reasoning in the assistant message, then call a tool."
 )
 
+# Gemma-3 pythonic parser: natural language must not be treated as a final answer.
+GEMMA_FORMAT_RETRY_PROMPT = (
+    "Your previous response was not a structured tool call. "
+    "Respond with ONLY a python list of function calls, for example "
+    "[search_corpus(query=\"your query\"), curate(add_ids=[\"123_0\"], importance={\"123_0\": \"fair\"})]. "
+    "Separate keyword arguments with commas. "
+    "Do not write natural language, markdown, or plans."
+)
+
 # GPT-OSS / Harness-1 Harmony-native retry: allow analysis channel, forbid API wrapper talk.
 GPT_OSS_FORMAT_RETRY_PROMPT = (
     "Continue the current retrieval task. Use one of the provided functions with valid JSON "
@@ -289,7 +298,12 @@ def format_retry_prompt(
     error_hint: str | None = None,
     failed_attempt: Mapping[str, Any] | None = None,
 ) -> str:
-    base = GPT_OSS_FORMAT_RETRY_PROMPT if is_harmony_chat_model(model) else QWEN_FORMAT_RETRY_PROMPT
+    if is_harmony_chat_model(model):
+        base = GPT_OSS_FORMAT_RETRY_PROMPT
+    elif model and re.search(r"gemma", str(model), re.I):
+        base = GEMMA_FORMAT_RETRY_PROMPT
+    else:
+        base = QWEN_FORMAT_RETRY_PROMPT
     parts = [base]
     if failed_attempt:
         parts.append(_format_failed_attempt_context(failed_attempt))

@@ -12,11 +12,11 @@ from trim.eval.harness1_metrics import f1_score
 from trim.upstream_harness1.api_adapter import (
     ApiError,
     ChatCompletionsClient,
-    ConfigError,
     QueryTimeoutError,
     ServerParseError,
     TransportError,
     parse_chat_completion,
+    rewrite_premature_user_text,
 )
 from trim.upstream_harness1.model_serve import ServedModelIdentity
 from trim.upstream_harness1.fix_manifest import fix_manifest
@@ -450,8 +450,6 @@ async def run_one_query_api(
                 deadline=deadline,
             )
             n_generation_attempts += 1
-        except ConfigError:
-            raise
         except ApiError as exc:
             api_error = exc
             n_generation_attempts += 1
@@ -489,7 +487,10 @@ async def run_one_query_api(
                 last_step_metrics.setdefault("query_timeout", 1.0)
         else:
             assert response is not None
-            parsed = parse_chat_completion(response)
+            parsed = rewrite_premature_user_text(
+                parse_chat_completion(response),
+                env_turn=int(getattr(env, "_current_turn", 0) or 0),
+            )
             usage = response.get("usage") or {}
             turn_rec.update(
                 {
