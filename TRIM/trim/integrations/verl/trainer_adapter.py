@@ -103,8 +103,12 @@ def run_verl_fsdp2_train(args: Any) -> dict[str, Any]:
     barrier()
     out.mkdir(parents=True, exist_ok=True)
 
-    train_rows, eval_rows, pool_meta = resolve_queries(args)
-    del eval_rows
+    # resolve_queries returns 4 values (train_rows, eval_rows, pool_meta,
+    # frozen_points) since 724d9fa; verl/FSDP2 on-policy RL path does not use
+    # eval_rows or frozen_points. Match the 4-tuple unpack used by the other
+    # callers (four_cell_runtime.py:1813/2041) to avoid ValueError.
+    train_rows, eval_rows, pool_meta, frozen_points = resolve_queries(args)
+    del eval_rows, frozen_points
     train_searcher = open_train_retrieval(args, train_rows)
     enc = load_model_encoding(str(args.base_model or args.model_name))
     vllm_base = str(args.base_model or args.model_name)
