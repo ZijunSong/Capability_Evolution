@@ -10,15 +10,17 @@ from trim.training.tinker_opd_datum import (
 )
 
 
-def _step(prompt: str, target: str, *, confidence: float = 1.0) -> ProjectedTrainingStep:
+def _step(prompt: str, target: str, *, confidence: float = 1.0, weight: float | None = None) -> ProjectedTrainingStep:
+    enc = [1] * len(prompt)
     return ProjectedTrainingStep(
         prompt_reduced=prompt,
         target_text=target,
         target_action={"name": "curate", "arguments": {}},
         token_mask=None,
-        weight=confidence,
+        weight=confidence if weight is None else weight,
         projection_kind="direct",
         projection_confidence=confidence,
+        metadata={"student_prompt_token_ids": enc},
     )
 
 

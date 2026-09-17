@@ -36,8 +36,16 @@ MAX_MODEL_LEN="${MAX_MODEL_LEN:-32768}"
 MAX_TURNS="${MAX_TURNS:-40}"
 MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-2048}"
 TEMPERATURE="${TEMPERATURE:-1.0}"
+REASONING_EFFORT="${REASONING_EFFORT:-low}"
 SEARCH_K="${SEARCH_K:-10}"
 EVAL_STAGGER="${EVAL_STAGGER:-8}"
+DEFAULT_GRAPH_INDEX_PATH="${TRIM_ROOT}/../SCOPE/external/BrowseComp-Plus/indexes/harness_g_corpus_graph.pkl"
+GRAPH_INDEX_PATH="${GRAPH_INDEX_PATH:-${DEFAULT_GRAPH_INDEX_PATH}}"
+: "${GRAPH_INDEX_PATH:?ERROR: GRAPH_INDEX_PATH must be set for official Harness-G evaluation}"
+if [[ ! -f "${GRAPH_INDEX_PATH}" && ! -d "${GRAPH_INDEX_PATH}" ]]; then
+  echo "ERROR: graph index does not exist: ${GRAPH_INDEX_PATH}" >&2
+  exit 2
+fi
 BETWEEN_S="${BETWEEN_S:-20}"
 
 MODEL_PATHS=(
@@ -135,7 +143,9 @@ run_eval() {
     --max-turns "${MAX_TURNS}" \
     --max-new-tokens "${MAX_NEW_TOKENS}" \
     --temperature "${TEMPERATURE}" \
+    --reasoning-effort "${REASONING_EFFORT}" \
     --search-k "${SEARCH_K}" \
+    --graph-index-path "${GRAPH_INDEX_PATH}" \
     --eval-stagger-s "${EVAL_STAGGER}" \
     --rollout-backend vllm \
     --out "${out}" \
@@ -162,6 +172,15 @@ capture_git_launch_record() {
     echo "started_at=$(date -Is)"
     echo "git_commit=${GIT_COMMIT}"
     echo "git_dirty_files=${GIT_DIRTY}"
+    echo "eval_gpus=${EVAL_GPUS}"
+    echo "eval_replicas=${TP}"
+    echo "reasoning_effort=${REASONING_EFFORT}"
+    echo "graph_index_path=${GRAPH_INDEX_PATH:-}"
+    echo "max_turns=${MAX_TURNS}"
+    echo "max_new_tokens=${MAX_NEW_TOKENS}"
+    echo "temperature=${TEMPERATURE}"
+    echo "gpu_util=${GPU_UTIL}"
+    echo "note=seal_audit_20260915_protocol_graph_eval"
     if [[ -n "${GIT_DIRTY_FILES}" ]]; then
       echo "--- dirty files ---"
       echo "${GIT_DIRTY_FILES}"
@@ -187,7 +206,7 @@ main() {
     comps=("${COMPONENTS_DEFAULT[@]}")
   fi
 
-  log "RUN_ID=${RUN_ID} harness=Harness-G benchmark=bcplus_test_50 eval_gpus=${EVAL_GPUS} tp=${TP} gpu_util=${GPU_UTIL} max_num_seqs=${MAX_NUM_SEQS} max_model_len=${MAX_MODEL_LEN} max_turns=${MAX_TURNS} temperature=${TEMPERATURE} models=${MODELS:-all} components=${comps[*]}"
+  log "RUN_ID=${RUN_ID} harness=Harness-G benchmark=bcplus_test_50 eval_gpus=${EVAL_GPUS} tp=${TP} gpu_util=${GPU_UTIL} max_num_seqs=${MAX_NUM_SEQS} max_model_len=${MAX_MODEL_LEN} max_turns=${MAX_TURNS} temperature=${TEMPERATURE} reasoning_effort=${REASONING_EFFORT} graph_index_path=${GRAPH_INDEX_PATH:-none} models=${MODELS:-all} components=${comps[*]}"
   log_gpu
 
   local failed=0
@@ -228,6 +247,8 @@ main() {
   "max_turns": ${MAX_TURNS},
   "max_new_tokens": ${MAX_NEW_TOKENS},
   "temperature": ${TEMPERATURE},
+  "reasoning_effort": "${REASONING_EFFORT}",
+  "graph_index_path": "${GRAPH_INDEX_PATH:-}",
   "search_k": ${SEARCH_K},
   "eval_stagger_s": ${EVAL_STAGGER},
   "models_filter": "${MODELS:-}",

@@ -46,7 +46,6 @@ def main(argv: list[str] | None = None) -> int:
         write_infra_error_query,
         write_run_manifest,
     )
-    from trim.upstream_harness1.api_adapter import ConfigError
     from trim.eval.tool_health import build_tool_health_payload, write_tool_health
     from trim.upstream_harness1.api_adapter import ChatCompletionsClient
     from trim.upstream_harness1.env_bridge import build_eval_toolset, load_scoring_dataset, load_upstream_modules
@@ -156,8 +155,6 @@ def main(argv: list[str] | None = None) -> int:
                     deadline=deadline,
                 )
                 traces.append(result["metrics"])
-            except ConfigError:
-                raise
             except asyncio.TimeoutError:
                 infra_errors.append(qid)
                 traces.append(

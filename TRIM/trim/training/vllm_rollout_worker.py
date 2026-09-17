@@ -186,13 +186,15 @@ def main() -> int:
             from trim.eval.harmony_runtime import fit_prompt_ids_to_context
 
             prompts = []
+            fitted_ids: list[list[int]] = []
             for r in requests:
                 ids = fit_prompt_ids_to_context(
-                    [int(x) for x in (r.get("prompt_token_ids") or [])],
+                    [int(x) for x in (r.get("prompt_token_ids") or r.get("effective_prompt_ids") or [])],
                     max_model_len=max_model_len,
                     max_new_tokens=int(r.get("max_new_tokens") or 1),
                 )
                 prompts.append(_tokens_prompt(ids))
+                fitted_ids.append(ids)
             params = [_sampling_params(r, stop_token_ids) for r in requests]
             generate_kwargs: dict[str, Any] = {}
             if lora_request is not None:
@@ -200,21 +202,43 @@ def main() -> int:
             outputs = llm.generate(prompts, params, **generate_kwargs)
             rows = []
             events_path = session / "events.jsonl"
-            for req, output in zip(requests, outputs):
+            from trim.training.action_encoding import prompt_ids_hash
+
+            by_req_id = {str(r.get("request_id")): i for i, r in enumerate(requests)}
+            if len(outputs) != len(requests):
+                raise RuntimeError(f"vLLM returned {len(outputs)} outputs for {len(requests)} requests")
+            for req, output, used_ids in zip(requests, outputs, fitted_ids):
+                req_id = str(req.get("request_id") or "")
+                if req_id not in by_req_id:
+                    raise RuntimeError(f"unexpected request_id in worker output: {req_id}")
                 token_ids = _completion_token_ids(output)
                 raw_lp = getattr(output.outputs[0], "logprobs", None)
-                token_logprobs = extract_sampled_logprobs(token_ids, raw_lp)
+                token_logprobs = extract_sampled_logprobs(
+                    token_ids, raw_lp, request_id=req_id
+                )
                 try:
                     text = tokenizer.decode(token_ids, skip_special_tokens=False)
                 except Exception:
                     text = ""
                 finish_reason = getattr(output.outputs[0], "finish_reason", None)
+                sampling = {
+                    "temperature": float(req.get("temperature") or 0.0),
+                    "max_new_tokens": int(req.get("max_new_tokens") or 384),
+                    "top_p": req.get("top_p"),
+                    "top_k": req.get("top_k"),
+                    "logprobs": 1,
+                    "seed": req.get("seed"),
+                }
                 row = {
                     "request_id": req.get("request_id"),
                     "token_ids": token_ids,
                     "token_logprobs": token_logprobs,
                     "finish_reason": finish_reason,
                     "text": str(text),
+                    "effective_prompt_ids": list(used_ids),
+                    "prompt_hash": prompt_ids_hash(used_ids),
+                    "sampling_params": sampling,
+                    "logprob_provenance": "vllm_sampled_token",
                 }
                 rows.append(row)
                 event = {

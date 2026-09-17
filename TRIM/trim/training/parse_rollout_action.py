@@ -62,20 +62,6 @@ def parse_generated_action(
     if g_mode:
         from trim.eval.harness_g_runtime import parse_harness_g_action
 
-        if enc is not None and hasattr(enc, "parse_tool_call"):
-            parsed = enc.parse_tool_call(text, completion_ids=completion_ids)
-            name = parsed.tool_name
-            args = dict(parsed.arguments or {}) if parsed.arguments is not None else {}
-            schema_ok = _schema_ok(str(name or ""), args)
-            if (
-                parsed.parsed
-                and parsed.legal
-                and name in legal
-                and schema_ok
-                and parsed.error is None
-            ):
-                return {"name": name, "arguments": args}, True
-
         g_action, g_ok = parse_harness_g_action(
             text,
             action_map=action_map,
@@ -83,9 +69,21 @@ def parse_generated_action(
         )
         g_name = str(g_action.get("name") or "")
         g_args = dict(g_action.get("arguments") or {})
-        if g_ok and _schema_ok(g_name, g_args) and g_name in legal:
-            return g_action, True
-        return {"name": g_name or "unknown", "arguments": g_args}, False
+        if not g_ok or not _schema_ok(g_name, g_args) or g_name not in legal:
+            return {"name": g_name or "unknown", "arguments": g_args}, False
+        if enc is not None and hasattr(enc, "parse_tool_call"):
+            parsed = enc.parse_tool_call(text, completion_ids=completion_ids)
+            if (
+                parsed.parsed
+                and parsed.legal
+                and parsed.error is None
+                and parsed.tool_name
+            ):
+                native_name = str(parsed.tool_name)
+                native_args = dict(parsed.arguments or {}) if parsed.arguments is not None else {}
+                if native_name != g_name or native_args != g_args:
+                    return {"name": "unknown", "arguments": {}}, False
+        return g_action, True
 
     from trim.eval.harmony_runtime import parse_harmony_tool_call
 

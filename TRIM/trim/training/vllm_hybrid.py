@@ -9,6 +9,7 @@ start HF → one optimizer step → save adapter → repeat.
 from __future__ import annotations
 
 import json
+import math
 import os
 import signal
 import subprocess
@@ -38,6 +39,8 @@ class GenerateRequest:
     max_new_tokens: int = 384
     temperature: float = 1.0
     seed: int = 0
+    top_p: float | None = None
+    top_k: float | None = None
 
 
 @dataclass
@@ -52,6 +55,8 @@ class GenerateResult:
     finish_reason: str = ""
     # Token ids actually fed to the sampler after context budgeting (authoritative for RL/OPD).
     effective_prompt_ids: list[int] = field(default_factory=list)
+    sampling_params: dict[str, Any] = field(default_factory=dict)
+    prompt_hash: str = ""
 
     def __post_init__(self) -> None:
         if not self.action_mask:
@@ -80,8 +85,18 @@ def cispo_row_from_generation(
     action_ids = list(gen.token_ids)
     mask = list(gen.action_mask or [1] * len(action_ids))
     if len(mask) != len(action_ids):
-        mask = [1] * len(action_ids)
+        raise ValueError(
+            f"action_mask length {len(mask)} != action_ids {len(action_ids)} "
+            f"request_id={gen.request_id}"
+        )
+    if len(gen.token_logprobs) != len(action_ids):
+        raise ValueError(
+            f"token_logprobs length {len(gen.token_logprobs)} != action_ids {len(action_ids)} "
+            f"request_id={gen.request_id}"
+        )
     eff = list(getattr(gen, "effective_prompt_ids", None) or prompt_ids)
+    if not eff and action_ids:
+        raise ValueError(f"missing effective_prompt_ids for request_id={gen.request_id}")
     return {
         "query_id": query_id,
         "prompt": prompt_text,
@@ -99,6 +114,8 @@ def cispo_row_from_generation(
         "turn_id": turn_id,
         "finish_reason": str(getattr(gen, "finish_reason", "") or ""),
         "truncated_generation": str(getattr(gen, "finish_reason", "") or "") == "length",
+        "sampling_params": dict(getattr(gen, "sampling_params", None) or {}),
+        "prompt_hash": str(getattr(gen, "prompt_hash", "") or ""),
     }
 
 
@@ -151,43 +168,90 @@ def assert_gptoss_tokenizer(tokenizer: Any, *, source: str) -> dict[str, Any]:
     }
 
 
-def extract_sampled_logprobs(token_ids: Sequence[int], raw_logprobs: Any) -> list[float]:
-    """Pull the sampled-token logprob at each position from a vLLM completion."""
+LOGPROB_ADAPTER_VLLM_SAMPLED_DICT_V1 = "vllm_sampled_dict_v1"
+
+
+def extract_sampled_logprobs(
+    token_ids: Sequence[int],
+    raw_logprobs: Any,
+    *,
+    request_id: str = "",
+    adapter: str = LOGPROB_ADAPTER_VLLM_SAMPLED_DICT_V1,
+) -> list[float]:
+    """Pull the sampled-token logprob at each position. Fail-closed on mismatch."""
+    if adapter != LOGPROB_ADAPTER_VLLM_SAMPLED_DICT_V1:
+        raise ValueError(f"unsupported logprob adapter {adapter!r} request_id={request_id}")
+    ids = [int(x) for x in token_ids]
+    if not ids:
+        if raw_logprobs:
+            raise ValueError(f"logprobs present for empty generation request_id={request_id}")
+        return []
+    if raw_logprobs is None:
+        raise ValueError(
+            f"missing sampled logprobs for non-empty generation request_id={request_id} n={len(ids)}"
+        )
+    rows = list(raw_logprobs)
+    if len(rows) != len(ids):
+        raise ValueError(
+            f"logprob length {len(rows)} != token_ids {len(ids)} request_id={request_id}"
+        )
     out: list[float] = []
-    rows = list(raw_logprobs or [])
-    for i, tid in enumerate(token_ids):
-        if i >= len(rows) or rows[i] is None:
-            out.append(0.0)
-            continue
+    for i, tid in enumerate(ids):
         slot = rows[i]
-        logp = _logprob_for_token(slot, int(tid))
-        out.append(0.0 if logp is None else float(logp))
+        logp = _logprob_for_token(slot, int(tid), request_id=request_id, position=i)
+        if logp is None:
+            raise ValueError(
+                f"sampled logprob missing for token_id={tid} pos={i} request_id={request_id}"
+            )
+        if not math.isfinite(logp):
+            raise ValueError(
+                f"non-finite sampled logprob {logp!r} token_id={tid} pos={i} request_id={request_id}"
+            )
+        out.append(float(logp))
     return out
 
 
-def _logprob_for_token(slot: Any, token_id: int) -> float | None:
+def _logprob_for_token(
+    slot: Any,
+    token_id: int,
+    *,
+    request_id: str = "",
+    position: int = 0,
+) -> float | None:
     if slot is None:
         return None
     if isinstance(slot, dict):
         if token_id in slot:
             return _coerce_logprob(slot[token_id])
-        # vLLM sometimes keys decoded strings; take the sampled entry.
         for key, val in slot.items():
-            if int(getattr(key, "real", key) if not isinstance(key, str) else -1) == token_id:
+            key_id: int | None = None
+            if isinstance(key, int):
+                key_id = int(key)
+            elif hasattr(key, "real") and not isinstance(key, str):
+                try:
+                    key_id = int(key)
+                except (TypeError, ValueError):
+                    key_id = None
+            if key_id == token_id:
                 return _coerce_logprob(val)
             inner_id = getattr(val, "token_id", None)
             if inner_id is not None and int(inner_id) == token_id:
                 return _coerce_logprob(val)
-        if len(slot) == 1:
-            return _coerce_logprob(next(iter(slot.values())))
+            if isinstance(val, dict) and int(val.get("token_id") or -1) == token_id:
+                return _coerce_logprob(val)
         return None
-    if isinstance(slot, (list, tuple)) and slot:
-        return _coerce_logprob(slot[0])
+    if isinstance(slot, (list, tuple)):
+        raise ValueError(
+            f"list/tuple logprob slot at pos={position} request_id={request_id}; "
+            f"use a versioned adapter instead of guessing"
+        )
     return _coerce_logprob(slot)
 
 
 def _coerce_logprob(value: Any) -> float | None:
     if value is None:
+        return None
+    if isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
         return float(value)
@@ -199,21 +263,35 @@ def _coerce_logprob(value: Any) -> float | None:
 
 
 def result_from_worker_row(row: dict[str, Any], *, enc) -> GenerateResult:
+    request_id = str(row.get("request_id") or "")
     token_ids = [int(x) for x in (row.get("token_ids") or [])]
+    if "token_logprobs" not in row and token_ids:
+        raise RuntimeError(f"worker row missing token_logprobs request_id={request_id}")
     logprobs = [float(x) for x in (row.get("token_logprobs") or [])]
     if len(logprobs) != len(token_ids):
-        logprobs = (logprobs + [0.0] * len(token_ids))[: len(token_ids)]
-    eff = [int(x) for x in (row.get("effective_prompt_ids") or row.get("prompt_token_ids") or [])]
+        raise RuntimeError(
+            f"worker logprob length {len(logprobs)} != token_ids {len(token_ids)} "
+            f"request_id={request_id}"
+        )
+    if any(not math.isfinite(x) for x in logprobs):
+        raise RuntimeError(f"non-finite worker logprob request_id={request_id}")
+    eff = [int(x) for x in (row.get("effective_prompt_ids") or [])]
+    if token_ids and not eff:
+        raise RuntimeError(f"worker row missing effective_prompt_ids request_id={request_id}")
+    sampling = dict(row.get("sampling_params") or {})
+    prompt_hash = str(row.get("prompt_hash") or "")
     return GenerateResult(
-        request_id=str(row.get("request_id") or ""),
+        request_id=request_id,
         token_ids=token_ids,
         token_logprobs=logprobs,
         text=decode_ids(enc, token_ids),
         logprob_old=mean_behavior_logprob(logprobs),
-        logprob_provenance="vllm_sampled_token",
+        logprob_provenance=str(row.get("logprob_provenance") or "vllm_sampled_token"),
         action_mask=[1] * len(token_ids),
         finish_reason=str(row.get("finish_reason") or ""),
         effective_prompt_ids=eff,
+        sampling_params=sampling,
+        prompt_hash=prompt_hash,
     )
 
 
@@ -511,9 +589,6 @@ class VLLMGenerateClient:
             result = result_from_worker_row(row, enc=decoder)
             if row.get("text"):
                 result.text = str(row["text"])
-            eff = [int(x) for x in (row.get("effective_prompt_ids") or row.get("prompt_token_ids") or [])]
-            if eff:
-                result.effective_prompt_ids = eff
             ordered.append(result)
         self.n_generate_calls += 1
         self.n_prompts += len(requests)

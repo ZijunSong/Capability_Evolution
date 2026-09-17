@@ -13,6 +13,7 @@ from trim.upstream_harness1.api_adapter import (
 )
 from trim.upstream_harness1.env_bridge import (
     GEMMA_FORMAT_RETRY_PROMPT,
+    GLM0414_FORMAT_RETRY_PROMPT,
     GPT_OSS_FORMAT_RETRY_PROMPT,
     QWEN_FORMAT_RETRY_PROMPT,
     _allowed_tool_names,
@@ -310,7 +311,21 @@ def test_later_turn_pythonic_user_text_is_recovered_not_finished():
     assert rewritten.tool_calls[0]["arguments"]["add_ids"] == ["65532_0", "94345_0"]
 
 
-def test_true_prose_is_still_implicit_user_text():
+def test_parse_recovers_glm0414_name_json_content():
+    parsed = parse_chat_completion(
+        {
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {"content": 'search_corpus\n{"query": "smoke test"}'},
+                }
+            ]
+        }
+    )
+    assert parsed.ok
+    assert parsed.tool_calls[0]["name"] == "search_corpus"
+    assert parsed.tool_calls[0]["arguments"] == {"query": "smoke test"}
+    assert parsed.episode_finish_reason is None
     parsed = parse_chat_completion(
         {
             "choices": [
@@ -323,6 +338,136 @@ def test_true_prose_is_still_implicit_user_text():
     )
     assert parsed.ok
     assert parsed.episode_finish_reason == "implicit_user_text"
+
+
+def test_parse_recovers_glm0414_buried_name_json_in_prose():
+    parsed = parse_chat_completion(
+        {
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {
+                        "content": (
+                            "I'll start by analyzing the query.\n\n"
+                            "search_corpus\n"
+                            '{"query": "EP with one-word song titles"}\n'
+                        )
+                    },
+                }
+            ]
+        }
+    )
+    assert parsed.ok
+    assert parsed.tool_calls[0]["name"] == "search_corpus"
+    assert parsed.tool_calls[0]["arguments"] == {"query": "EP with one-word song titles"}
+
+
+def test_parse_recovers_glm0414_fenced_pythonic_and_colon_kwargs():
+    fenced = parse_chat_completion(
+        {
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {
+                        "content": (
+                            "I'll start with a search:\n\n"
+                            "```plaintext\n"
+                            "search_corpus(EP song titles one word question mark)\n"
+                            "```\n"
+                        )
+                    },
+                }
+            ]
+        }
+    )
+    assert fenced.ok
+    assert fenced.tool_calls[0]["name"] == "search_corpus"
+    assert fenced.tool_calls[0]["arguments"] == {
+        "query": "EP song titles one word question mark"
+    }
+    colon = parse_chat_completion(
+        {
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {
+                        "content": 'search_corpus(query: "EP release 2018-2023 singer-songwriter")'
+                    },
+                }
+            ]
+        }
+    )
+    assert colon.ok
+    assert colon.tool_calls[0]["arguments"] == {
+        "query": "EP release 2018-2023 singer-songwriter"
+    }
+
+
+def test_parse_recovers_glm0414_fan_out_and_ignores_json_fence_name():
+    parsed = parse_chat_completion(
+        {
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {
+                        "content": (
+                            '```json\n{"pattern": "updated late 2023"}\n```'
+                            'grep_corpus\n{"pattern": "updated late 2023"}'
+                        )
+                    },
+                }
+            ]
+        }
+    )
+    assert parsed.ok
+    assert [c["name"] for c in parsed.tool_calls] == ["grep_corpus"]
+    assert parsed.tool_calls[0]["arguments"] == {"pattern": "updated late 2023"}
+    fan = parse_chat_completion(
+        {
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {
+                        "content": (
+                            "Next I will search several angles.\n"
+                            'fan_out_search(queries=["author W L 2023", "inorganic compound study 2019"])'
+                        )
+                    },
+                }
+            ]
+        }
+    )
+    assert fan.ok
+    assert fan.tool_calls[0]["name"] == "fan_out_search"
+    assert fan.tool_calls[0]["arguments"]["queries"] == [
+        "author W L 2023",
+        "inorganic compound study 2019",
+    ]
+
+
+def test_glm0414_later_turn_prose_is_retried_not_finished():
+    later = parse_chat_completion(
+        {
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {
+                        "content": (
+                            "I need to follow the search → curate rhythm properly. "
+                            "Let me curate the documents I found."
+                        )
+                    },
+                }
+            ]
+        }
+    )
+    kept = rewrite_premature_user_text(later, env_turn=1)
+    assert kept.ok
+    assert kept.episode_finish_reason == "implicit_user_text"
+    retried = rewrite_premature_user_text(later, env_turn=1, model="GLM-4-32B-0414")
+    assert not retried.ok
+    assert retried.protocol_error == "premature_user_text"
+    assert retried.episode_finish_reason is None
 
 
 def test_explicit_end_search_finish_reason():
@@ -391,6 +536,12 @@ def test_harmony_retry_prompt_differs_from_qwen():
     gemma_retry = format_retry_prompt(model="gemma-3-27b-it")
     assert "[search_corpus" in gemma_retry
     assert "python list" in gemma_retry
+    glm_retry = format_retry_prompt(model="GLM-4-32B-0414")
+    assert glm_retry.startswith(GLM0414_FORMAT_RETRY_PROMPT)
+    assert "Put any reasoning" not in glm_retry
+    assert 'search_corpus\n{"query": "your query"}' in glm_retry
+    assert GLM0414_FORMAT_RETRY_PROMPT != QWEN_FORMAT_RETRY_PROMPT
+    assert "Put any reasoning" in format_retry_prompt(model="THUDM/glm-4-9b-chat")
 
 
 def test_classify_harmony_http_500_as_server_parse_error():

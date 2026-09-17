@@ -286,13 +286,22 @@ def new_state_fn(
     harness_mask: Mapping[str, bool] | None,
     session: UpstreamTrainSession | None = None,
     is_harness_g: bool = False,
+    graph_index: Any | None = None,
 ):
     train_env = canonical_train_env(train_env)
     if is_harness_g:
         from trim.eval.harness_g_env import new_state as g_new_state
 
         def new_state(query: str, store: dict[str, Any], query_id: str = "") -> dict[str, Any]:
-            return g_new_state(query, store, harness_mask=harness_mask)
+            del query_id
+            path = getattr(graph_index, "source_path", None) if graph_index is not None else None
+            return g_new_state(
+                query,
+                store,
+                harness_mask=harness_mask,
+                graph_index=graph_index,
+                graph_index_path=path,
+            )
 
         return new_state
     if train_env == TRAIN_ENV_LOCAL_LEGACY:

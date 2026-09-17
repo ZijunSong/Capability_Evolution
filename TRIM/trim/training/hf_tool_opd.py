@@ -390,7 +390,7 @@ class ScapeHFToolOPD:
             prompt_ids, response_ids, require_grad=require_grad
         )
         ids = torch.tensor(response_ids, device=self._device, dtype=torch.long)
-        logp = F.log_softmax(pos_logits, dim=-1)
+        logp = F.log_softmax(pos_logits.float(), dim=-1)
         logps = logp.gather(1, ids.unsqueeze(1)).squeeze(1)
         return logps
 
@@ -769,7 +769,7 @@ class ScapeHFToolOPD:
                             self.encode(teacher_prompt), resp_ids, require_grad=False
                         )
                     ids_t = torch.tensor(resp_ids, device=s_logits.device, dtype=torch.long)
-                    student_lp = F.log_softmax(s_logits, dim=-1).gather(1, ids_t.unsqueeze(1)).squeeze(1)
+                    student_lp = F.log_softmax(s_logits.float(), dim=-1).gather(1, ids_t.unsqueeze(1)).squeeze(1)
                     legal = [
                         "fan_out_search",
                         "search_corpus",
@@ -789,8 +789,8 @@ class ScapeHFToolOPD:
                     idx = torch.tensor(name_ids, device=s_logits.device, dtype=torch.long)
                     s_sub = s_logits[name_idx].index_select(0, idx)
                     t_sub = t_logits[name_idx].index_select(0, idx)
-                    t_logp = F.log_softmax(t_sub, dim=-1)
-                    s_logp = F.log_softmax(s_sub, dim=-1)
+                    t_logp = F.log_softmax(t_sub.float(), dim=-1)
+                    s_logp = F.log_softmax(s_sub.float(), dim=-1)
                     t_p = t_logp.exp()
                     route_kl = (t_p * (t_logp - s_logp)).sum()
                     arg_audit = tool_loss_mask_from_response(

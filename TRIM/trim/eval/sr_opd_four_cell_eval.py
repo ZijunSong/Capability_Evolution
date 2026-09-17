@@ -37,6 +37,54 @@ def legal_rate(
     return sum(1 for n in tool_names if n in allowed and n not in invalid) / len(tool_names)
 
 
+def protocol_rate_block(traces: list[dict[str, Any]], *, harness_g: bool, answer_with_enabled: bool) -> dict[str, Any]:
+    name_macro = [
+        legal_rate(
+            t.get("tool_names") or t.get("names") or [],
+            harness_g=harness_g,
+            answer_with_enabled=answer_with_enabled or bool((t.get("harness_mask") or {}).get("answer_with")),
+        )
+        for t in traces
+    ]
+    gen = parse_ok = schema_ok = menu_ok = exec_ok = 0
+    name_ok = 0
+    allowed = set(HARNESS_G_STUDENT_NATIVE_TOOLS) if harness_g else set(STUDENT_NATIVE_TOOLS)
+    if harness_g and answer_with_enabled:
+        allowed.add("answer_with")
+    invalid = {"unknown", "truncated", "None", None, ""}
+    for t in traces:
+        names = list(t.get("tool_names") or t.get("names") or [])
+        hist = list(t.get("tool_history") or [])
+        gen += len(names) if names else int(t.get("n_generated") or t.get("n_turns") or 0)
+        if hist:
+            parse_ok += sum(1 for h in hist if h.get("parse_ok"))
+            schema_ok += sum(1 for h in hist if h.get("schema_ok"))
+            menu_ok += sum(1 for h in hist if h.get("menu_ok") or h.get("target_ok"))
+            exec_ok += sum(1 for h in hist if h.get("execution_ok"))
+        else:
+            parse_ok += int(t.get("n_parse_ok") or 0)
+            schema_ok += int(t.get("n_schema_ok") or 0)
+            menu_ok += int(t.get("n_menu_ok") or 0)
+            exec_ok += int(t.get("n_execution_ok") or 0)
+        name_ok += sum(1 for n in names if n in allowed and n not in invalid)
+    n = max(1, gen)
+    n_q = max(1, len(traces))
+    return {
+        "legal_action_rate": sum(name_macro) / n_q,
+        "legal_action_rate_name_macro": sum(name_macro) / n_q,
+        "legal_action_rate_name_micro": name_ok / n,
+        "n_generated": gen,
+        "n_parse_ok": parse_ok,
+        "n_schema_ok": schema_ok,
+        "n_menu_ok": menu_ok,
+        "n_execution_ok": exec_ok,
+        "parse_ok_rate_micro": parse_ok / n,
+        "schema_ok_rate_micro": schema_ok / n,
+        "menu_ok_rate_micro": menu_ok / n,
+        "execution_ok_rate_micro": exec_ok / n,
+    }
+
+
 def summarize_traces(
     traces: list[dict[str, Any]],
     *,
@@ -46,26 +94,25 @@ def summarize_traces(
     answer_with_enabled: bool = False,
 ) -> dict[str, Any]:
     n = max(1, len(traces))
-    legal = [
-        legal_rate(
-            t.get("tool_names") or t.get("names") or [],
-            harness_g=harness_g,
-            answer_with_enabled=answer_with_enabled or bool((t.get("harness_mask") or {}).get("answer_with")),
-        )
-        for t in traces
-    ]
-    rec5 = [float(t.get("evidence_recall_at_5") or 0.0) for t in traces]
-    rec100 = [float(t.get("evidence_recall_at_100") or 0.0) for t in traces]
+    protocol = protocol_rate_block(traces, harness_g=harness_g, answer_with_enabled=answer_with_enabled)
+    rec5 = [float(t.get("initial_bm25_recall_at_5") or t.get("evidence_recall_at_5") or 0.0) for t in traces]
+    rec100 = [float(t.get("initial_bm25_recall_at_100") or t.get("evidence_recall_at_100") or 0.0) for t in traces]
     tools = [float(t.get("n_tool_calls") or 0.0) for t in traces]
     searches = [float(t.get("n_search_calls") or 0.0) for t in traces]
+    real_searches = [float(t.get("real_search_calls") or 0.0) for t in traces]
+    graph_lookups = [float(t.get("graph_lookups") or 0.0) for t in traces]
     payload = {
         "setting": setting,
         "n_queries": len(traces),
-        "legal_action_rate": sum(legal) / n,
+        **protocol,
         "test_evidence_recall_at_5": sum(rec5) / n if retrieval_name != "none" else None,
         "test_evidence_recall_at_100": sum(rec100) / n if retrieval_name != "none" else None,
+        "initial_bm25_recall_at_5": sum(rec5) / n if retrieval_name != "none" else None,
+        "initial_bm25_recall_at_100": sum(rec100) / n if retrieval_name != "none" else None,
         "mean_tool_calls_per_query": sum(tools) / n,
         "tool_search_cost": sum(searches) / n,
+        "mean_real_search_calls": sum(real_searches) / n,
+        "mean_graph_lookups": sum(graph_lookups) / n,
         "retrieval": retrieval_name,
         "student_inference_privilege": False,
         "eval_harness": "Harness-G" if harness_g else "H_min",
@@ -78,15 +125,31 @@ def summarize_traces(
     return payload
 
 
-def search_metrics(searcher: RetrievalBackend, query: str, evidence: list[str]) -> dict[str, Any]:
-    hits5 = searcher.search(query, 5)
-    hits100 = searcher.search(query, 100) if searcher.name != "none" else []
+def search_metrics(
+    searcher: RetrievalBackend,
+    query: str,
+    evidence: list[str],
+    *,
+    cache: dict[str, list[Any]] | None = None,
+) -> dict[str, Any]:
+    hits100: list[Any]
+    if cache is not None and query in cache:
+        hits100 = cache[query]
+    else:
+        hits100 = searcher.search(query, 100) if searcher.name != "none" else []
+        if cache is not None:
+            cache[query] = hits100
+    hits5 = hits100[:5]
     normalize = getattr(searcher, "normalize_id", None)
+    rec5 = evidence_recall([h.docid for h in hits5], evidence, normalize=normalize)
+    rec100 = evidence_recall([h.docid for h in hits100], evidence, normalize=normalize)
     return {
         "retrieved_at_5": [h.docid for h in hits5],
         "retrieved_at_100": [h.docid for h in hits100],
-        "evidence_recall_at_5": evidence_recall([h.docid for h in hits5], evidence, normalize=normalize),
-        "evidence_recall_at_100": evidence_recall([h.docid for h in hits100], evidence, normalize=normalize),
+        "evidence_recall_at_5": rec5,
+        "evidence_recall_at_100": rec100,
+        "initial_bm25_recall_at_5": rec5,
+        "initial_bm25_recall_at_100": rec100,
     }
 
 
@@ -207,6 +270,9 @@ def write_eval_outputs(
     adapter_audits: list[dict[str, Any]],
     pool_meta: dict[str, Any],
     runtime_audit: dict[str, Any] | None = None,
+    run_kind: str | None = None,
+    harness_g: bool = False,
+    contract_fingerprint: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     out.mkdir(parents=True, exist_ok=True)
     reload = write_reload_audit(out / "ADAPTER_RELOAD_AUDIT.json", adapter_audits)
@@ -230,23 +296,59 @@ def write_eval_outputs(
             + "\n",
             encoding="utf-8",
         )
-    status = "SR_OPD_CISPO_FOUR_CELL_EVAL"
-    if runtime_audit and not runtime_audit.get("pass"):
-        status = "RUNTIME_EFFECT_AUDIT_FAILED"
-    payload = {
-        "status": status,
-        "component": component_id,
-        "opd_loss": "sr_opd_ce",
-        "rl_loss_fn": "cispo",
-        "legacy_tool_token_kl_hook_used": False,
-        "protocol_complete_rl_opd": True,
-        "claim_usable_for_full_vs_zero": claim_usable,
-        "claim_status": claim_status,
-        "pool": pool_meta,
-        "settings": summaries,
-        "adapter_reload": reload,
-        "runtime_effect_audit": runtime_audit,
-    }
+    if harness_g and (run_kind or "base_model_harness_g") != "sr_opd_cispo_four_cell":
+        status = "BASE_MODEL_HARNESS_G_EVAL"
+        kind = run_kind or "base_model_harness_g"
+        launch_path = out / "LAUNCH.json"
+        if launch_path.is_file():
+            launch = json.loads(launch_path.read_text(encoding="utf-8"))
+            if launch.get("graph_required"):
+                from trim.eval.harness_g_official import assert_official_run
+
+                assert_official_run(out)
+        payload = {
+            "status": status,
+            "run_kind": kind,
+            "component": component_id,
+            "opd_loss": "n/a",
+            "rl_loss_fn": "n/a",
+            "legacy_tool_token_kl_hook_used": False,
+            "protocol_complete_rl_opd": False,
+            "claim_usable_for_full_vs_zero": claim_usable,
+            "claim_status": claim_status,
+            "pool": pool_meta,
+            "settings": summaries,
+            "adapter_reload": reload,
+            "runtime_effect_audit": runtime_audit,
+            "contract_fingerprint": contract_fingerprint,
+            "note": (
+                "Base-model Harness-G retrieval eval. Not an SR-OPD/CISPO training run. "
+                "recall / trajectory_recall are selected/observed vs gold_docids. "
+                "evidence_recall is diagnostic support-doc recall. "
+                "final_answer_recall aliases official selected-vs-gold, not answer-string accuracy. "
+                "test_evidence_recall_at_k is initial BM25 recall, not agent trajectory recall."
+            ),
+        }
+    else:
+        status = "SR_OPD_CISPO_FOUR_CELL_EVAL"
+        if runtime_audit and not runtime_audit.get("pass"):
+            status = "RUNTIME_EFFECT_AUDIT_FAILED"
+        payload = {
+            "status": status,
+            "run_kind": run_kind or "sr_opd_cispo_four_cell",
+            "component": component_id,
+            "opd_loss": "sr_opd_ce",
+            "rl_loss_fn": "cispo",
+            "legacy_tool_token_kl_hook_used": False,
+            "protocol_complete_rl_opd": True,
+            "claim_usable_for_full_vs_zero": claim_usable,
+            "claim_status": claim_status,
+            "pool": pool_meta,
+            "settings": summaries,
+            "adapter_reload": reload,
+            "runtime_effect_audit": runtime_audit,
+            "contract_fingerprint": contract_fingerprint,
+        }
     (out / "FOUR_CELL_OFFICIAL_SUMMARY.json").write_text(
         json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",

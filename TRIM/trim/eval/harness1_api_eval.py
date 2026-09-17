@@ -490,6 +490,7 @@ async def run_one_query_api(
             parsed = rewrite_premature_user_text(
                 parse_chat_completion(response),
                 env_turn=int(getattr(env, "_current_turn", 0) or 0),
+                model=client.model,
             )
             usage = response.get("usage") or {}
             turn_rec.update(

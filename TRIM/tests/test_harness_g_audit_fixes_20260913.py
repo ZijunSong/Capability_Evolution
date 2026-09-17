@@ -51,14 +51,15 @@ def test_parse_accepts_strict_menu_id_only():
     assert action["arguments"]["sid"] == "18128:s3"
 
 
-def test_init_uses_numeric_sid_order_and_doc_coverage():
+def test_init_ranks_relevant_sentences_not_just_prefixes():
     store = {
-        "d1": {"id": "d1", "text": "s0. s1. s2. s3. s4. s5. s6. s7. s8. s9. s10."},
-        "d2": {"id": "d2", "text": "Evidence sentence here."},
+        "d1": {"id": "d1", "text": "s0. s1. s2. s3. s4. s5. s6. s7. s8. s9. s10. Evidence sentence here."},
+        "d2": {"id": "d2", "text": "Unrelated boilerplate. Evidence sentence here."},
     }
-    st = new_state("query", store, harness_mask=_mask())
+    st = new_state("Evidence sentence here", store, harness_mask=_mask())
     visible = _init_visible(st, searcher=None, search_k=10)
-    assert visible[0] == "d1:s0"
+    texts = " ".join(str((st["sentences"].get(sid) or {}).get("text") or "") for sid in visible)
+    assert "Evidence" in texts
     assert any(sid.startswith("d2:") for sid in visible)
 
 

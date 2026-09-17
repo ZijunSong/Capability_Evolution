@@ -128,6 +128,7 @@ def render_student_prompt(snapshot: EnvironmentSnapshot, *, component_id: str = 
         component_id=component_id or None,
         student_mask=snapshot.harness_mask,
         teacher_mask=(snapshot.metadata or {}).get("teacher_mask"),
+        include_null_controls=False,
     )
     student_view = dict(dual.student_view)
     for key in TEACHER_ONLY_PROMPT_MARKERS:
@@ -164,6 +165,7 @@ def render_teacher_prompt(snapshot: EnvironmentSnapshot, *, component_id: str = 
         component_id=component_id or None,
         student_mask=snapshot.harness_mask,
         teacher_mask=(snapshot.metadata or {}).get("teacher_mask"),
+        include_null_controls=False,
     )
     full_view = dict(dual.full_view)
     query_text = snapshot_query_text(snapshot)

@@ -499,12 +499,27 @@ def add_common_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--n-eval", type=int, default=None, help="Optional eval subset. Default is the full score split.")
+    parser.add_argument(
+        "--query-ids",
+        default=None,
+        help="Comma-separated query ids to evaluate. Applied before --n-eval.",
+    )
     parser.add_argument("--smoke", action="store_true")
     parser.add_argument("--gpu", default="0")
     parser.add_argument("--rollout-backend", choices=("vllm", "hf"), default="vllm")
     parser.add_argument("--tensor-parallel-size", type=int, default=None)
     parser.add_argument("--max-model-len", type=int, default=8192)
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.90)
+    parser.add_argument(
+        "--enforce-eager",
+        dest="enforce_eager",
+        action="store_true",
+        default=False,
+        help=(
+            "Force vLLM eager mode (no CUDA graphs). hf_debug still enables this "
+            "automatically; verl/fsdp2 leaves graphs on unless this flag is set."
+        ),
+    )
     parser.add_argument(
         "--retrieval-backend",
         choices=("upstream", "local_bm25", "local_hybrid", "substitute_bm25"),
@@ -586,6 +601,29 @@ def add_train_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--train-steps", type=int, default=8)
+    parser.add_argument(
+        "--training-backend",
+        dest="training_backend",
+        choices=("hf_debug", "verl", "fsdp2"),
+        default="hf_debug",
+        help=(
+            "hf_debug = single-process vLLM then HF device_map=auto. "
+            "verl/fsdp2 = torchrun 8-rank FSDP2 CISPO with per-rank vLLM TP=1. "
+            "Single-node 8 GPU: pass --training-backend verl and the launcher will torchrun."
+        ),
+    )
+    parser.add_argument(
+        "--already-worker",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--max-empty-rollouts",
+        dest="max_empty_rollouts",
+        type=int,
+        default=8,
+        help="Abort after this many consecutive no-signal rollouts before reaching --train-steps successful updates.",
+    )
     parser.add_argument(
         "--train-groups-per-step",
         type=int,
@@ -872,6 +910,17 @@ def add_eval_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
             "Seconds to wait between replica launches. Default 0 starts every "
             "replica immediately so idle GPUs are not sitting empty."
         ),
+    )
+    parser.add_argument(
+        "--reasoning-effort",
+        choices=("low", "medium", "high"),
+        default=None,
+        help="gpt-oss Harmony reasoning effort for Harness-G prompts. Default high in training; eval scripts should set low/medium.",
+    )
+    parser.add_argument(
+        "--graph-index-path",
+        default=None,
+        help="Prebuilt Harness-G corpus graph (.pkl or .json). LOOKUP uses this index instead of a per-query top-k graph.",
     )
     return parser
 

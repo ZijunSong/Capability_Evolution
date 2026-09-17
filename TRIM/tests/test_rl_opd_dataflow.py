@@ -59,6 +59,8 @@ def _point(
         action_tool_names=tools or ["search_corpus"],
         reward=reward,
         structurally_valid=valid,
+        student_prompt_token_ids=[1, 2, 3],
+        visible_doc_ids=["d1", "d2"],
     )
 
 
@@ -281,6 +283,8 @@ def test_reject_teacher_still_keeps_rl_datums():
         action_tool_names=["search_corpus"],
         reward=1.0,
         structurally_valid=True,
+        student_prompt_token_ids=[1, 2, 3],
+        visible_doc_ids=["d2"],
     )
     group = HybridRolloutGroup(
         query_id="q0",

@@ -23,7 +23,6 @@ from trim.training.hf_rl_batch import (
     iter_length_microbatches,
     log_train,
     sample_groups_for_step,
-    truncate_teacher_forced_pair,
 )
 from trim.training.tinker_opd_datum import TinkerOPDDatum
 
@@ -70,9 +69,13 @@ class HFDebugTrainingClient:
     def _align_context(
         self, prompt_ids: list[int], action_ids: list[int]
     ) -> tuple[list[int], list[int]]:
-        return truncate_teacher_forced_pair(
-            prompt_ids, action_ids, max_full=self.max_full_tokens
-        )
+        full = len(prompt_ids) + len(action_ids)
+        if full > int(self.max_full_tokens):
+            raise ValueError(
+                f"sampled sequence length {full} exceeds train budget {self.max_full_tokens}; "
+                "clipping must happen before sampling"
+            )
+        return prompt_ids, action_ids
 
     def _logprobs_many(
         self,
@@ -125,12 +128,10 @@ class HFDebugTrainingClient:
         log_train("hf_fb", **payload)
 
     def _prepare_cispo_row(self, row: Any) -> dict[str, Any] | None:
-        prompt_ids = list(
-            row.get("effective_prompt_ids")
-            or row.get("prompt_ids")
-            or self.backend.encode(row["prompt"])
-        )
-        action_ids = list(row.get("action_ids") or self.backend.encode(row["action_text"]))
+        prompt_ids = list(row.get("effective_prompt_ids") or row.get("prompt_ids") or [])
+        action_ids = list(row.get("action_ids") or [])
+        if not prompt_ids:
+            raise ValueError(f"CISPO row missing sampled prompt IDs for query={row.get('query_id')}")
         if not action_ids:
             return None
         token_logprobs = row.get("token_logprobs")
@@ -247,8 +248,12 @@ class HFDebugTrainingClient:
                 resp_ids = list(raw.target_tokens[n_p:])
                 weights = list(raw.weights[n_p:])
             else:
-                prompt_ids = list(raw.get("prompt_ids") or self.backend.encode(raw["prompt"]))
-                resp_ids = list(raw.get("target_ids") or self.backend.encode(raw["target_text"]))
+                prompt_ids = list(raw.get("prompt_ids") or raw.get("effective_prompt_ids") or [])
+                if not prompt_ids:
+                    raise ValueError("OPD CE row missing sampled prompt_ids; refuse silent encode")
+                resp_ids = list(raw.get("target_ids") or raw.get("projected_action_token_ids") or [])
+                if not resp_ids:
+                    raise ValueError("OPD CE row missing target_ids; refuse silent encode")
                 weights = list(raw.get("weights") or [1.0] * len(resp_ids))
             if not resp_ids:
                 continue
@@ -296,7 +301,8 @@ class HFDebugTrainingClient:
                 extra={"n_microbatches": n_mb, "student_fwd_s": round(t_fwd, 3)},
             )
         return {
-            "loss": total / max(1, n),
+            "loss": total,
+            "loss_per_datum": total / max(1, n),
             "n_datums": n,
             "n_microbatches": n_mb,
             "micro_batch_size": self.micro_batch_size,

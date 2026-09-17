@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 _TRIM = Path(__file__).resolve().parents[1]
 if str(_TRIM) not in sys.path:
@@ -115,6 +116,33 @@ def detect_score_split(args) -> str:
     return SCORE_SPLIT_830
 
 
+def load_eval_graph(args, spec, harness_mask) -> tuple[Any, dict]:
+    from trim.eval.harness_g_contract import (
+        is_formal_harness_g_eval,
+        require_graph_exists,
+        require_graph_path,
+        validate_loaded_graph,
+    )
+
+    formal = is_formal_harness_g_eval(
+        harness=spec.harness,
+        benchmark=spec.benchmark,
+        smoke=bool(getattr(args, "smoke", False) or getattr(args, "audit_only", False)),
+        component_ids=spec.components,
+        mask=harness_mask,
+    )
+    path = require_graph_path(getattr(args, "graph_index_path", None), required=formal)
+    if not path:
+        return None, {"graph_required": False, "graph_index_path": None, "graph_enabled": False}
+    require_graph_exists(path)
+    from trim.eval.harness_g_graph import load_graph_index
+
+    graph = load_graph_index(path)
+    meta = validate_loaded_graph(graph, required=formal, path=path)
+    meta["graph_required"] = formal
+    return graph, meta
+
+
 def main(argv: list[str] | None = None) -> int:
     try:
         args, spec = parse_eval_args(argv)
@@ -127,6 +155,7 @@ def main(argv: list[str] | None = None) -> int:
     evaluation_path = resolve_evaluation_path(args, spec)
     args.evaluation_path = evaluation_path
     harness_mask = resolve_eval_mask(args, spec, evaluation_path=evaluation_path)
+    graph_index, graph_meta = load_eval_graph(args, spec, harness_mask)
 
     from trim.training.gpu_keepalive import acquire_keepalive, release_keepalive
 
@@ -162,6 +191,18 @@ def main(argv: list[str] | None = None) -> int:
         "max_turns": 2 if args.smoke else int(args.max_turns),
         "max_new_tokens": min(int(args.max_new_tokens), 256) if args.smoke else int(args.max_new_tokens),
         "temperature": float(args.temperature),
+        "reasoning_effort": getattr(args, "reasoning_effort", None),
+        "graph_index_path": graph_meta.get("graph_index_path") or getattr(args, "graph_index_path", None),
+        "graph_scope": graph_meta.get("graph_scope"),
+        "graph_fingerprint": graph_meta.get("graph_fingerprint"),
+        "graph_required": graph_meta.get("graph_required"),
+        "graph_enabled": graph_meta.get("graph_enabled"),
+        "graph_num_docs": graph_meta.get("graph_num_docs"),
+        "graph_num_sentences": graph_meta.get("graph_num_sentences"),
+        "graph_num_entities": graph_meta.get("graph_num_entities"),
+        "graph_num_edges": graph_meta.get("graph_num_edges"),
+        "graph_build_version": graph_meta.get("graph_build_version"),
+        "graph_source_corpus": graph_meta.get("graph_source_corpus"),
         "search_k": int(args.search_k),
         "max_model_len": int(args.max_model_len),
         "eval_replicas": int(getattr(args, "eval_replicas", 1)),
@@ -172,6 +213,14 @@ def main(argv: list[str] | None = None) -> int:
     print(json.dumps({k: v for k, v in launch.items() if k != "harness_mask"} | {"eval_mode": mode}, indent=2), flush=True)
 
     rows, pool_meta = load_eval_benchmark(spec.benchmark, score_split=score_split)
+    qids = str(getattr(args, "query_ids", "") or "").strip()
+    if qids:
+        want = [x.strip() for x in qids.split(",") if x.strip()]
+        by_id = {str(r.get("query_id")): r for r in rows}
+        missing = [q for q in want if q not in by_id]
+        if missing:
+            raise SystemExit(f"--query-ids not in benchmark: {missing}")
+        rows = [by_id[q] for q in want]
     audits = []
     for cell, path in adapter_map.items():
         if path:
@@ -313,6 +362,12 @@ def main(argv: list[str] | None = None) -> int:
     launch["tensor_parallel_size"] = replica_tp
     launch["eval_gpus"] = getattr(args, "eval_gpus", None)
     launch["max_num_seqs"] = int(getattr(args, "max_num_seqs", 256) or 256)
+    launch.update({k: graph_meta.get(k) for k in (
+        "graph_scope", "graph_fingerprint", "graph_required", "graph_enabled",
+        "graph_num_docs", "graph_num_sentences", "graph_num_entities", "graph_num_edges",
+        "graph_build_version", "graph_source_corpus",
+    )})
+    launch["graph_index_path"] = graph_meta.get("graph_index_path") or getattr(args, "graph_index_path", None)
     (spec.out / "LAUNCH.json").write_text(json.dumps(launch, indent=2) + "\n", encoding="utf-8")
     print(json.dumps({k: v for k, v in launch.items() if k != "harness_mask"} | {"eval_mode": mode}, indent=2), flush=True)
 
@@ -339,6 +394,9 @@ def main(argv: list[str] | None = None) -> int:
                 "primary_split": score_split,
                 "benchmark": spec.benchmark,
                 "tensor_parallel_size": replica_tp,
+                "reasoning_effort": getattr(args, "reasoning_effort", None),
+                "graph_index_path": graph_meta.get("graph_index_path") or getattr(args, "graph_index_path", None),
+                "require_graph_index": bool(graph_meta.get("graph_required")),
             }
             for cell, path in adapter_map.items():
                 ev, traces = run_replicated_eval(
@@ -393,6 +451,8 @@ def main(argv: list[str] | None = None) -> int:
                         temperature=eval_temperature,
                         search_k=int(args.search_k),
                         primary_split=score_split,
+                        reasoning_effort=getattr(args, "reasoning_effort", None),
+                        graph_index=graph_index,
                     )
                 finally:
                     runtime.detach_vllm()
@@ -443,6 +503,8 @@ def main(argv: list[str] | None = None) -> int:
                     temperature=eval_temperature,
                     search_k=int(args.search_k),
                     primary_split=score_split,
+                    reasoning_effort=getattr(args, "reasoning_effort", None),
+                    graph_index=graph_index,
                 )
                 ev["setting"] = cell
                 ev["eval_mode"] = mode
@@ -469,6 +531,8 @@ def main(argv: list[str] | None = None) -> int:
         adapter_audits=audits,
         pool_meta=pool_meta,
         runtime_audit=runtime_audit,
+        run_kind="base_model_harness_g" if is_harness_g(mask=harness_mask, component_ids=spec.coalition) else None,
+        harness_g=is_harness_g(mask=harness_mask, component_ids=spec.coalition),
     )
     print(json.dumps(payload, indent=2), flush=True)
     if held_outer:

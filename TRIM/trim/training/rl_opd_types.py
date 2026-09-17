@@ -8,6 +8,9 @@ from typing import Any
 from trim.state.snapshot import EnvironmentSnapshot
 
 
+COLLECTION_MODE_RL = "rl"
+COLLECTION_MODE_RL_OPD = "rl+opd"
+COLLECTION_MODE_AUDIT_FULL = "audit_full"
 TRAINING_MODE_RL = "rl"
 TRAINING_MODE_PURE_OPD = "pure_opd"
 TRAINING_MODE_RL_OPD = "rl_opd"
@@ -75,6 +78,7 @@ class StudentDecisionPoint:
     decision_point_id: str = ""
     student_prompt_token_ids: list[int] = field(default_factory=list)
     teacher_prompt_token_ids: list[int] = field(default_factory=list)
+    visible_doc_ids: list[str] = field(default_factory=list)
     teacher_snapshot_hash: str = ""
     teacher_decision_turn: int | None = None
     history_end_turn: int | None = None

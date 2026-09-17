@@ -401,6 +401,16 @@ def cell_lambda(name: str, lambda_opd: float) -> float:
     return float(lambda_opd)
 
 
+def collection_mode_for_cell(name: str, lambda_opd: float) -> str:
+    from trim.training.rl_opd_types import COLLECTION_MODE_AUDIT_FULL, COLLECTION_MODE_RL, COLLECTION_MODE_RL_OPD
+
+    if name == "teacher":
+        return COLLECTION_MODE_AUDIT_FULL
+    if name in {"before", "rl"} or float(lambda_opd or 0.0) <= 0.0:
+        return COLLECTION_MODE_RL
+    return COLLECTION_MODE_RL_OPD
+
+
 def cells_for_mode(training_mode: str | None, *, train_only: bool = False) -> tuple[str, ...]:
     """Four-cell protocol, or the single training cell used by ``run_train.py``."""
     only = {
@@ -711,16 +721,28 @@ def snap_from_state(qid: str, st: dict[str, Any], component_id: str, *, harness_
         "content_dedup_state": st.get("content_dedup_state"),
     }
     if g:
+        vis = list(st.get("visible_sids") or [])
+        sel = list(st.get("selected_sids") or [])
+        keep_sids = set(vis + sel)
+        sentences = st.get("sentences") or {}
+        entities = st.get("entities") or {}
+        frontier = list(st.get("frontier_eids") or [])
+        visited = list(st.get("visited_eids") or [])
+        light_sents = {sid: sentences[sid] for sid in keep_sids if sid in sentences}
+        light_ents = {eid: entities[eid] for eid in frontier if eid in entities}
         wm.update(
             {
-                "visible_sids": list(st.get("visible_sids") or []),
-                "selected_sids": list(st.get("selected_sids") or []),
-                "frontier_eids": list(st.get("frontier_eids") or []),
-                "visited_eids": list(st.get("visited_eids") or []),
-                "sentences": st.get("sentences") or {},
-                "entities": st.get("entities") or {},
+                "visible_sids": vis,
+                "selected_sids": sel,
+                "frontier_eids": frontier,
+                "visited_eids": visited,
+                "sentences": light_sents,
+                "entities": light_ents,
                 "action_map": st.get("action_map") or {},
                 "initialized": bool(st.get("initialized")),
+                "graph_scope": st.get("graph_scope"),
+                "last_mixquery": st.get("last_mixquery"),
+                "last_mixquery_meta": dict(st.get("last_mixquery_meta") or {}),
             }
         )
         extra_ids = list(wm["visible_sids"]) + list(wm["selected_sids"]) + list(wm["frontier_eids"])
@@ -957,6 +979,7 @@ def one_episode(
     doc_store_k: int = 12,
     train_env: str = "local_legacy",
     train_session: Any | None = None,
+    graph_index: Any | None = None,
 ) -> tuple[list[StudentDecisionPoint], list[dict[str, Any]], float, dict[str, Any]]:
     from trim.eval.harmony_runtime import (
         build_continuation_prompt_ids,
@@ -987,7 +1010,13 @@ def one_episode(
     gold_ids = [str(x) for x in (row.get("gold_docids") or row.get("evidence_docids") or [])]
     store = doc_store_for_row(row, searcher, k=doc_store_k)
     if g:
-        st = new_state(query, store, harness_mask=harness_mask)
+        st = new_state(
+            query,
+            store,
+            harness_mask=harness_mask,
+            graph_index=graph_index,
+            graph_index_path=getattr(graph_index, "source_path", None) if graph_index is not None else None,
+        )
     else:
         st = new_state_fn(
             train_env=train_env,
@@ -1387,6 +1416,10 @@ async def train_cell(
                 "n_rl_forward_backward": 0,
                 "n_opd_forward_backward": 0,
                 "skipped_no_signal": True,
+                "n_rl_datums": 0,
+                "n_opd_datums": 0,
+                "n_rl_tokens": 0,
+                "n_opd_tokens": 0,
             }
         else:
             m = await hybrid_train_substep(
@@ -1425,9 +1458,15 @@ async def train_cell(
     for md in metrics_acc:
         if int(md.get("n_optimizer_steps") or 0) > 0:
             loop.bump_after_update()
+    last_ok = next((md for md in reversed(metrics_acc) if int(md.get("n_optimizer_steps") or 0) > 0), {})
+    last_any = metrics_acc[-1] if metrics_acc else {}
+    src = last_ok or last_any
     return {
         "call_log": list(client.calls),
         "n_optimizer_steps": sum(1 for c in client.calls if c[0] == "opt"),
+        "successful_optimizer_steps": sum(
+            1 for md in metrics_acc if int(md.get("n_optimizer_steps") or 0) > 0
+        ),
         "n_rl_forward_backward": sum(1 for c in client.calls if c[:2] == ("fb", "cispo")),
         "n_opd_forward_backward": sum(
             1
@@ -1442,6 +1481,13 @@ async def train_cell(
         "backend": HFDebugTrainingClient.backend_name,
         "policy_version_start": policy_version,
         "policy_version_end": loop.policy_version if metrics_acc else policy_version,
+        "n_rl_datums": src.get("n_rl_datums"),
+        "n_opd_datums": src.get("n_opd_datums"),
+        "n_rl_tokens": src.get("n_rl_tokens"),
+        "n_opd_tokens": src.get("n_opd_tokens"),
+        "rl_loss_proxy": src.get("rl_loss_proxy"),
+        "opd_nll": src.get("opd_nll"),
+        "update_type": src.get("update_type"),
     }
 
 
@@ -1467,6 +1513,8 @@ def eval_closed_loop(
     primary_split: str = "official_test",
     train_env: str = "local_legacy",
     train_session: Any | None = None,
+    reasoning_effort: str | None = None,
+    graph_index: Any | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     from trim.eval.eval_defaults import (
         HARNESS1_EVAL_DOC_STORE_K,
@@ -1512,6 +1560,8 @@ def eval_closed_loop(
             doc_store_workers=8 if doc_store_workers is None else int(doc_store_workers),
             train_env=train_env,
             train_session=train_session,
+            reasoning_effort=reasoning_effort,
+            graph_index=graph_index,
         )
         traces, leak = traces_from_groups(groups, rows, searcher=searcher)
         if runtime_audit is not None:
@@ -1566,6 +1616,7 @@ def eval_closed_loop(
             harness_mask=harness_mask,
             search_k=search_k,
             doc_store_k=doc_store_k,
+            graph_index=graph_index,
         )
         prefix = render_student_prompt(
             snap_from_state(
@@ -1937,6 +1988,14 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
     import torch
     from trim.eval.model_tokenizer import load_model_encoding
     from trim.training.batched_env_rollout import rollout_queries_batched
+    from trim.training.dist_runtime import (
+        barrier as dist_barrier,
+        broadcast_object,
+        gather_sharded_objects,
+        init_dist_if_needed,
+        is_coordinator,
+        shard_for_rank,
+    )
     from trim.training.tinker_rl_opd_trainer import HybridLoopState
     from trim.training.vllm_hybrid import (
         HFGenerateClient,
@@ -1949,15 +2008,26 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
         _release_cuda,
     )
 
+    dist = init_dist_if_needed()
     out = Path(args.out)
     resume_run = bool(getattr(args, "resume", False))
-    if training_output_occupied(out) and not resume_run:
-        raise SystemExit(
-            f"output dir {out} already has training state. Pass --resume or use a new --out."
-        )
+    occupy_err = None
+    if is_coordinator():
+        if training_output_occupied(out) and not resume_run:
+            occupy_err = (
+                f"output dir {out} already has training state. Pass --resume or use a new --out."
+            )
+        else:
+            out.mkdir(parents=True, exist_ok=True)
+    occupy_err = broadcast_object(occupy_err)
+    if occupy_err:
+        raise SystemExit(occupy_err)
+    dist_barrier()
     out.mkdir(parents=True, exist_ok=True)
     train_only = bool(getattr(args, "train_only", False))
     log_tag = "train" if train_only else "four_cell"
+    if dist.distributed:
+        log_tag = f"{log_tag} rank{dist.rank}/{dist.world_size}"
     from trim.eval.runtime_effect_audit import audit_train_runtime_or_raise
 
     train_audit = audit_train_runtime_or_raise(args, out=out)
@@ -2000,10 +2070,32 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
     frozen_groups = groups_from_frozen_points(frozen_points) if frozen_points else []
     vllm_on = uses_vllm(args)
     scheme_a = uses_scheme_a(args)
+    if dist.distributed and not scheme_a:
+        raise SystemExit(
+            "multi-node training requires Scheme A (vLLM rollout, exclusive HF train). "
+            "Do not pass --rollout-backend hf or a non-scheme_a gpu schedule."
+        )
+    if dist.distributed and str(getattr(args, "rollout_backend", "vllm") or "vllm") != "vllm":
+        raise SystemExit("multi-node training requires --rollout-backend vllm")
     device_map = train_device_map_for(args)
     # GPT-OSS Transformers backend currently rejects tensor parallelism; use
     # an explicit CLI TP size when supplied, otherwise retain the vLLM default.
-    tp = int(getattr(args, "tensor_parallel_size", None) or default_tensor_parallel_size(None))
+    rollout_replicas = max(1, int(getattr(args, "rollout_replicas", 1) or 1))
+    if rollout_replicas > 1:
+        from trim.eval.eval_parallel import replica_tp_size
+
+        replica_tp = replica_tp_size(
+            eval_replicas=rollout_replicas,
+            tensor_parallel_size=getattr(args, "tensor_parallel_size", None),
+        )
+        tp = replica_tp if replica_tp >= 1 else 1
+        if train_session is not None:
+            raise SystemExit(
+                "--rollout-replicas > 1 is not supported with --train-env upstream. "
+                "Use --train-env local_legacy or --rollout-replicas 1."
+            )
+    else:
+        tp = int(getattr(args, "tensor_parallel_size", None) or default_tensor_parallel_size(None))
     manifest = build_manifest(
         args,
         extra={
@@ -2020,11 +2112,25 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
             "teacher_kind": str(getattr(args, "teacher_kind", "upstream") or "upstream"),
             "updates_per_rollout": int(getattr(args, "updates_per_rollout", 1) or 1),
             "tensor_parallel_size": tp,
+            "rollout_replicas": rollout_replicas,
             "train_device_map": device_map,
             "resolved_vllm": _resolved_vllm_config(args, tp=tp),
+            "dist": {
+                "rank": int(dist.rank),
+                "world_size": int(dist.world_size),
+                "local_rank": int(dist.local_rank),
+                "local_world_size": int(dist.local_world_size),
+                "node_rank": int(dist.node_rank),
+                "nnodes": int(getattr(args, "dist_nnodes", dist.world_size) or dist.world_size),
+                "nproc_per_node": int(
+                    getattr(args, "dist_nproc_per_node", dist.local_world_size) or dist.local_world_size
+                ),
+                "coordinator_trains": True,
+            },
         },
     )
-    (out / "RUN_MANIFEST.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    if is_coordinator():
+        (out / "RUN_MANIFEST.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     teacher_fn = teacher_for(
         args.component,
         harness=getattr(args, "harness", None),
@@ -2038,13 +2144,16 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
     vllm_base = args.base_model
     if vllm_on:
         keepalive.pause()
-        vllm_base = materialize_vllm_base(
-            base_model=args.base_model,
-            sft_adapter=str(args.sft_adapter or ""),
-            cache_dir=out / "vllm_base_merged_sft",
-            device_map=device_map,
-        )
-        wait_gpus_quiet()
+        if is_coordinator():
+            vllm_base = materialize_vllm_base(
+                base_model=args.base_model,
+                sft_adapter=str(args.sft_adapter or ""),
+                cache_dir=out / "vllm_base_merged_sft",
+                device_map=device_map,
+            )
+            wait_gpus_quiet()
+        vllm_base = broadcast_object(vllm_base)
+        dist_barrier()
         keepalive.resume()
 
     # Do not load a 20B HF LoRA before the first vLLM rollout. That extra load
@@ -2054,6 +2163,8 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
     theta0_dir = out / "adapters" / "theta0"
     theta0_saved = {"n": False}
     if not scheme_a:
+        if not is_coordinator():
+            raise SystemExit("non-scheme-A HF-resident train is single-process only")
         print(f"[{log_tag}] init theta0 HF LoRA", flush=True)
         keepalive.pause()
         backend = load_hf_backend(args, device_map)
@@ -2199,6 +2310,8 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
         group_size: int,
         teacher_mode: bool = False,
     ):
+        from trim.training.dist_runtime import interleave_round_robin as _interleave
+
         rollout_backend = str(getattr(args, "rollout_backend", "vllm") or "vllm").lower()
         rollout_kw = dict(
             component_id=args.component,
@@ -2221,20 +2334,120 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
             train_env=train_env,
             train_session=train_session,
             rollout_backend=rollout_backend,
+            collection_mode=collection_mode_for_cell(cell, cell_lambda(cell, getattr(args, "lambda_opd", 0.0) or 0.0)),
         )
-        if rollout_backend == "vllm":
-            if backend is not None:
-                release_hf()
-            client = open_vllm(lora_path, tag)
-            try:
-                return rollout_queries_batched(client.generate_batch, rows, **rollout_kw)
-            finally:
-                close_vllm()
-        if rollout_backend == "hf":
-            gen = HFGenerateClient(ensure_hf(lora_path), enc=enc)
-            rollout_kw["rollout_backend"] = "hf"
-            return rollout_queries_batched(gen.generate_batch, rows, **rollout_kw)
-        raise RuntimeError(f"unsupported rollout_backend={rollout_backend!r}")
+        all_rows = list(rows)
+        work_rows = shard_for_rank(all_rows, rank=dist.rank, world_size=dist.world_size)
+        print(
+            f"[{log_tag}] rollout tag={tag} global_queries={len(all_rows)} "
+            f"local_queries={len(work_rows)} replicas={rollout_replicas} "
+            f"max_turns={int(args.max_turns)} tp={tp}",
+            flush=True,
+        )
+
+        def _local_rollout(local_rows):
+            if not local_rows:
+                return []
+            if rollout_backend == "vllm" and rollout_replicas > 1:
+                from concurrent.futures import ThreadPoolExecutor, as_completed
+                from trim.eval.eval_parallel import assign_replica_gpus, parse_gpu_ids, shard_rows_round_robin
+
+                if backend is not None:
+                    release_hf()
+                runtime.assert_exclusive()
+                gpu_groups = assign_replica_gpus(
+                    parse_gpu_ids(),
+                    n_replicas=rollout_replicas,
+                    tp_size=tp,
+                )
+                shards = shard_rows_round_robin(list(local_rows), rollout_replicas)
+                keepalive.pause()
+                wait_gpus_quiet()
+                clients: list[Any] = []
+                try:
+                    stagger = float(getattr(args, "eval_stagger_s", 2.0) or 0.0)
+                    for i, (gpus, shard) in enumerate(zip(gpu_groups, shards)):
+                        if not shard:
+                            clients.append(None)
+                            continue
+                        extra_env = {"CUDA_VISIBLE_DEVICES": ",".join(str(x) for x in gpus)}
+                        client = VLLMGenerateClient(
+                            model_path=vllm_base,
+                            session_dir=next_session(f"{tag}_r{i}"),
+                            tensor_parallel_size=tp,
+                            max_model_len=int(getattr(args, "max_model_len", 8192) or 8192),
+                            lora_path=vllm_lora(
+                                lora_path,
+                                required=bool(
+                                    lora_path and (Path(lora_path) / "adapter_model.safetensors").is_file()
+                                ),
+                            ),
+                            gpu_memory_utilization=float(getattr(args, "gpu_memory_utilization", 0.90) or 0.90),
+                            enforce_eager=bool(getattr(args, "enforce_eager", True)),
+                            python_exe=str(getattr(args, "vllm_python", "") or "") or None,
+                            startup_timeout_s=3600.0,
+                            generate_timeout_s=float(getattr(args, "vllm_generate_timeout_s", 3600.0) or 3600.0),
+                            max_num_seqs=int(getattr(args, "max_num_seqs", 0) or 0) or None,
+                            extra_env=extra_env,
+                        )
+                        disable_ar = getattr(args, "vllm_disable_custom_all_reduce", None)
+                        if disable_ar is not None:
+                            client._disable_custom_all_reduce = bool(disable_ar)
+                        print(
+                            f"[{log_tag}] vLLM replica={i} gpus={gpus} tp={tp} n_queries={len(shard)} tag={tag}",
+                            flush=True,
+                        )
+                        client.start()
+                        clients.append(client)
+                        if stagger > 0 and i + 1 < rollout_replicas:
+                            time.sleep(stagger)
+
+                    replica_groups: list[list[Any]] = [[] for _ in range(rollout_replicas)]
+
+                    def _run(idx: int):
+                        shard = shards[idx]
+                        client = clients[idx]
+                        if not shard or client is None:
+                            return idx, []
+                        return idx, rollout_queries_batched(client.generate_batch, shard, **rollout_kw)
+
+                    with ThreadPoolExecutor(max_workers=max(1, rollout_replicas)) as pool:
+                        futs = [pool.submit(_run, i) for i in range(rollout_replicas)]
+                        for fut in as_completed(futs):
+                            idx, groups = fut.result()
+                            replica_groups[idx] = groups
+                    return _interleave(replica_groups)
+                finally:
+                    for client in clients:
+                        if client is not None:
+                            try:
+                                client.close()
+                            except Exception:
+                                pass
+                    wait_gpus_quiet()
+                    keepalive.resume()
+            if rollout_backend == "vllm":
+                if backend is not None:
+                    release_hf()
+                client = open_vllm(lora_path, tag)
+                try:
+                    return rollout_queries_batched(client.generate_batch, local_rows, **rollout_kw)
+                finally:
+                    close_vllm()
+            if rollout_backend == "hf":
+                gen = HFGenerateClient(ensure_hf(lora_path), enc=enc)
+                rollout_kw["rollout_backend"] = "hf"
+                return rollout_queries_batched(gen.generate_batch, local_rows, **rollout_kw)
+            raise RuntimeError(f"unsupported rollout_backend={rollout_backend!r}")
+
+        local_groups = _local_rollout(work_rows)
+        if dist.world_size > 1:
+            return gather_sharded_objects(
+                local_groups,
+                shard_dir=out / "tmp" / "rollout_shards",
+                tag=tag,
+            )
+        return local_groups
 
     def eval_now(lora_path: str | None, tag: str, *, teacher_mode: bool = False):
         eval_kw = dict(
@@ -2347,144 +2560,194 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
                     flush=True,
                 )
             already = int(query_sampler.state.global_optimizer_step)
-            remaining = max(0, n_train - already)
+            target_updates = int(n_train)
             metrics_path = out / cell / "metrics.jsonl"
-            for step in range(remaining):
+            empty_streak = 0
+            max_empty = int(getattr(args, "max_empty_rollouts", 8) or 8)
+            while already < target_updates:
+                if empty_streak >= max_empty:
+                    raise RuntimeError(
+                        f"too many empty-signal rollouts ({empty_streak}) before reaching "
+                        f"{target_updates} successful optimizer updates"
+                    )
                 step_rows, sample_meta = query_sampler.sample_for_rollout()
                 query_sampler.note_rollout_start()
+                rollout_batch_id = int(query_sampler.state.global_rollout_batch)
+                attempt_id = int(query_sampler.state.attempt_id)
+                sample_meta["rollout_batch_id"] = rollout_batch_id
+                sample_meta["attempt_id"] = attempt_id
                 print(
-                    f"[{log_tag}] cell={cell} on-policy rollout step={step} "
+                    f"[{log_tag}] cell={cell} on-policy rollout batch={rollout_batch_id} "
+                    f"successful_opt={already}/{target_updates} "
                     f"policy={loop.policy_version} queries={sample_meta.get('query_ids')}",
                     flush=True,
                 )
                 groups = collect_groups(
                     adapter_live,
                     loop.policy_version,
-                    f"{cell}_rollout{step}",
+                    f"{cell}_b{rollout_batch_id}",
                     sample=True,
                     rows=step_rows,
                     group_size=args.group_size,
                     teacher_mode=cell == "teacher",
                 )
-                rewards_before = [r for g in groups for r in g.terminal_rewards]
-                ensure_hf(adapter_live)
-                if pending_optimizer is not None:
-                    load_optimizer_bundle(backend, pending_optimizer)
-                    pending_optimizer = None
-                part = asyncio.run(
-                    train_cell(
-                        name=cell,
-                        backend=backend,
-                        groups=groups,
-                        lambda_opd=cell_lambda(cell, args.lambda_opd),
-                        train_steps=1,
-                        policy_version=loop.policy_version,
-                        opd_states_per_trajectory=args.opd_states_per_trajectory,
-                        component_id=args.component,
-                        teacher_fn=teacher_fn,
-                        opd_loss=str(getattr(args, "opd_loss", None) or "sr_opd_ce"),
-                        opd_gate_beta=float(
-                            getattr(args, "opd_gate_beta", SCAPE_RL_OPD_GATE_BETA)
-                            or SCAPE_RL_OPD_GATE_BETA
-                        ),
-                        groups_per_step=int(getattr(args, "train_groups_per_step", HF_DEFAULT_GROUPS_PER_STEP) or 0),
-                        micro_batch_size=int(getattr(args, "train_micro_batch_size", HF_DEFAULT_MICRO_BATCH) or HF_DEFAULT_MICRO_BATCH),
-                        heartbeat_every=int(getattr(args, "train_heartbeat_every", HF_DEFAULT_HEARTBEAT_EVERY) or HF_DEFAULT_HEARTBEAT_EVERY),
-                        skip_group_sampling=True,
-                        global_optimizer_step=query_sampler.state.global_optimizer_step,
-                        base_seed=int(args.seed),
-                        model_enc=enc,
+                part: dict[str, Any] = {"n_optimizer_steps": 0, "skipped_non_coordinator": True}
+                n_opt = 0
+                if is_coordinator():
+                    rewards_before = [r for g in groups for r in g.terminal_rewards]
+                    ensure_hf(adapter_live)
+                    if pending_optimizer is not None:
+                        load_optimizer_bundle(backend, pending_optimizer)
+                        pending_optimizer = None
+                    part = asyncio.run(
+                        train_cell(
+                            name=cell,
+                            backend=backend,
+                            groups=groups,
+                            lambda_opd=cell_lambda(cell, args.lambda_opd),
+                            train_steps=1,
+                            policy_version=loop.policy_version,
+                            opd_states_per_trajectory=args.opd_states_per_trajectory,
+                            component_id=args.component,
+                            teacher_fn=teacher_fn,
+                            opd_loss=str(getattr(args, "opd_loss", None) or "sr_opd_ce"),
+                            opd_gate_beta=float(
+                                getattr(args, "opd_gate_beta", SCAPE_RL_OPD_GATE_BETA)
+                                or SCAPE_RL_OPD_GATE_BETA
+                            ),
+                            groups_per_step=int(getattr(args, "train_groups_per_step", HF_DEFAULT_GROUPS_PER_STEP) or 0),
+                            micro_batch_size=int(getattr(args, "train_micro_batch_size", HF_DEFAULT_MICRO_BATCH) or HF_DEFAULT_MICRO_BATCH),
+                            heartbeat_every=int(getattr(args, "train_heartbeat_every", HF_DEFAULT_HEARTBEAT_EVERY) or HF_DEFAULT_HEARTBEAT_EVERY),
+                            skip_group_sampling=True,
+                            global_optimizer_step=query_sampler.state.global_optimizer_step,
+                            base_seed=int(args.seed),
+                            model_enc=enc,
+                        )
                     )
-                )
-                rewards_after = [r for g in groups for r in g.terminal_rewards]
-                reward_unchanged = rewards_before == rewards_after
-                if not reward_unchanged:
-                    raise RuntimeError("Teacher shadow mutated RL rewards")
-                cell_reward_unchanged = cell_reward_unchanged and reward_unchanged
-                n_opt = int(part.get("n_optimizer_steps") or 0)
-                source_policy_version = loop.policy_version
-                if n_opt > 0:
-                    query_sampler.note_update_complete()
-                    loop.bump_after_update()
-                step_num = int(query_sampler.state.global_optimizer_step)
-                ckpt_tmp = out / "checkpoints" / cell / f".tmp_step_{step_num:06d}"
-                ckpt_final = out / "checkpoints" / cell / f"step_{step_num:06d}"
-                adapter_step_dir = ckpt_tmp / "adapter"
-                adapter_step_dir.mkdir(parents=True, exist_ok=True)
-                backend.save_pretrained(str(adapter_step_dir))
-                save_optimizer_bundle(backend, ckpt_tmp / "optimizer.pt")
-                save_rng_state(ckpt_tmp / "rng.json")
-                (ckpt_tmp / "sampler.json").write_text(
-                    json.dumps(query_sampler.state.to_dict(), indent=2) + "\n", encoding="utf-8"
-                )
-                digest = policy_digest_record(
-                    adapter_dir=adapter_step_dir,
-                    base_model=vllm_base,
-                    policy_version=loop.policy_version,
-                )
-                ep_stats = [
-                    s
-                    for g in groups
-                    for s in ((g.trajectory_group or {}).get("episode_stats") or [])
-                ]
-                task_recalls = [float(s.get("task_recall") or s.get("gold_recall") or 0.0) for s in ep_stats]
-                reward_parts = [dict(s.get("reward_parts") or {}) for s in ep_stats if s.get("reward_parts")]
-                step_manifest = {
-                    "cell": cell,
-                    "step": step_num,
-                    "source_policy_version": source_policy_version,
-                    "updated_policy_version": loop.policy_version,
-                    "policy_version": loop.policy_version,
-                    "sample_meta": sample_meta,
-                    "train": part,
-                    "policy_digest": digest,
-                    "n_optimizer_steps": n_opt,
-                    "reward_unchanged_by_teacher": reward_unchanged,
-                }
-                append_metrics_jsonl(
-                    metrics_path,
-                    {
-                        "step": step_num,
+                    rewards_after = [r for g in groups for r in g.terminal_rewards]
+                    reward_unchanged = rewards_before == rewards_after
+                    if not reward_unchanged:
+                        raise RuntimeError("Teacher shadow mutated RL rewards")
+                    cell_reward_unchanged = cell_reward_unchanged and reward_unchanged
+                    n_opt = int(part.get("n_optimizer_steps") or 0)
+                    source_policy_version = loop.policy_version
+                    if n_opt > 0:
+                        query_sampler.note_update_complete()
+                        loop.bump_after_update()
+                        empty_streak = 0
+                    else:
+                        empty_streak += 1
+                    already = int(query_sampler.state.global_optimizer_step)
+                    step_num = already
+                    ckpt_tmp = out / "checkpoints" / cell / f".tmp_step_{step_num:06d}"
+                    ckpt_final = out / "checkpoints" / cell / f"step_{step_num:06d}"
+                    adapter_step_dir = ckpt_tmp / "adapter"
+                    adapter_step_dir.mkdir(parents=True, exist_ok=True)
+                    backend.save_pretrained(str(adapter_step_dir))
+                    save_optimizer_bundle(backend, ckpt_tmp / "optimizer.pt")
+                    save_rng_state(ckpt_tmp / "rng.json")
+                    (ckpt_tmp / "sampler.json").write_text(
+                        json.dumps(query_sampler.state.to_dict(), indent=2) + "\n", encoding="utf-8"
+                    )
+                    digest = policy_digest_record(
+                        adapter_dir=adapter_step_dir,
+                        base_model=vllm_base,
+                        policy_version=loop.policy_version,
+                    )
+                    from trim.training.rl_opd_metrics import reward_parts_group_stats
+
+                    ep_stats = [
+                        s
+                        for g in groups
+                        for s in ((g.trajectory_group or {}).get("episode_stats") or [])
+                    ]
+                    task_recalls = [float(s.get("task_recall") or s.get("gold_recall") or 0.0) for s in ep_stats]
+                    reward_parts = [dict(s.get("reward_parts") or {}) for s in ep_stats if s.get("reward_parts")]
+                    reward_group_audit = reward_parts_group_stats(groups)
+                    step_manifest = {
                         "cell": cell,
+                        "step": step_num,
                         "source_policy_version": source_policy_version,
                         "updated_policy_version": loop.policy_version,
                         "policy_version": loop.policy_version,
-                        "policy_digest": digest,
                         "sample_meta": sample_meta,
+                        "train": part,
+                        "policy_digest": digest,
                         "n_optimizer_steps": n_opt,
-                        "n_rl_datums": part.get("n_rl_datums"),
-                        "n_opd_datums": part.get("n_opd_datums"),
-                        "n_rl_tokens": part.get("n_rl_tokens"),
-                        "n_opd_tokens": part.get("n_opd_tokens"),
-                        "rl_loss_proxy": part.get("rl_loss_proxy"),
-                        "opd_nll": part.get("opd_nll"),
-                        "projection_stats": part.get("projection_stats"),
-                        "task_recall_mean": (sum(task_recalls) / len(task_recalls)) if task_recalls else None,
-                        "reward_mean": (sum(rewards_before) / len(rewards_before)) if rewards_before else None,
-                        "reward_parts_last": reward_parts[-1] if reward_parts else {},
+                        "rollout_batch_id": rollout_batch_id,
+                        "attempt_id": attempt_id,
+                        "successful_optimizer_step": already,
                         "reward_unchanged_by_teacher": reward_unchanged,
-                        "update_type": (part.get("substeps") or [{}])[-1].get("update_type")
-                        if part.get("substeps")
-                        else part.get("update_type"),
-                    },
-                )
-                if n_opt > 0:
-                    publish_step_checkpoint(ckpt_tmp, ckpt_final, manifest=step_manifest)
-                    adapter_live = str(adapter_step_dir)
-                    adapter_dir = out / "adapters" / cell
-                    adapter_dir.mkdir(parents=True, exist_ok=True)
-                    backend.save_pretrained(str(adapter_dir))
-                    adapter_live = str(adapter_dir)
-                    if step == remaining - 1:
-                        adapter_audits.append(save_and_audit(cell, adapter_dir))
-                else:
-                    import shutil
+                    }
+                    append_metrics_jsonl(
+                        metrics_path,
+                        {
+                            "step": step_num,
+                            "cell": cell,
+                            "source_policy_version": source_policy_version,
+                            "updated_policy_version": loop.policy_version,
+                            "policy_version": loop.policy_version,
+                            "policy_digest": digest,
+                            "sample_meta": sample_meta,
+                            "n_optimizer_steps": n_opt,
+                            "n_rl_datums": part.get("n_rl_datums"),
+                            "n_opd_datums": part.get("n_opd_datums"),
+                            "n_rl_tokens": part.get("n_rl_tokens"),
+                            "n_opd_tokens": part.get("n_opd_tokens"),
+                            "rl_loss_proxy": part.get("rl_loss_proxy"),
+                            "opd_nll": part.get("opd_nll"),
+                            "projection_stats": part.get("projection_stats"),
+                            "task_recall_mean": (sum(task_recalls) / len(task_recalls)) if task_recalls else None,
+                            "reward_mean": (sum(rewards_before) / len(rewards_before)) if rewards_before else None,
+                            "reward_parts_last": reward_parts[-1] if reward_parts else {},
+                            "reward_group_audit": reward_group_audit,
+                            "rollout_batch_id": rollout_batch_id,
+                            "attempt_id": attempt_id,
+                            "successful_optimizer_step": already,
+                            "reward_unchanged_by_teacher": reward_unchanged,
+                            "update_type": (part.get("substeps") or [{}])[-1].get("update_type")
+                            if part.get("substeps")
+                            else part.get("update_type"),
+                        },
+                    )
+                    if n_opt > 0:
+                        publish_step_checkpoint(ckpt_tmp, ckpt_final, manifest=step_manifest)
+                        adapter_live = str(adapter_step_dir)
+                        adapter_dir = out / "adapters" / cell
+                        adapter_dir.mkdir(parents=True, exist_ok=True)
+                        backend.save_pretrained(str(adapter_dir))
+                        adapter_live = str(adapter_dir)
+                        if already >= target_updates:
+                            adapter_audits.append(save_and_audit(cell, adapter_dir))
+                    else:
+                        import shutil
 
-                    if ckpt_tmp.exists():
-                        shutil.rmtree(ckpt_tmp)
-                    part["skipped_no_signal"] = True
-                train_parts.append(part)
-                release_hf()
+                        if ckpt_tmp.exists():
+                            shutil.rmtree(ckpt_tmp)
+                        part["skipped_no_signal"] = True
+                    train_parts.append(part)
+                    release_hf()
+                else:
+                    keepalive.resume()
+                synced = broadcast_object(
+                    {
+                        "adapter_live": adapter_live,
+                        "policy_version": loop.policy_version,
+                        "sampler_state": query_sampler.state.to_dict(),
+                        "n_opt": n_opt,
+                        "cell_reward_unchanged": cell_reward_unchanged,
+                    }
+                )
+                adapter_live = str(synced["adapter_live"])
+                loop.policy_version = str(synced["policy_version"])
+                query_sampler.state = QuerySamplerState.from_dict(synced["sampler_state"])
+                cell_reward_unchanged = bool(synced["cell_reward_unchanged"])
+                already = int(query_sampler.state.global_optimizer_step)
+                if not is_coordinator():
+                    keepalive.pause()
+                    dist_barrier()
+                else:
+                    dist_barrier()
         else:
             print(f"[{log_tag}] cell={cell} rollout", flush=True)
             groups = collect_groups(
@@ -2500,70 +2763,92 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
         if groups is None:
             raise RuntimeError(f"cell={cell} produced no rollout groups")
         if not refresh and n_train > 0:
-            rewards_before = [r for g in groups for r in g.terminal_rewards]
-            ensure_hf(adapter_live)
-            train_parts.append(
-                asyncio.run(
-                    train_cell(
-                        name=cell,
-                        backend=backend,
-                        groups=groups,
-                        lambda_opd=cell_lambda(cell, args.lambda_opd),
-                        train_steps=n_train,
-                        policy_version=loop.policy_version,
-                        opd_states_per_trajectory=args.opd_states_per_trajectory,
-                        component_id=args.component,
-                        teacher_fn=teacher_fn,
-                        opd_loss=str(getattr(args, "opd_loss", None) or "sr_opd_ce"),
-                        opd_gate_beta=float(
-                            getattr(args, "opd_gate_beta", SCAPE_RL_OPD_GATE_BETA)
-                            or SCAPE_RL_OPD_GATE_BETA
-                        ),
-                        groups_per_step=int(getattr(args, "train_groups_per_step", HF_DEFAULT_GROUPS_PER_STEP) or 0),
-                        micro_batch_size=int(getattr(args, "train_micro_batch_size", HF_DEFAULT_MICRO_BATCH) or HF_DEFAULT_MICRO_BATCH),
-                        heartbeat_every=int(getattr(args, "train_heartbeat_every", HF_DEFAULT_HEARTBEAT_EVERY) or HF_DEFAULT_HEARTBEAT_EVERY),
-                        model_enc=enc,
+            if is_coordinator():
+                rewards_before = [r for g in groups for r in g.terminal_rewards]
+                ensure_hf(adapter_live)
+                train_parts.append(
+                    asyncio.run(
+                        train_cell(
+                            name=cell,
+                            backend=backend,
+                            groups=groups,
+                            lambda_opd=cell_lambda(cell, args.lambda_opd),
+                            train_steps=n_train,
+                            policy_version=loop.policy_version,
+                            opd_states_per_trajectory=args.opd_states_per_trajectory,
+                            component_id=args.component,
+                            teacher_fn=teacher_fn,
+                            opd_loss=str(getattr(args, "opd_loss", None) or "sr_opd_ce"),
+                            opd_gate_beta=float(
+                                getattr(args, "opd_gate_beta", SCAPE_RL_OPD_GATE_BETA)
+                                or SCAPE_RL_OPD_GATE_BETA
+                            ),
+                            groups_per_step=int(getattr(args, "train_groups_per_step", HF_DEFAULT_GROUPS_PER_STEP) or 0),
+                            micro_batch_size=int(getattr(args, "train_micro_batch_size", HF_DEFAULT_MICRO_BATCH) or HF_DEFAULT_MICRO_BATCH),
+                            heartbeat_every=int(getattr(args, "train_heartbeat_every", HF_DEFAULT_HEARTBEAT_EVERY) or HF_DEFAULT_HEARTBEAT_EVERY),
+                            model_enc=enc,
+                        )
                     )
                 )
+                rewards_after = [r for g in groups for r in g.terminal_rewards]
+                if rewards_before != rewards_after:
+                    raise RuntimeError("Teacher shadow mutated RL rewards")
+                cell_reward_unchanged = True
+                if cell != "before":
+                    adapter_dir = out / "adapters" / cell
+                    adapter_audits.append(save_and_audit(cell, adapter_dir))
+                    adapter_map[cell] = str(adapter_dir)
+                    adapter_live = str(adapter_dir)
+                release_hf()
+            else:
+                keepalive.resume()
+            synced_cell = broadcast_object(
+                {
+                    "adapter_live": adapter_live,
+                    "adapter_map": adapter_map,
+                    "cell_reward_unchanged": cell_reward_unchanged,
+                }
             )
-            rewards_after = [r for g in groups for r in g.terminal_rewards]
-            if rewards_before != rewards_after:
-                raise RuntimeError("Teacher shadow mutated RL rewards")
-            cell_reward_unchanged = True
-            if cell != "before":
-                adapter_dir = out / "adapters" / cell
-                adapter_audits.append(save_and_audit(cell, adapter_dir))
-                adapter_map[cell] = str(adapter_dir)
-                adapter_live = str(adapter_dir)
-            release_hf()
+            adapter_live = str(synced_cell["adapter_live"])
+            adapter_map = dict(synced_cell["adapter_map"])
+            cell_reward_unchanged = bool(synced_cell["cell_reward_unchanged"])
+            dist_barrier()
+            if not is_coordinator():
+                keepalive.pause()
         elif cell in {"teacher", "before"}:
             adapter_map[cell] = None
-            adapter_audits.append(
-                {"cell": cell, "adapter_dir": None, "reload_ready": True, "exists": False, "reload_path": "theta0_no_adapter"}
-            )
+            if is_coordinator():
+                adapter_audits.append(
+                    {"cell": cell, "adapter_dir": None, "reload_ready": True, "exists": False, "reload_path": "theta0_no_adapter"}
+                )
         elif refresh:
             adapter_map[cell] = adapter_live
-            if not any(a.get("cell") == cell for a in adapter_audits):
+            if is_coordinator() and not any(a.get("cell") == cell for a in adapter_audits):
                 adapter_audits.append(audit_saved_adapter(Path(adapter_live), cell=cell))
 
-        collected = filter_component_states(
-            [p for g in groups for p in g.decision_points],
-            component_id=args.component,
-            require_valid=False,
-        )
-        write_collected_states(
-            collected,
-            out / cell / "collected_states.jsonl",
-            component_id=args.component,
-            extra={
-                "cell": cell,
-                "n_rollout_points": sum(len(g.decision_points) for g in groups),
-                "policy_version": groups[0].policy_version if groups else "v0",
-                "on_policy_refresh": refresh,
-            },
-        )
-        gstat = group_stats(groups)
-        train_stats = merge_train_stats(train_parts)
+        if is_coordinator():
+            collected = filter_component_states(
+                [p for g in groups for p in g.decision_points],
+                component_id=args.component,
+                require_valid=False,
+            )
+            write_collected_states(
+                collected,
+                out / cell / "collected_states.jsonl",
+                component_id=args.component,
+                extra={
+                    "cell": cell,
+                    "n_rollout_points": sum(len(g.decision_points) for g in groups),
+                    "policy_version": groups[0].policy_version if groups else "v0",
+                    "on_policy_refresh": refresh,
+                },
+            )
+            gstat = group_stats(groups)
+            train_stats = merge_train_stats(train_parts)
+        else:
+            collected = []
+            gstat = {"n_decision_points": 0}
+            train_stats = merge_train_stats(train_parts)
         ev: dict[str, Any] = {
             "setting": cell,
             "skipped": True,
@@ -2572,35 +2857,39 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
         traces: list[dict[str, Any]] = []
         if not train_only:
             print(f"[{log_tag}] cell={cell} eval", flush=True)
-            ev, traces = eval_now(
-                str(theta0_dir) if cell == "before" else adapter_live,
-                f"{cell}_eval",
-                teacher_mode=cell == "teacher",
-            )
-            ev["setting"] = cell
-            ev["reported_split"] = "official_test"
-        cell_dir = out / cell
-        cell_dir.mkdir(parents=True, exist_ok=True)
-        if traces:
-            with (cell_dir / "PER_QUERY.jsonl").open("w", encoding="utf-8") as handle:
-                for tr in traces:
-                    handle.write(json.dumps(tr, ensure_ascii=False) + "\n")
-        cells[cell] = {
-            "eval": ev,
-            "train": train_stats,
-            "rollout": gstat,
-            "n_decision_points": gstat["n_decision_points"],
-            "n_component_states": len(collected),
-            "reward_unchanged_by_teacher": (
-                bool(cell_reward_unchanged)
-                if refresh and cell not in {"teacher", "before"}
-                else True
-            ),
-            "adapter": adapter_map.get(cell),
-            "on_policy_refresh": refresh,
-            "rollout_backend": "vllm" if vllm_on else "hf",
-        }
-        (cell_dir / "CELL.json").write_text(json.dumps(cells[cell], indent=2) + "\n", encoding="utf-8")
+            if is_coordinator():
+                ev, traces = eval_now(
+                    str(theta0_dir) if cell == "before" else adapter_live,
+                    f"{cell}_eval",
+                    teacher_mode=cell == "teacher",
+                )
+                ev["setting"] = cell
+                ev["reported_split"] = "official_test"
+            ev = broadcast_object(ev)
+            dist_barrier()
+        if is_coordinator():
+            cell_dir = out / cell
+            cell_dir.mkdir(parents=True, exist_ok=True)
+            if traces:
+                with (cell_dir / "PER_QUERY.jsonl").open("w", encoding="utf-8") as handle:
+                    for tr in traces:
+                        handle.write(json.dumps(tr, ensure_ascii=False) + "\n")
+            cells[cell] = {
+                "eval": ev,
+                "train": train_stats,
+                "rollout": gstat,
+                "n_decision_points": gstat["n_decision_points"],
+                "n_component_states": len(collected),
+                "reward_unchanged_by_teacher": (
+                    bool(cell_reward_unchanged)
+                    if refresh and cell not in {"teacher", "before"}
+                    else True
+                ),
+                "adapter": adapter_map.get(cell),
+                "on_policy_refresh": refresh,
+                "rollout_backend": "vllm" if vllm_on else "hf",
+            }
+            (cell_dir / "CELL.json").write_text(json.dumps(cells[cell], indent=2) + "\n", encoding="utf-8")
         eval_summaries.append(ev)
         if train_only:
             print(
@@ -2648,54 +2937,61 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
             )
         release_hf()
 
-    write_reload_audit(out / "ADAPTER_RELOAD_AUDIT.json", adapter_audits)
-    (out / "ADAPTER_MAP.json").write_text(json.dumps(adapter_map, indent=2) + "\n", encoding="utf-8")
-    if train_only:
-        official = {
-            "skipped": True,
-            "note": "train_only; score with scripts/run_eval.py",
+    summary = None
+    if is_coordinator():
+        write_reload_audit(out / "ADAPTER_RELOAD_AUDIT.json", adapter_audits)
+        (out / "ADAPTER_MAP.json").write_text(json.dumps(adapter_map, indent=2) + "\n", encoding="utf-8")
+        if train_only:
+            official = {
+                "skipped": True,
+                "note": "train_only; score with scripts/run_eval.py",
+            }
+        else:
+            official = write_eval_outputs(
+                out,
+                component_id=args.component,
+                summaries=eval_summaries,
+                adapter_audits=adapter_audits,
+                pool_meta=pool_meta["eval"],
+            )
+        rl_opd = cells.get("rl_opd", {}).get("train") or {}
+        scape_rl = cells.get("scape_rl", {}).get("train") or {}
+        scape_seed = cells.get("scape_seed", {}).get("train") or {}
+        joint = scape_seed or scape_rl or rl_opd
+        joint_cell_present = "scape_seed" in cells or "scape_rl" in cells or "rl_opd" in cells
+        summary = {
+            "elapsed_sec": time.time() - t0,
+            "manifest": manifest,
+            "cells": {
+                k: {kk: vv for kk, vv in v.items() if kk != "train"}
+                | {"train": {tk: tv for tk, tv in (v.get("train") or {}).items() if tk != "call_log"}}
+                for k, v in cells.items()
+            },
+            "official_eval": official,
+            "q1_joint_one_optim": (
+                int(joint.get("n_rl_forward_backward") or 0) >= 1
+                and int(joint.get("n_opd_forward_backward") or 0) >= 1
+                and int(joint.get("n_optimizer_steps") or 0) == (0 if not joint_cell_present else args.train_steps)
+            ),
+            "q2_on_policy_projection": any(c.get("n_decision_points") for c in cells.values()),
+            "q3_teacher_does_not_change_reward": all(c.get("reward_unchanged_by_teacher") for c in cells.values()),
+            "on_policy_refresh": bool(getattr(args, "on_policy_refresh", True)),
+            "rollout_backend": "vllm" if vllm_on else "hf",
+            "train_only": train_only,
+            "ok": True,
         }
-    else:
-        official = write_eval_outputs(
-            out,
-            component_id=args.component,
-            summaries=eval_summaries,
-            adapter_audits=adapter_audits,
-            pool_meta=pool_meta["eval"],
+        summary_name = "TRAIN_SUMMARY.json" if train_only else "FOUR_CELL_SUMMARY.json"
+        (out / summary_name).write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+        if train_only:
+            (out / "FOUR_CELL_SUMMARY.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+        (out / "RUN_COMPLETE").write_text(
+            json.dumps({"ok": True, "elapsed_sec": summary.get("elapsed_sec"), "train_only": train_only}) + "\n",
+            encoding="utf-8",
         )
-    rl_opd = cells.get("rl_opd", {}).get("train") or {}
-    scape_rl = cells.get("scape_rl", {}).get("train") or {}
-    scape_seed = cells.get("scape_seed", {}).get("train") or {}
-    joint = scape_seed or scape_rl or rl_opd
-    joint_cell_present = "scape_seed" in cells or "scape_rl" in cells or "rl_opd" in cells
-    summary = {
-        "elapsed_sec": time.time() - t0,
-        "manifest": manifest,
-        "cells": {
-            k: {kk: vv for kk, vv in v.items() if kk != "train"}
-            | {"train": {tk: tv for tk, tv in (v.get("train") or {}).items() if tk != "call_log"}}
-            for k, v in cells.items()
-        },
-        "official_eval": official,
-        "q1_joint_one_optim": (
-            int(joint.get("n_rl_forward_backward") or 0) >= 1
-            and int(joint.get("n_opd_forward_backward") or 0) >= 1
-            and int(joint.get("n_optimizer_steps") or 0) == (0 if not joint_cell_present else args.train_steps)
-        ),
-        "q2_on_policy_projection": any(c.get("n_decision_points") for c in cells.values()),
-        "q3_teacher_does_not_change_reward": all(c.get("reward_unchanged_by_teacher") for c in cells.values()),
-        "on_policy_refresh": bool(getattr(args, "on_policy_refresh", True)),
-        "rollout_backend": "vllm" if vllm_on else "hf",
-        "train_only": train_only,
-    }
-    summary_name = "TRAIN_SUMMARY.json" if train_only else "FOUR_CELL_SUMMARY.json"
-    (out / summary_name).write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
-    if train_only:
-        (out / "FOUR_CELL_SUMMARY.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
-    (out / "RUN_COMPLETE").write_text(
-        json.dumps({"ok": True, "elapsed_sec": summary.get("elapsed_sec"), "train_only": train_only}) + "\n",
-        encoding="utf-8",
-    )
+    summary = broadcast_object(summary)
+    dist_barrier()
+    if not summary:
+        raise RuntimeError("coordinator returned empty training summary")
     return summary
 
 
@@ -2742,8 +3038,11 @@ def coerce_runtime_args(args: argparse.Namespace) -> argparse.Namespace:
         args.seeds = [int(args.seed)]
     if not hasattr(args, "rollout_backend"):
         args.rollout_backend = "vllm"
+    if not hasattr(args, "training_backend"):
+        args.training_backend = "hf_debug"
     if not hasattr(args, "gpu_schedule"):
-        args.gpu_schedule = "scheme_a"
+        backend = str(getattr(args, "training_backend", "hf_debug") or "hf_debug").lower().replace("-", "_")
+        args.gpu_schedule = "verl_fsdp2" if backend in {"verl", "fsdp2", "verl_fsdp2"} else "scheme_a"
     if not hasattr(args, "on_policy_refresh"):
         args.on_policy_refresh = True
     if not hasattr(args, "tensor_parallel_size"):
@@ -2786,7 +3085,8 @@ def coerce_runtime_args(args: argparse.Namespace) -> argparse.Namespace:
     if not hasattr(args, "gpu_memory_utilization"):
         args.gpu_memory_utilization = 0.90
     if not hasattr(args, "enforce_eager"):
-        args.enforce_eager = True
+        backend = str(getattr(args, "training_backend", "hf_debug") or "hf_debug").lower().replace("-", "_")
+        args.enforce_eager = backend not in {"verl", "fsdp2", "verl_fsdp2"}
     if not hasattr(args, "vllm_python"):
         args.vllm_python = ""
     if not hasattr(args, "max_num_seqs"):
@@ -2795,6 +3095,8 @@ def coerce_runtime_args(args: argparse.Namespace) -> argparse.Namespace:
         args.vllm_generate_timeout_s = 3600.0
     if not hasattr(args, "vllm_disable_custom_all_reduce"):
         args.vllm_disable_custom_all_reduce = None
+    if not hasattr(args, "rollout_replicas") or getattr(args, "rollout_replicas", None) in {None, 0}:
+        args.rollout_replicas = 1
     if not hasattr(args, "resume"):
         args.resume = False
     if not hasattr(args, "train_groups_per_step"):
@@ -2853,6 +3155,11 @@ def run_from_rl_opd_args(args: argparse.Namespace) -> dict[str, Any]:
         Path(args.out).mkdir(parents=True, exist_ok=True)
         (Path(args.out) / "VALIDATE.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
         return report
+    backend = str(getattr(args, "training_backend", "hf_debug") or "hf_debug").lower().replace("-", "_")
+    if backend in {"verl", "fsdp2", "verl_fsdp2"}:
+        from trim.integrations.verl.trainer_adapter import run_verl_fsdp2_train
+
+        return run_verl_fsdp2_train(args)
     if len(getattr(args, "seeds", [args.seed]) or [args.seed]) > 1:
         return run_seeded_four_cell(args)
     return run_four_cell(args)

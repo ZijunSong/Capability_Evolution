@@ -44,8 +44,11 @@ def test_episode_quality_metrics_match_harness1_document_formulas():
         timing={"e2e_sec": 1.5, "model_sec": 1.0, "harness_sec": 0.4, "elapsed_s": 1.5},
         actions=[{"name": "search_corpus", "arguments": {"query": "who"}}],
     )
-    assert metrics["recall"] == 0.5
+    assert metrics["recall"] == 1.0
+    assert metrics["gold_recall"] == 1.0
+    assert metrics["evidence_recall"] == 0.5
     assert metrics["trajectory_recall"] == 1.0
+    assert metrics["trajectory_evidence_recall"] == 1.0
     assert metrics["precision"] == 0.5
     assert metrics["final_answer_recall"] == 1.0
     assert metrics["trajectory_fa_recall"] == 1.0
@@ -137,7 +140,8 @@ def test_summarize_traces_includes_harness1_and_timing():
     assert summary["error_rate"] == 0.0
     assert extra["p50_e2e_sec"] in {1.0, 2.0}
     table = format_summary_table("eval", summary)
-    assert "Curated Recall" in table
+    assert "Official Recall" in table
+    assert "Official Trajectory Recall" in table
     assert "Model Time" in table
     assert "Harness Time" in table
     assert "E2E Time" in table

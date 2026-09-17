@@ -55,6 +55,16 @@ def test_resolve_glm45_and_glm47():
     assert resolve_model_profile("THUDM/GLM-4.7").tool_call_parser == "glm47"
 
 
+def test_resolve_glm0414_uses_native_parser():
+    profile = resolve_model_profile("ZhipuAI/GLM-4-32B-0414")
+    assert profile.tool_call_parser == "glm4_0414"
+    assert profile.needs_tool_smoke_test
+    extra = vllm_extra_shell("GLM-4-32B-0414")
+    assert "--tool-call-parser glm4_0414" in extra
+    assert "--tool-parser-plugin" in extra
+    assert "glm4_0414_tool_parser.py" in extra
+
+
 def test_resolve_gemma_uses_pythonic():
     profile = resolve_model_profile("google/gemma-3-4b-it")
     assert profile.family == FAMILY_HF_CHAT
