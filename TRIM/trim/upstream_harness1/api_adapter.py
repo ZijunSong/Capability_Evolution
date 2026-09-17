@@ -6,6 +6,7 @@ decide episode end. Those stay on the original ``SlidingWindowSearchEnv``.
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import re
@@ -198,14 +199,36 @@ _TOOL_NAMES_PATTERN = (
     r"search_corpus|curate|end_search|grep_corpus|read_document|verify|fan_out_search|review_docs|prune_chunks"
 )
 
+_PYTHONIC_KWARG_NAMES = (
+    "add_ids",
+    "remove_ids",
+    "importance",
+    "query",
+    "queries",
+    "doc_id",
+    "doc_ids",
+    "pattern",
+    "claim",
+    "chunk_ids",
+    "reasoning",
+    "text",
+)
+_PYTHONIC_KWARG_PATTERN = "|".join(_PYTHONIC_KWARG_NAMES)
+_MISSING_PYTHONIC_COMMA_RE = re.compile(
+    rf'(?<=[\])}}\d"\'])(?=(?:{_PYTHONIC_KWARG_PATTERN})\s*=)'
+)
+
 _TOOL_CALL_IN_CONTENT_RE = re.compile(
     r"(?:<tool_call\b"
     r'|"name"\s*:\s*"(?:' + _TOOL_NAMES_PATTERN + r')"'
     r'|"(?:type|operation|function)"\s*:\s*"(?:' + _TOOL_NAMES_PATTERN + r')"'
     r"|<\|channel\|>|<\|call\|>"
-    r"|(?:^|[\s{])(?:" + _TOOL_NAMES_PATTERN + r")\s*[:({]"
+    r"|(?:^|[\s{\[,])(?:" + _TOOL_NAMES_PATTERN + r")\s*[:({]"
+    r"|\[(?:\s*(?:" + _TOOL_NAMES_PATTERN + r")\s*\()"
     r"|functions[\.\-\s](?:" + _TOOL_NAMES_PATTERN + r")"
     r"|\b(?:" + _TOOL_NAMES_PATTERN + r")\s*\(\s*\{"
+    r"|(?:^|[\s{\[,])(?:" + _TOOL_NAMES_PATTERN + r")\s*\(\s*"
+    r"(?:[)\]{]|" + _PYTHONIC_KWARG_PATTERN + r"\s*=)"
     r")",
     re.IGNORECASE,
 )
@@ -274,6 +297,8 @@ def _content_looks_like_tool_call(text: str, known_tool_names: frozenset[str] | 
         return False
     if _TOOL_CALL_IN_CONTENT_RE.search(raw):
         return True
+    if _try_parse_pythonic_tool_calls(raw, names) is not None:
+        return True
     if not raw.startswith("{"):
         return False
     try:
@@ -283,6 +308,81 @@ def _content_looks_like_tool_call(text: str, known_tool_names: frozenset[str] | 
             return True
         return False
     return isinstance(obj, dict) and _json_obj_looks_like_tool_call(obj, names)
+
+
+def _insert_missing_pythonic_commas(src: str) -> str:
+    """Gemma often emits [curate(add_ids=[...]importance={...})] without commas."""
+    return _MISSING_PYTHONIC_COMMA_RE.sub(",", src)
+
+
+def _pythonic_call_to_tool(call: ast.Call, names: frozenset[str]) -> dict[str, Any] | None:
+    if not isinstance(call.func, ast.Name):
+        return None
+    name = call.func.id
+    if name not in names or name == "user_text":
+        return None
+    if call.args or any(kw.arg is None for kw in call.keywords):
+        return None
+    arguments: dict[str, Any] = {}
+    for kw in call.keywords:
+        assert kw.arg is not None
+        try:
+            arguments[kw.arg] = ast.literal_eval(kw.value)
+        except (ValueError, TypeError, SyntaxError, MemoryError):
+            return None
+    return {"name": name, "arguments": arguments, "id": "agent"}
+
+
+def _try_parse_pythonic_tool_calls(
+    text: str, known_tool_names: frozenset[str] | None = None
+) -> list[dict[str, Any]] | None:
+    """Recover Gemma pythonic tool calls written into message content.
+
+    vLLM's pythonic parser drops malformed list-calls (missing commas between
+    kwargs) into ``content``. At temperature 0 a format retry usually repeats
+    the same string, so recover the intended tool call instead of ending the
+    episode as ``implicit_user_text``.
+    """
+    names = known_tool_names or _KNOWN_TOOL_NAMES
+    raw = _insert_missing_pythonic_commas(_strip_code_fences(str(text or "").strip()))
+    if not raw:
+        return None
+    try:
+        tree = ast.parse(raw, mode="eval")
+    except SyntaxError:
+        return None
+    body = tree.body
+    if isinstance(body, ast.List):
+        elts = body.elts
+    elif isinstance(body, ast.Tuple):
+        elts = body.elts
+    elif isinstance(body, ast.Call):
+        elts = [body]
+    else:
+        return None
+    if not elts:
+        return None
+    recovered: list[dict[str, Any]] = []
+    for elt in elts:
+        if not isinstance(elt, ast.Call):
+            return None
+        item = _pythonic_call_to_tool(elt, names)
+        if item is None:
+            return None
+        recovered.append(item)
+    return recovered
+
+
+def _apply_recovered_tool_calls(parsed: ParsedApiAction, calls: list[dict[str, Any]]) -> ParsedApiAction:
+    parsed.tool_calls = calls
+    parsed.parse_error = None
+    parsed.protocol_error = None
+    parsed.episode_finish_reason = (
+        "explicit_end_search"
+        if any(str(c.get("name") or "") == "end_search" for c in calls)
+        else None
+    )
+    return parsed
 
 
 def _message_text(message: Mapping[str, Any]) -> str:
@@ -363,6 +463,9 @@ def parse_chat_completion(response: Mapping[str, Any]) -> ParsedApiAction:
         return parsed
 
     text = _message_text(message)
+    recovered = _try_parse_pythonic_tool_calls(text) if text else None
+    if recovered:
+        return _apply_recovered_tool_calls(parsed, recovered)
     if text and _content_looks_like_tool_call(text):
         parsed.protocol_error = "tool_call_in_content"
         parsed.parse_error = "Response body contains tool-call syntax without structured tool_calls"
@@ -388,6 +491,39 @@ def parse_chat_completion(response: Mapping[str, Any]) -> ParsedApiAction:
         parsed.parse_error = "Reasoning-only action with no tool calls"
         return parsed
     parsed.parse_error = f"Unhandled finish_reason={finish!r} with empty content"
+    return parsed
+
+
+def rewrite_premature_user_text(parsed: ParsedApiAction, *, env_turn: int) -> ParsedApiAction:
+    """Treat first-turn prose as a format error for retrieval subagents.
+
+    BrowseComp zero/all actors must call search/curate/end_search. Mapping the
+    first completion to ``user_text`` ends the episode with zero retrieval.
+    Later-turn pythonic tool text that leaked through as ``user_text`` is also
+    recovered or retried — otherwise Gemma all dies after the second search.
+    """
+    if parsed.episode_finish_reason != "implicit_user_text":
+        return parsed
+    text = ""
+    if parsed.tool_calls:
+        args = parsed.tool_calls[0].get("arguments") or {}
+        if isinstance(args, Mapping):
+            text = str(args.get("text") or "")
+    recovered = _try_parse_pythonic_tool_calls(text) if text else None
+    if recovered:
+        return _apply_recovered_tool_calls(parsed, recovered)
+    if text and _content_looks_like_tool_call(text):
+        parsed.parse_error = "Response body contains tool-call syntax without structured tool_calls"
+        parsed.protocol_error = "tool_call_in_content"
+        parsed.episode_finish_reason = None
+        parsed.tool_calls = []
+        return parsed
+    if int(env_turn) > 0:
+        return parsed
+    parsed.parse_error = "Retrieval subagent returned natural language instead of a tool call"
+    parsed.protocol_error = parsed.protocol_error or "premature_user_text"
+    parsed.episode_finish_reason = None
+    parsed.tool_calls = []
     return parsed
 
 

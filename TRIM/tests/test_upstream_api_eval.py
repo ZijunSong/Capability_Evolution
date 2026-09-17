@@ -9,8 +9,10 @@ from trim.upstream_harness1.api_adapter import (
     ServerParseError,
     parse_chat_completion,
     request_fingerprint,
+    rewrite_premature_user_text,
 )
 from trim.upstream_harness1.env_bridge import (
+    GEMMA_FORMAT_RETRY_PROMPT,
     GPT_OSS_FORMAT_RETRY_PROMPT,
     QWEN_FORMAT_RETRY_PROMPT,
     _allowed_tool_names,
@@ -237,6 +239,92 @@ def test_parse_tool_call_in_content_without_structured_calls():
     assert parsed.protocol_error == "tool_call_in_content"
 
 
+def test_parse_recovers_gemma_pythonic_curate_missing_commas():
+    parsed = parse_chat_completion(
+        {
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {
+                        "content": (
+                            '[curate(add_ids=["19901_0"]importance={"19901_0": "low"})]'
+                        )
+                    },
+                }
+            ]
+        }
+    )
+    assert parsed.ok
+    assert parsed.episode_finish_reason is None
+    assert parsed.tool_calls == [
+        {
+            "name": "curate",
+            "arguments": {
+                "add_ids": ["19901_0"],
+                "importance": {"19901_0": "low"},
+            },
+            "id": "agent",
+        }
+    ]
+
+
+def test_parse_recovers_gemma_empty_pythonic_curate():
+    parsed = parse_chat_completion(
+        {
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {
+                        "content": "[curate(add_ids=[]remove_ids=[]importance={})]"
+                    },
+                }
+            ]
+        }
+    )
+    assert parsed.ok
+    assert parsed.tool_calls[0]["name"] == "curate"
+    assert parsed.tool_calls[0]["arguments"] == {
+        "add_ids": [],
+        "remove_ids": [],
+        "importance": {},
+    }
+
+
+def test_later_turn_pythonic_user_text_is_recovered_not_finished():
+    leaked = parse_chat_completion(
+        {
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {
+                        "content": '[curate(add_ids=["65532_0", "94345_0"]importance={"65532_0": "fair", "94345_0": "fair"})]'
+                    },
+                }
+            ]
+        }
+    )
+    rewritten = rewrite_premature_user_text(leaked, env_turn=3)
+    assert rewritten.ok
+    assert rewritten.episode_finish_reason is None
+    assert rewritten.tool_calls[0]["name"] == "curate"
+    assert rewritten.tool_calls[0]["arguments"]["add_ids"] == ["65532_0", "94345_0"]
+
+
+def test_true_prose_is_still_implicit_user_text():
+    parsed = parse_chat_completion(
+        {
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {"content": "I am done searching."},
+                }
+            ]
+        }
+    )
+    assert parsed.ok
+    assert parsed.episode_finish_reason == "implicit_user_text"
+
+
 def test_explicit_end_search_finish_reason():
     parsed = parse_chat_completion(
         {
@@ -272,6 +360,22 @@ def test_implicit_user_text_finish_reason():
     )
     assert parsed.ok
     assert parsed.episode_finish_reason == "implicit_user_text"
+    rewritten = rewrite_premature_user_text(parsed, env_turn=0)
+    assert not rewritten.ok
+    assert rewritten.protocol_error == "premature_user_text"
+    later = parse_chat_completion(
+        {
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {"content": "I am done searching."},
+                }
+            ]
+        }
+    )
+    kept = rewrite_premature_user_text(later, env_turn=1)
+    assert kept.ok
+    assert kept.episode_finish_reason == "implicit_user_text"
 
 
 def test_harmony_retry_prompt_differs_from_qwen():
@@ -281,8 +385,12 @@ def test_harmony_retry_prompt_differs_from_qwen():
     assert not is_harmony_chat_model("THUDM/glm-4-9b-chat")
     assert not is_harmony_chat_model("google/gemma-3-4b-it")
     assert GPT_OSS_FORMAT_RETRY_PROMPT != QWEN_FORMAT_RETRY_PROMPT
+    assert GEMMA_FORMAT_RETRY_PROMPT != QWEN_FORMAT_RETRY_PROMPT
     assert "analysis channel" in format_retry_prompt(model="gpt-oss-20b")
     assert "analysis channel" not in format_retry_prompt(model="Qwen3-4B")
+    gemma_retry = format_retry_prompt(model="gemma-3-27b-it")
+    assert "[search_corpus" in gemma_retry
+    assert "python list" in gemma_retry
 
 
 def test_classify_harmony_http_500_as_server_parse_error():

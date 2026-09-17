@@ -61,6 +61,15 @@ def test_resolve_gemma_uses_pythonic():
     assert profile.tool_call_parser == "pythonic"
 
 
+def test_vllm_extra_shell_gemma_skips_vision():
+    extra = vllm_extra_shell("google/gemma-3-27b-it")
+    assert "--tool-call-parser pythonic" in extra
+    assert "--language-model-only" in extra
+    assert "--chat-template" in extra
+    assert "--generation-config vllm" in extra
+    assert "tool_chat_template_gemma3_pythonic.jinja" in extra
+
+
 def test_harmony_models_skip_smoke_test():
     assert resolve_model_profile("openai/gpt-oss-20b").family == FAMILY_GPTOSS
     assert not needs_tool_call_smoke_test("gpt-oss-20b")
