@@ -36,13 +36,18 @@ def test_wm_shows_copyable_eid_not_surface_only():
 
 def test_lookup_surface_name_rejected():
     st = _state_with_entity()
+    st, _, ok_init = execute_tool(st, "init", {})
+    assert ok_init is True
     st2, obs, ok = execute_tool(st, "lookup", {"eid": "Alice Smith"})
     assert ok is False
-    assert "eid_not_found" in obs
+    assert "target_not_in_menu" in obs or "eid_not_found" in obs
 
 
 def test_lookup_valid_eid_works():
     st = _state_with_entity()
+    st, _, ok_init = execute_tool(st, "init", {})
+    assert ok_init is True
+    assert any(a.get("eid") == "e:alice_smith" for a in st["action_map"].values())
     st2, obs, ok = execute_tool(st, "lookup", {"eid": "e:alice_smith"}, searcher=None)
     assert ok is True
     assert "e:alice_smith" in obs
@@ -50,6 +55,7 @@ def test_lookup_valid_eid_works():
 
 def test_lookup_empty_args_rejected():
     st = _state_with_entity()
+    st, _, _ = execute_tool(st, "init", {})
     st2, obs, ok = execute_tool(st, "lookup", {})
     assert ok is False
     assert "missing_eid" in obs
@@ -60,11 +66,13 @@ def test_lookup_dedup_blocks_repeat():
     mask["lookup_dedup"] = True
     st = _state_with_entity()
     st["harness_mask"] = mask
+    st, _, ok_init = execute_tool(st, "init", {})
+    assert ok_init is True
     st, _, ok1 = execute_tool(st, "lookup", {"eid": "e:alice_smith"}, searcher=None)
     assert ok1 is True
     st, obs, ok2 = execute_tool(st, "lookup", {"eid": "e:alice_smith"}, searcher=None)
     assert ok2 is False
-    assert "eid_already_visited" in obs
+    assert "eid_already_visited" in obs or "target_not_in_menu" in obs
 
 
 def test_answer_with_invalid_sid_fails():

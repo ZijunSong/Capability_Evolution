@@ -158,7 +158,7 @@ class DualViewRenderer:
         component_id: str | None = None,
         student_mask: Mapping[str, bool] | None = None,
         teacher_mask: Mapping[str, bool] | None = None,
-        include_null_controls: bool = True,
+        include_null_controls: bool = False,
     ) -> DualView:
         if student_mask is None:
             if component_id is None:

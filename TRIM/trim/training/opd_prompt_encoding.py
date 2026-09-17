@@ -35,7 +35,7 @@ def render_rollout_action_text(enc: Any, action: dict[str, Any]) -> str:
     family = str(getattr(enc, "family", "") or "")
     if is_hf_chat_family(family):
         payload = {"name": canon["name"], "arguments": canon["arguments"]}
-        return f"<tool>{json.dumps(payload, ensure_ascii=False)}</tool>"
+        return f"<tool_call>{json.dumps(payload, ensure_ascii=False)}</tool_call>"
     if _is_harmony_family(family):
         # Canonical Harmony tool-call surface form (see harmony_runtime.canonical_examples):
         # <|start|>assistant to=functions.<name><|channel|>commentary <|constrain|>json<|message|>{args}<|call|>

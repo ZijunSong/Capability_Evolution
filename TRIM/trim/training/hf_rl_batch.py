@@ -173,7 +173,7 @@ def gather_response_logprobs(
     if kept_logits.ndim != 3:
         raise ValueError(f"expected [B, T, V] logits, got {tuple(kept_logits.shape)}")
     window = kept_logits[:, :-1, :] if kept_logits.shape[1] > 1 else kept_logits
-    logp = F.log_softmax(window, dim=-1)
+    logp = F.log_softmax(window.float(), dim=-1)
     out: list[torch.Tensor] = []
     width = int(logp.shape[1])
     cap = min(int(max_resp), width)

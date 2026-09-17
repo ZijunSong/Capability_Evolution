@@ -92,6 +92,7 @@ def test_cli_exposes_new_hf_train_settings(tmp_path):
     )
     assert args.train_groups_per_step == 32
     assert args.train_micro_batch_size == 4
+    assert args.max_empty_rollouts == 8
     args0, _ = parse_train_args(
         [
             "--train_method",

@@ -27,6 +27,18 @@ def test_dual_view_same_snapshot():
     rend.assert_same_snapshot(dual, snap)
     assert dual.snapshot_hash == snap.content_hash()
     assert dual.student_view["query_id"] == dual.full_view["query_id"] == snap.query_id
+    assert dual.null_controls == {}
+
+
+def test_training_default_skips_null_controls():
+    snap = _snap()
+    dual = DualViewRenderer().render_pair(snap, component_id="importance_tagging")
+    assert dual.null_controls == {}
+    audit = DualViewRenderer().render_pair(
+        snap, component_id="importance_tagging", include_null_controls=True
+    )
+    assert "same_render" in audit.null_controls
+    assert "field_order_only" in audit.null_controls
 
 
 def test_full_teacher_does_not_step_environment():

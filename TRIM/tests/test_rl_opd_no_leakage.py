@@ -54,6 +54,7 @@ def test_verify_secret_not_in_student_or_opd_prefix():
     assert result.kind == ProjectionKind.DIRECT
     steps = materialize(result, snap, component_id="verify_tool")
     assert len(steps) == 1
+    steps[0].metadata["student_prompt_token_ids"] = [1, 2, 3]
     blobs = [steps[0].prompt_reduced, steps[0].target_text]
     assert all(SECRET not in text for text in blobs)
     datums = build_tinker_opd_datums(steps, lambda_opd=0.1, policy_version="v0")

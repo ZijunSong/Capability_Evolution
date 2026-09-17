@@ -15,6 +15,7 @@ import random
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Sequence
 
+from trim.training.action_encoding import resolve_effective_weight, visible_doc_ids_from_snapshot
 from trim.training.opd_dataset import (
     ProjectionAudit,
     ProjectedTrainingStep,
@@ -222,8 +223,15 @@ def project_on_policy_decisions(
             point_steps.extend(mat)
         n_keep = len(point_steps)
         for step in point_steps:
-            if n_keep > 1:
-                step.weight = float(step.weight) / n_keep
+            raw_w = resolve_effective_weight(
+                weight=step.weight,
+                projection_confidence=step.projection_confidence,
+                metadata=step.metadata,
+            )
+            shared = raw_w / float(n_keep) if n_keep else raw_w
+            step.weight = shared
+            step.metadata["effective_weight"] = shared
+            step.metadata["raw_confidence"] = raw_w
             step.metadata["source_policy_version"] = point.policy_version
             step.metadata["decision_point_id"] = point.decision_point_id
             step.metadata["teacher_snapshot_hash"] = getattr(point, "teacher_snapshot_hash", "") or ""
@@ -236,6 +244,10 @@ def project_on_policy_decisions(
             )
             if point.student_prompt_token_ids:
                 step.metadata["student_prompt_token_ids"] = list(point.student_prompt_token_ids)
+            visible = list(getattr(point, "visible_doc_ids", None) or [])
+            if not visible:
+                visible = visible_doc_ids_from_snapshot(point.pre_action_snapshot)
+            step.metadata["visible_doc_ids"] = visible
             if point.teacher_prompt_token_ids:
                 step.metadata["teacher_prompt_token_ids"] = list(point.teacher_prompt_token_ids)
             if point.student_action_tokens:
@@ -375,6 +387,7 @@ def prepare_hybrid_batch(
                     encode_fn=encode_fn or default_encode,
                     policy_version=policy_version,
                     opd_loss=opd_loss,
+                    model_enc=model_enc,
                 )
             skipped_teacher = False
             token_hits = 0

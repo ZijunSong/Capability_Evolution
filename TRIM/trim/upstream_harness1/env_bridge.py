@@ -249,6 +249,18 @@ GEMMA_FORMAT_RETRY_PROMPT = (
     "Do not write natural language, markdown, or plans."
 )
 
+# GLM-4-0414 native parser: ``name\\n{json}``. Qwen's "put reasoning then call"
+# prompt reproduces the mixed prose+call pattern this parser rejects.
+GLM0414_FORMAT_RETRY_PROMPT = (
+    "Your previous response was not a structured tool call. "
+    "Respond with ONLY a GLM-4 function call: the tool name on its own line, "
+    "then a JSON object of arguments. Example:\n"
+    "search_corpus\n"
+    '{"query": "your query"}\n'
+    "Do not write natural language, markdown, plans, or code fences. "
+    "Do not wrap the call in backticks."
+)
+
 # GPT-OSS / Harness-1 Harmony-native retry: allow analysis channel, forbid API wrapper talk.
 GPT_OSS_FORMAT_RETRY_PROMPT = (
     "Continue the current retrieval task. Use one of the provided functions with valid JSON "
@@ -264,6 +276,12 @@ def is_harmony_chat_model(model: str | None) -> bool:
     from trim.eval.model_profiles import is_harmony_model
 
     return is_harmony_model(model)
+
+
+def is_glm0414_chat_model(model: str | None) -> bool:
+    from trim.eval.model_profiles import GLM0414_PROFILE, classify_profile_by_name
+
+    return bool(model) and classify_profile_by_name(str(model)) is GLM0414_PROFILE
 
 
 def _format_failed_attempt_context(failed: Mapping[str, Any]) -> str:
@@ -302,6 +320,8 @@ def format_retry_prompt(
         base = GPT_OSS_FORMAT_RETRY_PROMPT
     elif model and re.search(r"gemma", str(model), re.I):
         base = GEMMA_FORMAT_RETRY_PROMPT
+    elif is_glm0414_chat_model(model):
+        base = GLM0414_FORMAT_RETRY_PROMPT
     else:
         base = QWEN_FORMAT_RETRY_PROMPT
     parts = [base]

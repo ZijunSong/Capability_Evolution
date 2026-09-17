@@ -50,7 +50,7 @@ def sr_opd_ce_from_logits(
     token_weight: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """CE from raw logits. ``logits`` must require grad when training."""
-    logprobs = F.log_softmax(logits, dim=-1)
+    logprobs = F.log_softmax(logits.float(), dim=-1)
     gathered = logprobs.gather(-1, target_ids.unsqueeze(-1)).squeeze(-1)
     return compute_sr_opd_ce(gathered, token_mask, token_weight)
 

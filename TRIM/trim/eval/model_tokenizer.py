@@ -333,7 +333,8 @@ def parse_qwen_tool_call(text: str, completion_ids: Sequence[int] | None = None,
 
     text = text or ""
     matches = list(_TOOL_CALL_RE.finditer(text))
-    if len(matches) != 1:
+    raw = None
+    if len(matches) > 1:
         return ParsedToolCall(
             parsed=False,
             legal=False,
@@ -341,9 +342,24 @@ def parse_qwen_tool_call(text: str, completion_ids: Sequence[int] | None = None,
             arguments=None,
             parse_method="qwen_tool_call",
             raw_json=text[:2000] if text else None,
-            error="no_qwen_tool_call" if not matches else "multiple_qwen_tool_calls",
+            error="multiple_qwen_tool_calls",
         )
-    raw = matches[0].group(1)
+    if len(matches) == 1:
+        raw = matches[0].group(1)
+    else:
+        stripped = text.strip()
+        if stripped.startswith("{") and stripped.endswith("}"):
+            raw = stripped
+        else:
+            return ParsedToolCall(
+                parsed=False,
+                legal=False,
+                tool_name=None,
+                arguments=None,
+                parse_method="qwen_tool_call",
+                raw_json=text[:2000] if text else None,
+                error="no_qwen_tool_call",
+            )
     raw_obj = _loads_json(raw)
     if not isinstance(raw_obj, dict):
         return ParsedToolCall(

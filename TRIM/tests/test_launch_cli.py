@@ -544,6 +544,25 @@ def test_parse_eval_cli_can_override_horizon():
     assert args.temperature == 0.0
 
 
+def test_parse_eval_cli_graph_index_and_reasoning_effort():
+    args, _spec = parse_eval_args(
+        [
+            "--component",
+            "zero",
+            "--harness",
+            "Harness-G",
+            "--reasoning-effort",
+            "low",
+            "--graph-index-path",
+            "/tmp/harness_g_corpus.pkl",
+            "--out",
+            "/tmp/scape-eval-graph",
+        ]
+    )
+    assert args.reasoning_effort == "low"
+    assert args.graph_index_path == "/tmp/harness_g_corpus.pkl"
+
+
 def test_train_horizon_stays_short():
     args, _spec = parse_train_args(
         [
@@ -752,3 +771,38 @@ def test_run_train_entry_is_train_only(monkeypatch, tmp_path: Path):
     launch = json.loads((tmp_path / "LAUNCH.json").read_text(encoding="utf-8"))
     assert launch["train_only"] is True
     assert launch["official_eval"] is False
+    assert launch["max_turns"] == 6
+    assert launch["train_steps"] == 8
+    assert launch["dist"]["world_size"] == 1
+
+
+def test_run_train_entry_records_max_turns_40(monkeypatch, tmp_path: Path):
+    import importlib.util
+    import sys
+
+    monkeypatch.setattr(
+        "trim.training.four_cell_runtime.run_from_rl_opd_args",
+        lambda args: {"ok": True, "train_only": True, "max_turns": args.max_turns},
+    )
+    path = Path(__file__).resolve().parents[1] / "scripts" / "run_train.py"
+    spec = importlib.util.spec_from_file_location("run_train_entry_turns", path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    sys.modules["run_train_entry_turns"] = module
+    spec.loader.exec_module(module)
+    rc = module.main(
+        [
+            "--train_method",
+            "trim",
+            "--component",
+            "all",
+            "--max-turns",
+            "40",
+            "--out",
+            str(tmp_path),
+        ]
+    )
+    assert rc == 0
+    launch = json.loads((tmp_path / "LAUNCH.json").read_text(encoding="utf-8"))
+    assert launch["max_turns"] == 40
+    assert launch["train_method"] == "trim"

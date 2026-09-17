@@ -18,6 +18,29 @@ ensure_local_offline_credentials()
 from trim.eval.eval_parallel import load_json, write_json, write_jsonl
 
 
+_GRAPH_CACHE: dict[str, object] = {}
+
+
+def _load_graph_index(cfg: dict):
+    path = str(cfg.get("graph_index_path") or "").strip()
+    require_graph = bool(cfg.get("require_graph_index"))
+    if not path:
+        if require_graph:
+            raise RuntimeError("Shard requires corpus graph but graph_index_path is empty")
+        return None
+    cached = _GRAPH_CACHE.get(path)
+    if cached is not None:
+        return cached
+    from trim.eval.harness_g_contract import require_graph_exists, validate_loaded_graph
+    from trim.eval.harness_g_graph import load_graph_index
+
+    require_graph_exists(path)
+    graph = load_graph_index(path)
+    validate_loaded_graph(graph, required=require_graph, path=path)
+    _GRAPH_CACHE[path] = graph
+    return graph
+
+
 def _run_vllm(cfg: dict, rows: list[dict], harness_mask: dict) -> tuple[dict, list[dict]]:
     import threading
 
@@ -147,6 +170,8 @@ def _eval_chunks(cfg, rows, *, harness_mask, enc, searcher, generate_batch, back
             temperature=float(cfg.get("temperature") or 0.0),
             search_k=int(cfg.get("search_k") or 10),
             primary_split=str(cfg.get("primary_split") or "official_test"),
+            reasoning_effort=cfg.get("reasoning_effort"),
+            graph_index=_load_graph_index(cfg),
         )
         leak_count += int(ev.get("teacher_leak_count") or 0)
         all_traces.append(traces)
@@ -186,6 +211,47 @@ def main(argv: list[str] | None = None) -> int:
             summary, traces = _run_vllm(cfg, rows, harness_mask)
         out = Path(cfg["out"])
         write_jsonl(out / "PER_QUERY.jsonl", traces)
+        from trim.eval.contract_fingerprint import collect_contract_fingerprint
+
+        graph = _load_graph_index(cfg)
+        graph_meta = {}
+        if graph is not None:
+            from trim.eval.harness_g_contract import graph_metadata
+
+            graph_meta = graph_metadata(
+                graph,
+                path=str(cfg.get("graph_index_path") or ""),
+                required=bool(cfg.get("require_graph_index")),
+            )
+        fingerprint = collect_contract_fingerprint(
+            model_path=str(cfg.get("model_path") or ""),
+            graph_fingerprint=graph_meta.get("graph_fingerprint"),
+            graph_scope=graph_meta.get("graph_scope"),
+            corpus_path=str(cfg.get("graph_index_path") or "") or None,
+            sampling={
+                "max_turns": cfg.get("max_turns"),
+                "max_new_tokens": cfg.get("max_new_tokens"),
+                "temperature": cfg.get("temperature"),
+                "search_k": cfg.get("search_k"),
+                "reasoning_effort": cfg.get("reasoning_effort"),
+                "seed": cfg.get("seed"),
+                "component": cfg.get("component"),
+            },
+            extra={
+                "rank": int(cfg.get("rank") or 0),
+                "harness_mask": cfg.get("harness_mask"),
+                **{k: graph_meta.get(k) for k in (
+                    "graph_num_docs", "graph_num_sentences", "graph_num_entities",
+                    "graph_num_edges", "graph_build_version", "graph_source_corpus",
+                    "graph_required", "graph_enabled",
+                )},
+            },
+        )
+        write_json(out / "CONTRACT_FINGERPRINT.json", fingerprint)
+        summary["contract_fingerprint"] = {
+            "contract_sha256": fingerprint.get("contract_sha256"),
+            "git": fingerprint.get("git"),
+        }
         write_json(out / "SUMMARY.json", summary)
         write_json(
             out / "DONE.json",

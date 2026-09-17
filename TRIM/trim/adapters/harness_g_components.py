@@ -103,7 +103,11 @@ COMPONENT_TAXONOMY: dict[str, dict[str, Any]] = {
         "changes_execution": False,
         "default_enabled": True,
         "runtime_anchor": False,
-        "note": "Privileged same-state action previews for teacher DualView.",
+        "note": (
+            "Custom lexical_frontier_hint on the action menu (query/surface overlap). "
+            "This is NOT official Harness-G SNC (frozen answer scorer + counterfactual credit). "
+            "Do not describe enabling this flag as enabling paper SNC."
+        ),
     },
 }
 
@@ -130,6 +134,8 @@ COMPONENT_ALIASES: dict[str, str] = {
     "snc": "snc_frontier",
     "snc_frontier": "snc_frontier",
     "frontier": "snc_frontier",
+    "lexical_frontier_hint": "snc_frontier",
+    "lexical_hint": "snc_frontier",
 }
 
 RUNTIME_ANCHORS: frozenset[str] = frozenset(

@@ -48,7 +48,7 @@ def score_influence_on_snapshot(
     """Compute I_name / I_args on one student-owned snapshot."""
     rend = renderer or DualViewRenderer()
     before = rend.environment_steps
-    dual = rend.render_pair(snapshot, component_id=component_id)
+    dual = rend.render_pair(snapshot, component_id=component_id, include_null_controls=True)
     student_out = student_policy(dual.student_view)
     teacher_out = teacher_policy(dual.full_view)
     after = rend.environment_steps

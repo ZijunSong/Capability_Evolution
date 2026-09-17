@@ -35,6 +35,7 @@ _HARMONY_NAME_MARKERS = (
 _QWEN35_RE = re.compile(r"qwen3[\._-]?5", re.I)
 _QWEN_RE = re.compile(r"qwen", re.I)
 _GLM47_RE = re.compile(r"glm[\._-]?4[\._-]?7|glm4\.7|glm-4-7", re.I)
+_GLM0414_RE = re.compile(r"glm.*0414|glm-4-32b", re.I)
 _GLM_RE = re.compile(r"glm|chatglm", re.I)
 _GEMMA3_RE = re.compile(r"gemma[\._-]?3|gemma3", re.I)
 _GEMMA_RE = re.compile(r"gemma", re.I)
@@ -104,6 +105,19 @@ GLM45_PROFILE = ModelProfile(
     label="GLM-4",
 )
 
+_GLM0414_PARSER_PLUGIN = str(
+    Path(__file__).resolve().parent / "tool_parsers" / "glm4_0414_tool_parser.py"
+)
+
+GLM0414_PROFILE = ModelProfile(
+    family=FAMILY_HF_CHAT,
+    stack=STACK_HF_CHAT,
+    tool_call_parser="glm4_0414",
+    needs_tool_smoke_test=True,
+    extra_vllm_args=("--tool-parser-plugin", _GLM0414_PARSER_PLUGIN),
+    label="GLM-4-0414",
+)
+
 _GEMMA3_PYTHONIC_CHAT_TEMPLATE = str(
     Path(__file__).resolve().parent / "templates" / "tool_chat_template_gemma3_pythonic.jinja"
 )
@@ -154,6 +168,8 @@ def classify_profile_by_name(source: str) -> ModelProfile | None:
         return QWEN3_PROFILE
     if _GLM47_RE.search(n):
         return GLM47_PROFILE
+    if _GLM0414_RE.search(n):
+        return GLM0414_PROFILE
     if _GLM_RE.search(n):
         return GLM45_PROFILE
     if _GEMMA3_RE.search(n) or _GEMMA_RE.search(n):

@@ -289,6 +289,15 @@ def run_replicated_eval(
             "teacher_leak_count": leak_count,
             **{k: spec_out_env[k] for k in ("max_turns", "max_new_tokens", "temperature", "search_k") if k in spec_out_env},
         }
+        from trim.eval.contract_fingerprint import merge_fingerprints
+
+        fps = []
+        for shard_meta in plan:
+            fp_path = Path(shard_meta["out"]) / "CONTRACT_FINGERPRINT.json"
+            if fp_path.is_file():
+                fps.append(load_json(fp_path))
+        if fps:
+            extra["contract_fingerprint"] = merge_fingerprints(fps)
         from trim.adapters.harness_profiles import is_harness_g
 
         harness_mask = spec_out_env.get("harness_mask")

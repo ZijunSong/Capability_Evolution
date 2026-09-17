@@ -1,0 +1,28 @@
+# Inherits the RL FSDP2 contract and enables projected CE after C01–C04.
+# Launch: TRAIN_METHOD=rl+opd bash TRIM/scripts/run_qwen3_4b_rl_fsdp2_gpu8.sh
+actor_rollout_ref:
+  actor:
+    strategy: fsdp2
+    policy_loss:
+      loss_mode: cispo
+    clip_ratio_low: 1.0
+    clip_ratio_high: 4.0
+    ppo_epochs: 1
+    use_kl_loss: false
+    entropy_coeff: 0
+    optim:
+      lr: 1.0e-5
+  model:
+    lora_rank: 8
+    lora_alpha: 16
+    target_modules:
+      - q_proj
+      - k_proj
+      - v_proj
+      - o_proj
+  rollout:
+    name: vllm
+    n: 8
+lambda_opd: 0.1
+opd_states_per_trajectory: 3
+train_method: rl+opd

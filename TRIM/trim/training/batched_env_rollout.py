@@ -18,8 +18,13 @@ import time
 
 from trim.eval.browsecomp_retrieval import RetrievalBackend
 from trim.eval.harness1_metrics import EpisodeTiming, episode_quality_metrics, timed_section, trace_fields
-from trim.training.opd_dataset import render_student_prompt
-from trim.training.rl_opd_types import HybridRolloutGroup, StudentDecisionPoint
+from trim.training.rl_opd_types import (
+    COLLECTION_MODE_AUDIT_FULL,
+    COLLECTION_MODE_RL,
+    COLLECTION_MODE_RL_OPD,
+    HybridRolloutGroup,
+    StudentDecisionPoint,
+)
 from trim.training.vllm_hybrid import GenerateRequest, GenerateResult, cispo_row_from_generation
 
 GenerateBatch = Callable[[Sequence[GenerateRequest]], list[GenerateResult]]
@@ -69,6 +74,23 @@ class LiveEpisode:
     harness_mask: dict[str, bool] | None = None
     teacher_mode: bool = False
     timing: EpisodeTiming = field(default_factory=EpisodeTiming)
+    eval_only: bool = False
+    reasoning_effort: str | None = None
+    turn_events: list[dict[str, Any]] = field(default_factory=list)
+    collection_mode: str = COLLECTION_MODE_RL_OPD
+    n_turns: int = 0
+
+
+def _keep_snapshots(mode: str) -> bool:
+    return str(mode) in {COLLECTION_MODE_RL_OPD, COLLECTION_MODE_AUDIT_FULL}
+
+
+def _keep_teacher_encode(mode: str) -> bool:
+    return str(mode) == COLLECTION_MODE_AUDIT_FULL
+
+
+def _keep_dual_view(mode: str) -> bool:
+    return str(mode) == COLLECTION_MODE_AUDIT_FULL
 
 
 def _build_prompt_ids(ep: LiveEpisode, enc) -> list[int]:
@@ -87,12 +109,14 @@ def _build_prompt_ids(ep: LiveEpisode, enc) -> list[int]:
         max_new = int(getattr(enc, "max_new_tokens", 2048) or 2048) if enc is not None else 2048
         budget = max(1, max_model_len - max(1, max_new))
         ids = build_g_prompt_ids(
-            query, wm_text(ep.st), enc, harness_mask=ep.harness_mask, actions_obs=acts
+            query, wm_text(ep.st), enc, harness_mask=ep.harness_mask, actions_obs=acts,
+            reasoning_effort=ep.reasoning_effort,
         )
         while len(ids) > budget and len(acts) > 1:
             acts = acts[1:]
             ids = build_g_prompt_ids(
-                query, wm_text(ep.st), enc, harness_mask=ep.harness_mask, actions_obs=acts
+                query, wm_text(ep.st), enc, harness_mask=ep.harness_mask, actions_obs=acts,
+                reasoning_effort=ep.reasoning_effort,
             )
         if len(ids) > budget:
             ids = fit_prompt_ids_to_context(ids, max_model_len=max_model_len, max_new_tokens=max_new)
@@ -160,7 +184,14 @@ def _apply_generation(
     frozen_acts = list(ep.acts)
     teacher_prompt_ids: list[int] = []
     teacher_snapshot_hash = ""
-    if enc is not None and not ep.teacher_mode:
+    eval_only = bool(getattr(ep, "eval_only", False) or ep.policy_version == "eval")
+    mode = str(getattr(ep, "collection_mode", None) or COLLECTION_MODE_RL_OPD)
+    if (
+        enc is not None
+        and not ep.teacher_mode
+        and not eval_only
+        and _keep_teacher_encode(mode)
+    ):
         teacher_prompt_ids, _ = encode_aligned_teacher_prompt(
             enc,
             str(ep.row["query"]),
@@ -257,53 +288,71 @@ def _apply_generation(
         action_ids = list(gen.token_ids)
         effective_prompt_ids = list(getattr(gen, "effective_prompt_ids", None) or ep.pending_pids)
         prompt_text = ""
-        if enc is not None:
+        if not eval_only and enc is not None:
             try:
                 prompt_text = decode_ids(enc, effective_prompt_ids)
             except Exception:
                 prompt_text = ""
-        prompt_text = prompt_text or ep.pending_prefix
+        prompt_text = prompt_text or ("" if eval_only else ep.pending_prefix)
         ep.exec_oks.append(bool(_ok))
         truncated = str(getattr(gen, "finish_reason", "") or "") == "length"
-        post = snap_from_state(qid, ep.st, ep.component_id, harness_mask=ep.harness_mask)
-    ep.points.append(
-        StudentDecisionPoint(
-            episode_id=f"{qid}_r{ep.rollout_idx}",
-            query_id=qid,
-            rollout_idx=ep.rollout_idx,
-            turn_id=len(ep.points),
-            policy_version=ep.policy_version,
-            pre_action_snapshot=ep.pending_pre,
-            pre_action_snapshot_hash=ep.pending_pre.content_hash(),
-            student_model_input=ep.pending_prefix,
-            student_action_tokens=action_ids,
-            student_action_text=gen.text,
-            action_tool_names=[action.get("name") or ""],
-            post_action_snapshot=post,
-            reward=None,
-            structurally_valid=valid,
-            executed_ok=bool(_ok),
-            student_prompt_token_ids=list(effective_prompt_ids),
-            teacher_prompt_token_ids=list(teacher_prompt_ids),
-            teacher_snapshot_hash=teacher_snapshot_hash,
-            teacher_decision_turn=len(ep.points),
-            history_end_turn=len(frozen_acts),
+        post = None
+        if (_keep_snapshots(mode) or ep.teacher_mode) and not eval_only:
+            post = snap_from_state(qid, ep.st, ep.component_id, harness_mask=ep.harness_mask)
+        if is_harness_g(mask=ep.harness_mask, component_ids=ep.component_id):
+            last = list((ep.st.get("turn_events") or [])[-1:])
+            ep.turn_events.extend(last)
+            if last:
+                last[0]["raw_output"] = str(gen.text or "")[:4000]
+                last[0]["finish_reason"] = str(getattr(gen, "finish_reason", "") or "")
+                last[0]["parse_ok"] = bool(valid)
+                last[0]["n_tokens"] = len(action_ids)
+    turn_id = int(ep.n_turns)
+    ep.n_turns += 1
+    if (_keep_snapshots(mode) or ep.teacher_mode) and ep.pending_pre is not None and not eval_only:
+        from trim.training.action_encoding import visible_doc_ids_from_snapshot
+
+        visible = visible_doc_ids_from_snapshot(ep.pending_pre)
+        ep.points.append(
+            StudentDecisionPoint(
+                episode_id=f"{qid}_r{ep.rollout_idx}",
+                query_id=qid,
+                rollout_idx=ep.rollout_idx,
+                turn_id=turn_id,
+                policy_version=ep.policy_version,
+                pre_action_snapshot=ep.pending_pre,
+                pre_action_snapshot_hash=ep.pending_pre.content_hash(),
+                student_model_input=ep.pending_prefix,
+                student_action_tokens=action_ids,
+                student_action_text=gen.text,
+                action_tool_names=[action.get("name") or ""],
+                post_action_snapshot=post,
+                reward=None,
+                structurally_valid=valid,
+                executed_ok=bool(_ok),
+                student_prompt_token_ids=list(effective_prompt_ids),
+                teacher_prompt_token_ids=list(teacher_prompt_ids),
+                visible_doc_ids=visible,
+                teacher_snapshot_hash=teacher_snapshot_hash,
+                teacher_decision_turn=turn_id,
+                history_end_turn=len(frozen_acts),
+            )
         )
-    )
     rec = cispo_row_from_generation(
         query_id=qid,
         prompt_ids=effective_prompt_ids,
         prompt_text=prompt_text,
         gen=gen,
         policy_version=ep.policy_version,
-        turn_id=ep.points[-1].turn_id,
+        turn_id=turn_id,
         valid=valid and not truncated,
     )
     rec["episode_id"] = f"{qid}_r{ep.rollout_idx}"
     rec["rollout_idx"] = ep.rollout_idx
     if truncated:
         rec["truncated_generation"] = True
-    ep.rl_rows.append(rec)
+    if not eval_only:
+        ep.rl_rows.append(rec)
 
 
 def _prepare_chunk_episodes(
@@ -320,6 +369,7 @@ def _prepare_chunk_episodes(
     new_state,
     doc_store_for_row,
     teacher_mode: bool = False,
+    collection_mode: str = COLLECTION_MODE_RL_OPD,
 ) -> list[LiveEpisode]:
     workers = max(1, int(doc_store_workers or 1))
     if workers == 1 or len(chunk) <= 1:
@@ -343,6 +393,8 @@ def _prepare_chunk_episodes(
                     policy_version=policy_version,
                     harness_mask=harness_mask,
                     teacher_mode=teacher_mode,
+                    eval_only=str(policy_version) == "eval",
+                    collection_mode=str(collection_mode or COLLECTION_MODE_RL_OPD),
                 )
             )
     return episodes
@@ -375,9 +427,18 @@ def _run_episode_turns(
         for i, ep in enumerate(live):
             with timed_section(ep.timing, "harness"):
                 pids = _build_prompt_ids(ep, enc)
-                pre = snap_from_state(str(ep.row["query_id"]), ep.st, component_id, harness_mask=ep.harness_mask)
-                ep.pending_pre = pre
-                ep.pending_prefix = render_student_prompt(pre, component_id=component_id)
+                mode = str(getattr(ep, "collection_mode", None) or COLLECTION_MODE_RL_OPD)
+                if (_keep_snapshots(mode) or ep.teacher_mode) and not ep.eval_only:
+                    pre = snap_from_state(str(ep.row["query_id"]), ep.st, component_id, harness_mask=ep.harness_mask)
+                    ep.pending_pre = pre
+                else:
+                    ep.pending_pre = None
+                if _keep_dual_view(mode) and ep.pending_pre is not None:
+                    from trim.training.opd_dataset import render_student_prompt
+
+                    ep.pending_prefix = render_student_prompt(ep.pending_pre, component_id=component_id)
+                else:
+                    ep.pending_prefix = ""
                 ep.pending_pids = pids
             if teacher_mode:
                 from trim.training.action_codec import render_action
@@ -388,7 +449,7 @@ def _run_episode_turns(
                     episode_id=f"{ep.row['query_id']}_r{ep.rollout_idx}",
                     query_id=str(ep.row["query_id"]),
                     rollout_idx=ep.rollout_idx,
-                    turn_id=turn,
+                    turn_id=int(ep.n_turns),
                     policy_version=policy_version,
                     pre_action_snapshot=pre,
                     pre_action_snapshot_hash=pre.content_hash(),
@@ -519,6 +580,8 @@ def _groups_from_episodes(
                     "task_recall": float(parts.get("task_recall") or 0.0),
                     "n_exec_ok": int(parts.get("n_exec_ok") or 0),
                     "n_structurally_valid": sum(1 for v in ep.valids if v),
+                    "max_turns": int(max_turns),
+                    "n_valids": len(ep.valids),
                 }
             )
             episode_stats.append(quality)
@@ -543,6 +606,7 @@ def _groups_from_episodes(
                     "n_rl_rows": len(rl_rows),
                     "reward_spread": (max(rewards) - min(rewards)) if rewards else 0.0,
                     "batched": True,
+                    "collection_mode": str(getattr(members[0], "collection_mode", "") if members else ""),
                 },
             )
         )
@@ -572,6 +636,9 @@ def rollout_queries_batched(
     train_env: str = "local_legacy",
     train_session: Any | None = None,
     rollout_backend: str = "vllm",
+    reasoning_effort: str | None = None,
+    graph_index: Any | None = None,
+    collection_mode: str = COLLECTION_MODE_RL_OPD,
 ) -> list[HybridRolloutGroup]:
     """Batch across queries and group members; step the env between turns.
 
@@ -607,6 +674,7 @@ def rollout_queries_batched(
         harness_mask=harness_mask,
         session=train_session,
         is_harness_g=g,
+        graph_index=graph_index,
     )
 
     def prepare(chunk: Sequence[dict[str, Any]]) -> tuple[list[LiveEpisode], float]:
@@ -624,6 +692,7 @@ def rollout_queries_batched(
             new_state=new_state,
             doc_store_for_row=doc_store_for_row,
             teacher_mode=teacher_mode,
+            collection_mode=collection_mode,
         )
         return episodes, time.perf_counter() - t0
 
@@ -634,6 +703,9 @@ def rollout_queries_batched(
             episodes, prep_s = next_fut.result()
             if i + 1 < len(chunks):
                 next_fut = prefetch.submit(prepare, chunks[i + 1])
+            for ep in episodes:
+                ep.reasoning_effort = reasoning_effort
+                ep.eval_only = bool(ep.eval_only or policy_version == "eval")
             print(
                 f"[rollout] chunk {i + 1}/{len(chunks)} queries={len(chunk)} "
                 f"episodes={len(episodes)} prep={prep_s:.1f}s backend={rollout_backend}",
@@ -679,6 +751,7 @@ def traces_from_groups(
     by_q = {g.query_id: g for g in groups}
     traces: list[dict[str, Any]] = []
     leak = 0
+    bm25_cache: dict[str, list[Any]] = {}
     for row in rows:
         group = by_q.get(str(row["query_id"]))
         stats = {}
@@ -695,7 +768,11 @@ def traces_from_groups(
             elif "compressed_teacher_view" in prefix or "VERIFY_RESULT_SECRET" in prefix:
                 leak += 1
         search_q = str(row.get("query") or "")
-        sm = search_metrics(searcher, search_q, list(row.get("evidence_docids") or [])) if searcher is not None else {}
+        sm = (
+            search_metrics(searcher, search_q, list(row.get("evidence_docids") or []), cache=bm25_cache)
+            if searcher is not None
+            else {}
+        )
         if sm:
             sm = {
                 **sm,

@@ -35,6 +35,13 @@ def test_vllm_extra_glm_uses_glm45_parser():
     assert "--tool-call-parser glm45" in extra
 
 
+def test_vllm_extra_glm0414_uses_plugin_parser():
+    extra = _bash_vllm_extra("GLM-4-32B-0414")
+    assert "--tool-call-parser glm4_0414" in extra
+    assert "--tool-parser-plugin" in extra
+    assert "glm4_0414_tool_parser.py" in extra
+
+
 def test_normalize_pid_strips_log_noise():
     out = subprocess.check_output(
         [

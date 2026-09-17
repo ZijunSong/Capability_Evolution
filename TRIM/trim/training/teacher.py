@@ -79,6 +79,7 @@ class FullViewTeacher:
             snapshot,
             component_id=component_id,
             teacher_mask=teacher_mask or (snapshot.metadata or {}).get("teacher_mask"),
+            include_null_controls=False,
         )
         after = self.renderer.environment_steps
         if after != before:
