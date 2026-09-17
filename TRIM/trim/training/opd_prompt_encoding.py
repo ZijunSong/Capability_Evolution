@@ -9,6 +9,24 @@ from trim.state.snapshot import EnvironmentSnapshot
 from trim.training.action_codec import canonicalize_action, render_action
 
 
+def _is_harmony_family(family: str) -> bool:
+    """True for Harmony-stack families (gpt-oss) whose tool-call surface form
+    must use the canonical Harmony recipient+channel+call structure.
+
+    render_action's ``to=<name>\\n{args}`` bare form is rejected by
+    parse_harmony_tool_call ("no_executable_tool_call_region") for these
+    families, so the OPD projected-action round-trip (encode -> decode ->
+    parse_tool_call) must emit the same Harmony surface form the rollout
+    sampler and canonical_examples() use.
+    """
+    from trim.eval.model_profiles import resolve_model_profile
+
+    try:
+        return bool(resolve_model_profile(family).is_harmony)
+    except Exception:
+        return family == "gpt-oss"
+
+
 def render_rollout_action_text(enc: Any, action: dict[str, Any]) -> str:
     """Render an action in the same surface form rollout sampling uses."""
     canon = canonicalize_action(action)
@@ -17,7 +35,20 @@ def render_rollout_action_text(enc: Any, action: dict[str, Any]) -> str:
     family = str(getattr(enc, "family", "") or "")
     if is_hf_chat_family(family):
         payload = {"name": canon["name"], "arguments": canon["arguments"]}
-        return f"<tool_call>{json.dumps(payload, ensure_ascii=False)}</tool_call>"
+        return f"<tool>{json.dumps(payload, ensure_ascii=False)}</tool>"
+    if _is_harmony_family(family):
+        # Canonical Harmony tool-call surface form (see harmony_runtime.canonical_examples):
+        # <|start|>assistant to=functions.<name><|channel|>commentary <|constrain|>json<|message|>{args}<|call|>
+        # render_action's bare "to=<name>\n{args}" is rejected by parse_harmony_tool_call
+        # (no <|call|> executable region), so the OPD projected-action round-trip
+        # (encode -> decode -> parse_tool_call) failed for gpt-oss. Emit the form
+        # the Harmony parser accepts; this mirrors canonical_examples() exactly.
+        args_json = json.dumps(canon["arguments"], ensure_ascii=False)
+        return (
+            f"<|start|>assistant to=functions.{canon['name']}"
+            f"<|channel|>commentary <|constrain|>json"
+            f"<|message|>{args_json}<|call|>"
+        )
     return render_action(canon)
 
 

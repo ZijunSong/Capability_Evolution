@@ -156,8 +156,20 @@ def main(argv: list[str] | None = None) -> int:
                     deadline=deadline,
                 )
                 traces.append(result["metrics"])
-            except ConfigError:
-                raise
+            except ConfigError as exc:
+                # HTTP 400 context-length / config-class errors are deterministic (retrying
+                # won't help), but must NOT kill the worker process — the previous
+                # `raise` here let a single over-long prompt abort the whole shard and
+                # drop every subsequent query. Treat it like other infra errors: mark the
+                # query, write an infra-error trace, and continue to the next query so the
+                # shard can still complete 830/830. This does not change any served model
+                # / vLLM / eval parameter — it is a harness fault-tolerance fix only.
+                # (Qwen3.5-27B all BC+ eval: BC+ multi-turn agent loops can accumulate
+                # prompt >32768 + max_new_tokens 2048 = 32769 > max_model_len.)
+                infra_errors.append(qid)
+                traces.append(
+                    write_infra_error_query(trace_dir=out, query_row=row, exc=exc)
+                )
             except asyncio.TimeoutError:
                 infra_errors.append(qid)
                 traces.append(

@@ -220,7 +220,8 @@ def test_parse_length_truncation_not_implicit_end():
     assert parsed.tool_calls == []
 
 
-def test_parse_tool_call_in_content_without_structured_calls():
+def test_parse_tool_call_in_content_recovered():
+    """Content with recognizable tool-call syntax is recovered (GLM-4-32B-0414 fix)."""
     parsed = parse_chat_completion(
         {
             "choices": [
@@ -233,8 +234,12 @@ def test_parse_tool_call_in_content_without_structured_calls():
             ]
         }
     )
-    assert parsed.ok is False
-    assert parsed.protocol_error == "tool_call_in_content"
+    # The content-based fallback extracts the tool call instead of failing.
+    assert parsed.ok
+    assert parsed.protocol_error is None
+    assert len(parsed.tool_calls) == 1
+    assert parsed.tool_calls[0]["name"] == "search_corpus"
+    assert parsed.tool_calls[0]["arguments"] == {"query": "foo"}
 
 
 def test_explicit_end_search_finish_reason():

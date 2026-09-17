@@ -199,7 +199,7 @@ _TOOL_NAMES_PATTERN = (
 )
 
 _TOOL_CALL_IN_CONTENT_RE = re.compile(
-    r"(?:<tool_call\b"
+    r"(?:<\|tool_call\|>|<tool_call\b"
     r'|"name"\s*:\s*"(?:' + _TOOL_NAMES_PATTERN + r')"'
     r'|"(?:type|operation|function)"\s*:\s*"(?:' + _TOOL_NAMES_PATTERN + r')"'
     r"|<\|channel\|>|<\|call\|>"
@@ -285,6 +285,276 @@ def _content_looks_like_tool_call(text: str, known_tool_names: frozenset[str] | 
     return isinstance(obj, dict) and _json_obj_looks_like_tool_call(obj, names)
 
 
+# --- Content-based tool-call extraction for models that emit tool calls in the
+# response body instead of the OpenAI ``tool_calls`` field (e.g. GLM-4-32B-0414
+# whose tokenizer has no ``<|tool_call|>`` token, so vLLM's glm45/glm47 parsers
+# cannot extract structured tool_calls).  The model naturally emits several
+# plain-text forms:
+#   - ``func_name(arg_key=val, ...)``           (pythonic, optionally in a
+#                                                ```python ... ``` fence)
+#   - ``func_name\n{"arg": "val"}``             (name on its own line, JSON body)
+#   - ``{"name": "func_name", "arguments": {..}} (plain JSON object)
+# We attempt to extract the *last* recognizable call in the text so that
+# trailing reasoning is not mistaken for content.
+_GLM_FUNC_CALL_RE = re.compile(
+    r"(?P<name>" + _TOOL_NAMES_PATTERN + r")\s*\((?P<args>.+?)\)",
+    re.DOTALL,
+)
+# "func_name\n{json}" or "func_name: {json}" (with or without a trailing ``` fence)
+_GLM_NAME_NEWLINE_JSON_RE = re.compile(
+    r"(?P<name>" + _TOOL_NAMES_PATTERN + r")\s*[\n:]\s*(?P<json>\{.*?\})",
+    re.DOTALL,
+)
+# "func_name: \"value\"" (colon-separated bare string)
+_GLM_NAME_COLON_RE = re.compile(
+    r"(?P<name>" + _TOOL_NAMES_PATTERN + r")\s*:\s*\"(?P<val>[^\"]*)\"",
+    re.DOTALL,
+)
+_GLM_TOOLCALL_TAG_RE = re.compile(
+    r"<\|tool_call\|>(?P<body>.*?)(?:<\|/tool_call\|>|</tool_call\|>|\Z)",
+    re.DOTALL,
+)
+# GLM-4.7-style args: <|arg_key|>k<|/arg_key|><|arg_val|>v<|/arg_val|> or bare
+# value text after <|/arg_key|> (when no <|arg_val|> wrapper is present).
+_GLM_ARG_KV_RE = re.compile(
+    r"<\|arg_key\|>(?P<key>.*?)(?:<\|/arg_key\|>|<\|/arg_val\|>)\s*(?:(?P<val>.*?)<\|/arg_val\|>)?",
+    re.DOTALL,
+)
+_GLM_ARG_BARE_RE = re.compile(
+    r"<\|arg_key\|>(?P<key>.+?)(?=\n<\|arg_key\|>|\Z)",
+    re.DOTALL,
+)
+
+
+def _parse_glm_tool_call_args(raw_args: str, tool_name: str) -> dict[str, Any] | None:
+    """Parse the argument portion of a content-embedded tool call.
+
+    Handles pythonic ``key=val, key2=val2``, JSON objects, and bare string
+    arguments.  Returns a dict or ``None`` on failure.
+    """
+    s = raw_args.strip()
+    if not s:
+        return {}
+    # JSON object?
+    if s.startswith("{"):
+        try:
+            obj = json.loads(s)
+            if isinstance(obj, dict):
+                return obj
+        except json.JSONDecodeError:
+            pass
+    # Pythonic kwargs: key=value, key2=value2 (values may be quoted strings,
+    # numbers, booleans, or JSON arrays/objects)
+    if "=" in s:
+        try:
+            kwargs: dict[str, Any] = {}
+            for part in _split_kwargs(s):
+                if "=" not in part:
+                    continue
+                k, _, v = part.partition("=")
+                k = k.strip()
+                v = v.strip()
+                # Try to parse value as JSON first (covers arrays/objects/nums)
+                try:
+                    v_parsed = json.loads(v)
+                except json.JSONDecodeError:
+                    v_parsed = v.strip("'\"")
+                kwargs[k] = v_parsed
+            if kwargs:
+                return kwargs
+        except Exception:
+            pass
+    # Bare positional arg (string)
+    return {"query": s.strip("'\"")} if tool_name in ("search_corpus", "grep_corpus") else {"value": s.strip("'\"")}
+
+
+def _split_kwargs(s: str) -> list[str]:
+    """Split a pythonic argument list on top-level commas (respecting brackets/quotes)."""
+    parts: list[str] = []
+    depth = 0
+    in_str: str | None = None
+    start = 0
+    for i, ch in enumerate(s):
+        if in_str:
+            if ch == in_str:
+                in_str = None
+        elif ch in "\"'":
+            in_str = ch
+        elif ch in "[{(":
+            depth += 1
+        elif ch in "]})":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            parts.append(s[start:i])
+            start = i + 1
+    parts.append(s[start:])
+    return parts
+
+
+def extract_tool_calls_from_content(text: str, known_tool_names: frozenset[str] | None = None) -> list[dict[str, Any]]:
+    """Extract structured tool calls from response content text.
+
+    Tries several GLM-4-32B-0414 output patterns.  Returns the last
+    recognizable call (the model often appends reasoning after the call).
+    Each element is ``{"name": str, "arguments": dict, "id": "agent"}``.
+    Returns an empty list if no tool call is found.
+    """
+    names = known_tool_names or _KNOWN_TOOL_NAMES
+    raw_text = str(text or "")
+    calls: list[dict[str, Any]] = []
+
+    # 1. ``<|tool_call|>body<|/tool_call|>`` or ``<|tool_call|>body<|/arg_call|>``
+    for m in _GLM_TOOLCALL_TAG_RE.finditer(raw_text):
+        body = m.group("body").strip()
+        # body may be "func_name\n{json}", "func_name(args)", "func_name\n<|arg_key|>...",
+        # or bare JSON
+        sub = _GLM_NAME_NEWLINE_JSON_RE.search(body)
+        if sub:
+            name = sub.group("name")
+            args = _parse_glm_tool_call_args(sub.group("json"), name)
+            if args is not None:
+                calls.append({"name": name, "arguments": args, "id": "agent"})
+                continue
+        pm = _GLM_FUNC_CALL_RE.search(body)
+        if pm:
+            name = pm.group("name")
+            args = _parse_glm_tool_call_args(pm.group("args"), name)
+            if args is not None:
+                calls.append({"name": name, "arguments": args, "id": "agent"})
+                continue
+        # GLM-4.7-style args: <|arg_key|>k<|/arg_key|><|arg_val|>v<|/arg_val|>
+        # or bare value after <|/arg_key|> (no <|arg_val|> wrapper)
+        first_line = body.split("\n", 1)[0].strip()
+        if first_line in names:
+            kv = _GLM_ARG_KV_RE.findall(body)
+            if kv:
+                args = {}
+                for m_kv in kv:
+                    k, v = m_kv
+                    k = k.strip()
+                    if not k:
+                        continue
+                    args[k] = json.loads(v) if v and v.strip().startswith(("[", "{")) else (v.strip("'\"") if v else "")
+                if args:
+                    calls.append({"name": first_line, "arguments": args, "id": "agent"})
+                continue
+            # Fallback: <\|arg_key\>k\nvalue (no closing tag at all)
+            bare = _GLM_ARG_BARE_RE.findall(body)
+            if bare:
+                args = {}
+                for k in bare:
+                    # Value is everything after the key until the next
+                    # <\|arg_key\> or end; split on first newline.
+                    parts = k.split("\n", 1)
+                    key = parts[0].strip()
+                    val = parts[1].strip() if len(parts) > 1 else ""
+                    if val.startswith(("<|/arg_key|>", "</arg_key|>")):
+                        val = val.split(">", 1)[-1].strip()
+                    if key:
+                        try:
+                            args[key] = json.loads(val) if val and val[0] in "[{" else val
+                        except (json.JSONDecodeError, IndexError):
+                            args[key] = val
+                if args:
+                    calls.append({"name": first_line, "arguments": args, "id": "agent"})
+                continue
+        # bare JSON inside the tag
+        if body.startswith("{"):
+            try:
+                obj = json.loads(body)
+                if isinstance(obj, dict) and _json_obj_looks_like_tool_call(obj, names):
+                    name = str(obj.get("name") or obj.get("type") or obj.get("function") or "")
+                    args = obj.get("arguments") or obj.get("parameters") or {}
+                    if name in names:
+                        calls.append({"name": name, "arguments": args, "id": "agent"})
+            except json.JSONDecodeError:
+                pass
+
+    if calls:
+        return [calls[-1]]
+
+    # 2. ``func_name(args)`` without a tool_call tag (pythonic, may be in
+    # a ```python ... ``` code fence or after a line of reasoning)
+    for m in _GLM_FUNC_CALL_RE.finditer(raw_text):
+        name = m.group("name")
+        args = _parse_glm_tool_call_args(m.group("args"), name)
+        if args is not None:
+            calls.append({"name": name, "arguments": args, "id": "agent"})
+    if calls:
+        return [calls[-1]]
+
+    # 3. ``func_name\n{json}`` or ``func_name: {json}`` (with or without a
+    # trailing ``` fence — strip code fences first so the closing ``` doesn't
+    # block the match)
+    for m in _GLM_NAME_NEWLINE_JSON_RE.finditer(raw_text):
+        name = m.group("name")
+        args = _parse_glm_tool_call_args(m.group("json"), name)
+        if args is not None:
+            calls.append({"name": name, "arguments": args, "id": "agent"})
+    if calls:
+        return [calls[-1]]
+
+    # 3b. ``func_name: "value"`` (colon-separated bare string)
+    for m in _GLM_NAME_COLON_RE.finditer(raw_text):
+        name = m.group("name")
+        val = m.group("val")
+        if name in ("search_corpus", "grep_corpus"):
+            calls.append({"name": name, "arguments": {"query": val}, "id": "agent"})
+        else:
+            calls.append({"name": name, "arguments": {"value": val}, "id": "agent"})
+    if calls:
+        return [calls[-1]]
+
+    # 4. bare JSON object containing a tool call — may be at the start, inside a
+    # ```json...``` fence, or after a line of reasoning.  Search for the last
+    # JSON block (greedy) that looks like a tool call.
+    _ARG_TO_TOOL = {
+        "query": "search_corpus",
+        "queries": "fan_out_search",
+        "pattern": "grep_corpus",
+        "doc_id": "read_document",
+        "doc_ids": "review_docs",
+        "add_ids": "curate",
+        "remove_ids": "curate",
+        "chunk_ids": "review_docs",
+    }
+    for m in re.finditer(r"\{[^{}]*\{.*?\}\s*\}", raw_text, re.DOTALL):
+        try:
+            obj = json.loads(m.group(0))
+            if isinstance(obj, dict) and _json_obj_looks_like_tool_call(obj, names):
+                name = str(obj.get("name") or obj.get("type") or obj.get("function") or "")
+                args = obj.get("arguments") or obj.get("parameters") or obj
+                if not name and isinstance(args, dict):
+                    # No "name" field — infer from argument keys
+                    for arg_key in args:
+                        if arg_key in _ARG_TO_TOOL:
+                            name = _ARG_TO_TOOL[arg_key]
+                            break
+                if name in names:
+                    return [{"name": name, "arguments": args, "id": "agent"}]
+        except json.JSONDecodeError:
+            pass
+    # 4b. single-level JSON object (no nesting)
+    stripped = _strip_code_fences(raw_text.strip())
+    if stripped.startswith("{"):
+        try:
+            obj = json.loads(stripped)
+            if isinstance(obj, dict) and _json_obj_looks_like_tool_call(obj, names):
+                name = str(obj.get("name") or obj.get("type") or obj.get("function") or "")
+                args = obj.get("arguments") or obj.get("parameters") or obj
+                if not name and isinstance(args, dict):
+                    for arg_key in args:
+                        if arg_key in _ARG_TO_TOOL:
+                            name = _ARG_TO_TOOL[arg_key]
+                            break
+                if name in names:
+                    return [{"name": name, "arguments": args, "id": "agent"}]
+        except json.JSONDecodeError:
+            pass
+
+    return []
+
+
 def _message_text(message: Mapping[str, Any]) -> str:
     content = message.get("content")
     if content is None:
@@ -364,6 +634,18 @@ def parse_chat_completion(response: Mapping[str, Any]) -> ParsedApiAction:
 
     text = _message_text(message)
     if text and _content_looks_like_tool_call(text):
+        # The vLLM tool-call parser (e.g. glm45/glm47) failed to extract
+        # structured tool_calls, but the response body *does* contain a
+        # recognizable tool call.  Try to recover the call(s) from the
+        # content text so the eval can proceed instead of always treating
+        # this as a hard protocol error (which forces a format retry and
+        # yields 0 tool calls / 0 recall for GLM-4-32B-0414).
+        recovered = extract_tool_calls_from_content(text)
+        if recovered:
+            parsed.tool_calls = recovered
+            if any(str(c.get("name") or "") == "end_search" for c in parsed.tool_calls):
+                parsed.episode_finish_reason = "explicit_end_search"
+            return parsed
         parsed.protocol_error = "tool_call_in_content"
         parsed.parse_error = "Response body contains tool-call syntax without structured tool_calls"
         return parsed
