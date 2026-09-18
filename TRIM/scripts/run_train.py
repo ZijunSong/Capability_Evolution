@@ -46,10 +46,16 @@ from trim.eval.sec_corpus import (
 )
 from trim.training.dist_runtime import (
     DIST_BACKEND_ENV,
+    DIST_TRAIN_BACKENDS,
     DistLaunchConfig,
+    TRIM_EXPECTED_WORLD_SIZE_ENV,
+    TRIM_OUTER_RANK_ENV_JSON,
+    TRIM_TRAIN_WORKER_ENV,
+    clear_outer_rank_env,
     needs_torchrun,
     parse_dist_argv,
     pin_local_cuda_device,
+    snapshot_rank_env,
     torchrun_cmd,
     training_backend_from_argv,
     under_torchrun,
@@ -57,7 +63,7 @@ from trim.training.dist_runtime import (
 )
 from trim.training.rl_opd_types import TRAINING_MODE_RL
 
-VERL_BACKENDS = {"verl", "fsdp2", "verl_fsdp2"}
+VERL_BACKENDS = set(DIST_TRAIN_BACKENDS)
 
 
 def apply_train_launcher_defaults(args) -> None:
@@ -69,7 +75,7 @@ def apply_train_launcher_defaults(args) -> None:
         args.on_policy_refresh = True
     backend = str(getattr(args, "training_backend", "hf_debug") or "hf_debug").lower().replace("-", "_")
     if backend in VERL_BACKENDS:
-        args.gpu_schedule = "verl_fsdp2"
+        args.gpu_schedule = "torch_ddp_lora" if backend == "torch_ddp_lora" else "verl_fsdp2"
         args.enforce_eager = bool(getattr(args, "enforce_eager", False))
         args.tensor_parallel_size = int(getattr(args, "tensor_parallel_size", None) or 1)
         args.rollout_replicas = 1
@@ -99,12 +105,33 @@ def _forward_env() -> dict[str, str]:
 
 
 def _exec_fsdp2_torchrun(cfg: DistLaunchConfig, train_argv: list[str]) -> int:
-    cmd = torchrun_cmd(script=str(Path(__file__).resolve()), train_argv=train_argv, cfg=cfg, node_rank=0)
+    saved = snapshot_rank_env()
     env = _forward_env()
+    leftover = clear_outer_rank_env(env)
+    if leftover:
+        env[TRIM_OUTER_RANK_ENV_JSON] = json.dumps(leftover, ensure_ascii=False)
     env[DIST_BACKEND_ENV] = "nccl"
     env["TRIM_GPU_KEEPALIVE"] = "0"
+    env[TRIM_TRAIN_WORKER_ENV] = "1"
+    env[TRIM_EXPECTED_WORLD_SIZE_ENV] = str(max(1, int(cfg.expected_world_size or cfg.nnodes * cfg.nproc_per_node)))
     env["MASTER_ADDR"] = str(cfg.master_addr)
     env["MASTER_PORT"] = str(int(cfg.master_port))
+    cmd = torchrun_cmd(script=str(Path(__file__).resolve()), train_argv=train_argv, cfg=cfg, node_rank=0)
+    print(
+        json.dumps(
+            {
+                "event": "dist_outer_launch",
+                "cmd": cmd,
+                "requested_world_size": int(cfg.expected_world_size),
+                "nproc_per_node": int(cfg.nproc_per_node),
+                "outer_rank_env": saved,
+                "cleared_rank_env": leftover,
+            },
+            ensure_ascii=False,
+            default=str,
+        ),
+        flush=True,
+    )
     print("[verl-fsdp2-launch] " + " ".join(cmd), flush=True)
     os.execvpe(cmd[0], cmd, env)
     return 1
@@ -187,6 +214,13 @@ def build_train_launch_record(args, spec) -> dict:
             "node_rank": int(info.node_rank),
             "nnodes": int(getattr(args, "dist_nnodes", info.world_size) or info.world_size),
             "nproc_per_node": int(getattr(args, "dist_nproc_per_node", info.local_world_size) or info.local_world_size),
+            "requested_world_size": int(getattr(args, "expected_world_size", info.world_size) or info.world_size),
+            "effective_world_size": int(info.world_size),
+            "initialized": bool(info.initialized),
+            "source": {
+                "trim_train_worker": os.environ.get(TRIM_TRAIN_WORKER_ENV),
+                "torchelastic_run_id": os.environ.get("TORCHELASTIC_RUN_ID"),
+            },
         },
     }
 
@@ -195,12 +229,14 @@ def run_parsed_train(args, spec) -> int:
     apply_train_launcher_defaults(args)
     from trim.training.dist_runtime import is_coordinator
 
-    if is_coordinator():
+    backend = str(getattr(args, "training_backend", "hf_debug") or "hf_debug").lower().replace("-", "_")
+    defer_launch = backend in VERL_BACKENDS
+    if not defer_launch and is_coordinator():
         spec.out.mkdir(parents=True, exist_ok=True)
         launch = build_train_launch_record(args, spec)
         (spec.out / "LAUNCH.json").write_text(json.dumps(launch, indent=2) + "\n", encoding="utf-8")
         print(json.dumps(launch, indent=2), flush=True)
-    else:
+    elif not defer_launch:
         launch = build_train_launch_record(args, spec)
         print(json.dumps({"rank_skip_launch_write": True, **launch.get("dist", {})}, indent=2), flush=True)
 
@@ -238,7 +274,8 @@ def main(argv: list[str] | None = None) -> int:
     if backend in VERL_BACKENDS:
         os.environ["TRIM_GPU_KEEPALIVE"] = "0"
         os.environ.setdefault(DIST_BACKEND_ENV, "nccl")
-        if not cfg.already_worker and not under_torchrun():
+        # CloudML PyTorchJob injects RANK=0/WORLD_SIZE=1; under_torchrun() is Plan A.
+        if not under_torchrun():
             nproc = int(cfg.nproc_per_node)
             if nproc <= 1:
                 nproc = visible_cuda_count()
@@ -249,11 +286,13 @@ def main(argv: list[str] | None = None) -> int:
                         nproc = int(torch.cuda.device_count()) if torch.cuda.is_available() else 1
                     except Exception:
                         nproc = 1
+            expected = max(1, int(cfg.nnodes) * max(1, int(nproc)))
             cfg = replace(
                 cfg,
                 nproc_per_node=max(1, int(nproc)),
                 dist_backend="nccl",
                 rollout_replicas=1,
+                expected_world_size=expected,
             )
             if needs_torchrun(cfg):
                 return _exec_fsdp2_torchrun(cfg, train_argv)
@@ -270,6 +309,12 @@ def _main(argv: list[str] | None = None) -> int:
         args, spec = parse_train_args(argv)
     except LaunchError as exc:
         raise SystemExit(str(exc)) from exc
+    from trim.training.dist_runtime import expected_world_size_from_env
+
+    if getattr(args, "expected_world_size", None) in {None, 0}:
+        inferred = expected_world_size_from_env()
+        if inferred is not None:
+            args.expected_world_size = inferred
     return run_parsed_train(args, spec)
 
 

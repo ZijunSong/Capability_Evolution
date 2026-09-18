@@ -10,6 +10,7 @@ from trim.cli.launch import parse_train_args
 from trim.integrations.verl.batch_adapter import (
     drop_constant_reward_groups,
     expand_episode_rows,
+    plan_joint_sync_batches,
     shard_training_rows,
     training_rows_from_groups,
 )
@@ -91,6 +92,30 @@ def test_drop_constant_reward_groups_and_shard():
     assert shards[0][0]["action_ids"] == [1, 2]
 
 
+def test_parse_train_backend_torch_ddp_lora(tmp_path):
+    args, _spec = parse_train_args(
+        [
+            "--train_method",
+            "rl",
+            "--component",
+            "all",
+            "--training-backend",
+            "torch_ddp_lora",
+            "--expected-world-size",
+            "8",
+            "--train-steps",
+            "100",
+            "--max-turns",
+            "40",
+            "--out",
+            str(tmp_path / "out"),
+            "--validate-only",
+        ]
+    )
+    assert args.training_backend == "torch_ddp_lora"
+    assert args.expected_world_size == 8
+
+
 def test_parse_train_backend_verl(tmp_path):
     args, _spec = parse_train_args(
         [
@@ -123,6 +148,48 @@ def test_training_backend_from_argv_and_visible_count(monkeypatch):
     assert visible_cuda_count() == 8
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1,2,3,4,5,6,7,8")
     assert visible_cuda_count() == 9
+
+
+def test_global_batch_plan_equal_rounds_and_dummy():
+    rows = []
+    for i in range(17):
+        n = 64 * ((i % 5) + 1)
+        rows.append(
+            {
+                "row_id": i,
+                "prompt_ids": [1] * n,
+                "action_ids": [2, 3],
+                "action_mask": [1, 1],
+                "token_logprobs": [-0.1, -0.2],
+                "advantage": 0.5,
+            }
+        )
+    plans = [
+        plan_joint_sync_batches(rows, [], rank=r, world_size=8, micro_batch_size=4)
+        for r in range(8)
+    ]
+    rounds = {p.n_rl_rounds for p in plans}
+    assert len(rounds) == 1
+    assert plans[0].n_sync_rounds == plans[0].n_rl_rounds
+    assert sum(1 for p in plans for chunk in p.rl_chunks) == plans[0].n_rl_rounds * 8
+    assert plans[0].n_dummy_rl == (8 - (plans[0].n_global_rl_microbatches % 8)) % 8
+    real = [row for p in plans for chunk in p.rl_chunks for row in chunk if not row.get("is_dummy")]
+    assert len(real) == 17
+
+
+def test_resolve_resume_optimizer_ddp_and_fsdp2(tmp_path):
+    from trim.integrations.verl.trainer_adapter import resolve_resume_optimizer_path
+
+    ckpt = tmp_path / "step_000001"
+    ckpt.mkdir()
+    (ckpt / "optimizer.rank0000.pt").write_bytes(b"opt")
+    assert resolve_resume_optimizer_path(ckpt, rank=3, world_size=8, wrap="ddp").endswith("optimizer.rank0000.pt")
+    try:
+        resolve_resume_optimizer_path(ckpt, rank=3, world_size=8, wrap="fsdp2")
+        raised = False
+    except SystemExit:
+        raised = True
+    assert raised is True
 
 
 def test_unsupported_verl_method_scape():

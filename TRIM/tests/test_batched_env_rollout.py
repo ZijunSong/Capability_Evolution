@@ -108,6 +108,48 @@ def _frozen_row(qid: str) -> dict:
     }
 
 
+def test_prompt_history_keep_reads_encoder_window():
+    from trim.eval.harmony_runtime import prompt_history_keep
+
+    assert prompt_history_keep() == 12
+    enc = type("Enc", (), {"prompt_history_keep": 8})()
+    assert prompt_history_keep(enc) == 8
+
+
+def test_build_prompt_ids_clips_to_renderer_window_before_retry():
+    from trim.training.batched_env_rollout import LiveEpisode, _build_prompt_ids
+
+    seen: list[int] = []
+
+    class Enc:
+        max_model_len = 8192
+        max_new_tokens = 2048
+        prompt_history_keep = 12
+
+        def build_first_turn_prompt_ids(self, query):
+            return [1, 2]
+
+        def build_continuation_prompt_ids(self, query, actions_obs=None, wm_text=None):
+            acts = list(actions_obs or [])
+            seen.append(len(acts))
+            return [1] * 20
+
+    ep = LiveEpisode(
+        row={"query_id": "q", "query": "question"},
+        rollout_idx=0,
+        seed=1,
+        st={"query": "question", "pool": {}, "curated": {}},
+        component_id="sentence_compress",
+        policy_version="v0",
+        acts=[(f"a{i}", f"o{i}") for i in range(30)],
+    )
+    ids = _build_prompt_ids(ep, Enc())
+    assert ids == [1] * 20
+    assert seen
+    assert seen[0] == 12
+    assert all(n <= 12 for n in seen)
+
+
 def test_resolved_query_batch_size_keeps_about_256_live_episodes():
     from trim.training.batched_env_rollout import resolved_query_batch_size
 

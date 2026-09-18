@@ -456,6 +456,7 @@ class ModelEncoding:
     stop_token_ids: list[int]
     tokenizer: Any | None = None
     harmony: Any | None = None
+    prompt_history_keep: int = 12
 
     def decode_tokens(self, ids: Sequence[int]) -> str:
         tokens = [int(x) for x in ids]
@@ -521,7 +522,7 @@ class ModelEncoding:
         *,
         wm_text: str | None = None,
     ) -> list[int]:
-        from trim.eval.harmony_runtime import _ensure_scope, recent_actions_obs
+        from trim.eval.harmony_runtime import _ensure_scope, prompt_history_keep, recent_actions_obs
 
         _ensure_scope()
         from harness.ultra_core import get_system_prompt
@@ -536,7 +537,9 @@ class ModelEncoding:
         ]
         if wm_text:
             messages.append({"role": "user", "content": str(wm_text)})
-        for action, obs in recent_actions_obs(list(actions_obs), keep=12):
+        for action, obs in recent_actions_obs(
+            list(actions_obs), keep=prompt_history_keep(self)
+        ):
             name, args = _action_name_args(action)
             messages.append(
                 {

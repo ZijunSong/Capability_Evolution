@@ -24,9 +24,41 @@ from typing import Any, Sequence, TypeVar
 T = TypeVar("T")
 
 DIST_BACKEND_ENV = "TRIM_DIST_BACKEND"
+TRIM_TRAIN_WORKER_ENV = "TRIM_TRAIN_WORKER"
+TRIM_EXPECTED_WORLD_SIZE_ENV = "TRIM_EXPECTED_WORLD_SIZE"
+TRIM_CUDA_PINNED_ENV = "TRIM_CUDA_PINNED"
+TRIM_CUDA_PARENT_VISIBLE_ENV = "TRIM_CUDA_PARENT_VISIBLE"
+TRIM_CUDA_PHYSICAL_ENV = "TRIM_CUDA_PHYSICAL"
+TRIM_OUTER_RANK_ENV_JSON = "TRIM_OUTER_RANK_ENV_JSON"
 DEFAULT_MASTER_PORT = 29500
 DEFAULT_DIST_BACKEND = "gloo"
 DEFAULT_RDZV_ID = "trim-rl"
+DIST_TRAIN_BACKENDS = frozenset({"verl", "fsdp2", "verl_fsdp2", "torch_ddp_lora"})
+TORCHRUN_REQUIRED_KEYS = ("RANK", "WORLD_SIZE", "LOCAL_RANK", "LOCAL_WORLD_SIZE")
+OUTER_STRIP_RANK_KEYS = (
+    "RANK",
+    "WORLD_SIZE",
+    "LOCAL_RANK",
+    "LOCAL_WORLD_SIZE",
+    "GROUP_RANK",
+    "ROLE_RANK",
+    "GROUP_WORLD_SIZE",
+    "NODE_RANK",
+    "TORCHELASTIC_RUN_ID",
+    "TORCHELASTIC_RESTART_COUNT",
+    "TORCHELASTIC_MAX_RESTARTS",
+    "TORCHELASTIC_USE_AGENT_STORE",
+    "MASTER_ADDR",
+    "MASTER_PORT",
+)
+VLLM_CHILD_STRIP_KEYS = OUTER_STRIP_RANK_KEYS + (
+    TRIM_TRAIN_WORKER_ENV,
+    "PET_MASTER_ADDR",
+    "PET_MASTER_PORT",
+    "PET_NNODES",
+    "PET_NPROC_PER_NODE",
+    "PET_NODE_RANK",
+)
 
 
 @dataclass(frozen=True)
@@ -61,6 +93,8 @@ class DistLaunchConfig:
     ssh_launch: bool = False
     rollout_replicas: int = 1
     already_worker: bool = False
+    expected_world_size: int = 1
+    outer_rank_env: dict[str, str] = field(default_factory=dict)
 
 
 _INFO: DistInfo | None = None
@@ -71,8 +105,120 @@ def reset_dist_info_for_tests() -> None:
     _INFO = None
 
 
+def snapshot_rank_env(env: dict[str, str] | None = None) -> dict[str, str]:
+    src = os.environ if env is None else env
+    return {k: str(src[k]) for k in OUTER_STRIP_RANK_KEYS if k in src and str(src.get(k) or "") != ""}
+
+
+def has_complete_torchrun_env(env: dict[str, str] | None = None) -> bool:
+    src = os.environ if env is None else env
+    return all(str(src.get(k) or "").strip() != "" for k in TORCHRUN_REQUIRED_KEYS)
+
+
+def is_explicit_train_worker(env: dict[str, str] | None = None) -> bool:
+    src = os.environ if env is None else env
+    return str(src.get(TRIM_TRAIN_WORKER_ENV) or "").strip() == "1"
+
+
+def _env_int_or_none(name: str, env: dict[str, str] | None = None) -> int | None:
+    src = os.environ if env is None else env
+    raw = src.get(name)
+    if raw is None or str(raw).strip() == "":
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
+def pet_nproc_per_node(env: dict[str, str] | None = None) -> str:
+    src = os.environ if env is None else env
+    return str(src.get("PET_NPROC_PER_NODE") or "").strip()
+
+
+def pet_nproc_indicates_torchrun(env: dict[str, str] | None = None) -> bool:
+    """CloudML / init-pytorch sets ``PET_NPROC_PER_NODE=auto`` on the outer job."""
+    pet = pet_nproc_per_node(env)
+    return bool(pet) and pet.lower() != "auto"
+
+
+def torchrun_env_source(env: dict[str, str] | None = None) -> dict[str, Any]:
+    src = os.environ if env is None else env
+    return {
+        "trim_train_worker": is_explicit_train_worker(src),
+        "complete_torchrun_env": has_complete_torchrun_env(src),
+        "torchelastic_run_id": str(src.get("TORCHELASTIC_RUN_ID") or ""),
+        "rank": src.get("RANK"),
+        "world_size": src.get("WORLD_SIZE"),
+        "local_rank": src.get("LOCAL_RANK"),
+        "local_world_size": src.get("LOCAL_WORLD_SIZE"),
+        "pet_nproc_per_node": pet_nproc_per_node(src),
+        "plan_a_world_size_gt_1": (_env_int_or_none("WORLD_SIZE", src) or 0) > 1,
+        "plan_a_pet_nproc_real": pet_nproc_indicates_torchrun(src),
+    }
+
+
 def under_torchrun() -> bool:
-    return "RANK" in os.environ and "WORLD_SIZE" in os.environ
+    """True only for a real multi-process worker, not CloudML node-level injection.
+
+    CloudML ``framework: pytorch`` / init-pytorch injects ``RANK=0``,
+    ``WORLD_SIZE=1`` and ``PET_NPROC_PER_NODE=auto`` even on a single-node
+    job. The old check (``RANK`` and ``WORLD_SIZE`` merely present) then
+    skipped ``_exec_fsdp2_torchrun``. Plan A: only ``WORLD_SIZE>1`` or a
+    non-``auto`` ``PET_NPROC_PER_NODE`` counts as already being under
+    torchrun. ``TRIM_TRAIN_WORKER=1`` is our own relaunch mark.
+    """
+    if is_explicit_train_worker():
+        return True
+    world = _env_int_or_none("WORLD_SIZE")
+    if world is not None and world > 1:
+        return True
+    if pet_nproc_indicates_torchrun():
+        return True
+    return False
+
+
+def is_real_train_worker(cfg: DistLaunchConfig | None = None) -> bool:
+    if cfg is not None and cfg.already_worker and has_complete_torchrun_env():
+        return True
+    return under_torchrun()
+
+
+def clear_outer_rank_env(env: dict[str, str]) -> dict[str, str]:
+    """Strip leftover rank/rendezvous vars from an outer-launcher env copy."""
+    saved = snapshot_rank_env(env)
+    for key in OUTER_STRIP_RANK_KEYS:
+        env.pop(key, None)
+    return saved
+
+
+def isolate_inference_child_env(env: dict[str, str] | None = None) -> dict[str, str]:
+    """Copy env for a TP1 vLLM subprocess: keep the pinned GPU, drop parent rank ids."""
+    child = dict(os.environ if env is None else env)
+    for key in VLLM_CHILD_STRIP_KEYS:
+        child.pop(key, None)
+    return child
+
+
+def expected_world_size_from_env() -> int | None:
+    raw = os.environ.get(TRIM_EXPECTED_WORLD_SIZE_ENV)
+    if raw is None or str(raw).strip() == "":
+        return None
+    return max(1, int(raw))
+
+
+def assert_expected_world_size(info: DistInfo, expected: int | None) -> None:
+    if expected is None:
+        return
+    want = max(1, int(expected))
+    got = max(1, int(info.world_size))
+    if got != want:
+        raise RuntimeError(
+            "requested/effective world size mismatch: "
+            f"requested={want} effective={got} rank={info.rank} "
+            f"local_rank={info.local_rank} local_world_size={info.local_world_size} "
+            f"source={torchrun_env_source()}"
+        )
 
 
 def dist_info() -> DistInfo:
@@ -113,40 +259,129 @@ def training_backend_from_argv(argv: Sequence[str]) -> str:
     return "hf_debug"
 
 
+def _visible_ids(visible: str) -> list[str]:
+    return [x.strip() for x in str(visible or "").split(",") if x.strip()]
+
+
 def pin_local_cuda_device() -> dict[str, Any]:
     """Give each local rank a single visible GPU before torch/vLLM start.
 
-    torchrun does not rewrite ``CUDA_VISIBLE_DEVICES``. With
-    ``--nproc-per-node 8`` every rank would otherwise inherit the full node
-    GPU list and vLLM would try to grab every card.
+    Idempotent: a second call validates the saved parent/physical mapping and
+    returns the same pin. A lone leftover ``CUDA_VISIBLE_DEVICES=1`` is not
+    treated as a finished 8-rank bind unless the project pin fields exist.
+    After a successful pin the process must use logical ``cuda:0``.
     """
     local_rank = int(os.environ.get("LOCAL_RANK") or 0)
     local_world = int(os.environ.get("LOCAL_WORLD_SIZE") or os.environ.get("NPROC_PER_NODE") or 1)
     visible = str(os.environ.get("CUDA_VISIBLE_DEVICES") or "").strip()
+    parent = str(os.environ.get(TRIM_CUDA_PARENT_VISIBLE_ENV) or "")
+    physical = str(os.environ.get(TRIM_CUDA_PHYSICAL_ENV) or "")
+    already = str(os.environ.get(TRIM_CUDA_PINNED_ENV) or "").strip() == "1"
     payload: dict[str, Any] = {
-        "pinned": False,
+        "pinned": already,
         "local_rank": local_rank,
         "local_world_size": local_world,
         "cuda_visible_devices": visible,
+        "parent_visible": parent,
+        "physical_id": physical,
+        "logical_device": "cuda:0",
     }
+    if already:
+        current_ids = _visible_ids(visible)
+        if physical and current_ids and current_ids != [physical]:
+            raise RuntimeError(
+                "CUDA pin mismatch on repeat bind: "
+                f"CUDA_VISIBLE_DEVICES={visible!r} saved_physical={physical!r}"
+            )
+        payload["cuda_visible_devices"] = physical or (current_ids[0] if current_ids else visible)
+        return payload
     if local_world <= 1:
         return payload
     if visible and visible not in {"-1", "none", "None"}:
-        ids = [x.strip() for x in visible.split(",") if x.strip()]
+        ids = _visible_ids(visible)
+        if len(ids) == 1:
+            raise RuntimeError(
+                "refusing to treat a single-element CUDA_VISIBLE_DEVICES as an 8-rank pin "
+                f"without {TRIM_CUDA_PINNED_ENV}=1 "
+                f"(LOCAL_RANK={local_rank} LOCAL_WORLD_SIZE={local_world} visible={visible!r}). "
+                "The outer launcher must pass the full parent GPU list."
+            )
         if local_rank >= len(ids):
             raise RuntimeError(
                 f"LOCAL_RANK={local_rank} but CUDA_VISIBLE_DEVICES has {len(ids)} ids: {visible!r}"
             )
-        if len(ids) == 1:
-            payload["cuda_visible_devices"] = ids[0]
-            return payload
         chosen = ids[local_rank]
+        parent_visible = ",".join(ids)
     else:
         chosen = str(local_rank)
+        parent_visible = ""
     os.environ["CUDA_VISIBLE_DEVICES"] = chosen
-    payload["pinned"] = True
-    payload["cuda_visible_devices"] = chosen
+    os.environ[TRIM_CUDA_PINNED_ENV] = "1"
+    os.environ[TRIM_CUDA_PARENT_VISIBLE_ENV] = parent_visible
+    os.environ[TRIM_CUDA_PHYSICAL_ENV] = chosen
+    payload.update(
+        {
+            "pinned": True,
+            "cuda_visible_devices": chosen,
+            "parent_visible": parent_visible,
+            "physical_id": chosen,
+        }
+    )
     return payload
+
+
+def collect_rank_probe() -> dict[str, Any]:
+    import socket
+
+    info = dist_info()
+    logical = "cpu"
+    uuid = None
+    name = None
+    if str(os.environ.get("CUDA_VISIBLE_DEVICES") or "").strip() not in {"", "-1", "none", "None"}:
+        logical = "cuda:0"
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            logical = "cuda:0"
+            props = torch.cuda.get_device_properties(0)
+            name = str(getattr(props, "name", "") or "")
+            raw_uuid = getattr(props, "uuid", None)
+            uuid = str(raw_uuid) if raw_uuid is not None else None
+    except Exception:
+        pass
+    return {
+        "rank": int(info.rank),
+        "local_rank": int(info.local_rank),
+        "world_size": int(info.world_size),
+        "pid": int(os.getpid()),
+        "host": socket.gethostname(),
+        "logical_device": logical,
+        "cuda_visible_devices": str(os.environ.get("CUDA_VISIBLE_DEVICES") or ""),
+        "physical_id": str(os.environ.get(TRIM_CUDA_PHYSICAL_ENV) or ""),
+        "gpu_uuid": uuid,
+        "gpu_name": name,
+        "source": torchrun_env_source(),
+    }
+
+
+def assert_unique_local_gpu_uuids(probes: Sequence[dict[str, Any]]) -> None:
+    by_host: dict[str, list[dict[str, Any]]] = {}
+    for row in probes:
+        by_host.setdefault(str(row.get("host") or ""), []).append(dict(row))
+    for host, rows in by_host.items():
+        if len(rows) <= 1:
+            continue
+        uuids = [str(r.get("gpu_uuid") or "") for r in rows]
+        if any(not u or u == "None" for u in uuids):
+            physical = [str(r.get("physical_id") or r.get("cuda_visible_devices") or "") for r in rows]
+            if len(set(physical)) != len(physical):
+                raise RuntimeError(
+                    f"local GPU bind is not unique on host={host}: {rows}"
+                )
+            continue
+        if len(set(uuids)) != len(uuids):
+            raise RuntimeError(f"duplicate GPU UUID on host={host}: {rows}")
 
 
 def init_dist_if_needed(*, backend: str | None = None, timeout_hours: float = 6.0) -> DistInfo:
@@ -346,6 +581,13 @@ def parse_dist_argv(argv: Sequence[str] | None = None) -> tuple[DistLaunchConfig
         action="store_true",
         help=argparse.SUPPRESS,
     )
+    parser.add_argument(
+        "--expected-world-size",
+        dest="expected_world_size",
+        type=int,
+        default=None,
+        help="Requested training world size. Workers abort if torch.distributed disagrees.",
+    )
     cfg_ns, rest = parser.parse_known_args(list(argv) if argv is not None else sys.argv[1:])
     nnodes = cfg_ns.nnodes
     if nnodes is None:
@@ -358,6 +600,12 @@ def parse_dist_argv(argv: Sequence[str] | None = None) -> tuple[DistLaunchConfig
         node_rank = _env_int("SLURM_NODEID", "GROUP_RANK", "NODE_RANK")
     master_addr = cfg_ns.master_addr or os.environ.get("MASTER_ADDR") or os.environ.get("SLURM_LAUNCH_NODE_IPADDR") or "127.0.0.1"
     master_port = cfg_ns.master_port or _env_int("MASTER_PORT") or DEFAULT_MASTER_PORT
+    expected = cfg_ns.expected_world_size
+    if expected is None:
+        expected = expected_world_size_from_env()
+    if expected is None:
+        expected = max(1, int(nnodes)) * max(1, int(nproc))
+    already = bool(cfg_ns.already_worker) or is_real_train_worker()
     cfg = DistLaunchConfig(
         nnodes=max(1, int(nnodes)),
         nproc_per_node=max(1, int(nproc)),
@@ -370,7 +618,9 @@ def parse_dist_argv(argv: Sequence[str] | None = None) -> tuple[DistLaunchConfig
         hosts=parse_host_list(cfg_ns.hosts),
         ssh_launch=bool(cfg_ns.ssh_launch),
         rollout_replicas=max(1, int(cfg_ns.rollout_replicas or 1)),
-        already_worker=bool(cfg_ns.already_worker) or under_torchrun(),
+        already_worker=already,
+        expected_world_size=max(1, int(expected)),
+        outer_rank_env=snapshot_rank_env(),
     )
     return cfg, list(rest)
 
@@ -417,6 +667,7 @@ def torchrun_cmd(
         )
     cmd.append(str(script))
     cmd.append("--already-worker")
+    cmd.extend(["--expected-world-size", str(max(1, int(cfg.expected_world_size or cfg.nnodes * cfg.nproc_per_node)))])
     if int(cfg.rollout_replicas) != 1:
         cmd.extend(["--rollout-replicas", str(int(cfg.rollout_replicas))])
     cmd.extend(list(train_argv))
@@ -471,4 +722,4 @@ def format_launch_help(rows: Sequence[tuple[int, str, list[str]]]) -> str:
 def needs_torchrun(cfg: DistLaunchConfig) -> bool:
     if cfg.already_worker or under_torchrun():
         return False
-    return int(cfg.nnodes) > 1 or int(cfg.nproc_per_node) > 1
+    return int(cfg.nnodes) > 1 or int(cfg.nproc_per_node) > 1 or int(cfg.expected_world_size) > 1

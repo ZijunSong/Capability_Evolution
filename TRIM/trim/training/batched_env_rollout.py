@@ -104,7 +104,10 @@ def _build_prompt_ids(ep: LiveEpisode, enc) -> list[int]:
         from trim.eval.harness_g_runtime import build_prompt_ids as build_g_prompt_ids
         from trim.eval.harmony_runtime import fit_prompt_ids_to_context
 
-        acts = list(ep.acts)
+        from trim.eval.harmony_runtime import prompt_history_keep, recent_actions_obs
+
+        keep = prompt_history_keep(enc, harness_mask=ep.harness_mask)
+        acts = recent_actions_obs(list(ep.acts), keep=keep)
         max_model_len = int(getattr(enc, "max_model_len", 8192) or 8192) if enc is not None else 8192
         max_new = int(getattr(enc, "max_new_tokens", 2048) or 2048) if enc is not None else 2048
         budget = max(1, max_model_len - max(1, max_new))
@@ -126,7 +129,10 @@ def _build_prompt_ids(ep: LiveEpisode, enc) -> list[int]:
         from trim.eval.local_search_env import wm_text
 
         wm = wm_text(ep.st)
-    acts = list(ep.acts)
+    from trim.eval.harmony_runtime import prompt_history_keep, recent_actions_obs
+
+    keep = prompt_history_keep(enc, harness_mask=ep.harness_mask)
+    acts = recent_actions_obs(list(ep.acts), keep=keep)
     max_model_len = int(getattr(enc, "max_model_len", 8192) or 8192) if enc is not None else 8192
     max_new = int(getattr(enc, "max_new_tokens", 2048) or 2048) if enc is not None else 2048
 
@@ -288,7 +294,7 @@ def _apply_generation(
         action_ids = list(gen.token_ids)
         effective_prompt_ids = list(getattr(gen, "effective_prompt_ids", None) or ep.pending_pids)
         prompt_text = ""
-        if not eval_only and enc is not None:
+        if not eval_only and enc is not None and _keep_dual_view(mode):
             try:
                 prompt_text = decode_ids(enc, effective_prompt_ids)
             except Exception:
@@ -465,7 +471,7 @@ def _run_episode_turns(
                 text = render_action(action)
                 token_ids = list(enc.encode(text))
                 generated[i] = GenerateResult(
-                    request_id=f"{ep.row['query_id']}:g{ep.rollout_idx}:t{turn}:{i}",
+                    request_id=f"{ep.row['query_id']}:e{ep.rollout_idx}:t{int(ep.n_turns)}",
                     token_ids=token_ids,
                     token_logprobs=[0.0] * len(token_ids),
                     text=text,
@@ -476,7 +482,7 @@ def _run_episode_turns(
                 request_slots.append(i)
                 reqs.append(
                     GenerateRequest(
-                        request_id=f"{ep.row['query_id']}:g{ep.rollout_idx}:t{turn}:{i}",
+                        request_id=f"{ep.row['query_id']}:e{ep.rollout_idx}:t{int(ep.n_turns)}",
                         prompt_token_ids=pids,
                         max_new_tokens=max_new,
                         temperature=temperature,

@@ -1676,7 +1676,9 @@ def eval_closed_loop(
     return official, traces
 
 
-def resolve_queries(args: argparse.Namespace) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+def resolve_queries(
+    args: argparse.Namespace,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any], list[Any]]:
     custom_train = getattr(args, "query_manifest", None)
     n_queries = getattr(args, "n_queries", None)
     if uses_sec_train_data(args):
@@ -3042,7 +3044,13 @@ def coerce_runtime_args(args: argparse.Namespace) -> argparse.Namespace:
         args.training_backend = "hf_debug"
     if not hasattr(args, "gpu_schedule"):
         backend = str(getattr(args, "training_backend", "hf_debug") or "hf_debug").lower().replace("-", "_")
-        args.gpu_schedule = "verl_fsdp2" if backend in {"verl", "fsdp2", "verl_fsdp2"} else "scheme_a"
+        args.gpu_schedule = (
+            "torch_ddp_lora"
+            if backend == "torch_ddp_lora"
+            else "verl_fsdp2"
+            if backend in {"verl", "fsdp2", "verl_fsdp2", "torch_ddp_lora"}
+            else "scheme_a"
+        )
     if not hasattr(args, "on_policy_refresh"):
         args.on_policy_refresh = True
     if not hasattr(args, "tensor_parallel_size"):
@@ -3086,7 +3094,7 @@ def coerce_runtime_args(args: argparse.Namespace) -> argparse.Namespace:
         args.gpu_memory_utilization = 0.90
     if not hasattr(args, "enforce_eager"):
         backend = str(getattr(args, "training_backend", "hf_debug") or "hf_debug").lower().replace("-", "_")
-        args.enforce_eager = backend not in {"verl", "fsdp2", "verl_fsdp2"}
+        args.enforce_eager = backend not in {"verl", "fsdp2", "verl_fsdp2", "torch_ddp_lora"}
     if not hasattr(args, "vllm_python"):
         args.vllm_python = ""
     if not hasattr(args, "max_num_seqs"):
@@ -3156,7 +3164,7 @@ def run_from_rl_opd_args(args: argparse.Namespace) -> dict[str, Any]:
         (Path(args.out) / "VALIDATE.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
         return report
     backend = str(getattr(args, "training_backend", "hf_debug") or "hf_debug").lower().replace("-", "_")
-    if backend in {"verl", "fsdp2", "verl_fsdp2"}:
+    if backend in {"verl", "fsdp2", "verl_fsdp2", "torch_ddp_lora"}:
         from trim.integrations.verl.trainer_adapter import run_verl_fsdp2_train
 
         return run_verl_fsdp2_train(args)

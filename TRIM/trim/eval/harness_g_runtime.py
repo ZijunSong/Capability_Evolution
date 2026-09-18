@@ -225,13 +225,13 @@ def _qwen_messages(
     *,
     include_answer_with: bool,
 ) -> list[dict[str, Any]]:
-    from trim.eval.harmony_runtime import recent_actions_obs
+    from trim.eval.harmony_runtime import prompt_history_keep, recent_actions_obs
 
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": f"Question: {query}"},
     ]
-    for action, obs in recent_actions_obs(list(actions_obs or []), keep=12):
+    for action, obs in recent_actions_obs(list(actions_obs or []), keep=prompt_history_keep()):
         if is_protocol_feedback(action):
             messages.append({"role": "user", "content": _obs_text(obs)})
             continue
@@ -322,7 +322,7 @@ def build_harness_g_context(
 ) -> Any:
     """Harmony context with Harness-G tools and recent tool-call history."""
     from openai_harmony import Conversation, DeveloperContent, Message, Role, SystemContent, ToolDescription
-    from trim.eval.harmony_runtime import _ensure_scope, make_action, make_observation, recent_actions_obs
+    from trim.eval.harmony_runtime import _ensure_scope, make_action, make_observation, prompt_history_keep, recent_actions_obs
 
     _ensure_scope()
     from harness.ultra_core import action_observation_to_messages
@@ -346,7 +346,7 @@ def build_harness_g_context(
         Message.from_role_and_content(Role.DEVELOPER, developer),
         Message.from_role_and_content(Role.USER, f"Question: {query}"),
     ]
-    for action, obs in recent_actions_obs(list(actions_obs or []), keep=12):
+    for action, obs in recent_actions_obs(list(actions_obs or []), keep=prompt_history_keep()):
         if is_protocol_feedback(action):
             messages.append(Message.from_role_and_content(Role.USER, _obs_text(obs)))
             continue

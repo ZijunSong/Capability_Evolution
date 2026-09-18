@@ -1,18 +1,19 @@
-"""FSDP2 (fallback FSDP1) CISPO actor. One optimizer.step per rollout batch."""
+"""TRIM-owned CISPO actor. FSDP2 or official DDP wrap; one optimizer.step per batch."""
 
 from __future__ import annotations
 
-import os
+import time
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, Sequence
 
 import torch
 import torch.distributed as dist
 
+from trim.integrations.verl.batch_adapter import RankBatchPlan, dummy_rl_row, plan_joint_sync_batches
 from trim.integrations.verl.joint_objective import cispo_clip_bounds, verl_cispo_clip_config
 from trim.training.hf_rl_batch import (
     gather_response_logprobs,
-    iter_length_microbatches,
     log_train,
     pack_left_pad_teacher_forced,
 )
@@ -35,24 +36,47 @@ def _wrap_fsdp2(model: Any, *, device: torch.device, world_size: int) -> Any:
     try:
         from torch.distributed.device_mesh import init_device_mesh
         from torch.distributed.fsdp import MixedPrecisionPolicy, fully_shard
+    except Exception as exc:
+        raise RuntimeError("FSDP2 imports failed; refusing silent FSDP1 fallback") from exc
+    mesh = init_device_mesh("cuda", (world_size,))
+    mp = MixedPrecisionPolicy(param_dtype=torch.bfloat16, reduce_dtype=torch.float32)
+    for cls in _decoder_layer_classes(model):
+        for mod in list(model.modules()):
+            if type(mod) is cls:
+                fully_shard(mod, mesh=mesh, mp_policy=mp)
+    fully_shard(model, mesh=mesh, mp_policy=mp)
+    return model
 
-        mesh = init_device_mesh("cuda", (world_size,))
-        mp = MixedPrecisionPolicy(param_dtype=torch.bfloat16, reduce_dtype=torch.float32)
-        for cls in _decoder_layer_classes(model):
-            for mod in list(model.modules()):
-                if type(mod) is cls:
-                    fully_shard(mod, mesh=mesh, mp_policy=mp)
-        fully_shard(model, mesh=mesh, mp_policy=mp)
+
+def _wrap_ddp(model: Any, *, device: torch.device, world_size: int) -> Any:
+    model = model.to(device)
+    if world_size <= 1:
         return model
-    except Exception:
-        from trim.training.hf_sft import _wrap_fsdp
+    from torch.nn.parallel import DistributedDataParallel as DDP
 
-        local_rank = int(os.environ.get("LOCAL_RANK") or 0)
-        return _wrap_fsdp(model, local_rank=local_rank)
+    device_ids = [0] if device.type == "cuda" else None
+    return DDP(model, device_ids=device_ids, output_device=device_ids[0] if device_ids else None, find_unused_parameters=False)
+
+
+def _set_fsdp_grad_sync(model: Any, enabled: bool) -> None:
+    seen = False
+    for mod in model.modules():
+        fn = getattr(mod, "set_requires_gradient_sync", None)
+        if callable(fn):
+            fn(bool(enabled))
+            seen = True
+    if not seen:
+        fn = getattr(model, "set_requires_gradient_sync", None)
+        if callable(fn):
+            fn(bool(enabled))
+
+
+def actor_class_name(wrap: str) -> str:
+    return "DDPLoraActor" if str(wrap) == "ddp" else "FSDP2CispoActor"
 
 
 class FSDP2CispoActor:
-    """LoRA actor owned by TRIM; FSDP2 owns sharding/optimizer step."""
+    """LoRA actor owned by TRIM. Wrap is official DDP or FSDP2; not native verl."""
 
     def __init__(
         self,
@@ -65,8 +89,11 @@ class FSDP2CispoActor:
         lora_r: int = 8,
         lora_alpha: int = 16,
         optimizer_path: str | None = None,
+        wrap: str = "fsdp2",
+        heartbeat_every: int = 8,
+        heartbeat_s: float = 30.0,
     ) -> None:
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         self.world_size = dist.get_world_size() if dist.is_available() and dist.is_initialized() else 1
         self.rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
         self.micro_batch_size = max(1, int(micro_batch_size))
@@ -79,9 +106,17 @@ class FSDP2CispoActor:
         self.lora_r = int(lora_r)
         self.lora_alpha = int(lora_alpha)
         self.optimizer_path = optimizer_path
+        self.wrap = str(wrap or "fsdp2").lower().replace("-", "_")
+        if self.wrap in {"torch_ddp_lora", "ddp_lora"}:
+            self.wrap = "ddp"
+        self.heartbeat_every = max(1, int(heartbeat_every))
+        self.heartbeat_s = max(1.0, float(heartbeat_s))
         self.model = None
         self.optimizer = None
         self.tokenizer = None
+        self.wrapper_type = "none"
+        self._logged_logits_fallback = False
+        self._logged_logits_shape = False
         self._load()
 
     def _load(self) -> None:
@@ -133,9 +168,21 @@ class FSDP2CispoActor:
             except Exception:
                 n_train = sum(p.numel() for p in model.parameters() if p.requires_grad)
                 print(f"[verl-fsdp2] trainable_params={n_train}", flush=True)
-        if self.device.type == "cuda" and self.world_size > 1:
+        if self.device.type == "cuda":
             model = model.to(self.device)
-        self.model = _wrap_fsdp2(model, device=self.device, world_size=self.world_size)
+        if self.wrap == "ddp":
+            self.model = _wrap_ddp(model, device=self.device, world_size=self.world_size)
+        elif self.wrap == "none":
+            self.model = model.to(self.device)
+        else:
+            self.model = _wrap_fsdp2(model, device=self.device, world_size=self.world_size)
+        self.wrapper_type = type(self.model).__name__
+        if self.rank == 0:
+            print(
+                f"[actor] wrap={self.wrap} wrapper={self.wrapper_type} "
+                f"world_size={self.world_size} device={self.device} native_verl=false",
+                flush=True,
+            )
         self.optimizer = torch.optim.AdamW(
             [p for p in self.model.parameters() if p.requires_grad],
             lr=self.learning_rate,
@@ -143,8 +190,11 @@ class FSDP2CispoActor:
             eps=1e-8,
             weight_decay=0.01,
         )
-        if self.optimizer_path and Path(self.optimizer_path).is_file():
-            payload = torch.load(self.optimizer_path, map_location="cpu", weights_only=False)
+        if self.optimizer_path:
+            path = Path(self.optimizer_path)
+            if not path.is_file():
+                raise FileNotFoundError(f"optimizer state missing: {path}")
+            payload = torch.load(path, map_location="cpu", weights_only=False)
             self.optimizer.load_state_dict(payload)
 
     def close(self) -> None:
@@ -171,8 +221,22 @@ class FSDP2CispoActor:
         try:
             out = self.model(**kwargs, logits_to_keep=keep)
         except TypeError:
+            if not self._logged_logits_fallback:
+                print(
+                    f"[actor rank{self.rank}] logits_to_keep unsupported; "
+                    "falling back to full-sequence logits",
+                    flush=True,
+                )
+                self._logged_logits_fallback = True
             out = self.model(**kwargs)
         logits = out.logits
+        if not self._logged_logits_shape:
+            print(
+                f"[actor rank{self.rank}] logits_shape={tuple(logits.shape)} "
+                f"logits_to_keep={keep} fallback={self._logged_logits_fallback}",
+                flush=True,
+            )
+            self._logged_logits_shape = True
         if logits.shape[1] > keep:
             logits = logits[:, -keep:, :]
         logps = gather_response_logprobs(logits, packed.response_ids, max_resp=packed.max_resp)
@@ -192,158 +256,280 @@ class FSDP2CispoActor:
             aligned.append(item)
         return logps, aligned
 
-    def update(
-        self,
-        rl_rows: Sequence[dict[str, Any]],
-        opd_rows: Sequence[Any] | None = None,
-        *,
-        lambda_opd: float = 0.0,
-    ) -> dict[str, Any]:
-        """Accumulate CISPO (+ optional CE) then one optimizer.step. All ranks must enter."""
-        assert self.model is not None and self.optimizer is not None
-        self.model.train()
-        self.optimizer.zero_grad(set_to_none=True)
-        local = [dict(r) for r in rl_rows if list(r.get("action_ids") or r.get("response_ids") or [])]
-        n_opt = 0
-        metrics = {
-            "n_rl_rows_local": len(local),
-            "n_opd_rows_local": len(list(opd_rows or [])),
-            "n_optimizer_steps": 0,
-            "loss": 0.0,
-        }
-        token_count = 0
-        for row in local:
-            mask = list(row.get("action_mask") or [1] * len(row.get("action_ids") or []))
-            token_count += sum(1 for m in mask if m)
-        token_t = torch.tensor([float(token_count)], device=self.device, dtype=torch.float32)
-        if self.world_size > 1:
-            dist.all_reduce(token_t, op=dist.ReduceOp.SUM)
-        global_tokens = max(1.0, float(token_t.item()))
-        metrics["n_rl_tokens"] = int(global_tokens)
-        has_local = 1 if (local or list(opd_rows or [])) else 0
-        has_t = torch.tensor([has_local], device=self.device, dtype=torch.int32)
-        if self.world_size > 1:
-            dist.all_reduce(has_t, op=dist.ReduceOp.MAX)
-        if int(has_t.item()) == 0:
-            return metrics
+    def _sync_context(self, sync_now: bool):
+        if sync_now or self.world_size <= 1:
+            if self.wrap == "fsdp2":
+                _set_fsdp_grad_sync(self.model, True)
+            return nullcontext()
+        if self.wrap == "ddp":
+            no_sync = getattr(self.model, "no_sync", None)
+            if callable(no_sync):
+                return no_sync()
+        if self.wrap == "fsdp2":
+            _set_fsdp_grad_sync(self.model, False)
+        return nullcontext()
 
-        loss_sum = 0.0
-        n_mb = 0
+    def _peak_mem_mb(self) -> float | None:
+        if self.device.type != "cuda" or not torch.cuda.is_available():
+            return None
+        return round(float(torch.cuda.max_memory_allocated()) / (1024 * 1024), 1)
+
+    def _heartbeat(
+        self,
+        *,
+        done: int,
+        total: int,
+        stage: str,
+        input_tokens: int,
+        supervised_tokens: int,
+        last_len: int,
+        started: float,
+    ) -> None:
+        elapsed = max(1e-6, time.perf_counter() - started)
+        payload = {
+            "rank": self.rank,
+            "wrap": self.wrap,
+            "wrapper": self.wrapper_type,
+            "done": done,
+            "total": total,
+            "stage": stage,
+            "input_tokens": input_tokens,
+            "supervised_tokens": supervised_tokens,
+            "tokens_per_s": round(input_tokens / elapsed, 1),
+            "last_batch_len": last_len,
+            "peak_mem_mb": self._peak_mem_mb(),
+            "elapsed_s": round(elapsed, 2),
+        }
+        log_train("actor_heartbeat", **payload)
+
+    def _rl_numerator(
+        self,
+        chunk: Sequence[dict[str, Any]],
+    ) -> tuple[torch.Tensor, int, int, int]:
+        pairs = []
+        extras = []
+        for row in chunk:
+            prompt = list(row.get("effective_prompt_ids") or row.get("prompt_ids") or dummy_rl_row()["prompt_ids"])
+            action = list(row.get("action_ids") or [1])
+            if len(prompt) + len(action) > self.max_full_tokens:
+                raise ValueError(f"sampled sequence {len(prompt)+len(action)} exceeds {self.max_full_tokens}")
+            pairs.append((prompt, action))
+            extras.append(dict(row))
+        logps, aligned = self._forward_response_logprobs(pairs, extras)
+        terms: list[torch.Tensor] = []
         ratio_hits = 0
         ratio_total = 0
-        if not local:
-            dummy = None
-            for p in self.model.parameters():
-                if p.requires_grad:
-                    term = p.float().sum() * 0.0
-                    dummy = term if dummy is None else dummy + term
-            if dummy is not None:
-                dummy.backward()
+        input_tokens = sum(len(p) + len(a) for p, a in pairs)
+        for row, new_lp in zip(aligned, logps):
+            if new_lp.numel() == 0:
+                continue
+            new_lp = new_lp.float()
+            old_raw = list(row.get("token_logprobs") or [])
+            if not old_raw:
+                continue
+            old_lp = torch.tensor(old_raw[: new_lp.numel()], device=self.device, dtype=torch.float32)
+            mask = torch.tensor(
+                list(row.get("action_mask") or [1] * new_lp.numel())[: new_lp.numel()],
+                device=self.device,
+                dtype=torch.float32,
+            )
+            if new_lp.numel() != old_lp.numel():
+                n = min(new_lp.numel(), old_lp.numel(), mask.numel())
+                new_lp = new_lp[:n]
+                old_lp = old_lp[:n]
+                mask = mask[:n]
+            if not torch.isfinite(new_lp).all() or not torch.isfinite(old_lp).all():
+                raise ValueError("non-finite logprobs in CISPO")
+            ratio = (new_lp - old_lp).exp()
+            if not torch.isfinite(ratio).all():
+                raise ValueError("non-finite CISPO ratio")
+            weight = ratio.clamp(min=self.clip_low, max=self.clip_high).detach()
+            ratio_hits += int((ratio != weight).sum().item())
+            ratio_total += int(mask.sum().item())
+            adv = float(row.get("advantage") or 0.0)
+            terms.append((-(weight * adv * new_lp * mask)).sum())
+        if terms:
+            numer = torch.stack(terms).sum()
         else:
-            for chunk in iter_length_microbatches(
-                local,
-                size=self.micro_batch_size,
-                length_fn=lambda r: len(r.get("prompt_ids") or r.get("effective_prompt_ids") or [])
-                + len(r.get("action_ids") or []),
-            ):
-                n_mb += 1
-                pairs = []
-                for row in chunk:
-                    prompt = list(row.get("effective_prompt_ids") or row.get("prompt_ids") or [])
-                    action = list(row.get("action_ids") or [])
-                    if len(prompt) + len(action) > self.max_full_tokens:
-                        raise ValueError(
-                            f"sampled sequence {len(prompt)+len(action)} exceeds {self.max_full_tokens}"
-                        )
-                    pairs.append((prompt, action))
-                logps, aligned = self._forward_response_logprobs(pairs, chunk)
-                chunk_terms = []
-                for row, new_lp in zip(aligned, logps):
-                    if new_lp.numel() == 0:
-                        continue
-                    new_lp = new_lp.float()
-                    old_lp = torch.tensor(row["token_logprobs"], device=self.device, dtype=torch.float32)
-                    mask = torch.tensor(row["action_mask"], device=self.device, dtype=torch.float32)
-                    if not torch.isfinite(new_lp).all() or not torch.isfinite(old_lp).all():
-                        raise ValueError("non-finite logprobs in FSDP2 CISPO")
-                    ratio = (new_lp - old_lp).exp()
-                    if not torch.isfinite(ratio).all():
-                        raise ValueError("non-finite CISPO ratio")
-                    weight = ratio.clamp(min=self.clip_low, max=self.clip_high).detach()
-                    ratio_hits += int((ratio != weight).sum().item())
-                    ratio_total += int(mask.sum().item())
-                    adv = float(row.get("advantage") or 0.0)
-                    chunk_terms.append((-(weight * adv * new_lp * mask)).sum() / global_tokens)
-                if chunk_terms:
-                    loss = torch.stack(chunk_terms).sum()
-                    if loss.requires_grad:
-                        loss.backward()
-                    loss_sum += float(loss.detach().item())
-                    del loss
-                del logps, chunk_terms
-        if opd_rows and float(lambda_opd) > 0:
-            from trim.training.tinker_opd_datum import TinkerOPDDatum
+            dummy = next(p for p in self.model.parameters() if p.requires_grad)
+            numer = dummy.float().sum() * 0.0
+        return numer, ratio_hits, ratio_total, input_tokens
 
-            opd_loss = self._opd_ce(list(opd_rows), lambda_already_baked=True)
-            loss_sum += float(opd_loss)
-            del TinkerOPDDatum
-        params = [p for p in self.model.parameters() if p.requires_grad]
-        clip_fn = getattr(self.model, "clip_grad_norm_", None)
-        if callable(clip_fn):
-            clip_fn(1.0)
-        else:
-            torch.nn.utils.clip_grad_norm_(params, 1.0)
-        self.optimizer.step()
-        n_opt = 1
-        self.optimizer.zero_grad(set_to_none=True)
-        metrics.update(
-            {
-                "n_optimizer_steps": n_opt,
-                "n_microbatches": n_mb,
-                "loss": loss_sum,
-                "ratio_clip_fraction": (ratio_hits / max(1, ratio_total)),
-                "clip_low": self.clip_low,
-                "clip_high": self.clip_high,
-            }
-        )
-        log_train("fsdp2_cispo", **metrics)
-        if n_opt not in {0, 1}:
-            raise RuntimeError(f"n_optimizer_steps={n_opt}")
-        return metrics
-
-    def _opd_ce(self, datums: Sequence[Any], *, lambda_already_baked: bool) -> float:
+    def _opd_numerator(self, chunk: Sequence[Any]) -> tuple[torch.Tensor, int]:
         from trim.training.tinker_opd_datum import TinkerOPDDatum
 
-        del lambda_already_baked
-        prepared: list[tuple[list[int], list[int], list[float]]] = []
-        for raw in datums:
+        prepared: list[tuple[list[int], list[int], list[float], bool]] = []
+        for raw in chunk:
+            dummy = bool(isinstance(raw, dict) and raw.get("is_dummy"))
             if isinstance(raw, TinkerOPDDatum):
                 prompt = list(raw.prompt_token_ids)
                 n_p = len(prompt)
                 resp = list(raw.target_tokens[n_p:])
                 weights = list(raw.weights[n_p:])
             else:
-                prompt = list(raw.get("prompt_ids") or raw.get("effective_prompt_ids") or [])
-                resp = list(raw.get("target_ids") or [])
-                weights = list(raw.get("weights") or [1.0] * len(resp))
+                prompt = list(raw.get("prompt_ids") or raw.get("effective_prompt_ids") or [1, 2, 3, 4])
+                resp = list(raw.get("target_ids") or [1])
+                weights = list(raw.get("weights") or [0.0] * len(resp))
             if prompt and resp:
-                prepared.append((prompt, resp, weights))
+                prepared.append((prompt, resp, weights, dummy))
         if not prepared:
-            return 0.0
-        total = 0.0
-        for chunk in iter_length_microbatches(
-            prepared, size=self.micro_batch_size, length_fn=lambda r: len(r[0]) + len(r[1])
-        ):
-            logps, _ = self._forward_response_logprobs([(p, r) for p, r, _w in chunk], [{} for _ in chunk])
-            terms = []
-            for (_p, _r, weights), logp in zip(chunk, logps):
-                w = torch.tensor(weights[: logp.numel()], device=self.device, dtype=torch.float32)
-                terms.append(-(logp.float() * w).sum())
-            if terms:
-                loss = torch.stack(terms).sum()
+            dummy_p = next(p for p in self.model.parameters() if p.requires_grad)
+            return dummy_p.float().sum() * 0.0, 0
+        logps, _ = self._forward_response_logprobs(
+            [(p, r) for p, r, _w, _d in prepared],
+            [{} for _ in prepared],
+        )
+        terms: list[torch.Tensor] = []
+        input_tokens = 0
+        for (prompt, resp, weights, dummy), logp in zip(prepared, logps):
+            input_tokens += len(prompt) + len(resp)
+            if dummy:
+                continue
+            w = torch.tensor(weights[: logp.numel()], device=self.device, dtype=torch.float32)
+            terms.append(-(logp.float() * w).sum())
+        if terms:
+            return torch.stack(terms).sum(), input_tokens
+        dummy_p = next(p for p in self.model.parameters() if p.requires_grad)
+        return dummy_p.float().sum() * 0.0, input_tokens
+
+    def update(
+        self,
+        rl_rows: Sequence[dict[str, Any]],
+        opd_rows: Sequence[Any] | None = None,
+        *,
+        lambda_opd: float = 0.0,
+        plan: RankBatchPlan | None = None,
+    ) -> dict[str, Any]:
+        """Accumulate CISPO (+ optional CE) then one optimizer.step. All ranks must enter."""
+        assert self.model is not None and self.optimizer is not None
+        self.model.train()
+        self.optimizer.zero_grad(set_to_none=True)
+        scheduled = plan or plan_joint_sync_batches(
+            list(rl_rows),
+            list(opd_rows or []),
+            rank=self.rank,
+            world_size=self.world_size,
+            micro_batch_size=self.micro_batch_size,
+        )
+        steps = scheduled.steps()
+        scale = float(self.world_size)
+        z_rl = max(1.0, float(scheduled.global_rl_tokens))
+        metrics = {
+            "n_rl_rows_local": sum(1 for chunk in scheduled.rl_chunks for r in chunk if not r.get("is_dummy")),
+            "n_opd_rows_local": sum(len(chunk) for chunk in scheduled.opd_chunks),
+            "n_optimizer_steps": 0,
+            "loss": 0.0,
+            "n_rl_tokens": int(scheduled.global_rl_tokens),
+            "n_dummy_rl": int(scheduled.n_dummy_rl),
+            "n_dummy_opd": int(scheduled.n_dummy_opd),
+            "n_sync_rounds": int(scheduled.n_sync_rounds),
+            "n_global_rl_microbatches": int(scheduled.n_global_rl_microbatches),
+            "wrap": self.wrap,
+            "wrapper": self.wrapper_type,
+        }
+        if not steps:
+            return metrics
+
+        loss_sum = 0.0
+        ratio_hits = 0
+        ratio_total = 0
+        input_tokens = 0
+        supervised = 0
+        started = time.perf_counter()
+        last_hb = started
+        last_len = 0
+        if self.device.type == "cuda" and torch.cuda.is_available():
+            torch.cuda.reset_peak_memory_stats()
+        for i, (kind, chunk) in enumerate(steps):
+            sync_now = i == len(steps) - 1
+            last_len = sum(
+                len(r.get("effective_prompt_ids") or r.get("prompt_ids") or [])
+                + len(r.get("action_ids") or r.get("target_ids") or [])
+                if isinstance(r, dict)
+                else 0
+                for r in chunk
+            )
+            ctx = self._sync_context(sync_now)
+            with ctx:
+                if kind == "rl":
+                    numer, hits, tot, n_in = self._rl_numerator(chunk)
+                    ratio_hits += hits
+                    ratio_total += tot
+                    supervised += tot
+                    loss = scale * (numer / z_rl)
+                else:
+                    # Weights already include lambda; keep the original sum, only undo DDP mean.
+                    numer, n_in = self._opd_numerator(chunk)
+                    loss = scale * numer
                 if loss.requires_grad:
                     loss.backward()
-                total += float(loss.detach().item())
+                loss_sum += float(loss.detach().item())
+                del loss, numer
+            input_tokens += n_in
+            now = time.perf_counter()
+            if (
+                (i + 1) % self.heartbeat_every == 0
+                or sync_now
+                or (now - last_hb) >= self.heartbeat_s
+            ):
+                self._heartbeat(
+                    done=i + 1,
+                    total=len(steps),
+                    stage=kind,
+                    input_tokens=input_tokens,
+                    supervised_tokens=supervised,
+                    last_len=last_len,
+                    started=started,
+                )
+                last_hb = now
+        params = [p for p in self.model.parameters() if p.requires_grad]
+        clip_fn = getattr(self.model, "clip_grad_norm_", None)
+        if callable(clip_fn):
+            clip_fn(1.0)
+        else:
+            torch.nn.utils.clip_grad_norm_(params, 1.0)
+        if self.device.type == "cuda":
+            torch.cuda.synchronize()
+        t_opt = time.perf_counter()
+        self.optimizer.step()
+        if self.device.type == "cuda":
+            torch.cuda.synchronize()
+        opt_s = time.perf_counter() - t_opt
+        n_opt = 1
+        self.optimizer.zero_grad(set_to_none=True)
+        metrics.update(
+            {
+                "n_optimizer_steps": n_opt,
+                "n_microbatches": len(steps),
+                "loss": loss_sum,
+                "ratio_clip_fraction": (ratio_hits / max(1, ratio_total)),
+                "clip_low": self.clip_low,
+                "clip_high": self.clip_high,
+                "update_wall_s": round(time.perf_counter() - started, 3),
+                "optimizer_s": round(opt_s, 3),
+                "peak_mem_mb": self._peak_mem_mb(),
+            }
+        )
+        log_train(f"{self.wrap}_cispo", **metrics)
+        if n_opt not in {0, 1}:
+            raise RuntimeError(f"n_optimizer_steps={n_opt}")
+        return metrics
+
+    def _opd_ce(self, datums: Sequence[Any], *, lambda_already_baked: bool) -> float:
+        del lambda_already_baked
+        plan = plan_joint_sync_batches(
+            [],
+            list(datums),
+            rank=self.rank,
+            world_size=1,
+            micro_batch_size=self.micro_batch_size,
+        )
+        total = 0.0
+        for chunk in plan.opd_chunks:
+            numer, _ = self._opd_numerator(chunk)
+            if numer.requires_grad:
+                numer.backward()
+            total += float(numer.detach().item())
         return total
 
     def save_adapter(self, path: Path) -> None:
@@ -391,3 +577,11 @@ class FSDP2CispoActor:
             self.tokenizer.save_pretrained(str(path))
         if self.world_size > 1:
             dist.barrier()
+
+
+class DDPLoraActor(FSDP2CispoActor):
+    """Official PyTorch DDP LoRA actor. Same CISPO math as FSDP2CispoActor."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        kwargs["wrap"] = "ddp"
+        super().__init__(**kwargs)
