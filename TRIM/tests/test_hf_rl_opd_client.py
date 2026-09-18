@@ -76,6 +76,39 @@ def test_forward_backward_async_logs_and_counts():
     assert client.calls == [("fb", "cispo", 4)]
 
 
+def test_gap_runs_teacher_first_merges_and_caches():
+    backend = _TinyBackend()
+    backend.order = []
+
+    def _logprobs(prompt_ids, response_ids, *, require_grad):
+        backend.order.append("student" if require_grad else "teacher")
+        n = max(1, len(response_ids))
+        vals = backend.param.expand(n)
+        return vals if require_grad else vals.detach()
+
+    backend._teacher_forced_logprobs = _logprobs
+    client = HFDebugTrainingClient(backend, micro_batch_size=8, heartbeat_every=100)
+    client.set_policy_version("v1")
+    row = {
+        "prompt_ids": [1, 2, 3, 4],
+        "target_ids": [5, 6],
+        "teacher_prompt_ids": [7, 8, 9],
+        "weights": [1.0, 1.0],
+        "lambda_opd": 0.01,
+        "gate_beta": 5.0,
+    }
+    first = client._opd_sampled_gap([row, dict(row)])
+    assert backend.order[0] == "teacher"
+    assert "student" in backend.order
+    assert first["teacher_first"] is True
+    assert first["n_merged_rows"] == 1
+    assert first["teacher_cache_misses"] == 1
+    second = client._opd_sampled_gap([row])
+    assert second["teacher_cache_hits"] >= 1
+    asyncio.run(client.optim_step_async({}))
+    assert client._teacher_logp_cache == {}
+
+
 def test_cli_exposes_new_hf_train_settings(tmp_path):
     from trim.cli.launch import parse_train_args
 

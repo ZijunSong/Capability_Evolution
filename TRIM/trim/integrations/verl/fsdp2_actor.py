@@ -384,7 +384,15 @@ class FSDP2CispoActor:
         for (prompt, resp, weights, dummy), logp in zip(prepared, logps):
             input_tokens += len(prompt) + len(resp)
             if dummy:
+                terms.append(logp.float().sum() * 0.0)
                 continue
+            from trim.training.opd_train_contract import weights_look_like_unnormalized_gap_mask
+
+            if weights_look_like_unnormalized_gap_mask(list(weights)):
+                raise ValueError(
+                    "distributed CE actor refused 0/1 gap-style token weights; "
+                    "CE weights must already include lambda / Z"
+                )
             w = torch.tensor(weights[: logp.numel()], device=self.device, dtype=torch.float32)
             terms.append(-(logp.float() * w).sum())
         if terms:
@@ -401,6 +409,18 @@ class FSDP2CispoActor:
         plan: RankBatchPlan | None = None,
     ) -> dict[str, Any]:
         """Accumulate CISPO (+ optional CE) then one optimizer.step. All ranks must enter."""
+        from trim.training.rl_opd_types import uses_seed_gap
+
+        for raw in list(opd_rows or []):
+            if isinstance(raw, dict) and raw.get("is_dummy"):
+                continue
+            loss = getattr(raw, "opd_loss", None)
+            if loss is None and isinstance(raw, dict):
+                loss = raw.get("opd_loss")
+            if loss and uses_seed_gap(str(loss)):
+                raise ValueError(
+                    f"distributed actor is CE-only; refused gap datum opd_loss={loss!r}"
+                )
         assert self.model is not None and self.optimizer is not None
         self.model.train()
         self.optimizer.zero_grad(set_to_none=True)
@@ -424,6 +444,10 @@ class FSDP2CispoActor:
             "n_dummy_opd": int(scheduled.n_dummy_opd),
             "n_sync_rounds": int(scheduled.n_sync_rounds),
             "n_global_rl_microbatches": int(scheduled.n_global_rl_microbatches),
+            "rl_padding_fraction": float(scheduled.rl_padding_fraction),
+            "opd_padding_fraction": float(scheduled.opd_padding_fraction),
+            "rl_real_tokens": int(scheduled.rl_real_tokens),
+            "opd_real_tokens": int(scheduled.opd_real_tokens),
             "wrap": self.wrap,
             "wrapper": self.wrapper_type,
         }
@@ -491,15 +515,19 @@ class FSDP2CispoActor:
         if self.device.type == "cuda":
             torch.cuda.synchronize()
         t_opt = time.perf_counter()
-        self.optimizer.step()
+        has_signal = float(scheduled.global_rl_tokens) > 0 or float(scheduled.global_opd_weight) > 0
+        n_opt = 0
+        if has_signal:
+            self.optimizer.step()
+            n_opt = 1
         if self.device.type == "cuda":
             torch.cuda.synchronize()
         opt_s = time.perf_counter() - t_opt
-        n_opt = 1
         self.optimizer.zero_grad(set_to_none=True)
         metrics.update(
             {
                 "n_optimizer_steps": n_opt,
+                "skipped_empty_supervision": not has_signal,
                 "n_microbatches": len(steps),
                 "loss": loss_sum,
                 "ratio_clip_fraction": (ratio_hits / max(1, ratio_total)),

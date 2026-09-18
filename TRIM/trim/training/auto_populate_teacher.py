@@ -68,6 +68,7 @@ def _skip(turn_id: int, reason: str) -> list[HarnessEvent]:
             visible_to_student=False,
             metadata={
                 "teacher_kind": "skip_untriggered",
+                "source_type": "skip_untriggered",
                 "skip_reason": reason,
                 "not_a_continuous_teacher_rollout": True,
             },
@@ -90,7 +91,13 @@ def teacher_events_from_wm(
                 {"query": q},
                 turn_id=turn_id,
                 component_id=COMPONENT_ID,
-                metadata={"owner": "teacher_full", "auto_anchor": True, "trigger": trigger},
+                metadata={
+                    "owner": "teacher_full",
+                    "auto_anchor": True,
+                    "trigger": trigger,
+                    "source_type": "capability_effect",
+                    "teacher_kind": "capability_effect",
+                },
             )
         ]
     pool = _records(wm)
@@ -113,6 +120,8 @@ def teacher_events_from_wm(
                 "hidden_auto_effect": True,
                 "trigger": trigger,
                 "first_search_bound": True,
+                "source_type": "capability_effect",
+                "teacher_kind": "capability_effect",
             },
         )
     ]

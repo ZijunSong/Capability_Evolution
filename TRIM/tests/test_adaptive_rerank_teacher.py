@@ -5,7 +5,14 @@ from trim.training.opd_dataset import project_and_materialize, prompt_has_teache
 from trim.training.opd_projection import ProjectionKind, StudentActionSpaceProjector
 
 
-def test_adaptive_rerank_projects_query_only_search_without_leak():
+def test_adaptive_rerank_skips_without_instruction():
+    events = teacher_events_from_wm({"query": "Which source is direct evidence?", "documents": []})
+    assert events[0].metadata["teacher_kind"] == "skip_untriggered"
+    assert events[0].metadata["skip_reason"] == "no_rerank_instruction"
+    assert not any(getattr(e, "action_name", None) for e in events)
+
+
+def test_adaptive_rerank_does_not_emit_fake_search_by_default():
     wm = {
         "query": "Which source is direct evidence?",
         RERANK_INSTRUCTION_KEY: "prefer direct evidence",
@@ -13,11 +20,28 @@ def test_adaptive_rerank_projects_query_only_search_without_leak():
         "curated_ids": [],
     }
     events = teacher_events_from_wm(wm)
+    assert events[0].metadata["skip_reason"] == "no_capability_derived_action"
+    assert not any(getattr(e, "action_name", None) for e in events)
+
+
+def test_adaptive_rerank_ablation_projects_query_only_search_without_leak():
+    wm = {
+        "query": "Which source is direct evidence?",
+        RERANK_INSTRUCTION_KEY: "prefer direct evidence",
+        "documents": [{"id": "d1", "text": "evidence"}],
+        "curated_ids": [],
+    }
+    events = teacher_events_from_wm(wm, allow_synthetic_heuristic=True)
     assert events[0].visible_to_student is False
     assert events[0].observation[RERANK_INSTRUCTION_KEY] == "prefer direct evidence"
     assert events[1].action_name == "search_corpus"
     assert events[1].arguments == {"query": wm["query"]}
-    snap = capture_snapshot(query_id="q1", step=0, harness_mask=minus_mask("adaptive_rerank_instruction"), working_memory=wm)
+    snap = capture_snapshot(
+        query_id="q1",
+        step=0,
+        harness_mask=minus_mask("adaptive_rerank_instruction"),
+        working_memory=wm,
+    )
     projection, steps = project_and_materialize(
         student_snapshot=snap,
         teacher_events=events,

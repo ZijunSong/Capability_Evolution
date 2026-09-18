@@ -33,6 +33,9 @@ def split_log_groups(metrics: HybridStepMetrics) -> dict[str, dict[str, Any]]:
         },
         "opd": {
             "nll": metrics.opd_nll,
+            "weighted_ce": metrics.opd_weighted_ce,
+            "weighted_gap": metrics.opd_weighted_gap,
+            "unweighted_nll": metrics.opd_unweighted_nll,
             "num_datums": metrics.n_opd_datums,
             "num_loss_tokens": metrics.n_opd_tokens,
             "projection_coverage": metrics.projection_coverage,

@@ -82,3 +82,22 @@ def test_qwen_action_renderer_uses_tool_call_xml():
     ids, roundtrip = encode_rollout_style_action(_FakeEnc(), action)
     assert ids
     assert roundtrip == text
+
+
+def test_gptoss_action_renderer_uses_harmony_call():
+    class _HarmonyEnc:
+        family = "gpt-oss"
+
+        def encode(self, text: str) -> list[int]:
+            return [ord(c) % 200 + 1 for c in str(text)]
+
+    action = {"name": "search_corpus", "arguments": {"query": "Apple 10-K"}}
+    text = render_rollout_action_text(_HarmonyEnc(), action)
+    assert text.startswith("to=functions.search_corpus")
+    assert "<|call|>" in text
+    assert "<|start|>assistant" not in text
+    from trim.eval.harmony_runtime import parse_harmony_tool_call
+
+    parsed = parse_harmony_tool_call(text)
+    assert parsed.parsed is True
+    assert parsed.tool_name == "search_corpus"

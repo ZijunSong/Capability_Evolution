@@ -60,6 +60,9 @@ class HFDebugTrainingClient:
         self.calls: list[tuple] = []
         self._accumulating = False
         self._step_tag = 0
+        self._teacher_logp_cache: dict[tuple[Any, ...], torch.Tensor] = {}
+        self._teacher_cache_policy_version: str | None = None
+        self.policy_version: str = "v0"
 
     def _ensure_accum(self) -> None:
         if not self._accumulating:
@@ -109,6 +112,63 @@ class HFDebugTrainingClient:
             self.backend._teacher_forced_logprobs(prompt, resp, require_grad=require_grad)
             for prompt, resp in pairs
         ]
+
+    def set_policy_version(self, version: str) -> None:
+        ver = str(version or "")
+        if ver != self._teacher_cache_policy_version:
+            self._teacher_logp_cache.clear()
+            self._teacher_cache_policy_version = ver
+        self.policy_version = ver
+
+    def _teacher_cache_key(self, teacher_ids: list[int], resp_ids: list[int]) -> tuple[Any, ...]:
+        return (self._teacher_cache_policy_version, tuple(teacher_ids), tuple(resp_ids))
+
+    def _teacher_logprobs_cached(
+        self, pairs: list[tuple[list[int], list[int]]]
+    ) -> tuple[list[torch.Tensor], int, int]:
+        out: list[torch.Tensor | None] = [None] * len(pairs)
+        misses: list[int] = []
+        hits = 0
+        for i, pair in enumerate(pairs):
+            cached = self._teacher_logp_cache.get(self._teacher_cache_key(*pair))
+            if cached is not None:
+                out[i] = cached
+                hits += 1
+            else:
+                misses.append(i)
+        if misses:
+            computed = self._logprobs_many([pairs[i] for i in misses], require_grad=False)
+            for i, lp in zip(misses, computed):
+                cached = lp.detach()
+                self._teacher_logp_cache[self._teacher_cache_key(*pairs[i])] = cached
+                out[i] = cached
+                if len(self._teacher_logp_cache) > 4096:
+                    self._teacher_logp_cache.clear()
+        return [item if item is not None else torch.zeros(0) for item in out], hits, len(misses)
+
+    @staticmethod
+    def _merge_weighted_rows(
+        rows: list[tuple],
+        *,
+        key_fn,
+        weight_index: int,
+    ) -> tuple[list[tuple], int]:
+        merged: dict[Any, list] = {}
+        order: list[Any] = []
+        for row in rows:
+            key = key_fn(row)
+            if key not in merged:
+                merged[key] = list(row)
+                merged[key][weight_index] = [float(w) for w in row[weight_index]]
+                order.append(key)
+            else:
+                dest = merged[key][weight_index]
+                src = row[weight_index]
+                if len(dest) != len(src):
+                    raise ValueError("cannot merge OPD rows with mismatched weight lengths")
+                for i, val in enumerate(src):
+                    dest[i] += float(val)
+        return [tuple(merged[k]) for k in order], max(0, len(rows) - len(order))
 
     def _heartbeat(self, *, phase: str, done: int, total: int, t0: float, extra: dict[str, Any] | None = None) -> None:
         every = self.heartbeat_every
@@ -263,6 +323,12 @@ class HFDebugTrainingClient:
             prepared.append((prompt_ids, resp_ids, weights))
         if not prepared:
             return {"loss": 0.0, "n_datums": 0, "n_microbatches": 0, "micro_batch_size": self.micro_batch_size}
+        n_in = len(prepared)
+        prepared, n_merged = self._merge_weighted_rows(
+            prepared,
+            key_fn=lambda row: (tuple(row[0]), tuple(row[1]), tuple(1 if w else 0 for w in row[2])),
+            weight_index=2,
+        )
         total = 0.0
         n = 0
         n_mb = 0
@@ -307,6 +373,8 @@ class HFDebugTrainingClient:
             "n_microbatches": n_mb,
             "micro_batch_size": self.micro_batch_size,
             "student_fwd_s": round(t_fwd, 3),
+            "n_rows_in": n_in,
+            "n_merged_rows": n_merged,
         }
 
     def _opd_reverse_kl(self, datums: Sequence[Any]) -> dict[str, float]:
@@ -355,14 +423,32 @@ class HFDebugTrainingClient:
             if teacher_ids:
                 teacher_ids, _resp_t = self._align_context(teacher_ids, resp_ids)
             else:
-                teacher_ids = list(prompt_ids)
+                raise ValueError(
+                    "missing teacher_prompt_token_ids for OPD gap; refuse copying student prompt"
+                )
             if len(resp_ids) != len(weights):
                 raise ValueError("OPD gap post-alignment length mismatch")
             lam = float(meta.get("lambda_opd") if meta.get("lambda_opd") is not None else 0.01)
             beta = float(meta.get("gate_beta") if meta.get("gate_beta") is not None else 5.0)
             prepared.append((prompt_ids, resp_ids, teacher_ids, weights, lam, beta))
-            n_total += sum(1 for w in weights if w)
-        if not prepared or n_total <= 0:
+        if not prepared:
+            return {"loss": 0.0, "n_datums": 0, "n_microbatches": 0, "micro_batch_size": self.micro_batch_size}
+        n_in = len(prepared)
+        prepared, n_merged = self._merge_weighted_rows(
+            prepared,
+            key_fn=lambda row: (
+                tuple(row[0]),
+                tuple(row[1]),
+                tuple(row[2]),
+                round(float(row[4]), 8),
+                round(float(row[5]), 8),
+            ),
+            weight_index=3,
+        )
+        n_total = 0.0
+        for _p, _r, _t, weights, _lam, _b in prepared:
+            n_total += sum(float(w) for w in weights if w)
+        if n_total <= 0:
             return {"loss": 0.0, "n_datums": 0, "n_microbatches": 0, "micro_batch_size": self.micro_batch_size}
 
         total = 0.0
@@ -372,18 +458,24 @@ class HFDebugTrainingClient:
         t0 = time.perf_counter()
         t_student = 0.0
         t_teacher = 0.0
+        cache_hits = 0
+        cache_misses = 0
         for chunk in iter_length_microbatches(
             prepared,
             size=self.micro_batch_size,
-            length_fn=lambda row: len(row[0]) + len(row[1]),
+            length_fn=lambda row: max(len(row[0]), len(row[2])) + len(row[1]),
         ):
             n_mb += 1
+            t_t0 = time.perf_counter()
+            teacher_lps, hits, misses = self._teacher_logprobs_cached(
+                [(t, r) for _p, r, t, _w, _lam, _b in chunk]
+            )
+            t_teacher += time.perf_counter() - t_t0
+            cache_hits += hits
+            cache_misses += misses
             t_s0 = time.perf_counter()
             student_lps = self._logprobs_many([(p, r) for p, r, _t, _w, _lam, _b in chunk], require_grad=True)
             t_student += time.perf_counter() - t_s0
-            t_t0 = time.perf_counter()
-            teacher_lps = self._logprobs_many([(t, r) for _p, r, t, _w, _lam, _b in chunk], require_grad=False)
-            t_teacher += time.perf_counter() - t_t0
             losses = []
             for (_p, _r, _tid, weights, lam, beta), student_lp, teacher_lp in zip(
                 chunk, student_lps, teacher_lps
@@ -393,7 +485,7 @@ class HFDebugTrainingClient:
                 if student_lp.numel() != teacher_lp.numel():
                     raise ValueError("teacher/student target length mismatch in OPD gap")
                 w = torch.tensor(weights[: len(student_lp)], device=student_lp.device, dtype=torch.float32)
-                gap = gated_sampled_gap_per_token(student_lp.float(), teacher_lp.float(), gate_beta=beta)
+                gap = gated_sampled_gap_per_token(student_lp.float(), teacher_lp.detach().float(), gate_beta=beta)
                 losses.append((gap * w).sum() * (float(lam) / denom))
                 n += 1
             if losses:
@@ -412,6 +504,8 @@ class HFDebugTrainingClient:
                     "n_microbatches": n_mb,
                     "student_fwd_s": round(t_student, 3),
                     "teacher_fwd_s": round(t_teacher, 3),
+                    "teacher_cache_hits": cache_hits,
+                    "teacher_cache_misses": cache_misses,
                 },
             )
         return {
@@ -421,6 +515,11 @@ class HFDebugTrainingClient:
             "micro_batch_size": self.micro_batch_size,
             "student_fwd_s": round(t_student, 3),
             "teacher_fwd_s": round(t_teacher, 3),
+            "n_rows_in": n_in,
+            "n_merged_rows": n_merged,
+            "teacher_cache_hits": cache_hits,
+            "teacher_cache_misses": cache_misses,
+            "teacher_first": True,
         }
 
     async def forward_backward_async(
@@ -457,15 +556,24 @@ class HFDebugTrainingClient:
         )
         return payload
 
-    async def optim_step_async(self, adam_params: Any) -> dict[str, float]:
+    async def optim_step_async(self, adam_params: Any, *, skip: bool = False) -> dict[str, float]:
         del adam_params
         t0 = time.perf_counter()
+        if skip:
+            self.backend.optimizer.zero_grad(set_to_none=True)
+            self._accumulating = False
+            self._teacher_logp_cache.clear()
+            self.calls.append(("opt_skip",))
+            elapsed = round(time.perf_counter() - t0, 3)
+            log_train("hf_optim_skip", step=self._step_tag, elapsed_s=elapsed)
+            return {"ok": 1.0, "skipped": True, "elapsed_s": elapsed}
         for p in self.backend.model.parameters():
             if p.requires_grad and p.grad is not None and not torch.isfinite(p.grad).all():
                 raise RuntimeError("non-finite gradient before optimizer step")
         self.backend.optimizer.step()
         self.backend.optimizer.zero_grad(set_to_none=True)
         self._accumulating = False
+        self._teacher_logp_cache.clear()
         self.calls.append(("opt",))
         elapsed = round(time.perf_counter() - t0, 3)
         log_train("hf_optim_step", step=self._step_tag, elapsed_s=elapsed)

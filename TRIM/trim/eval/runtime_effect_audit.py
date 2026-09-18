@@ -345,6 +345,22 @@ def _opd_projection_probe(
 
     st = new_state("Alice Smith Paris", dict(_PROBE_STORE), harness_mask=dict(student_mask))
     st, _obs, search_ok = _search(st)
+    extra_id = "probe_uncurated"
+    extra = {
+        "id": extra_id,
+        "text": "Alice Smith visited Paris in 2019 for a lecture series. " * 16,
+        "score": 0.95,
+    }
+    pool = dict(st.get("pool") or {})
+    pool[extra_id] = extra
+    st["pool"] = pool
+    docs = [dict(rec) for rec in (st.get("documents") or []) if isinstance(rec, dict)]
+    if extra_id not in {str(rec.get("id") or rec.get("doc_id") or "") for rec in docs}:
+        docs.append(dict(extra))
+    st["documents"] = docs
+    st["curated_ids"] = [str(x) for x in (st.get("curated_ids") or []) if str(x) != extra_id]
+    if isinstance(st.get("curated"), dict):
+        st["curated"].pop(extra_id, None)
     snap = snap_from_state("train_probe", st, component_id, harness_mask=dict(student_mask))
     fn = teacher_for(component_id, harness=harness)
     point = StudentDecisionPoint(

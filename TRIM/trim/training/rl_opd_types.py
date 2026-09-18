@@ -47,6 +47,35 @@ def uses_projected_seed(opd_loss: str) -> bool:
     """True for trim (scape+seed): projector + SEED-scale gap on a*."""
     return str(opd_loss) == OPD_LOSS_PROJECTED_GAP
 
+
+@dataclass(frozen=True)
+class CollectionNeeds:
+    """What a collector must keep, keyed by collection_mode and opd_loss."""
+
+    need_student_snapshot: bool
+    need_teacher_context: bool
+    need_debug_view: bool
+
+
+def collection_needs(*, collection_mode: str, opd_loss: str | None = None) -> CollectionNeeds:
+    """CE keeps student snapshots; both gap losses also need teacher context.
+
+    Live teacher-token encoding can wait until OPD states are selected, as long
+    as the snapshot carries recoverable decision-time refs.
+    """
+    mode = str(collection_mode or COLLECTION_MODE_RL)
+    loss = str(opd_loss or "")
+    if mode == COLLECTION_MODE_AUDIT_FULL:
+        return CollectionNeeds(True, True, True)
+    if mode == COLLECTION_MODE_RL:
+        return CollectionNeeds(False, False, False)
+    gap = uses_seed_gap(loss) if loss else False
+    return CollectionNeeds(
+        need_student_snapshot=True,
+        need_teacher_context=gap,
+        need_debug_view=False,
+    )
+
 UPDATE_RL_OPD_JOINT = "rl_opd_joint"
 UPDATE_RL_ONLY = "rl_only"
 UPDATE_OPD_ONLY_ZERO_RL = "opd_only_zero_rl_signal"
@@ -79,6 +108,8 @@ class StudentDecisionPoint:
     student_prompt_token_ids: list[int] = field(default_factory=list)
     teacher_prompt_token_ids: list[int] = field(default_factory=list)
     visible_doc_ids: list[str] = field(default_factory=list)
+    accessible_doc_ids: list[str] = field(default_factory=list)
+    prompt_visible_doc_ids: list[str] | None = None
     teacher_snapshot_hash: str = ""
     teacher_decision_turn: int | None = None
     history_end_turn: int | None = None
@@ -147,6 +178,12 @@ class HybridStepMetrics:
     reject_rate: float
     policy_version: str
     opd_weighted_gap: float | None = None
+    opd_weighted_ce: float | None = None
+    opd_unweighted_nll: float | None = None
+    skipped_empty_supervision: bool = False
+    n_merged_opd_rows: int = 0
+    teacher_cache_hits: int = 0
+    teacher_cache_misses: int = 0
     n_rl_forward_backward: int = 0
     n_opd_forward_backward: int = 0
     n_optimizer_steps: int = 0

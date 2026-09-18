@@ -94,6 +94,7 @@ def test_sampled_opd_datums_use_action_tokens_not_encoded_text():
         student_action_text="ignored",
         action_tool_names=["search_corpus"],
         student_prompt_token_ids=[1, 2, 3],
+        teacher_prompt_token_ids=[4, 5, 6],
     )
     datums = build_sampled_opd_datums(
         [point],

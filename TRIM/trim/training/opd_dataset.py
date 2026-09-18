@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass, field
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from trim.rendering.dual_view import DualViewRenderer
 from trim.state.snapshot import EnvironmentSnapshot
@@ -73,6 +73,13 @@ class ProjectionAudit:
     n_materialize: int = 0
     n_projected_training_steps: int = 0
     n_supervised_tokens: int = 0
+    n_attempt: int = 0
+    n_unregistered: int = 0
+    n_untriggered: int = 0
+    n_unrealizable: int = 0
+    n_filtered_after_clipping: int = 0
+    n_synthetic_heuristic: int = 0
+    n_decision_points_with_supervision: int = 0
     component_stats: dict[str, dict[str, int]] = field(default_factory=dict)
     illegal_target_rate: float = 0.0
     inaccessible_reference_rate: float = 0.0
@@ -337,7 +344,9 @@ def project_and_materialize(
     if projection.kind == ProjectionKind.DIRECT:
         steps = materialize(projection, student_snapshot, component_id=component_id)
     if audit is not None:
-        record_projection_outcome(audit, projection, steps, component_id=component_id)
+        record_projection_outcome(
+            audit, projection, steps, component_id=component_id, teacher_events=teacher_events
+        )
     return projection, steps
 
 
@@ -346,14 +355,28 @@ def _component_bucket(audit: ProjectionAudit, component_id: str) -> dict[str, in
     bucket = audit.component_stats.setdefault(
         cid,
         {
+            "attempt_count": 0,
             "trigger_count": 0,
             "align_count": 0,
             "skip_count": 0,
             "reject_count": 0,
             "capacity_fail": 0,
+            "skip_untriggered": 0,
+            "skip_unregistered": 0,
+            "n_unrealizable": 0,
+            "n_synthetic_heuristic": 0,
             "supervised_tokens": 0,
+            "supervised_whitespace_tokens": 0,
+            "trained_tokens": 0,
         },
     )
+    bucket.setdefault("attempt_count", 0)
+    bucket.setdefault("skip_untriggered", 0)
+    bucket.setdefault("skip_unregistered", 0)
+    bucket.setdefault("n_unrealizable", 0)
+    bucket.setdefault("n_synthetic_heuristic", 0)
+    bucket.setdefault("supervised_whitespace_tokens", bucket.get("supervised_tokens", 0))
+    bucket.setdefault("trained_tokens", 0)
     return bucket
 
 
@@ -363,20 +386,46 @@ def record_projection_outcome(
     steps: list[ProjectedTrainingStep],
     *,
     component_id: str = "",
+    teacher_events: Sequence[Any] | None = None,
 ) -> None:
     from trim.training.opd_projection import (
+        REJECT_DOC_NOT_ACCESSIBLE,
         REJECT_ILLEGAL_TOOL,
         REJECT_INVALID_ARGUMENT_SCHEMA,
         REJECT_NO_SEMANTIC_ANCHOR,
+        REJECT_TEACHER_ONLY_INFORMATION,
+    )
+    from trim.training.teacher_branch import (
+        SOURCE_SKIP_UNREGISTERED,
+        SOURCE_SKIP_UNTRIGGERED,
+        SOURCE_SYNTHETIC,
+        teacher_skip_kind,
     )
 
     audit.n_teacher_segments += 1
+    audit.n_attempt += 1
     cid = component_id or projection.component_id or ""
     audit.component_id = cid
     audit.n_skip_events += len(projection.skipped_event_ids)
     bucket = _component_bucket(audit, cid)
-    bucket["trigger_count"] += 1
+    bucket["attempt_count"] += 1
+    skip_kind = teacher_skip_kind(teacher_events)
+    source_types = {
+        str((getattr(ev, "metadata", None) or {}).get("source_type") or "")
+        for ev in (teacher_events or [])
+    }
+    if SOURCE_SYNTHETIC in source_types or skip_kind == SOURCE_SYNTHETIC:
+        audit.n_synthetic_heuristic += 1
+        bucket["n_synthetic_heuristic"] += 1
     reason = projection.reject_reason or ""
+    if skip_kind == SOURCE_SKIP_UNREGISTERED:
+        audit.n_unregistered += 1
+        bucket["skip_unregistered"] += 1
+    elif skip_kind == SOURCE_SKIP_UNTRIGGERED:
+        audit.n_untriggered += 1
+        bucket["skip_untriggered"] += 1
+    elif skip_kind != SOURCE_SKIP_UNREGISTERED:
+        bucket["trigger_count"] += 1
     if projection.kind == ProjectionKind.DIRECT and steps:
         audit.n_direct += 1
         audit.n_materialize += len(steps)
@@ -385,6 +434,7 @@ def record_projection_outcome(
         for step in steps:
             n_tok += int(len(step.target_text.split()) if step.target_text else 0)
         bucket["supervised_tokens"] += n_tok
+        bucket["supervised_whitespace_tokens"] += n_tok
         audit.n_supervised_tokens += n_tok
     elif projection.kind == ProjectionKind.DIRECT and not steps:
         audit.n_reject += 1
@@ -392,24 +442,45 @@ def record_projection_outcome(
         if REJECT_CURATED_CAPACITY in fail_reason or "CAPACITY" in fail_reason:
             audit.n_capacity_fail += 1
             bucket["capacity_fail"] += 1
+        if "CLIP" in fail_reason.upper() or "filtered_after_clipping" in fail_reason:
+            audit.n_filtered_after_clipping += 1
         audit.reject_reasons[fail_reason] = audit.reject_reasons.get(fail_reason, 0) + 1
         bucket["reject_count"] += 1
+        if fail_reason in {
+            REJECT_ILLEGAL_TOOL,
+            REJECT_INVALID_ARGUMENT_SCHEMA,
+            REJECT_DOC_NOT_ACCESSIBLE,
+            REJECT_TEACHER_ONLY_INFORMATION,
+        }:
+            audit.n_unrealizable += 1
+            bucket["n_unrealizable"] += 1
     else:
-        fail_reason = reason or "SKIP"
+        fail_reason = reason or skip_kind or "SKIP"
         audit.reject_reasons[fail_reason] = audit.reject_reasons.get(fail_reason, 0) + 1
-        if fail_reason in {REJECT_NO_SEMANTIC_ANCHOR, "SKIP", "skip_untriggered", "skip_unregistered"}:
+        if fail_reason in {REJECT_NO_SEMANTIC_ANCHOR, "SKIP", SOURCE_SKIP_UNTRIGGERED, SOURCE_SKIP_UNREGISTERED}:
             audit.n_skip += 1
             audit.n_no_anchor += 1 if fail_reason == REJECT_NO_SEMANTIC_ANCHOR else 0
             bucket["skip_count"] += 1
-        elif fail_reason in {REJECT_ILLEGAL_TOOL, REJECT_INVALID_ARGUMENT_SCHEMA}:
+        elif fail_reason in {
+            REJECT_ILLEGAL_TOOL,
+            REJECT_INVALID_ARGUMENT_SCHEMA,
+            REJECT_DOC_NOT_ACCESSIBLE,
+            REJECT_TEACHER_ONLY_INFORMATION,
+        }:
             audit.n_illegal += 1
             audit.n_reject += 1
             bucket["reject_count"] += 1
+            audit.n_unrealizable += 1
+            bucket["n_unrealizable"] += 1
         elif "CAPACITY" in fail_reason or fail_reason == REJECT_CURATED_CAPACITY:
             audit.n_capacity_fail += 1
             audit.n_reject += 1
             bucket["capacity_fail"] += 1
             bucket["reject_count"] += 1
+        elif "CLIP" in fail_reason.upper() or "filtered_after_clipping" in fail_reason:
+            audit.n_filtered_after_clipping += 1
+            audit.n_skip += 1
+            bucket["skip_count"] += 1
         else:
             audit.n_skip += 1
             bucket["skip_count"] += 1

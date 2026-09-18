@@ -12,6 +12,13 @@ from typing import Any, Mapping
 
 from trim.training.opd_events import HarnessEvent, model_action, obs_transform
 from trim.training.rl_opd_types import StudentDecisionPoint
+from trim.training.teacher_branch import (
+    SOURCE_CAPABILITY,
+    SOURCE_SKIP_UNTRIGGERED,
+    filter_unworthy_events,
+    skip_teacher_events,
+    tag_source,
+)
 
 COMPONENT_ID = "sentence_compress"
 COMPRESSED_VIEW_KEY = "compressed_teacher_view"
@@ -88,6 +95,13 @@ def teacher_events_from_wm(
     query: str | None = None,
 ) -> list[HarnessEvent]:
     q = str(query if query is not None else wm.get("query") or "")
+    if not is_compression_active_state(wm):
+        return skip_teacher_events(
+            COMPONENT_ID,
+            turn_id=turn_id,
+            reason="compression_inactive",
+            teacher_kind=SOURCE_SKIP_UNTRIGGERED,
+        )
     docs = documents_from_wm(wm)
     curated = {str(x) for x in (wm.get("curated_ids") or [])}
     compressed = {did: compress_text(q, text) for did, text in docs}
@@ -103,32 +117,31 @@ def teacher_events_from_wm(
         visible_to_student=False,
         metadata={"owner": "teacher_full", "student_must_not_see": True},
     )
-    if not docs:
-        return [
-            transform,
-            model_action(
-                "search_corpus",
-                {"query": q},
-                turn_id=turn_id,
-                component_id=COMPONENT_ID,
-            ),
-        ]
     ranked = sorted(
         ((did, compressed[did]) for did, _ in docs if did not in curated),
         key=lambda it: (-score_doc(q, it[1]), it[0]),
     )
     add_ids = [did for did, _ in ranked[:2]]
     if not add_ids:
-        add_ids = [docs[0][0]]
-    return [
-        transform,
-        model_action(
-            "curate",
-            {"add_ids": add_ids, "remove_ids": []},
+        return skip_teacher_events(
+            COMPONENT_ID,
             turn_id=turn_id,
-            component_id=COMPONENT_ID,
-        ),
-    ]
+            reason="noop_curate",
+            teacher_kind=SOURCE_SKIP_UNTRIGGERED,
+        )
+    events = tag_source(
+        [
+            transform,
+            model_action(
+                "curate",
+                {"add_ids": add_ids, "remove_ids": []},
+                turn_id=turn_id,
+                component_id=COMPONENT_ID,
+            ),
+        ],
+        SOURCE_CAPABILITY,
+    )
+    return filter_unworthy_events(wm, events, component_id=COMPONENT_ID, turn_id=turn_id)
 
 
 def teacher_events_from_point(point: StudentDecisionPoint) -> list[HarnessEvent]:

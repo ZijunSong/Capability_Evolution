@@ -60,6 +60,7 @@ def _point(
         reward=reward,
         structurally_valid=valid,
         student_prompt_token_ids=[1, 2, 3],
+        teacher_prompt_token_ids=[4, 5, 6],
         visible_doc_ids=["d1", "d2"],
     )
 

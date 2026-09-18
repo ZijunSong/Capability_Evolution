@@ -48,3 +48,18 @@ def test_teacher_projects_to_student_curate_without_leak():
     assert steps[0].target_action["name"] == "curate"
     assert not any(prompt_has_teacher_leak(s.prompt_reduced) for s in steps)
     assert not any(COMPRESSED_VIEW_KEY in s.prompt_reduced for s in steps)
+
+
+def test_sentence_compress_skips_inactive_and_already_curated():
+    inactive = teacher_events_from_wm({"query": "q", "documents": [{"id": "d1", "text": "short"}]})
+    assert inactive[0].metadata["skip_reason"] == "compression_inactive"
+    wm = {
+        "query": "When did the author lecture?",
+        "documents": [
+            {"id": "ev1", "text": ("Noisy filler. " * 30) + "The author lectured from 2018 until his death."},
+        ],
+        "curated_ids": ["ev1"],
+    }
+    skipped = teacher_events_from_wm(wm)
+    assert skipped[0].metadata["skip_reason"] == "noop_curate"
+    assert not any(getattr(e, "action_name", None) for e in skipped)

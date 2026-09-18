@@ -186,14 +186,18 @@ def test_manifest_marks_new_loss():
     assert man["opd_loss"] == "sr_opd_ce"
     assert man["rl_loss_fn"] == "cispo"
     assert man["legacy_tool_token_kl_hook_used"] is False
-    assert man["protocol_complete_rl_opd"] is True
+    assert man["protocol_requested_rl_opd"] is True
+    assert man["protocol_contract_verified"] is False
+    assert man["protocol_complete_rl_opd"] is False
     assert man["score_split"] == "bcplus_test_166"
     assert man["backend"] == "vllm_rollout+hf_train"
     assert man["train_backend"] == "hf_debug"
     assert man["gpu_schedule"] == "scheme_a"
     assert man["on_policy_refresh"] is True
-    assert man["harmony_encoding"] == "o200k_harmony"
-    assert man["stop_token_ids"] == [200012, 200002]
+    assert man["tokenizer_family"] == "unknown"
+    assert man["harmony_encoding"] is None
+    assert man["stop_token_ids"] is None
+    assert man["component_implementation_table"]["sentence_compress"]["implemented"] is True
     json.dumps(man)
 
 
@@ -218,7 +222,30 @@ def test_manifest_scape_rl_uses_sampled_gap_and_all_actions():
     assert man["opd_states_per_trajectory"] == -1
     assert man["lambda_opd"] == 0.01
     assert man["opd_gate_beta"] == 5.0
-    assert man["protocol_complete_rl_opd"] is True
+    assert man["protocol_requested_rl_opd"] is True
+    assert man["protocol_complete_rl_opd"] is False
     assert man["rl_loss_fn"] == "cispo"
     assert man["score_split"] == "bcplus_830"
     assert man["train_pool"] == "harness-1-rl-data"
+
+
+def test_manifest_qwen_tokenizer_not_harmony():
+    class A:
+        training_mode = "four_cell"
+        component = "sentence_compress"
+        lambda_opd = 0.1
+        group_size = 8
+        max_turns = 6
+        train_steps = 8
+        n_queries = 664
+        opd_states_per_trajectory = 3
+        seed = 42
+        base_model = "Qwen/Qwen3-4B-Instruct-2507"
+        sft_adapter = ""
+        smoke = False
+
+    man = build_manifest(A())
+    assert man["tokenizer_family"] == "qwen3"
+    assert man["prompt_stack"] == "hf_chat_tools"
+    assert man["harmony_encoding"] is None
+    assert man["stop_token_ids"] is None

@@ -254,6 +254,19 @@ def test_prepare_hybrid_batch_rl_skips_opd_trim_projects():
         g.query_id: list((g.trajectory_group or {}).get("rl_rows") or []) for g in groups
     }
     teacher = teacher_for("sentence_compress")
+    for group in groups:
+        for point in group.decision_points:
+            if not point.teacher_prompt_token_ids:
+                point.teacher_prompt_token_ids = list(point.student_prompt_token_ids or [1, 2, 3, 4])
+            wm = point.pre_action_snapshot.working_memory
+            extra = {
+                "id": "uncurated_probe",
+                "text": "Alice Smith visited Paris in 2019 for a lecture series. " * 16,
+            }
+            docs = list(wm.get("documents") or [])
+            docs.append(extra)
+            wm["documents"] = docs
+            wm["curated_ids"] = [str(x) for x in (wm.get("curated_ids") or []) if str(x) != "uncurated_probe"]
     rl_batch = prepare_hybrid_batch(
         groups=groups,
         rl_datums_by_query=rl_by_q,

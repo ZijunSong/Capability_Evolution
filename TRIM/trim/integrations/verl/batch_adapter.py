@@ -69,13 +69,64 @@ def global_action_token_count(rows: Sequence[dict[str, Any]]) -> int:
 
 
 def row_input_length(row: Any) -> int:
+    from trim.training.tinker_opd_datum import TinkerOPDDatum
+
+    if isinstance(row, TinkerOPDDatum):
+        prompt = list(row.prompt_token_ids or [])
+        n_prompt = len(prompt)
+        targets = list(row.target_tokens or [])
+        resp = targets[n_prompt:] if len(targets) >= n_prompt else targets
+        teacher = list(row.teacher_prompt_token_ids or [])
+        student_len = n_prompt + len(resp)
+        teacher_len = len(teacher) + len(resp) if teacher else 0
+        return max(1, student_len, teacher_len)
     if isinstance(row, dict):
-        prompt = list(row.get("prompt_ids") or row.get("effective_prompt_ids") or [])
-        action = list(row.get("action_ids") or row.get("response_ids") or [])
-        return max(1, len(prompt) + len(action))
+        prompt = list(
+            row.get("prompt_ids")
+            or row.get("effective_prompt_ids")
+            or row.get("prompt_token_ids")
+            or []
+        )
+        action = list(row.get("action_ids") or row.get("response_ids") or row.get("target_ids") or [])
+        if not action and row.get("target_tokens"):
+            tokens = list(row.get("target_tokens") or [])
+            action = tokens[len(prompt) :] if len(tokens) >= len(prompt) else tokens
+        teacher = list(row.get("teacher_prompt_token_ids") or row.get("teacher_prompt_ids") or [])
+        student_len = len(prompt) + len(action)
+        teacher_len = len(teacher) + len(action) if teacher else 0
+        return max(1, student_len, teacher_len)
     if isinstance(row, (tuple, list)) and len(row) >= 2:
         return max(1, len(row[0]) + len(row[1]))
     return 1
+
+
+def _is_dummy_row(row: Any) -> bool:
+    return bool(isinstance(row, dict) and row.get("is_dummy"))
+
+
+def chunk_padding_stats(
+    chunks: Sequence[Sequence[Any]],
+    length_fn: Callable[[Any], int] | None = None,
+) -> dict[str, float]:
+    """Sequence-padding cost inside microbatches. Dummy rows are excluded."""
+    fn = length_fn or row_input_length
+    real = 0
+    padded = 0
+    n_rows = 0
+    for chunk in chunks:
+        lengths = [int(fn(row)) for row in chunk if not _is_dummy_row(row)]
+        if not lengths:
+            continue
+        mx = max(lengths)
+        real += sum(lengths)
+        padded += mx * len(lengths)
+        n_rows += len(lengths)
+    return {
+        "real_tokens": float(real),
+        "padded_tokens": float(padded),
+        "padding_fraction": (1.0 - (real / padded)) if padded else 0.0,
+        "n_rows": float(n_rows),
+    }
 
 
 def dummy_rl_row() -> dict[str, Any]:
@@ -135,6 +186,12 @@ class RankBatchPlan:
     global_opd_weight: float = 0.0
     rank: int = 0
     world_size: int = 1
+    rl_real_tokens: int = 0
+    rl_padded_tokens: int = 0
+    rl_padding_fraction: float = 0.0
+    opd_real_tokens: int = 0
+    opd_padded_tokens: int = 0
+    opd_padding_fraction: float = 0.0
 
     @property
     def n_sync_rounds(self) -> int:
@@ -228,6 +285,8 @@ def plan_joint_sync_batches(
         micro_batch_size=micro_batch_size,
         dummy_factory=dummy_opd_row,
     )
+    rl_pad = chunk_padding_stats([chunk for part in rl_assigned for chunk in part], row_input_length)
+    opd_pad = chunk_padding_stats([chunk for part in opd_assigned for chunk in part], row_input_length)
     return RankBatchPlan(
         rl_chunks=list(rl_assigned[rnk]),
         opd_chunks=list(opd_assigned[rnk]),
@@ -241,4 +300,10 @@ def plan_joint_sync_batches(
         global_opd_weight=float(global_opd_weight_sum(opd_rows or [])),
         rank=rnk,
         world_size=world,
+        rl_real_tokens=int(rl_pad["real_tokens"]),
+        rl_padded_tokens=int(rl_pad["padded_tokens"]),
+        rl_padding_fraction=float(rl_pad["padding_fraction"]),
+        opd_real_tokens=int(opd_pad["real_tokens"]),
+        opd_padded_tokens=int(opd_pad["padded_tokens"]),
+        opd_padding_fraction=float(opd_pad["padding_fraction"]),
     )

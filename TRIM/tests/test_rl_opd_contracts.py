@@ -246,9 +246,15 @@ def test_a11_rl_collection_mode_skips_teacher_and_keeps_turn_ids():
     from trim.training.batched_env_rollout import (
         _keep_dual_view,
         _keep_snapshots,
+        _keep_teacher_context,
         _keep_teacher_encode,
     )
-    from trim.training.rl_opd_types import COLLECTION_MODE_AUDIT_FULL, COLLECTION_MODE_RL, COLLECTION_MODE_RL_OPD
+    from trim.training.rl_opd_types import (
+        COLLECTION_MODE_AUDIT_FULL,
+        COLLECTION_MODE_RL,
+        COLLECTION_MODE_RL_OPD,
+        collection_needs,
+    )
 
     assert _keep_teacher_encode(COLLECTION_MODE_RL) is False
     assert _keep_dual_view(COLLECTION_MODE_RL) is False
@@ -257,6 +263,10 @@ def test_a11_rl_collection_mode_skips_teacher_and_keeps_turn_ids():
     assert _keep_teacher_encode(COLLECTION_MODE_RL_OPD) is False
     assert _keep_teacher_encode(COLLECTION_MODE_AUDIT_FULL) is True
     assert _keep_dual_view(COLLECTION_MODE_AUDIT_FULL) is True
+    assert _keep_teacher_context(COLLECTION_MODE_RL_OPD, "sr_opd_projected_gap") is True
+    assert _keep_teacher_encode(COLLECTION_MODE_RL_OPD, "sr_opd_projected_gap") is False
+    assert collection_needs(collection_mode=COLLECTION_MODE_RL_OPD, opd_loss="sr_opd_ce").need_teacher_context is False
+    assert collection_needs(collection_mode=COLLECTION_MODE_RL_OPD, opd_loss="sr_opd_sampled_gap").need_teacher_context is True
 
 
 def test_a12_a13_sampler_unique_and_fingerprint():

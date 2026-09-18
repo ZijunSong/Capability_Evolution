@@ -8,16 +8,50 @@ from typing import Any, Sequence
 from trim.state.snapshot import EnvironmentSnapshot
 from trim.training.action_codec import canonicalize_action, render_action
 
+HARMONY_CALL_TOKEN = "<|call|>"
+
+
+def _family_of(enc: Any) -> str:
+    return str(getattr(enc, "family", "") or "").lower()
+
+
+def is_harmony_encoder(enc: Any) -> bool:
+    family = _family_of(enc)
+    if family in {"gpt-oss", "gptoss", "harmony", "o200k_harmony", "harness-1", "harness1"}:
+        return True
+    from trim.eval.model_profiles import is_hf_chat_family
+
+    if is_hf_chat_family(family):
+        return False
+    stack = str(getattr(enc, "stack", "") or "").lower()
+    return stack in {"harmony", "o200k_harmony"}
+
+
+def render_harmony_tool_call_completion(action: dict[str, Any]) -> str:
+    """Completion suffix after the Harmony assistant prefix.
+
+    Matches ``to=functions.<name><|channel|>commentary … <|call|>`` so the
+    strict parser's text branch accepts it. Do not prepend ``<|start|>assistant``.
+    """
+    canon = canonicalize_action(action)
+    args = json.dumps(canon["arguments"], ensure_ascii=False)
+    return (
+        f"to=functions.{canon['name']}<|channel|>commentary "
+        f"<|constrain|>json<|message|>{args}{HARMONY_CALL_TOKEN}"
+    )
+
 
 def render_rollout_action_text(enc: Any, action: dict[str, Any]) -> str:
     """Render an action in the same surface form rollout sampling uses."""
     canon = canonicalize_action(action)
     from trim.eval.model_profiles import is_hf_chat_family
 
-    family = str(getattr(enc, "family", "") or "")
+    family = _family_of(enc)
     if is_hf_chat_family(family):
         payload = {"name": canon["name"], "arguments": canon["arguments"]}
         return f"<tool_call>{json.dumps(payload, ensure_ascii=False)}</tool_call>"
+    if is_harmony_encoder(enc):
+        return render_harmony_tool_call_completion(canon)
     return render_action(canon)
 
 
@@ -32,13 +66,92 @@ def encode_rollout_style_action(enc: Any, action: dict[str, Any]) -> tuple[list[
     return list(text.encode("utf-8")) or [0], text
 
 
+def _action_as_dict(action: Any) -> dict[str, Any]:
+    if isinstance(action, dict):
+        name = str(action.get("name") or action.get("tool") or "")
+        arguments = dict(action.get("arguments") or {})
+        return {"name": name, "arguments": arguments}
+    tools = getattr(action, "tools", None) or []
+    params = getattr(action, "params", None) or []
+    name = ""
+    if tools:
+        schema = getattr(tools[0], "tool_schema", None)
+        name = str(getattr(schema, "name", None) or "")
+    arguments: dict[str, Any] = {}
+    if params and isinstance(params[0], dict):
+        arguments = dict(params[0])
+    return {"name": name, "arguments": arguments}
+
+
+def _obs_as_text(obs: Any) -> str:
+    if obs is None:
+        return ""
+    if isinstance(obs, str):
+        return obs
+    texts = getattr(obs, "observations", None)
+    if isinstance(texts, (list, tuple)) and texts:
+        return str(texts[0])
+    return str(obs)
+
+
+def serialize_rollout_actions_obs(acts: Sequence[tuple[Any, Any]] | None) -> list[list[Any]]:
+    out: list[list[Any]] = []
+    for item in acts or []:
+        if not isinstance(item, (list, tuple)) or len(item) < 2:
+            continue
+        out.append([_action_as_dict(item[0]), _obs_as_text(item[1])])
+    return out
+
+
+def hydrate_rollout_actions_obs(raw: Sequence[Any] | None) -> list[tuple[Any, Any]]:
+    if not raw:
+        return []
+    try:
+        from trim.eval.harmony_runtime import make_action, make_observation
+    except Exception:
+        make_action = None
+        make_observation = None
+    out: list[tuple[Any, Any]] = []
+    for item in raw:
+        if not isinstance(item, (list, tuple)) or len(item) < 2:
+            continue
+        action, obs = item[0], item[1]
+        if isinstance(action, dict) and action.get("name") and make_action is not None:
+            try:
+                action = make_action(str(action.get("name")), dict(action.get("arguments") or {}))
+                obs = make_observation(str(obs)) if make_observation is not None else obs
+            except Exception:
+                pass
+        out.append((action, obs))
+    return out
+
+
+def attach_prompt_context(
+    snapshot: EnvironmentSnapshot,
+    *,
+    acts: Sequence[tuple[Any, Any]] | None = None,
+    wm_text: str = "",
+    teacher_wm_text: str | None = None,
+) -> EnvironmentSnapshot:
+    """Store JSON-safe decision-time refs without changing content_hash."""
+    snapshot.metadata["_rollout_actions_obs"] = serialize_rollout_actions_obs(acts)
+    snapshot.metadata["_rollout_wm_text"] = str(wm_text or "")
+    if teacher_wm_text is not None:
+        snapshot.metadata["_teacher_wm_text"] = str(teacher_wm_text)
+    return snapshot
+
+
 def _snapshot_acts_and_wm(snapshot: EnvironmentSnapshot) -> tuple[list[tuple[Any, Any]], str]:
     meta = dict(snapshot.metadata or {})
-    acts = list(meta.get("rollout_actions_obs") or [])
-    wm = str(meta.get("rollout_wm_text") or "")
-    if acts:
-        return acts, wm
-    return [], wm
+    acts = meta.get("_rollout_actions_obs") or meta.get("rollout_actions_obs") or []
+    wm = str(meta.get("_rollout_wm_text") or meta.get("rollout_wm_text") or "")
+    hydrated = hydrate_rollout_actions_obs(list(acts) if acts else [])
+    return hydrated, wm
+
+
+def snapshot_teacher_wm_text(snapshot: EnvironmentSnapshot) -> str:
+    meta = dict(snapshot.metadata or {})
+    return str(meta.get("_teacher_wm_text") or meta.get("teacher_wm_text") or "")
 
 
 def _harmony_safe_actions_obs(
