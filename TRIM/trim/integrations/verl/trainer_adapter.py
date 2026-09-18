@@ -37,11 +37,15 @@ from trim.training.dist_runtime import (
     shard_for_rank,
     torchrun_env_source,
 )
-from trim.training.opd_train_contract import assert_train_contract
+from trim.training.opd_train_contract import (
+    assert_train_contract,
+    opd_loss_from_args,
+    training_cell_for_method,
+)
 from trim.training.rl_opd_types import TRAINING_MODE_RL, TRAINING_MODE_RL_OPD
 
 
-VERL_METHODS = {"rl", "rl+opd"}
+VERL_METHODS = {"rl", "rl+opd", "trim", "scape_seed", "scape+seed"}
 
 
 def require_verl_trainer() -> dict[str, Any]:
@@ -149,7 +153,7 @@ def run_verl_fsdp2_train(args: Any) -> dict[str, Any]:
     barrier()
     _unsupported_method(
         str(getattr(args, "train_method", None) or getattr(args, "training_mode", "")),
-        str(getattr(args, "opd_loss", None) or "sr_opd_ce"),
+        opd_loss_from_args(args),
         str(getattr(args, "training_backend", "verl") or "verl"),
     )
 
@@ -182,9 +186,10 @@ def run_verl_fsdp2_train(args: Any) -> dict[str, Any]:
         method = "rl+opd"
     if method == TRAINING_MODE_RL:
         method = "rl"
+    opd_loss = opd_loss_from_args(args, method=method)
     _unsupported_method(
         method,
-        str(getattr(args, "opd_loss", None) or "sr_opd_ce"),
+        opd_loss,
         str(getattr(args, "training_backend", "verl") or "verl"),
     )
 
@@ -215,16 +220,14 @@ def run_verl_fsdp2_train(args: Any) -> dict[str, Any]:
                 device_map="cpu",
             )
         vllm_base = broadcast_object(vllm_base)
-    cell = "rl" if method == "rl" else "rl_opd"
+    cell = training_cell_for_method(method)
     lambda_opd = cell_lambda(cell, float(getattr(args, "lambda_opd", 0.0) or 0.0))
     teacher_fn = None if lambda_opd <= 0 else teacher_for(
         args.component,
         harness=getattr(args, "harness", None),
         teacher_kind=str(getattr(args, "teacher_kind", "upstream") or "upstream"),
     )
-    collection_mode = collection_mode_for_cell(
-        cell, lambda_opd, str(getattr(args, "opd_loss", None) or "sr_opd_ce")
-    )
+    collection_mode = collection_mode_for_cell(cell, lambda_opd, opd_loss)
     loop = HybridLoopState(policy_version="v0")
     sampler = QuerySampler(
         train_rows,
@@ -288,6 +291,10 @@ def run_verl_fsdp2_train(args: Any) -> dict[str, Any]:
             "claimed_backend": backend,
         },
         "train_method": method,
+        "cell": cell,
+        "opd_loss": opd_loss,
+        "lambda_opd": float(lambda_opd),
+        "actor_wrap": wrap,
         "n_gpus": int(dist.world_size),
         "tensor_parallel_size": 1,
         "rollout_replicas": int(dist.world_size),
@@ -403,7 +410,7 @@ def run_verl_fsdp2_train(args: Any) -> dict[str, Any]:
                 harness_mask=resolved_rollout_mask(args.component, harness=getattr(args, "harness", None)),
                 train_env=str(getattr(args, "train_env", "local_legacy") or "local_legacy"),
                 collection_mode=collection_mode,
-                opd_loss=str(getattr(args, "opd_loss", None) or "sr_opd_ce"),
+                opd_loss=opd_loss,
             )
         finally:
             client.close()
@@ -428,12 +435,12 @@ def run_verl_fsdp2_train(args: Any) -> dict[str, Any]:
                     opd_states_per_trajectory=(
                         int(args.opd_states_per_trajectory)
                         if getattr(args, "opd_states_per_trajectory", None) is not None
-                        else 3
+                        else (-1 if cell == "scape_seed" else 3)
                     ),
                     remove_constant_reward_groups=False,
                     include_format_errors=False,
                     seed=int(args.seed) + rollout_batch_id,
-                    opd_loss=str(getattr(args, "opd_loss", "sr_opd_ce") or "sr_opd_ce"),
+                    opd_loss=opd_loss,
                     opd_gate_beta=float(getattr(args, "opd_gate_beta", 5.0) or 5.0),
                 )
                 opd_datums = list(batch.opd_datums)
@@ -468,7 +475,7 @@ def run_verl_fsdp2_train(args: Any) -> dict[str, Any]:
             heartbeat_every=int(getattr(args, "train_heartbeat_every", 8) or 8),
         )
         t_train = time.perf_counter()
-        part = actor.update([], list(opd_datums), lambda_opd=lambda_opd, plan=plan)
+        part = actor.update(rl_rows, list(opd_datums), lambda_opd=lambda_opd, plan=plan)
         train_s = time.perf_counter() - t_train
         n_opt = int(part.get("n_optimizer_steps") or 0)
         if n_opt > 0:
@@ -511,6 +518,9 @@ def run_verl_fsdp2_train(args: Any) -> dict[str, Any]:
                     "reward_group_audit": audit,
                     "layout": resolved["layout"],
                     "wrap": wrap,
+                    "train_method": method,
+                    "opd_loss": opd_loss,
+                    "lambda_opd": float(lambda_opd),
                     "requested_world_size": requested,
                     "effective_world_size": int(dist.world_size),
                     "batch_plan": {
@@ -519,6 +529,7 @@ def run_verl_fsdp2_train(args: Any) -> dict[str, Any]:
                         "n_dummy_opd": plan.n_dummy_opd,
                         "n_global_rl_microbatches": plan.n_global_rl_microbatches,
                         "global_rl_tokens": plan.global_rl_tokens,
+                        "global_opd_weight": plan.global_opd_weight,
                     },
                 }
                 metrics_path.parent.mkdir(parents=True, exist_ok=True)

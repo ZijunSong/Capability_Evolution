@@ -71,15 +71,28 @@ def global_action_token_count(rows: Sequence[dict[str, Any]]) -> int:
 def row_input_length(row: Any) -> int:
     from trim.training.tinker_opd_datum import TinkerOPDDatum
 
+    student_len, teacher_len = _row_student_teacher_lengths(row)
+    if isinstance(row, (tuple, list)) and len(row) >= 2 and not isinstance(row, TinkerOPDDatum):
+        return max(1, len(row[0]) + len(row[1]))
+    return max(1, student_len, teacher_len)
+
+
+def row_gap_schedule_length(row: Any) -> int:
+    """Teacher forward plus student forward/backward for projected-gap packing."""
+    student_len, teacher_len = _row_student_teacher_lengths(row)
+    return max(1, student_len + teacher_len)
+
+
+def _row_student_teacher_lengths(row: Any) -> tuple[int, int]:
+    from trim.training.tinker_opd_datum import TinkerOPDDatum
+
     if isinstance(row, TinkerOPDDatum):
         prompt = list(row.prompt_token_ids or [])
         n_prompt = len(prompt)
         targets = list(row.target_tokens or [])
         resp = targets[n_prompt:] if len(targets) >= n_prompt else targets
         teacher = list(row.teacher_prompt_token_ids or [])
-        student_len = n_prompt + len(resp)
-        teacher_len = len(teacher) + len(resp) if teacher else 0
-        return max(1, student_len, teacher_len)
+        return n_prompt + len(resp), (len(teacher) + len(resp) if teacher else 0)
     if isinstance(row, dict):
         prompt = list(
             row.get("prompt_ids")
@@ -92,12 +105,8 @@ def row_input_length(row: Any) -> int:
             tokens = list(row.get("target_tokens") or [])
             action = tokens[len(prompt) :] if len(tokens) >= len(prompt) else tokens
         teacher = list(row.get("teacher_prompt_token_ids") or row.get("teacher_prompt_ids") or [])
-        student_len = len(prompt) + len(action)
-        teacher_len = len(teacher) + len(action) if teacher else 0
-        return max(1, student_len, teacher_len)
-    if isinstance(row, (tuple, list)) and len(row) >= 2:
-        return max(1, len(row[0]) + len(row[1]))
-    return 1
+        return len(prompt) + len(action), (len(teacher) + len(action) if teacher else 0)
+    return 1, 0
 
 
 def _is_dummy_row(row: Any) -> bool:
@@ -144,14 +153,55 @@ def dummy_rl_row() -> dict[str, Any]:
     }
 
 
-def dummy_opd_row() -> dict[str, Any]:
+def dummy_opd_row(*, opd_loss: str = "sr_opd_ce") -> dict[str, Any]:
+    from trim.training.rl_opd_types import PROJECTED_GAP_OBJECTIVE_VERSION, uses_seed_gap
+
+    loss = str(opd_loss or "sr_opd_ce")
+    gap = uses_seed_gap(loss)
     return {
         "is_dummy": True,
         "prompt_ids": [1, 2, 3, 4],
+        "prompt_token_ids": [1, 2, 3, 4],
         "effective_prompt_ids": [1, 2, 3, 4],
+        "teacher_prompt_token_ids": [1, 2, 3, 4],
+        "teacher_prompt_ids": [1, 2, 3, 4],
         "target_ids": [1],
+        "target_tokens": [0, 0, 0, 0, 1],
         "weights": [0.0],
+        "opd_loss": loss,
+        "loss_id": loss,
+        "lambda_opd": 0.01,
+        "gate_beta": 5.0,
+        "metadata": {
+            "sampled_action": False,
+            "projector_used": True if gap else False,
+            "target_source": "projected" if gap else "ce",
+            "lambda_opd": 0.01,
+            "gate_beta": 5.0,
+            "objective_version": PROJECTED_GAP_OBJECTIVE_VERSION if gap else "ce_lambda_baked_v1",
+        },
     }
+
+
+def infer_opd_loss_from_rows(rows: Sequence[Any] | None) -> str:
+    from trim.training.tinker_opd_datum import TinkerOPDDatum
+
+    for raw in list(rows or []):
+        dummy = bool(isinstance(raw, dict) and raw.get("is_dummy"))
+        loss = getattr(raw, "opd_loss", None)
+        if loss is None and isinstance(raw, dict):
+            loss = raw.get("opd_loss") or raw.get("loss_id")
+        if loss and not dummy:
+            return str(loss)
+    for raw in list(rows or []):
+        loss = getattr(raw, "opd_loss", None)
+        if loss is None and isinstance(raw, dict):
+            loss = raw.get("opd_loss") or raw.get("loss_id")
+        if loss:
+            return str(loss)
+    if isinstance(rows, list) and rows and isinstance(rows[0], TinkerOPDDatum):
+        return str(rows[0].opd_loss or "sr_opd_ce")
+    return "sr_opd_ce"
 
 
 def global_opd_weight_sum(rows: Sequence[Any]) -> float:
@@ -279,14 +329,20 @@ def plan_joint_sync_batches(
         micro_batch_size=micro_batch_size,
         dummy_factory=dummy_rl_row,
     )
+    inferred_loss = infer_opd_loss_from_rows(opd_rows)
+    from trim.training.rl_opd_types import uses_seed_gap
+
+    gap = uses_seed_gap(inferred_loss)
+    opd_len = row_gap_schedule_length if gap else row_input_length
     opd_assigned, n_dummy_opd, n_global_opd = plan_sync_microbatches(
         list(opd_rows or []),
         world_size=world,
         micro_batch_size=micro_batch_size,
-        dummy_factory=dummy_opd_row,
+        length_fn=opd_len,
+        dummy_factory=lambda: dummy_opd_row(opd_loss=inferred_loss),
     )
     rl_pad = chunk_padding_stats([chunk for part in rl_assigned for chunk in part], row_input_length)
-    opd_pad = chunk_padding_stats([chunk for part in opd_assigned for chunk in part], row_input_length)
+    opd_pad = chunk_padding_stats([chunk for part in opd_assigned for chunk in part], opd_len)
     return RankBatchPlan(
         rl_chunks=list(rl_assigned[rnk]),
         opd_chunks=list(opd_assigned[rnk]),

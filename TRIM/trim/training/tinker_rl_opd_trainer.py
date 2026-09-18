@@ -15,6 +15,7 @@ import random
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Sequence
 
+from trim.training.action_codec import canonicalize_action, parse_action
 from trim.training.action_encoding import resolve_effective_weight, visible_doc_ids_from_snapshot
 from trim.training.opd_dataset import (
     ProjectionAudit,
@@ -51,7 +52,7 @@ from trim.training.rl_opd_types import (
 )
 
 
-TeacherEventFn = Callable[[StudentDecisionPoint], list[HarnessEvent]]
+TeacherEventFn = Callable[[StudentDecisionPoint], Any]
 
 
 def _n_rl_tokens(datums: Sequence[Any]) -> int:
@@ -209,6 +210,19 @@ def _group_events_by_component(events: Sequence[Any]) -> dict[str, list[Any]]:
     return groups
 
 
+def _student_canonical_action(point: StudentDecisionPoint) -> dict[str, Any] | None:
+    text = str(getattr(point, "student_action_text", "") or "")
+    if text.strip():
+        try:
+            return canonicalize_action(parse_action(text))
+        except Exception:
+            pass
+    names = list(getattr(point, "action_tool_names", None) or [])
+    if names and names[0]:
+        return {"name": str(names[0]), "arguments": {}}
+    return None
+
+
 def project_on_policy_decisions(
     points: Sequence[StudentDecisionPoint],
     *,
@@ -221,6 +235,8 @@ def project_on_policy_decisions(
     Independent component branches are projected separately against the same
     student snapshot. Same-state candidates share equal weight.
     """
+    from trim.training.teacher_branch import coerce_teacher_branch
+
     proj = projector or StudentActionSpaceProjector()
     audit = ProjectionAudit()
     steps: list[ProjectedTrainingStep] = []
@@ -228,7 +244,10 @@ def project_on_policy_decisions(
     same_canonical_hits = 0
     overlap_total = 0
     for point in points:
-        events = list(teacher_event_fn(point) or [])
+        branch = coerce_teacher_branch(
+            teacher_event_fn(point), point=point, component_id=component_id
+        )
+        events = list(branch.events or [])
         grouped = _group_events_by_component(events)
         if not grouped:
             grouped = {component_id: []}
@@ -245,6 +264,7 @@ def project_on_policy_decisions(
             )
             point_steps.extend(mat)
         n_keep = len(point_steps)
+        student_canon = _student_canonical_action(point)
         for step in point_steps:
             raw_w = resolve_effective_weight(
                 weight=step.weight,
@@ -265,6 +285,11 @@ def project_on_policy_decisions(
             step.metadata["selection_rule"] = (
                 "independent_branch_equal_weight" if n_keep > 1 else "single_triggered_branch"
             )
+            step.metadata["branch_id"] = str(getattr(step, "component_id", None) or component_id)
+            step.metadata["teacher_branch_source_type"] = branch.source_type
+            step.metadata["teacher_branch_triggered"] = branch.triggered
+            if branch.teacher_condition:
+                step.metadata["teacher_condition"] = dict(branch.teacher_condition)
             if point.student_prompt_token_ids:
                 step.metadata["student_prompt_token_ids"] = list(point.student_prompt_token_ids)
             accessible = list(getattr(point, "accessible_doc_ids", None) or [])
@@ -280,12 +305,12 @@ def project_on_policy_decisions(
                 step.metadata["teacher_prompt_token_ids"] = list(point.teacher_prompt_token_ids)
             if point.student_action_tokens:
                 step.metadata["sampled_action_token_ids"] = list(point.student_action_tokens)
-            student_tool = str((point.action_tool_names or [""])[0] or "")
-            projected_tool = str((step.target_action or {}).get("name") or "")
-            if student_tool and projected_tool:
+            projected_canon = canonicalize_action(step.target_action or {}) if step.target_action else {}
+            if student_canon and projected_canon:
                 overlap_total += 1
-                if student_tool == projected_tool:
+                if str(student_canon.get("name") or "") == str(projected_canon.get("name") or ""):
                     same_tool_hits += 1
+                if student_canon == projected_canon:
                     same_canonical_hits += 1
         steps.extend(point_steps)
     finalize_audit(audit)
@@ -370,11 +395,10 @@ def prepare_hybrid_batch(
             include_valid_failures=include_valid_failures,
             include_format_errors=include_format_errors,
         )
-        if uses_seed_gap(opd_loss):
+        if uses_sampled_opd(opd_loss):
             sampled = materialize_teacher_prompt_ids(
                 sampled, encode_fn=encode_fn or default_encode, model_enc=model_enc
             )
-        if uses_sampled_opd(opd_loss):
             opd_datums = build_sampled_opd_datums(
                 sampled,
                 lambda_opd=lambda_opd,
@@ -410,7 +434,7 @@ def prepare_hybrid_batch(
                 projector=projector,
             )
             if uses_projected_seed(opd_loss):
-                opd_datums = build_projected_seed_datums(
+                opd_datums, build_stats = build_projected_seed_datums(
                     steps,
                     lambda_opd=lambda_opd,
                     encode_fn=encode_fn or default_encode,
@@ -419,6 +443,7 @@ def prepare_hybrid_batch(
                     opd_loss=opd_loss,
                     model_enc=model_enc,
                 )
+                extras["build_stats"] = build_stats
             else:
                 opd_datums = build_tinker_opd_datums(
                     steps,
@@ -462,6 +487,11 @@ def prepare_hybrid_batch(
                 **extras,
             }
 
+    unique_supervised = {
+        str((datum.metadata or {}).get("decision_point_id") or "")
+        for datum in opd_datums
+        if (datum.metadata or {}).get("decision_point_id")
+    }
     if opd_datums:
         trained_by_cid: dict[str, int] = {}
         for datum in opd_datums:
@@ -472,7 +502,13 @@ def prepare_hybrid_batch(
             bucket = stats.setdefault(cid, {})
             bucket["trained_tokens"] = int(bucket.get("trained_tokens", 0)) + int(n_tok)
         projection_stats["n_trained_tokens"] = int(sum(d.n_supervised_tokens for d in opd_datums))
-        projection_stats["n_decision_points_with_supervision"] = len(opd_datums)
+        projection_stats["n_decision_points_with_supervision"] = len(unique_supervised)
+    build_stats = dict(projection_stats.get("build_stats") or {})
+    if build_stats:
+        projection_stats["build_stats"] = build_stats
+        projection_stats.setdefault("n_skip_missing_teacher", build_stats.get("n_skip_missing_teacher", 0))
+        projection_stats.setdefault("n_skip_missing_student", build_stats.get("n_skip_missing_student", 0))
+        projection_stats.setdefault("n_skip_zero_mask", build_stats.get("n_skip_zero_mask", 0))
 
     rewards = [r for g in groups for r in g.terminal_rewards]
     return HybridTrainingBatch(

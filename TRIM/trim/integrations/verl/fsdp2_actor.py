@@ -75,6 +75,113 @@ def actor_class_name(wrap: str) -> str:
     return "DDPLoraActor" if str(wrap) == "ddp" else "FSDP2CispoActor"
 
 
+def _row_opd_loss(raw: Any) -> str:
+    loss = getattr(raw, "opd_loss", None)
+    if loss is None and isinstance(raw, dict):
+        loss = raw.get("opd_loss") or raw.get("loss_id")
+        meta = raw.get("metadata") if isinstance(raw.get("metadata"), dict) else {}
+        loss = loss or (meta or {}).get("loss_id")
+    return str(loss or "")
+
+
+def unpack_gap_row(raw: Any, *, require_projected: bool = True) -> dict[str, Any]:
+    """Student/teacher prefixes and a* tokens for projected-gap scoring."""
+    from trim.training.tinker_opd_datum import TinkerOPDDatum
+
+    dummy = bool(isinstance(raw, dict) and raw.get("is_dummy"))
+    if isinstance(raw, TinkerOPDDatum):
+        student = list(raw.prompt_token_ids)
+        n_p = len(student)
+        resp = list(raw.target_tokens[n_p:]) if len(raw.target_tokens) >= n_p else list(raw.target_tokens)
+        teacher = list(raw.teacher_prompt_token_ids or [])
+        weights = list(raw.weights[n_p:]) if len(raw.weights) >= n_p else list(raw.weights)
+        meta = dict(raw.metadata or {})
+        loss = str(raw.opd_loss or meta.get("loss_id") or "")
+        lam = float(meta.get("lambda_opd") if meta.get("lambda_opd") is not None else 0.01)
+        beta = float(meta.get("gate_beta") if meta.get("gate_beta") is not None else 5.0)
+        projector_used = bool(meta.get("projector_used", True))
+        sampled_action = bool(meta.get("sampled_action", False))
+    elif isinstance(raw, dict):
+        student = list(raw.get("prompt_ids") or raw.get("prompt_token_ids") or raw.get("effective_prompt_ids") or [])
+        resp = list(raw.get("target_ids") or [])
+        if not resp and raw.get("target_tokens"):
+            tokens = list(raw["target_tokens"])
+            resp = tokens[len(student) :] if len(tokens) >= len(student) else tokens
+        teacher = list(raw.get("teacher_prompt_token_ids") or raw.get("teacher_prompt_ids") or [])
+        weights = list(raw.get("weights") or [])
+        if len(weights) > len(resp) and student:
+            weights = weights[-len(resp) :] if resp else weights
+        meta = dict(raw.get("metadata") or {})
+        loss = _row_opd_loss(raw)
+        lam = float(meta.get("lambda_opd") if meta.get("lambda_opd") is not None else raw.get("lambda_opd") or 0.01)
+        beta = float(meta.get("gate_beta") if meta.get("gate_beta") is not None else raw.get("gate_beta") or 5.0)
+        projector_used = bool(meta.get("projector_used", True))
+        sampled_action = bool(meta.get("sampled_action", False))
+    else:
+        raise TypeError(f"unsupported OPD row type: {type(raw)!r}")
+    if dummy:
+        if not student:
+            student = [1, 2, 3, 4]
+        if not teacher:
+            teacher = list(student)
+        if not resp:
+            resp = [1]
+        if not weights:
+            weights = [0.0] * len(resp)
+        if not loss:
+            from trim.training.rl_opd_types import OPD_LOSS_PROJECTED_GAP
+
+            loss = OPD_LOSS_PROJECTED_GAP
+    else:
+        if not loss:
+            raise ValueError("projected-gap datum missing loss_id; refuse CE fallback")
+        if not student or not resp:
+            raise ValueError("projected-gap datum missing student prompt or a* tokens")
+        if not teacher:
+            raise ValueError("projected-gap datum missing teacher_prompt_token_ids")
+        if len(weights) != len(resp):
+            raise ValueError(
+                f"projected-gap weight/target length mismatch: weights={len(weights)} target={len(resp)}"
+            )
+        if require_projected and (sampled_action or not projector_used):
+            raise ValueError(
+                "distributed gap actor requires projector_used=True and sampled_action=False "
+                f"(got projector_used={projector_used} sampled_action={sampled_action})"
+            )
+    return {
+        "student_ids": [int(x) for x in student],
+        "resp_ids": [int(x) for x in resp],
+        "teacher_ids": [int(x) for x in teacher],
+        "weights": [float(w) for w in weights],
+        "dummy": dummy,
+        "lambda_opd": lam,
+        "gate_beta": beta,
+        "opd_loss": loss,
+        "projector_used": projector_used,
+        "sampled_action": sampled_action,
+    }
+
+
+def detect_opd_objective(rows: Sequence[Any] | None) -> str:
+    from trim.training.rl_opd_types import uses_seed_gap
+
+    saw_gap = False
+    saw_ce = False
+    for raw in list(rows or []):
+        loss = _row_opd_loss(raw)
+        if not loss:
+            continue
+        if uses_seed_gap(loss):
+            saw_gap = True
+        else:
+            saw_ce = True
+    if saw_gap and saw_ce:
+        raise ValueError("mixed CE and gap OPD rows in one optimizer update")
+    if saw_gap:
+        return "gap"
+    return "ce"
+
+
 class FSDP2CispoActor:
     """LoRA actor owned by TRIM. Wrap is official DDP or FSDP2; not native verl."""
 
@@ -355,12 +462,115 @@ class FSDP2CispoActor:
             numer = dummy.float().sum() * 0.0
         return numer, ratio_hits, ratio_total, input_tokens
 
+    def _teacher_forward_context(self):
+        """Disable gradient reduction during teacher scoring. FSDP2 still all-gathers."""
+        if self.wrap == "ddp":
+            no_sync = getattr(self.model, "no_sync", None)
+            if callable(no_sync):
+                return no_sync()
+        if self.wrap == "fsdp2":
+            _set_fsdp_grad_sync(self.model, False)
+        return nullcontext()
+
+    def _score_teacher_chunk(self, chunk: Sequence[Any]) -> list[torch.Tensor]:
+        pairs = []
+        unpacked_rows = []
+        for raw in chunk:
+            row = unpack_gap_row(raw, require_projected=not bool(isinstance(raw, dict) and raw.get("is_dummy")))
+            if len(row["teacher_ids"]) + len(row["resp_ids"]) > self.max_full_tokens:
+                raise ValueError(
+                    f"teacher sequence {len(row['teacher_ids'])+len(row['resp_ids'])} exceeds {self.max_full_tokens}"
+                )
+            pairs.append((row["teacher_ids"], row["resp_ids"]))
+            unpacked_rows.append(row)
+        with torch.no_grad():
+            logps, _ = self._forward_response_logprobs(pairs, [{} for _ in pairs])
+        out: list[torch.Tensor] = []
+        for row, logp in zip(unpacked_rows, logps):
+            lp = logp.detach().float().reshape(-1)
+            if not row["dummy"] and lp.numel() != len(row["resp_ids"]):
+                raise ValueError(
+                    f"teacher a* logprob length mismatch: logp={lp.numel()} target={len(row['resp_ids'])}"
+                )
+            out.append(lp.cpu())
+        return out
+
+    def _projected_gap_numerator(
+        self,
+        chunk: Sequence[Any],
+        teacher_lps: Sequence[torch.Tensor],
+    ) -> tuple[torch.Tensor, int, dict[str, float]]:
+        from trim.training.sr_opd_loss import gated_action_gap_weighted_sum
+
+        prepared = []
+        for raw in chunk:
+            dummy = bool(isinstance(raw, dict) and raw.get("is_dummy"))
+            prepared.append(unpack_gap_row(raw, require_projected=not dummy))
+        if len(prepared) != len(teacher_lps):
+            raise ValueError("teacher logprob chunks drifted from student gap chunks")
+        pairs = [(row["student_ids"], row["resp_ids"]) for row in prepared]
+        for row in prepared:
+            if len(row["student_ids"]) + len(row["resp_ids"]) > self.max_full_tokens:
+                raise ValueError(
+                    f"student sequence {len(row['student_ids'])+len(row['resp_ids'])} exceeds {self.max_full_tokens}"
+                )
+        logps, _ = self._forward_response_logprobs(pairs, [{} for _ in pairs])
+        terms: list[torch.Tensor] = []
+        input_tokens = 0
+        gate_sum = 0.0
+        n_tok = 0
+        student_lp_sum = 0.0
+        teacher_lp_sum = 0.0
+        for row, student_lp, teacher_lp in zip(prepared, logps, teacher_lps):
+            input_tokens += len(row["student_ids"]) + len(row["resp_ids"])
+            s = student_lp.float().reshape(-1)
+            t = teacher_lp.to(device=s.device, dtype=torch.float32).reshape(-1).detach()
+            if row["dummy"]:
+                terms.append(s.sum() * 0.0)
+                continue
+            w = torch.tensor(row["weights"], device=s.device, dtype=torch.float32)
+            if s.numel() != t.numel() or s.numel() != w.numel():
+                raise ValueError(
+                    f"projected-gap student/teacher/weight length mismatch: "
+                    f"student={s.numel()} teacher={t.numel()} weights={w.numel()}"
+                )
+            numer = gated_action_gap_weighted_sum(s, t, w, gate_beta=row["gate_beta"])
+            terms.append(numer)
+            with torch.no_grad():
+                delta = (t - s).detach()
+                gate = torch.sigmoid(delta * float(row["gate_beta"]))
+                n_keep = int((w != 0).sum().item())
+                gate_sum += float((gate * (w != 0).float()).sum().item())
+                n_tok += n_keep
+                student_lp_sum += float((s * (w != 0).float()).sum().item())
+                teacher_lp_sum += float((t * (w != 0).float()).sum().item())
+        if terms:
+            numer = torch.stack(terms).sum()
+        else:
+            dummy_p = next(p for p in self.model.parameters() if p.requires_grad)
+            numer = dummy_p.float().sum() * 0.0
+        stats = {
+            "gate_mean": (gate_sum / n_tok) if n_tok else 0.0,
+            "student_logp": (student_lp_sum / n_tok) if n_tok else 0.0,
+            "teacher_logp": (teacher_lp_sum / n_tok) if n_tok else 0.0,
+            "n_weighted_tokens": float(n_tok),
+        }
+        return numer, input_tokens, stats
+
     def _opd_numerator(self, chunk: Sequence[Any]) -> tuple[torch.Tensor, int]:
         from trim.training.tinker_opd_datum import TinkerOPDDatum
 
         prepared: list[tuple[list[int], list[int], list[float], bool]] = []
         for raw in chunk:
             dummy = bool(isinstance(raw, dict) and raw.get("is_dummy"))
+            loss = _row_opd_loss(raw)
+            if loss:
+                from trim.training.rl_opd_types import uses_seed_gap
+
+                if uses_seed_gap(loss) and not dummy:
+                    raise ValueError(
+                        f"CE actor path refused gap datum opd_loss={loss!r}"
+                    )
             if isinstance(raw, TinkerOPDDatum):
                 prompt = list(raw.prompt_token_ids)
                 n_p = len(prompt)
@@ -408,22 +618,10 @@ class FSDP2CispoActor:
         lambda_opd: float = 0.0,
         plan: RankBatchPlan | None = None,
     ) -> dict[str, Any]:
-        """Accumulate CISPO (+ optional CE) then one optimizer.step. All ranks must enter."""
-        from trim.training.rl_opd_types import uses_seed_gap
+        """Accumulate CISPO (+ CE or projected-gap) then one optimizer.step. All ranks must enter."""
+        from trim.training.rl_opd_types import PROJECTED_GAP_OBJECTIVE_VERSION, uses_projected_seed, uses_seed_gap
+        from trim.training.sr_opd_loss import scale_projected_gap_loss
 
-        for raw in list(opd_rows or []):
-            if isinstance(raw, dict) and raw.get("is_dummy"):
-                continue
-            loss = getattr(raw, "opd_loss", None)
-            if loss is None and isinstance(raw, dict):
-                loss = raw.get("opd_loss")
-            if loss and uses_seed_gap(str(loss)):
-                raise ValueError(
-                    f"distributed actor is CE-only; refused gap datum opd_loss={loss!r}"
-                )
-        assert self.model is not None and self.optimizer is not None
-        self.model.train()
-        self.optimizer.zero_grad(set_to_none=True)
         scheduled = plan or plan_joint_sync_batches(
             list(rl_rows),
             list(opd_rows or []),
@@ -431,9 +629,27 @@ class FSDP2CispoActor:
             world_size=self.world_size,
             micro_batch_size=self.micro_batch_size,
         )
+        inspect_rows: list[Any] = list(opd_rows or [])
+        for chunk in scheduled.opd_chunks:
+            inspect_rows.extend(chunk)
+        objective = detect_opd_objective(inspect_rows)
+        gap_mode = objective == "gap"
+        if gap_mode:
+            for raw in inspect_rows:
+                if isinstance(raw, dict) and raw.get("is_dummy"):
+                    continue
+                loss = _row_opd_loss(raw)
+                if loss and uses_seed_gap(loss) and not uses_projected_seed(loss):
+                    raise ValueError(
+                        f"distributed actor implements projected-gap only; refused {loss!r}"
+                    )
+        assert self.model is not None and self.optimizer is not None
+        self.model.train()
+        self.optimizer.zero_grad(set_to_none=True)
         steps = scheduled.steps()
         scale = float(self.world_size)
         z_rl = max(1.0, float(scheduled.global_rl_tokens))
+        z_gap = float(scheduled.global_opd_weight) if gap_mode else 0.0
         metrics = {
             "n_rl_rows_local": sum(1 for chunk in scheduled.rl_chunks for r in chunk if not r.get("is_dummy")),
             "n_opd_rows_local": sum(len(chunk) for chunk in scheduled.opd_chunks),
@@ -450,18 +666,39 @@ class FSDP2CispoActor:
             "opd_real_tokens": int(scheduled.opd_real_tokens),
             "wrap": self.wrap,
             "wrapper": self.wrapper_type,
+            "opd_objective": "projected_gap" if gap_mode else "ce",
+            "objective_version": PROJECTED_GAP_OBJECTIVE_VERSION if gap_mode else "ce_lambda_baked_v1",
+            "Z_gap": z_gap if gap_mode else None,
+            "lambda_projected_gap": float(lambda_opd) if gap_mode else None,
         }
         if not steps:
             return metrics
+
+        teacher_logps_by_chunk: list[list[torch.Tensor]] = []
+        teacher_score_s = 0.0
+        if gap_mode and scheduled.opd_chunks:
+            t_teacher = time.perf_counter()
+            ctx = self._teacher_forward_context()
+            with ctx:
+                for chunk in scheduled.opd_chunks:
+                    teacher_logps_by_chunk.append(self._score_teacher_chunk(chunk))
+            if self.wrap == "fsdp2":
+                _set_fsdp_grad_sync(self.model, True)
+            teacher_score_s = time.perf_counter() - t_teacher
 
         loss_sum = 0.0
         ratio_hits = 0
         ratio_total = 0
         input_tokens = 0
         supervised = 0
+        gap_raw = 0.0
+        gate_mean_acc = 0.0
+        gate_n = 0
         started = time.perf_counter()
         last_hb = started
         last_len = 0
+        opd_i = 0
+        skipped_gap = gap_mode and z_gap <= 0.0
         if self.device.type == "cuda" and torch.cuda.is_available():
             torch.cuda.reset_peak_memory_stats()
         for i, (kind, chunk) in enumerate(steps):
@@ -481,6 +718,23 @@ class FSDP2CispoActor:
                     ratio_total += tot
                     supervised += tot
                     loss = scale * (numer / z_rl)
+                elif gap_mode:
+                    t_lps = teacher_logps_by_chunk[opd_i]
+                    numer, n_in, gap_stats = self._projected_gap_numerator(chunk, t_lps)
+                    if skipped_gap:
+                        loss = numer * 0.0
+                    else:
+                        loss = scale_projected_gap_loss(
+                            numer,
+                            lambda_opd=float(lambda_opd),
+                            z_gap=z_gap,
+                            world_size=self.world_size,
+                        )
+                    gap_raw += float(numer.detach().item())
+                    if gap_stats["n_weighted_tokens"]:
+                        gate_mean_acc += gap_stats["gate_mean"] * gap_stats["n_weighted_tokens"]
+                        gate_n += gap_stats["n_weighted_tokens"]
+                    opd_i += 1
                 else:
                     # Weights already include lambda; keep the original sum, only undo DDP mean.
                     numer, n_in = self._opd_numerator(chunk)
@@ -515,7 +769,10 @@ class FSDP2CispoActor:
         if self.device.type == "cuda":
             torch.cuda.synchronize()
         t_opt = time.perf_counter()
-        has_signal = float(scheduled.global_rl_tokens) > 0 or float(scheduled.global_opd_weight) > 0
+        has_rl = float(scheduled.global_rl_tokens) > 0
+        has_gap = gap_mode and z_gap > 0
+        has_ce = (not gap_mode) and float(scheduled.global_opd_weight) > 0
+        has_signal = has_rl or has_gap or has_ce
         n_opt = 0
         if has_signal:
             self.optimizer.step()
@@ -528,8 +785,12 @@ class FSDP2CispoActor:
             {
                 "n_optimizer_steps": n_opt,
                 "skipped_empty_supervision": not has_signal,
+                "skipped_gap_zero_Z": skipped_gap,
                 "n_microbatches": len(steps),
                 "loss": loss_sum,
+                "projected_gap_raw": gap_raw if gap_mode else None,
+                "gate_mean": (gate_mean_acc / gate_n) if gate_n else None,
+                "teacher_score_s": round(teacher_score_s, 3) if gap_mode else None,
                 "ratio_clip_fraction": (ratio_hits / max(1, ratio_total)),
                 "clip_low": self.clip_low,
                 "clip_high": self.clip_high,

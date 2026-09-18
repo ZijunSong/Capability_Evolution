@@ -31,6 +31,10 @@ SAMPLED_OPD_LOSSES = frozenset({OPD_LOSS_SAMPLED_GAP, OPD_LOSS_REVERSE_KL})
 SEED_GAP_LOSSES = frozenset({OPD_LOSS_SAMPLED_GAP, OPD_LOSS_REVERSE_KL, OPD_LOSS_PROJECTED_GAP})
 SCAPE_RL_LAMBDA_OPD = 0.01
 SCAPE_RL_OPD_GATE_BETA = 5.0
+# Gap weights are effective_weight × mask; lambda and Z_gap are applied at FB.
+PROJECTED_GAP_OBJECTIVE_VERSION = "projected_gap_weighted_v1"
+# Archived binary 0/1 masks without confidence sharing (pre-b616b7d).
+PROJECTED_GAP_OBJECTIVE_VERSION_BINARY_MASK = "projected_gap_binary_mask_v0"
 
 
 def uses_sampled_opd(opd_loss: str) -> bool:

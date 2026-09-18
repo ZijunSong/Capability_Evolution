@@ -121,8 +121,8 @@ def test_projected_seed_datums_use_target_text_and_binary_weights():
 
     steps = [_step("PREFIX", "aa"), _step("PREFIX", "bbb")]
     for s in steps:
-        s.metadata["prompt_full"] = "FULL"
-    datums = build_projected_seed_datums(
+        s.metadata["teacher_prompt_token_ids"] = _encode("FULL")
+    datums, _stats = build_projected_seed_datums(
         steps, lambda_opd=0.01, encode_fn=_encode, policy_version="v1", gate_beta=5.0
     )
     assert len(datums) == 2

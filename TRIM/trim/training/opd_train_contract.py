@@ -1,9 +1,9 @@
 """Method / OPD-loss / backend support matrix.
 
-Unsupported combinations must fail before GPU training starts. The
-distributed verl/FSDP2 actor is CE-only; projected/sampled gap stays on
-hf_debug. Changing method and loss together is not an acceleration of the
-same algorithm.
+Unsupported combinations must fail before GPU training starts. trim /
+scape_seed uses sr_opd_projected_gap on hf_debug and the distributed
+verl/FSDP2/DDP actor. rl+opd stays CE on those backends. Changing method
+and loss together is not an acceleration of the same algorithm.
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ from trim.training.rl_opd_types import (
     OPD_LOSS_PROJECTED_GAP,
     OPD_LOSS_REVERSE_KL,
     OPD_LOSS_SAMPLED_GAP,
+    PROJECTED_GAP_OBJECTIVE_VERSION,
     TRAINING_MODE_PURE_OPD,
     TRAINING_MODE_RL,
     TRAINING_MODE_RL_OPD,
@@ -45,12 +46,13 @@ BACKEND_ALIASES = {
     "local_legacy": BACKEND_HF_DEBUG,
     "verl": BACKEND_VERL,
     "fsdp2": BACKEND_VERL,
+    "verl_fsdp2": BACKEND_VERL,
     "torch_ddp_lora": BACKEND_VERL,
+    "ddp": BACKEND_VERL,
+    "ddp_lora": BACKEND_VERL,
 }
 
 LOSS_ALIASES = {
-    "": OPD_LOSS_CE,
-    "none": OPD_LOSS_CE,
     OPD_LOSS_CE: OPD_LOSS_CE,
     OPD_LOSS_PROJECTED_GAP: OPD_LOSS_PROJECTED_GAP,
     OPD_LOSS_SAMPLED_GAP: OPD_LOSS_SAMPLED_GAP,
@@ -67,12 +69,30 @@ SUPPORTED_TRAIN_CONTRACTS: frozenset[tuple[str, str, str]] = frozenset(
         ("rl+opd", OPD_LOSS_CE, BACKEND_VERL),
         (TRAINING_MODE_PURE_OPD, OPD_LOSS_CE, BACKEND_HF_DEBUG),
         (TRAINING_MODE_SCAPE_SEED, OPD_LOSS_PROJECTED_GAP, BACKEND_HF_DEBUG),
+        (TRAINING_MODE_SCAPE_SEED, OPD_LOSS_PROJECTED_GAP, BACKEND_VERL),
         (TRAINING_MODE_SCAPE_RL, OPD_LOSS_SAMPLED_GAP, BACKEND_HF_DEBUG),
         (TRAINING_MODE_SCAPE_RL, OPD_LOSS_CE, BACKEND_HF_DEBUG),
         ("rl+opd", OPD_LOSS_PROJECTED_GAP, BACKEND_HF_DEBUG),
         ("rl+opd", OPD_LOSS_SAMPLED_GAP, BACKEND_HF_DEBUG),
     }
 )
+
+# trim/scape_seed is never CE or sampled-gap, even on hf_debug.
+FORBIDDEN_METHOD_LOSSES: frozenset[tuple[str, str]] = frozenset(
+    {
+        (TRAINING_MODE_SCAPE_SEED, OPD_LOSS_CE),
+        (TRAINING_MODE_SCAPE_SEED, OPD_LOSS_SAMPLED_GAP),
+    }
+)
+
+CELL_FOR_METHOD = {
+    TRAINING_MODE_RL: "rl",
+    "rl+opd": "rl_opd",
+    TRAINING_MODE_RL_OPD: "rl_opd",
+    TRAINING_MODE_SCAPE_SEED: "scape_seed",
+    TRAINING_MODE_SCAPE_RL: "scape_rl",
+    TRAINING_MODE_PURE_OPD: "pure_opd",
+}
 
 
 def normalize_train_method(method: str | None) -> str:
@@ -88,18 +108,55 @@ def normalize_backend(backend: str | None) -> str:
     return BACKEND_ALIASES.get(key, key)
 
 
+def actor_wrap_for_backend(backend: str | None) -> str:
+    key = str(backend or "").strip().lower().replace("-", "_")
+    if key in {"torch_ddp_lora", "ddp", "ddp_lora"}:
+        return "ddp"
+    if normalize_backend(key) == BACKEND_HF_DEBUG:
+        return "none"
+    return "fsdp2"
+
+
+def default_opd_loss_for_method(method: str | None) -> str:
+    norm_method = normalize_train_method(method)
+    if norm_method == TRAINING_MODE_SCAPE_SEED:
+        return OPD_LOSS_PROJECTED_GAP
+    if norm_method == TRAINING_MODE_SCAPE_RL:
+        return OPD_LOSS_SAMPLED_GAP
+    return OPD_LOSS_CE
+
+
+def _loss_unspecified(opd_loss: str | None) -> bool:
+    if opd_loss is None:
+        return True
+    raw = str(opd_loss).strip().lower()
+    return raw in {"", "none", "null"}
+
+
 def normalize_opd_loss(opd_loss: str | None, *, method: str | None = None) -> str:
-    raw = str(opd_loss or "").strip()
+    """Resolve loss after method default. Empty values are not CE aliases."""
+    if _loss_unspecified(opd_loss):
+        return default_opd_loss_for_method(method)
+    raw = str(opd_loss).strip()
     if raw in LOSS_ALIASES:
         return LOSS_ALIASES[raw]
-    if not raw:
-        norm_method = normalize_train_method(method)
-        if norm_method == TRAINING_MODE_SCAPE_SEED:
-            return OPD_LOSS_PROJECTED_GAP
-        if norm_method == TRAINING_MODE_SCAPE_RL:
-            return OPD_LOSS_SAMPLED_GAP
-        return OPD_LOSS_CE
     return raw
+
+
+def opd_loss_from_args(args: Any | None, *, method: str | None = None) -> str:
+    """Read args.opd_loss without ``or 'sr_opd_ce'`` overriding trim defaults."""
+    raw = getattr(args, "opd_loss", None) if args is not None else None
+    use_method = method
+    if use_method is None and args is not None:
+        use_method = getattr(args, "train_method", None) or getattr(args, "training_mode", None)
+    return normalize_opd_loss(raw, method=use_method)
+
+
+def training_cell_for_method(method: str | None) -> str:
+    norm = normalize_train_method(method)
+    if norm not in CELL_FOR_METHOD:
+        raise SystemExit(f"unsupported training cell for method={method!r} (normalized={norm!r})")
+    return CELL_FOR_METHOD[norm]
 
 
 def teacher_context_required(opd_loss: str | None) -> bool:
@@ -110,17 +167,36 @@ def contract_supported(method: str, opd_loss: str, backend: str) -> bool:
     return (method, opd_loss, backend) in SUPPORTED_TRAIN_CONTRACTS
 
 
-def describe_train_contract(method: str, opd_loss: str, backend: str) -> dict[str, Any]:
+def describe_train_contract(
+    method: str,
+    opd_loss: str,
+    backend: str,
+    *,
+    requested_backend: str | None = None,
+    actor_wrap: str | None = None,
+) -> dict[str, Any]:
     need_teacher = teacher_context_required(opd_loss)
     actor = "ce" if not uses_seed_gap(opd_loss) else "gap"
+    requested = requested_backend or backend
+    wrap = actor_wrap or actor_wrap_for_backend(requested)
+    family = normalize_backend(requested)
+    gap_on_dist = (
+        method == TRAINING_MODE_SCAPE_SEED
+        and opd_loss == OPD_LOSS_PROJECTED_GAP
+        and family == BACKEND_VERL
+    )
     return {
         "method": method,
         "opd_loss": opd_loss,
-        "backend": backend,
-        "supported": contract_supported(method, opd_loss, backend),
+        "backend": requested,
+        "backend_family": family,
+        "actor_wrap": wrap,
+        "supported": contract_supported(method, opd_loss, family),
         "teacher_context_required": need_teacher,
         "actor_objective": actor,
-        "verl_ce_only": backend == BACKEND_VERL,
+        "objective_version": PROJECTED_GAP_OBJECTIVE_VERSION if actor == "gap" else "ce_lambda_baked_v1",
+        "verl_ce_only": family == BACKEND_VERL and actor == "ce",
+        "distributed_gap_supported": gap_on_dist,
     }
 
 
@@ -129,18 +205,32 @@ def assert_train_contract(
     opd_loss: str | None = None,
     backend: str | None = None,
 ) -> dict[str, Any]:
+    requested_backend = str(backend or BACKEND_HF_DEBUG)
     norm_method = normalize_train_method(method)
-    norm_backend = normalize_backend(backend)
+    norm_backend = normalize_backend(requested_backend)
     norm_loss = normalize_opd_loss(opd_loss, method=norm_method)
     if norm_method == TRAINING_MODE_RL:
         norm_loss = OPD_LOSS_CE
-    payload = describe_train_contract(norm_method, norm_loss, norm_backend)
+    if (norm_method, norm_loss) in FORBIDDEN_METHOD_LOSSES:
+        raise SystemExit(
+            "unsupported train contract "
+            f"method={norm_method!r} opd_loss={norm_loss!r} backend={requested_backend!r}. "
+            "trim/scape_seed requires sr_opd_projected_gap; CE and sampled-gap are not trim."
+        )
+    payload = describe_train_contract(
+        norm_method,
+        norm_loss,
+        norm_backend,
+        requested_backend=requested_backend,
+        actor_wrap=actor_wrap_for_backend(requested_backend),
+    )
     if payload["supported"]:
         return payload
     raise SystemExit(
         "unsupported train contract "
-        f"method={norm_method!r} opd_loss={norm_loss!r} backend={norm_backend!r}. "
-        "verl/fsdp2 is CE-only for rl and rl+opd; trim/scape+rl gap stays on hf_debug. "
+        f"method={norm_method!r} opd_loss={norm_loss!r} backend={requested_backend!r}. "
+        "rl/rl+opd on verl/fsdp2/ddp stay CE; trim uses sr_opd_projected_gap on those "
+        "backends; scape+rl gap stays on hf_debug. "
         "Do not treat a method+loss change as the same algorithm accelerated."
     )
 

@@ -60,7 +60,9 @@ def test_verify_secret_not_in_student_or_opd_prefix():
     datums = build_tinker_opd_datums(steps, lambda_opd=0.1, policy_version="v0")
     assert all(SECRET not in d.model_input for d in datums)
     assert all(SECRET not in d.target_action.get("name", "") for d in datums)
-    assert datums[0].teacher_prompt_token_ids
+    assert datums[0].prompt_token_ids
+    # Online CE/gap refuse encoding debug prompt_full as teacher IDs.
+    assert not datums[0].teacher_prompt_token_ids
 
 
 def test_aligned_curate_prefix_has_no_teacher_verify():

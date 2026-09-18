@@ -195,12 +195,7 @@ def test_resolve_resume_optimizer_ddp_and_fsdp2(tmp_path):
 def test_unsupported_verl_method_scape():
     from trim.integrations.verl.trainer_adapter import _unsupported_method
 
-    try:
-        _unsupported_method("trim")
-        raised = False
-    except SystemExit:
-        raised = True
-    assert raised is True
+    _unsupported_method("trim", "sr_opd_projected_gap")
     _unsupported_method("rl")
     _unsupported_method("rl+opd")
     try:
@@ -209,3 +204,9 @@ def test_unsupported_verl_method_scape():
     except SystemExit:
         raised_gap = True
     assert raised_gap is True
+    try:
+        _unsupported_method("trim", "sr_opd_ce")
+        raised_ce = False
+    except SystemExit:
+        raised_ce = True
+    assert raised_ce is True
