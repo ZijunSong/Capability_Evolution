@@ -33,6 +33,7 @@ from trim.training.tinker_opd_datum import (
     build_sampled_opd_datums,
     build_tinker_opd_datums,
     default_encode,
+    recover_teacher_prompt_ids,
 )
 from trim.training.rl_opd_types import (
     UPDATE_OPD_ONLY_ZERO_RL,
@@ -125,6 +126,28 @@ def filter_constant_reward_rl_datums(
             continue
         kept.extend(rl_datums_by_query.get(group.query_id, []))
     return kept
+
+
+def materialize_teacher_prompt_ids(
+    points: Sequence[StudentDecisionPoint],
+    *,
+    encode_fn: EncodeFn,
+    model_enc: Any | None = None,
+) -> list[StudentDecisionPoint]:
+    """Encode teacher prefixes only for selected OPD states, from saved refs."""
+    for point in points:
+        if point.teacher_prompt_token_ids:
+            continue
+        recovered = recover_teacher_prompt_ids(
+            teacher_ids=None,
+            metadata={},
+            snapshot=point.pre_action_snapshot,
+            encode=encode_fn,
+            model_enc=model_enc,
+        )
+        if recovered:
+            point.teacher_prompt_token_ids = list(recovered)
+    return list(points)
 
 
 def sample_decision_points(
@@ -244,35 +267,35 @@ def project_on_policy_decisions(
             )
             if point.student_prompt_token_ids:
                 step.metadata["student_prompt_token_ids"] = list(point.student_prompt_token_ids)
-            visible = list(getattr(point, "visible_doc_ids", None) or [])
-            if not visible:
-                visible = visible_doc_ids_from_snapshot(point.pre_action_snapshot)
-            step.metadata["visible_doc_ids"] = visible
+            accessible = list(getattr(point, "accessible_doc_ids", None) or [])
+            if not accessible:
+                accessible = visible_doc_ids_from_snapshot(point.pre_action_snapshot)
+            step.metadata["accessible_doc_ids"] = accessible
+            if getattr(point, "prompt_visible_doc_ids", None) is not None:
+                step.metadata["prompt_visible_doc_ids"] = list(point.prompt_visible_doc_ids)
+                step.metadata["visible_doc_ids"] = list(point.prompt_visible_doc_ids)
+            elif getattr(point, "visible_doc_ids", None):
+                step.metadata["visible_doc_ids"] = list(point.visible_doc_ids)
             if point.teacher_prompt_token_ids:
                 step.metadata["teacher_prompt_token_ids"] = list(point.teacher_prompt_token_ids)
             if point.student_action_tokens:
                 step.metadata["sampled_action_token_ids"] = list(point.student_action_tokens)
-            if point.student_action_text and step.target_action:
+            student_tool = str((point.action_tool_names or [""])[0] or "")
+            projected_tool = str((step.target_action or {}).get("name") or "")
+            if student_tool and projected_tool:
                 overlap_total += 1
-                student_tool = (point.action_tool_names or [""])[0]
-                projected_tool = str(step.target_action.get("name") or "")
-                if student_tool and projected_tool and student_tool == projected_tool:
+                if student_tool == projected_tool:
                     same_tool_hits += 1
-                try:
-                    from trim.training.action_codec import parse_action
-
-                    student_parsed = parse_action(point.student_action_text)
-                    if student_parsed == step.target_action:
-                        same_canonical_hits += 1
-                except Exception:
-                    pass
+                    same_canonical_hits += 1
         steps.extend(point_steps)
     finalize_audit(audit)
     extras = {
-        "rl_opd_same_tool_rate": (same_tool_hits / overlap_total) if overlap_total else 0.0,
-        "rl_opd_same_canonical_action_rate": (same_canonical_hits / overlap_total) if overlap_total else 0.0,
-        "rl_opd_same_supervised_token_rate": 0.0,
-        "rl_opd_exact_target_overlap_rate": 0.0,
+        "rl_opd_same_tool_rate": (same_tool_hits / overlap_total) if overlap_total else None,
+        "rl_opd_same_canonical_action_rate": (same_canonical_hits / overlap_total) if overlap_total else None,
+        "rl_opd_same_supervised_token_rate": None,
+        "rl_opd_exact_target_overlap_rate": None,
+        "rl_opd_overlap_unavailable_reason": None if overlap_total else "no_comparable_pairs",
+        "n_overlap_pairs": overlap_total,
         "n_sampled_decision_points": len(points),
         "component_stats": dict(audit.component_stats),
         "n_skip": audit.n_skip,
@@ -285,6 +308,17 @@ def project_on_policy_decisions(
             for cid, stats in audit.component_stats.items()
             if stats.get("align_count", 0) == 0 and stats.get("trigger_count", 0) > 0
         ],
+        "unimplemented_components": [
+            cid
+            for cid, stats in audit.component_stats.items()
+            if stats.get("skip_unregistered", 0) > 0
+        ],
+        "n_attempt": audit.n_attempt,
+        "n_unregistered": audit.n_unregistered,
+        "n_untriggered": audit.n_untriggered,
+        "n_unrealizable": audit.n_unrealizable,
+        "n_filtered_after_clipping": audit.n_filtered_after_clipping,
+        "n_synthetic_heuristic": audit.n_synthetic_heuristic,
     }
     return steps, audit, extras
 
@@ -336,6 +370,10 @@ def prepare_hybrid_batch(
             include_valid_failures=include_valid_failures,
             include_format_errors=include_format_errors,
         )
+        if uses_seed_gap(opd_loss):
+            sampled = materialize_teacher_prompt_ids(
+                sampled, encode_fn=encode_fn or default_encode, model_enc=model_enc
+            )
         if uses_sampled_opd(opd_loss):
             opd_datums = build_sampled_opd_datums(
                 sampled,
@@ -345,6 +383,7 @@ def prepare_hybrid_batch(
                 component_id=component_id,
                 gate_beta=opd_gate_beta,
                 opd_loss=opd_loss,
+                model_enc=model_enc,
             )
             skipped_teacher = False
             projection_stats = {
@@ -399,9 +438,11 @@ def prepare_hybrid_batch(
                     token_total += 1
                     if sampled_ids == projected_ids:
                         token_hits += 1
-            token_rate = (token_hits / token_total) if token_total else 0.0
+            token_rate = (token_hits / token_total) if token_total else None
             extras["rl_opd_same_supervised_token_rate"] = token_rate
             extras["rl_opd_exact_target_overlap_rate"] = token_rate
+            if token_total == 0 and not extras.get("rl_opd_overlap_unavailable_reason"):
+                extras["rl_opd_overlap_unavailable_reason"] = "no_token_pairs"
             projection_stats = {
                 "skipped_teacher": False,
                 "projector_used": True,
@@ -420,6 +461,18 @@ def prepare_hybrid_batch(
                 "n_projected_training_steps": audit.n_projected_training_steps,
                 **extras,
             }
+
+    if opd_datums:
+        trained_by_cid: dict[str, int] = {}
+        for datum in opd_datums:
+            cid = str((datum.metadata or {}).get("component_id") or component_id or "unknown")
+            trained_by_cid[cid] = trained_by_cid.get(cid, 0) + int(datum.n_supervised_tokens)
+        stats = projection_stats.setdefault("component_stats", {})
+        for cid, n_tok in trained_by_cid.items():
+            bucket = stats.setdefault(cid, {})
+            bucket["trained_tokens"] = int(bucket.get("trained_tokens", 0)) + int(n_tok)
+        projection_stats["n_trained_tokens"] = int(sum(d.n_supervised_tokens for d in opd_datums))
+        projection_stats["n_decision_points_with_supervision"] = len(opd_datums)
 
     rewards = [r for g in groups for r in g.terminal_rewards]
     return HybridTrainingBatch(
@@ -478,6 +531,10 @@ async def hybrid_train_substep(
     )
     requested_lambda = float(lambda_opd)
 
+    setter = getattr(training_client, "set_policy_version", None)
+    if callable(setter):
+        setter(policy_version)
+
     rl_list = list(rl_datums)
     opd_list = list(opd_datums)
     if not rl_list and not opd_list:
@@ -506,13 +563,28 @@ async def hybrid_train_substep(
         opd_result = await maybe if isinstance(maybe, Awaitable) else maybe
         n_opd_fb = 1
 
-    maybe_opt = training_client.optim_step_async(adam_params)
+    maybe_opt = None
+    n_opt = 0
+    n_rl_tok = _n_rl_tokens(rl_list)
+    n_opd_tok = _n_opd_tokens(opd_list)
+    has_signal = n_rl_tok > 0 or n_opd_tok > 0
+    if has_signal:
+        try:
+            maybe_opt = training_client.optim_step_async(adam_params, skip=False)
+        except TypeError:
+            maybe_opt = training_client.optim_step_async(adam_params)
+        n_opt = 1
+    else:
+        try:
+            maybe_opt = training_client.optim_step_async(adam_params, skip=True)
+        except TypeError:
+            maybe_opt = None
+        n_opt = 0
     if isinstance(maybe_opt, Awaitable):
         await maybe_opt
 
-    n_rl_tok = _n_rl_tokens(rl_list)
-    n_opd_tok = _n_opd_tokens(opd_list)
-    opd_gap = _extract_loss(opd_result)
+    opd_loss_value = _extract_loss(opd_result)
+    gap_path = uses_seed_gap(opd_loss)
     return HybridStepMetrics(
         update_type=classify_update_type(n_rl=len(rl_list), n_opd=len(opd_list)),
         n_rl_datums=len(rl_list),
@@ -520,15 +592,20 @@ async def hybrid_train_substep(
         n_rl_tokens=n_rl_tok,
         n_opd_tokens=n_opd_tok,
         rl_loss_proxy=_extract_loss(rl_result),
-        opd_nll=opd_gap,
-        opd_weighted_gap=opd_gap,
+        opd_nll=None if gap_path else opd_loss_value,
+        opd_weighted_ce=None if gap_path else opd_loss_value,
+        opd_weighted_gap=opd_loss_value if gap_path else None,
         lambda_opd=requested_lambda,
         projection_coverage=float(projection_coverage),
         reject_rate=float(reject_rate),
         policy_version=policy_version,
         n_rl_forward_backward=n_rl_fb,
         n_opd_forward_backward=n_opd_fb,
-        n_optimizer_steps=1,
+        n_optimizer_steps=n_opt,
+        skipped_empty_supervision=not has_signal,
+        n_merged_opd_rows=int((opd_result or {}).get("n_merged_rows") or 0) if isinstance(opd_result, dict) else 0,
+        teacher_cache_hits=int((opd_result or {}).get("teacher_cache_hits") or 0) if isinstance(opd_result, dict) else 0,
+        teacher_cache_misses=int((opd_result or {}).get("teacher_cache_misses") or 0) if isinstance(opd_result, dict) else 0,
         opd_to_rl_token_ratio=(n_opd_tok / n_rl_tok) if n_rl_tok else float(n_opd_tok),
         rl_opd_exact_target_overlap_rate=float(overlap_rate),
     )

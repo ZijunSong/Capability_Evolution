@@ -37,6 +37,7 @@ from trim.training.dist_runtime import (
     shard_for_rank,
     torchrun_env_source,
 )
+from trim.training.opd_train_contract import assert_train_contract
 from trim.training.rl_opd_types import TRAINING_MODE_RL, TRAINING_MODE_RL_OPD
 
 
@@ -105,12 +106,8 @@ def _actor_wrap(backend: str) -> str:
     return "ddp" if str(backend).lower().replace("-", "_") == "torch_ddp_lora" else "fsdp2"
 
 
-def _unsupported_method(method: str) -> None:
-    if str(method) not in VERL_METHODS:
-        raise SystemExit(
-            f"--training-backend verl/fsdp2 currently supports {sorted(VERL_METHODS)}; "
-            f"got {method!r}. scape+rl / trim stay on hf_debug until T4."
-        )
+def _unsupported_method(method: str, opd_loss: str | None = None, backend: str | None = None) -> None:
+    assert_train_contract(method, opd_loss, backend or "verl")
 
 
 def _write_resolved_config(out: Path, payload: dict[str, Any]) -> None:
@@ -150,7 +147,11 @@ def run_verl_fsdp2_train(args: Any) -> dict[str, Any]:
             flush=True,
         )
     barrier()
-    _unsupported_method(str(getattr(args, "train_method", None) or getattr(args, "training_mode", "")))
+    _unsupported_method(
+        str(getattr(args, "train_method", None) or getattr(args, "training_mode", "")),
+        str(getattr(args, "opd_loss", None) or "sr_opd_ce"),
+        str(getattr(args, "training_backend", "verl") or "verl"),
+    )
 
     from trim.eval.model_tokenizer import load_model_encoding
     from trim.training.batched_env_rollout import rollout_queries_batched
@@ -181,7 +182,11 @@ def run_verl_fsdp2_train(args: Any) -> dict[str, Any]:
         method = "rl+opd"
     if method == TRAINING_MODE_RL:
         method = "rl"
-    _unsupported_method(method)
+    _unsupported_method(
+        method,
+        str(getattr(args, "opd_loss", None) or "sr_opd_ce"),
+        str(getattr(args, "training_backend", "verl") or "verl"),
+    )
 
     out = Path(args.out)
     occupy_err = None
@@ -217,7 +222,9 @@ def run_verl_fsdp2_train(args: Any) -> dict[str, Any]:
         harness=getattr(args, "harness", None),
         teacher_kind=str(getattr(args, "teacher_kind", "upstream") or "upstream"),
     )
-    collection_mode = collection_mode_for_cell(cell, lambda_opd)
+    collection_mode = collection_mode_for_cell(
+        cell, lambda_opd, str(getattr(args, "opd_loss", None) or "sr_opd_ce")
+    )
     loop = HybridLoopState(policy_version="v0")
     sampler = QuerySampler(
         train_rows,
@@ -396,6 +403,7 @@ def run_verl_fsdp2_train(args: Any) -> dict[str, Any]:
                 harness_mask=resolved_rollout_mask(args.component, harness=getattr(args, "harness", None)),
                 train_env=str(getattr(args, "train_env", "local_legacy") or "local_legacy"),
                 collection_mode=collection_mode,
+                opd_loss=str(getattr(args, "opd_loss", None) or "sr_opd_ce"),
             )
         finally:
             client.close()
@@ -417,7 +425,11 @@ def run_verl_fsdp2_train(args: Any) -> dict[str, Any]:
                     teacher_event_fn=teacher_fn,
                     encode_fn=enc.encode,
                     model_enc=enc,
-                    opd_states_per_trajectory=int(getattr(args, "opd_states_per_trajectory", 3) or 3),
+                    opd_states_per_trajectory=(
+                        int(args.opd_states_per_trajectory)
+                        if getattr(args, "opd_states_per_trajectory", None) is not None
+                        else 3
+                    ),
                     remove_constant_reward_groups=False,
                     include_format_errors=False,
                     seed=int(args.seed) + rollout_batch_id,

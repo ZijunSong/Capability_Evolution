@@ -203,3 +203,9 @@ def test_unsupported_verl_method_scape():
     assert raised is True
     _unsupported_method("rl")
     _unsupported_method("rl+opd")
+    try:
+        _unsupported_method("rl+opd", "sr_opd_projected_gap")
+        raised_gap = False
+    except SystemExit:
+        raised_gap = True
+    assert raised_gap is True

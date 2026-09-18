@@ -14,7 +14,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable, Sequence
 
-from trim.training.action_codec import parse_action
 from trim.training.action_encoding import (
     assert_action_visible,
     encode_supervised_action,
@@ -27,7 +26,6 @@ from trim.training.opd_dataset import (
     ProjectedTrainingStep,
     prompt_has_teacher_leak,
     render_student_prompt,
-    render_teacher_prompt,
 )
 from trim.training.rl_opd_types import (
     OPD_LOSS_PROJECTED_GAP,
@@ -83,7 +81,7 @@ def _supervised_mask(step: ProjectedTrainingStep, target_ids: Sequence[int]) -> 
 
 
 def _n_supervised_from_mask(mask: Sequence[bool]) -> int:
-    return max(1, sum(1 for bit in mask if bit))
+    return int(sum(1 for bit in mask if bit))
 
 
 def _step_snapshot(step: ProjectedTrainingStep) -> Any:
@@ -98,6 +96,55 @@ def _step_snapshot(step: ProjectedTrainingStep) -> Any:
         return EnvironmentSnapshot.from_dict(raw)
     except Exception:
         return None
+
+
+def recover_teacher_prompt_ids(
+    *,
+    teacher_ids: Sequence[int] | None,
+    metadata: dict[str, Any] | None,
+    snapshot: Any = None,
+    encode: EncodeFn,
+    model_enc: Any | None = None,
+) -> list[int]:
+    """Use collected teacher IDs or recoverable decision-time refs. No student copy."""
+    if teacher_ids:
+        return [int(x) for x in list(teacher_ids)]
+    meta = dict(metadata or {})
+    if meta.get("teacher_prompt_token_ids"):
+        return [int(x) for x in list(meta["teacher_prompt_token_ids"])]
+    prompt_full = str(meta.get("prompt_full") or "")
+    if prompt_full:
+        return list(encode(prompt_full))
+    snap = snapshot
+    if snap is None:
+        return []
+    if isinstance(snap, dict):
+        from trim.state.snapshot import EnvironmentSnapshot
+
+        try:
+            snap = EnvironmentSnapshot.from_dict(snap)
+        except Exception:
+            return []
+    from trim.training.opd_dataset import snapshot_query_text
+    from trim.training.opd_prompt_encoding import (
+        encode_teacher_rollout_style_prompt,
+        snapshot_teacher_wm_text,
+    )
+    from trim.training.opd_prompt_encoding import _snapshot_acts_and_wm
+
+    acts, _student_wm = _snapshot_acts_and_wm(snap)
+    teacher_wm = snapshot_teacher_wm_text(snap)
+    if not acts and not teacher_wm:
+        return []
+    if model_enc is None:
+        return []
+    ids, _ = encode_teacher_rollout_style_prompt(
+        model_enc,
+        snapshot_query_text(snap),
+        acts=acts,
+        wm_text=teacher_wm,
+    )
+    return list(ids)
 
 
 def build_tinker_opd_datums(
@@ -120,7 +167,7 @@ def build_tinker_opd_datums(
     if float(lambda_opd) <= 0.0 or not steps:
         return []
 
-    prepared: list[tuple[ProjectedTrainingStep, list[int], list[int], list[bool], float, int]] = []
+    prepared: list[tuple[ProjectedTrainingStep, list[int], list[int], list[bool], float, int, dict[str, Any]]] = []
     denom = 0.0
     for step in steps:
         if prompt_has_teacher_leak(step.prompt_reduced):
@@ -132,17 +179,21 @@ def build_tinker_opd_datums(
             encode=encode,
             allow_offline=allow_offline,
         )
-        target_ids, target_text = encode_supervised_action(
+        encoded = encode_supervised_action(
             target_action=step.target_action,
             target_text=step.target_text,
             encode=encode,
             model_enc=model_enc,
         )
+        target_ids = list(encoded.target_ids)
+        target_text = encoded.target_text
         if not target_ids:
             continue
         step.target_text = target_text
-        mask = _supervised_mask(step, target_ids)
+        mask = _supervised_mask(step, target_ids) if step.token_mask is not None else list(encoded.supervision_mask)
         n_tok = _n_supervised_from_mask(mask)
+        if n_tok <= 0:
+            continue
         weight = resolve_effective_weight(
             weight=step.weight,
             projection_confidence=step.projection_confidence,
@@ -156,28 +207,25 @@ def build_tinker_opd_datums(
             enc=model_enc,
             metadata=meta,
         )
-        if visible and step.target_action:
+        if visible is not None and step.target_action:
             assert_action_visible(step.target_action, visible)
-        prepared.append((step, prompt_ids, target_ids, mask, weight, n_tok))
+        prepared.append((step, prompt_ids, target_ids, mask, weight, n_tok, encoded.canonical_action))
         denom += weight * n_tok
     if denom <= 0 or not prepared:
         return []
 
     datums: list[TinkerOPDDatum] = []
-    for step, prompt_ids, target_ids, mask, weight, n_tok in prepared:
+    for step, prompt_ids, target_ids, mask, weight, n_tok, canon in prepared:
         meta = dict(step.metadata or {})
-        teacher_ids: list[int] = []
-        if meta.get("teacher_prompt_token_ids"):
-            teacher_ids = [int(x) for x in list(meta["teacher_prompt_token_ids"])]
-        else:
-            teacher_prompt = str(meta.get("prompt_full") or "")
-            teacher_ids = encode(teacher_prompt) if teacher_prompt else []
+        teacher_ids = recover_teacher_prompt_ids(
+            teacher_ids=meta.get("teacher_prompt_token_ids"),
+            metadata=meta,
+            snapshot=_step_snapshot(step),
+            encode=encode,
+            model_enc=model_enc,
+        )
         token_w = float(lambda_opd) * weight / denom
         target_weights = [token_w if bit else 0.0 for bit in mask]
-        try:
-            parsed = parse_action(step.target_text)
-        except Exception:
-            parsed = dict(step.target_action or {})
         meta.update(
             {
                 "projection_kind": step.projection_kind,
@@ -188,6 +236,7 @@ def build_tinker_opd_datums(
                 "prompt_hash": prompt_ids_hash(prompt_ids),
                 "supervised_mask": [1 if bit else 0 for bit in mask],
                 "lambda_opd": float(lambda_opd),
+                "termination_kind": "eos" if model_enc is not None else "none",
             }
         )
         datums.append(
@@ -199,7 +248,7 @@ def build_tinker_opd_datums(
                 policy_version=policy_version,
                 n_supervised_tokens=n_tok,
                 projection_confidence=weight,
-                target_action=parsed,
+                target_action=dict(canon or step.target_action or {}),
                 teacher_prompt_token_ids=teacher_ids,
                 opd_loss=str(opd_loss),
                 metadata=meta,
@@ -231,88 +280,92 @@ def build_projected_seed_datums(
     lam = float(lambda_opd)
     beta = float(gate_beta)
     datums: list[TinkerOPDDatum] = []
-    from trim.state.snapshot import EnvironmentSnapshot
-    from trim.training.opd_prompt_encoding import (
-        assert_supervised_action_matches,
-        encode_rollout_style_action,
-        encode_rollout_style_prompt,
-    )
+    n_skip_missing_teacher = 0
+    n_skip_missing_student = 0
+    n_skip_zero_mask = 0
 
     for step in steps:
         meta = dict(step.metadata or {})
         if prompt_has_teacher_leak(step.prompt_reduced):
             raise ValueError("teacher-only observation leaked into Student prefix")
         if meta.get("student_prompt_token_ids"):
-            prompt_ids = list(meta["student_prompt_token_ids"])
-        elif model_enc is not None and step.student_snapshot:
-            snap = EnvironmentSnapshot.from_dict(step.student_snapshot)
-            prompt_ids, _ = encode_rollout_style_prompt(
-                model_enc, snap, component_id=str(meta.get("component_id") or "")
-            )
+            prompt_ids = [int(x) for x in list(meta["student_prompt_token_ids"])]
         else:
-            prompt_ids = encode(step.prompt_reduced)
-        if model_enc is not None:
-            target_ids, target_text = encode_rollout_style_action(model_enc, step.target_action)
-        else:
-            target_text = step.target_text
-            target_ids = encode(target_text)
+            n_skip_missing_student += 1
+            continue
+        encoded = encode_supervised_action(
+            target_action=step.target_action,
+            target_text=step.target_text,
+            encode=encode,
+            model_enc=model_enc,
+        )
+        target_ids = list(encoded.target_ids)
         if not target_ids:
             continue
-        meta["projected_action_token_ids"] = list(target_ids)
-        if model_enc is not None:
-            assert_supervised_action_matches(
-                model_enc,
-                target_action=step.target_action,
-                target_token_ids=target_ids,
-            )
-        if meta.get("teacher_prompt_token_ids"):
-            teacher_ids = list(meta["teacher_prompt_token_ids"])
-        elif model_enc is not None and step.student_snapshot:
-            snap = EnvironmentSnapshot.from_dict(step.student_snapshot)
-            teacher_ids, _ = encode_rollout_style_prompt(
-                model_enc,
-                snap,
-                component_id=str(meta.get("component_id") or ""),
-            )
-        else:
-            teacher_prompt = str(meta.get("prompt_full") or "")
-            teacher_ids = encode(teacher_prompt) if teacher_prompt else []
+        teacher_ids = recover_teacher_prompt_ids(
+            teacher_ids=meta.get("teacher_prompt_token_ids"),
+            metadata=meta,
+            snapshot=_step_snapshot(step),
+            encode=encode,
+            model_enc=model_enc,
+        )
         if not teacher_ids:
+            n_skip_missing_teacher += 1
             continue
-        mask = list(step.token_mask) if step.token_mask is not None else [True] * len(target_ids)
+        mask = list(step.token_mask) if step.token_mask is not None else list(encoded.supervision_mask)
         if len(mask) != len(target_ids):
             raise ValueError("projected target/mask length mismatch")
-        n_tok = max(1, sum(1 for bit in mask if bit))
-        try:
-            parsed = parse_action(target_text)
-        except Exception:
-            parsed = dict(step.target_action or {})
+        n_tok = _n_supervised_from_mask(mask)
+        weight = resolve_effective_weight(
+            weight=step.weight,
+            projection_confidence=step.projection_confidence,
+            metadata=meta,
+        )
+        if weight == 0.0 or n_tok <= 0:
+            n_skip_zero_mask += 1
+            continue
+        visible = visible_doc_ids_for_decision(
+            snapshot=_step_snapshot(step),
+            prompt_ids=prompt_ids,
+            enc=model_enc,
+            metadata=meta,
+        )
+        if visible is not None and step.target_action:
+            assert_action_visible(step.target_action, visible)
+        meta.update(
+            {
+                "projection_kind": step.projection_kind,
+                "source_event_ids": list(step.source_event_ids),
+                "sampled_action": False,
+                "projector_used": True,
+                "lambda_opd": lam,
+                "gate_beta": beta,
+                "opd_weight_normalization": "seed_token_mean",
+                "effective_weight": weight,
+                "projected_action_token_ids": list(target_ids),
+                "supervised_mask": [1 if bit else 0 for bit in mask],
+                "n_skip_missing_teacher": n_skip_missing_teacher,
+            }
+        )
         datums.append(
             TinkerOPDDatum(
                 model_input=step.prompt_reduced,
                 prompt_token_ids=prompt_ids,
                 target_tokens=[0] * len(prompt_ids) + list(target_ids),
-                weights=[0.0] * len(prompt_ids) + [1.0 if bit else 0.0 for bit in mask],
+                weights=[0.0] * len(prompt_ids) + [float(weight) if bit else 0.0 for bit in mask],
                 policy_version=policy_version,
                 n_supervised_tokens=n_tok,
-                projection_confidence=float(
-                    step.projection_confidence if step.projection_confidence else step.weight or 1.0
-                ),
-                target_action=parsed,
+                projection_confidence=weight,
+                target_action=dict(encoded.canonical_action or step.target_action or {}),
                 teacher_prompt_token_ids=teacher_ids,
                 opd_loss=str(opd_loss),
-                metadata={
-                    "projection_kind": step.projection_kind,
-                    "source_event_ids": list(step.source_event_ids),
-                    "sampled_action": False,
-                    "projector_used": True,
-                    "lambda_opd": lam,
-                    "gate_beta": beta,
-                    "opd_weight_normalization": "seed_token_mean",
-                    **dict(step.metadata or {}),
-                },
+                metadata=meta,
             )
         )
+    if datums:
+        datums[0].metadata["n_skip_missing_teacher"] = n_skip_missing_teacher
+        datums[0].metadata["n_skip_missing_student"] = n_skip_missing_student
+        datums[0].metadata["n_skip_zero_mask"] = n_skip_zero_mask
     return datums
 
 
@@ -342,6 +395,7 @@ def build_sampled_opd_datums(
     component_id: str = "",
     gate_beta: float = SCAPE_RL_OPD_GATE_BETA,
     opd_loss: str = OPD_LOSS_SAMPLED_GAP,
+    model_enc: Any | None = None,
 ) -> list[TinkerOPDDatum]:
     """SEED OPD rows: CISPO sampled action tokens, DualView teacher prefix.
 
@@ -364,10 +418,13 @@ def build_sampled_opd_datums(
         if point.teacher_prompt_token_ids:
             teacher_ids = list(point.teacher_prompt_token_ids)
         else:
-            teacher_text = render_teacher_prompt(
-                point.pre_action_snapshot, component_id=component_id
+            teacher_ids = recover_teacher_prompt_ids(
+                teacher_ids=None,
+                metadata={},
+                snapshot=point.pre_action_snapshot,
+                encode=encode,
+                model_enc=model_enc,
             )
-            teacher_ids = encode(teacher_text) if teacher_text else []
         if not teacher_ids:
             continue
         n_tok = len(action_ids)
@@ -393,6 +450,7 @@ def build_sampled_opd_datums(
                     "lambda_opd": lam,
                     "gate_beta": beta,
                     "opd_weight_normalization": "seed_token_mean",
+                    "effective_weight": 1.0,
                 },
             )
         )

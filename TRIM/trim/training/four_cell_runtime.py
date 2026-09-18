@@ -112,6 +112,7 @@ from trim.training.rl_opd_types import (
 )
 from trim.training.parse_rollout_action import parse_generated_action
 from trim.training.teacher_isolation import COMPONENT_KIND, run_teacher_branch_isolated
+from trim.training.teacher_branch import component_implementation_table
 from trim.training.auto_populate_teacher import teacher_events_from_point as auto_populate_events_from_point
 from trim.training.sentence_compress_teacher import teacher_events_from_point
 from trim.training.token_budget_marker_teacher import teacher_events_from_point as token_budget_marker_events_from_point
@@ -254,9 +255,10 @@ def generic_teacher_events_from_wm(
     *,
     turn_id: int = 0,
 ) -> list[Any]:
-    """Fallback Teacher for taxonomy ids that do not have a dedicated side-branch."""
+    """Ablation-only heuristic Teacher. Not a capability-derived branch."""
     from trim.training.opd_events import model_action, obs_transform
     from trim.training.sentence_compress_teacher import documents_from_wm, score_doc
+    from trim.training.teacher_branch import SOURCE_SYNTHETIC, filter_unworthy_events, skip_teacher_events, tag_source
 
     q = str(wm.get("query") or "")
     docs = documents_from_wm(wm)
@@ -279,12 +281,24 @@ def generic_teacher_events_from_wm(
                 component_id=component_id,
             )
         )
-        return events
+        return filter_unworthy_events(
+            wm,
+            tag_source(events, SOURCE_SYNTHETIC),
+            component_id=component_id,
+            turn_id=turn_id,
+        )
     ranked = sorted(
         ((did, text) for did, text in docs if did not in curated),
         key=lambda it: (-score_doc(q, it[1]), it[0]),
     )
-    add_ids = [did for did, _ in ranked[:2]] or [docs[0][0]]
+    add_ids = [did for did, _ in ranked[:2]]
+    if not add_ids:
+        return skip_teacher_events(
+            component_id,
+            turn_id=turn_id,
+            reason="noop_curate",
+            teacher_kind="skip_untriggered",
+        )
     events.append(
         model_action(
             "curate",
@@ -293,7 +307,12 @@ def generic_teacher_events_from_wm(
             component_id=component_id,
         )
     )
-    return events
+    return filter_unworthy_events(
+        wm,
+        tag_source(events, SOURCE_SYNTHETIC),
+        component_id=component_id,
+        turn_id=turn_id,
+    )
 
 
 def _teacher_fn_for_one(component_id: str, *, teacher_kind: str = "upstream") -> TeacherFn:
@@ -328,8 +347,10 @@ def _teacher_fn_for_one(component_id: str, *, teacher_kind: str = "upstream") ->
                 visible_to_student=False,
                 metadata={
                     "teacher_kind": "skip_unregistered",
+                    "source_type": "skip_unregistered",
                     "component_kind": kind,
                     "not_a_continuous_teacher_rollout": True,
+                    "skip_reason": "no_upstream_side_branch",
                 },
             )
         ]
@@ -401,9 +422,10 @@ def cell_lambda(name: str, lambda_opd: float) -> float:
     return float(lambda_opd)
 
 
-def collection_mode_for_cell(name: str, lambda_opd: float) -> str:
+def collection_mode_for_cell(name: str, lambda_opd: float, opd_loss: str | None = None) -> str:
     from trim.training.rl_opd_types import COLLECTION_MODE_AUDIT_FULL, COLLECTION_MODE_RL, COLLECTION_MODE_RL_OPD
 
+    del opd_loss
     if name == "teacher":
         return COLLECTION_MODE_AUDIT_FULL
     if name in {"before", "rl"} or float(lambda_opd or 0.0) <= 0.0:
@@ -522,6 +544,24 @@ def build_manifest(args: argparse.Namespace, *, extra: dict[str, Any] | None = N
         opd_loss = str(getattr(args, "opd_loss", None) or OPD_LOSS_SAMPLED_GAP)
     elif mode == TRAINING_MODE_SCAPE_SEED:
         opd_loss = str(getattr(args, "opd_loss", None) or OPD_LOSS_PROJECTED_GAP)
+    from trim.eval.model_profiles import classify_profile_by_name
+
+    profile = classify_profile_by_name(str(getattr(args, "base_model", "") or ""))
+    tokenizer_family = profile.family if profile is not None else "unknown"
+    prompt_stack = profile.stack if profile is not None else "unknown"
+    harmony = bool(profile is not None and profile.is_harmony)
+    extra_payload = dict(extra or {})
+    requested_ids = component_ids_of(
+        args.component,
+        harness=getattr(args, "harness", None),
+    )
+    protocol_requested = mode in {
+        "four_cell",
+        TRAINING_MODE_RL_OPD,
+        TRAINING_MODE_SCAPE_RL,
+        TRAINING_MODE_SCAPE_SEED,
+    } and lam > 0
+    protocol_verified = bool(extra_payload.get("protocol_contract_verified"))
     return {
         "training_mode": mode,
         "component": args.component,
@@ -542,9 +582,15 @@ def build_manifest(args: argparse.Namespace, *, extra: dict[str, Any] | None = N
         "opd_state_source": "current_on_policy_rl_rollout",
         "joint_update_contract": "rl_fb+opd_fb+single_optim",
         "legacy_tool_token_kl_hook_used": False,
-        "protocol_complete_rl_opd": mode in {"four_cell", TRAINING_MODE_RL_OPD, TRAINING_MODE_SCAPE_RL, TRAINING_MODE_SCAPE_SEED} and lam > 0,
+        "protocol_requested_rl_opd": protocol_requested,
+        "protocol_contract_verified": protocol_verified,
+        "protocol_complete_rl_opd": bool(protocol_requested and protocol_verified),
         "protocol_name": PROTOCOL_COMPLETE_RL_OPD,
         "projection_schema_version": "scape_projection_v1",
+        "component_implementation_table": component_implementation_table(
+            requested_ids,
+            implemented=set(TEACHER_REGISTRY),
+        ),
         "group_size": args.group_size,
         "max_turns": args.max_turns,
         "train_steps": args.train_steps,
@@ -564,8 +610,10 @@ def build_manifest(args: argparse.Namespace, *, extra: dict[str, Any] | None = N
         "train_backend": "hf_debug",
         "gpu_schedule": str(getattr(args, "gpu_schedule", "scheme_a") or "scheme_a"),
         "on_policy_refresh": bool(getattr(args, "on_policy_refresh", True)),
-        "harmony_encoding": "o200k_harmony",
-        "stop_token_ids": [200012, 200002],
+        "tokenizer_family": tokenizer_family,
+        "prompt_stack": prompt_stack,
+        "harmony_encoding": "o200k_harmony" if harmony else None,
+        "stop_token_ids": [200012, 200002] if harmony else None,
         "tensor_parallel_size": getattr(args, "tensor_parallel_size", None),
         "seeds": list(getattr(args, "seeds", [args.seed])),
         "train_state_source": ("current_on_policy_rl_rollout" if args.component == "auto_populate_first_search" and not getattr(args, "train_states", None) else "train_states_5k_or_on_policy"),
@@ -810,10 +858,12 @@ def encode_aligned_teacher_prompt(
     frozen_st: Mapping[str, Any],
     frozen_acts: list[tuple[Any, Any]],
     component_id: str,
+    teacher_wm_text: str | None = None,
 ) -> tuple[list[int], str]:
     """Teacher prefix at the same pre-action decision as the student.
 
-    Flipping the mask to H_full does not replay hidden capability effects.
+    Flipping the mask to H_full does **not** replay hidden capability effects.
+    Prefer the saved teacher WM from the same branch that produced the target.
     Extra teacher evidence must come from an independent side branch.
     """
     from trim.training.opd_prompt_encoding import encode_teacher_rollout_style_prompt
@@ -821,7 +871,13 @@ def encode_aligned_teacher_prompt(
 
     teacher_st = freeze_train_state(frozen_st)
     teacher_st["harness_mask"] = teacher_mask_for(component_id)
-    if is_upstream_state(teacher_st):
+    saved = teacher_wm_text
+    if not saved:
+        meta = teacher_st.get("metadata") if isinstance(teacher_st.get("metadata"), Mapping) else {}
+        saved = (meta or {}).get("_teacher_wm_text") or teacher_st.get("_teacher_wm_text")
+    if saved:
+        wm = str(saved)
+    elif is_upstream_state(teacher_st):
         wm = wm_text_for_train_state(teacher_st)
     else:
         from trim.eval.local_search_env import wm_text as local_wm_text
@@ -1487,6 +1543,8 @@ async def train_cell(
         "n_opd_tokens": src.get("n_opd_tokens"),
         "rl_loss_proxy": src.get("rl_loss_proxy"),
         "opd_nll": src.get("opd_nll"),
+        "opd_weighted_ce": src.get("opd_weighted_ce"),
+        "opd_weighted_gap": src.get("opd_weighted_gap"),
         "update_type": src.get("update_type"),
     }
 
@@ -2336,7 +2394,12 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
             train_env=train_env,
             train_session=train_session,
             rollout_backend=rollout_backend,
-            collection_mode=collection_mode_for_cell(cell, cell_lambda(cell, getattr(args, "lambda_opd", 0.0) or 0.0)),
+            collection_mode=collection_mode_for_cell(
+                cell,
+                cell_lambda(cell, getattr(args, "lambda_opd", 0.0) or 0.0),
+                str(getattr(args, "opd_loss", None) or ""),
+            ),
+            opd_loss=str(getattr(args, "opd_loss", None) or ""),
         )
         all_rows = list(rows)
         work_rows = shard_for_rank(all_rows, rank=dist.rank, world_size=dist.world_size)

@@ -40,8 +40,12 @@ class FakeTrainingClient:
         self.grad = self.grad + g
         return {"loss": loss}
 
-    async def optim_step_async(self, adam_params):
+    async def optim_step_async(self, adam_params, skip=False):
         del adam_params
+        if skip:
+            self.calls.append(("opt_skip",))
+            self.grad = torch.zeros(self.dim)
+            return {"ok": 1.0, "skipped": True}
         self.calls.append(("opt",))
         self.W = self.W - self.lr * self.grad
         self.grad = torch.zeros(self.dim)
@@ -104,6 +108,9 @@ def test_scape_rl_substep_uses_sampled_gap_fb():
         ("opt",),
     ]
     assert metrics.n_opd_forward_backward == 1
+    assert metrics.opd_nll is None
+    assert metrics.opd_weighted_gap is not None
+    assert metrics.opd_weighted_ce is None
 
 
 def test_scape_rl_reverse_kl_alias_still_dispatches_sampled_gap():
@@ -279,3 +286,30 @@ def test_version_mismatch_before_any_fb():
     except PolicyVersionMismatch:
         pass
     assert client.calls == []
+
+
+def test_zero_supervision_skips_optimizer_and_keeps_gap_nll_null():
+    client = FakeTrainingClient()
+    zero = TinkerOPDDatum(
+        model_input="prefix",
+        prompt_token_ids=[0],
+        target_tokens=[0],
+        weights=[0.0],
+        policy_version="v1",
+        n_supervised_tokens=0,
+    )
+    metrics = _run(
+        training_client=client,
+        rl_datums=[{"n_tokens": 0}],
+        opd_datums=[zero],
+        rl_loss_fn="cispo",
+        rl_loss_fn_config={},
+        lambda_opd=0.1,
+        adam_params={},
+        policy_version="v1",
+        opd_loss="sr_opd_ce",
+    )
+    assert client.calls[-1] == ("opt_skip",)
+    assert metrics.n_optimizer_steps == 0
+    assert metrics.skipped_empty_supervision is True
+    assert metrics.opd_weighted_gap is None

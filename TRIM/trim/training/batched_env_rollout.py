@@ -19,11 +19,11 @@ import time
 from trim.eval.browsecomp_retrieval import RetrievalBackend
 from trim.eval.harness1_metrics import EpisodeTiming, episode_quality_metrics, timed_section, trace_fields
 from trim.training.rl_opd_types import (
-    COLLECTION_MODE_AUDIT_FULL,
-    COLLECTION_MODE_RL,
     COLLECTION_MODE_RL_OPD,
+    CollectionNeeds,
     HybridRolloutGroup,
     StudentDecisionPoint,
+    collection_needs,
 )
 from trim.training.vllm_hybrid import GenerateRequest, GenerateResult, cispo_row_from_generation
 
@@ -78,19 +78,37 @@ class LiveEpisode:
     reasoning_effort: str | None = None
     turn_events: list[dict[str, Any]] = field(default_factory=list)
     collection_mode: str = COLLECTION_MODE_RL_OPD
+    opd_loss: str = ""
     n_turns: int = 0
+    pending_prompt_acts: list[tuple[Any, Any]] = field(default_factory=list)
+    pending_wm_text: str = ""
 
 
-def _keep_snapshots(mode: str) -> bool:
-    return str(mode) in {COLLECTION_MODE_RL_OPD, COLLECTION_MODE_AUDIT_FULL}
+def _needs_for(ep_or_mode: Any, opd_loss: str | None = None) -> CollectionNeeds:
+    if isinstance(ep_or_mode, str):
+        mode = ep_or_mode
+        loss = opd_loss
+    else:
+        mode = str(getattr(ep_or_mode, "collection_mode", None) or COLLECTION_MODE_RL_OPD)
+        loss = opd_loss if opd_loss is not None else str(getattr(ep_or_mode, "opd_loss", "") or "")
+    return collection_needs(collection_mode=mode, opd_loss=loss)
 
 
-def _keep_teacher_encode(mode: str) -> bool:
-    return str(mode) == COLLECTION_MODE_AUDIT_FULL
+def _keep_snapshots(mode: str, opd_loss: str | None = None) -> bool:
+    return _needs_for(mode, opd_loss).need_student_snapshot
 
 
-def _keep_dual_view(mode: str) -> bool:
-    return str(mode) == COLLECTION_MODE_AUDIT_FULL
+def _keep_teacher_encode(mode: str, opd_loss: str | None = None) -> bool:
+    """Live teacher-token encoding. Gap modes save recoverable refs instead."""
+    return _needs_for(mode, opd_loss).need_debug_view
+
+
+def _keep_teacher_context(mode: str, opd_loss: str | None = None) -> bool:
+    return _needs_for(mode, opd_loss).need_teacher_context
+
+
+def _keep_dual_view(mode: str, opd_loss: str | None = None) -> bool:
+    return _needs_for(mode, opd_loss).need_debug_view
 
 
 def _build_prompt_ids(ep: LiveEpisode, enc) -> list[int]:
@@ -123,6 +141,8 @@ def _build_prompt_ids(ep: LiveEpisode, enc) -> list[int]:
             )
         if len(ids) > budget:
             ids = fit_prompt_ids_to_context(ids, max_model_len=max_model_len, max_new_tokens=max_new)
+        ep.pending_prompt_acts = list(acts)
+        ep.pending_wm_text = str(wm_text(ep.st) or "")
         return ids
     wm = wm_text_for_train_state(ep.st) if is_upstream_state(ep.st) else None
     if wm is None:
@@ -159,7 +179,22 @@ def _build_prompt_ids(ep: LiveEpisode, enc) -> list[int]:
         from trim.eval.harmony_runtime import fit_prompt_ids_to_context
 
         ids = fit_prompt_ids_to_context(ids, max_model_len=max_model_len, max_new_tokens=max_new)
+    ep.pending_prompt_acts = list(acts)
+    ep.pending_wm_text = str(wm or "")
     return ids
+
+
+def _teacher_wm_for_episode(ep: LiveEpisode) -> str:
+    from trim.training.four_cell_runtime import freeze_train_state, teacher_mask_for
+    from trim.training.upstream_train_env import is_upstream_state, wm_text_for_train_state
+
+    teacher_st = freeze_train_state(ep.st)
+    teacher_st["harness_mask"] = teacher_mask_for(ep.component_id)
+    if is_upstream_state(teacher_st):
+        return str(wm_text_for_train_state(teacher_st) or "")
+    from trim.eval.local_search_env import wm_text as local_wm_text
+
+    return str(local_wm_text(teacher_st) or "")
 
 
 def _apply_generation(
@@ -192,11 +227,12 @@ def _apply_generation(
     teacher_snapshot_hash = ""
     eval_only = bool(getattr(ep, "eval_only", False) or ep.policy_version == "eval")
     mode = str(getattr(ep, "collection_mode", None) or COLLECTION_MODE_RL_OPD)
+    loss = str(getattr(ep, "opd_loss", "") or "")
     if (
         enc is not None
         and not ep.teacher_mode
         and not eval_only
-        and _keep_teacher_encode(mode)
+        and _keep_teacher_encode(mode, loss)
     ):
         teacher_prompt_ids, _ = encode_aligned_teacher_prompt(
             enc,
@@ -294,7 +330,7 @@ def _apply_generation(
         action_ids = list(gen.token_ids)
         effective_prompt_ids = list(getattr(gen, "effective_prompt_ids", None) or ep.pending_pids)
         prompt_text = ""
-        if not eval_only and enc is not None and _keep_dual_view(mode):
+        if not eval_only and enc is not None and _keep_dual_view(mode, loss):
             try:
                 prompt_text = decode_ids(enc, effective_prompt_ids)
             except Exception:
@@ -303,7 +339,7 @@ def _apply_generation(
         ep.exec_oks.append(bool(_ok))
         truncated = str(getattr(gen, "finish_reason", "") or "") == "length"
         post = None
-        if (_keep_snapshots(mode) or ep.teacher_mode) and not eval_only:
+        if (_keep_snapshots(mode, loss) or ep.teacher_mode) and not eval_only:
             post = snap_from_state(qid, ep.st, ep.component_id, harness_mask=ep.harness_mask)
         if is_harness_g(mask=ep.harness_mask, component_ids=ep.component_id):
             last = list((ep.st.get("turn_events") or [])[-1:])
@@ -315,10 +351,19 @@ def _apply_generation(
                 last[0]["n_tokens"] = len(action_ids)
     turn_id = int(ep.n_turns)
     ep.n_turns += 1
-    if (_keep_snapshots(mode) or ep.teacher_mode) and ep.pending_pre is not None and not eval_only:
-        from trim.training.action_encoding import visible_doc_ids_from_snapshot
+    if (_keep_snapshots(mode, loss) or ep.teacher_mode) and ep.pending_pre is not None and not eval_only:
+        from trim.training.action_encoding import (
+            prompt_visible_doc_ids_from_prompt,
+            visible_doc_ids_from_snapshot,
+        )
 
-        visible = visible_doc_ids_from_snapshot(ep.pending_pre)
+        accessible = visible_doc_ids_from_snapshot(ep.pending_pre)
+        prompt_visible = prompt_visible_doc_ids_from_prompt(
+            prompt_ids=effective_prompt_ids,
+            accessible_ids=accessible,
+            enc=enc,
+        )
+        recorded_visible = list(prompt_visible) if prompt_visible is not None else []
         ep.points.append(
             StudentDecisionPoint(
                 episode_id=f"{qid}_r{ep.rollout_idx}",
@@ -338,7 +383,9 @@ def _apply_generation(
                 executed_ok=bool(_ok),
                 student_prompt_token_ids=list(effective_prompt_ids),
                 teacher_prompt_token_ids=list(teacher_prompt_ids),
-                visible_doc_ids=visible,
+                visible_doc_ids=recorded_visible,
+                accessible_doc_ids=list(accessible),
+                prompt_visible_doc_ids=prompt_visible,
                 teacher_snapshot_hash=teacher_snapshot_hash,
                 teacher_decision_turn=turn_id,
                 history_end_turn=len(frozen_acts),
@@ -376,6 +423,7 @@ def _prepare_chunk_episodes(
     doc_store_for_row,
     teacher_mode: bool = False,
     collection_mode: str = COLLECTION_MODE_RL_OPD,
+    opd_loss: str = "",
 ) -> list[LiveEpisode]:
     workers = max(1, int(doc_store_workers or 1))
     if workers == 1 or len(chunk) <= 1:
@@ -401,6 +449,7 @@ def _prepare_chunk_episodes(
                     teacher_mode=teacher_mode,
                     eval_only=str(policy_version) == "eval",
                     collection_mode=str(collection_mode or COLLECTION_MODE_RL_OPD),
+                    opd_loss=str(opd_loss or ""),
                 )
             )
     return episodes
@@ -434,12 +483,24 @@ def _run_episode_turns(
             with timed_section(ep.timing, "harness"):
                 pids = _build_prompt_ids(ep, enc)
                 mode = str(getattr(ep, "collection_mode", None) or COLLECTION_MODE_RL_OPD)
-                if (_keep_snapshots(mode) or ep.teacher_mode) and not ep.eval_only:
+                loss = str(getattr(ep, "opd_loss", "") or "")
+                if (_keep_snapshots(mode, loss) or ep.teacher_mode) and not ep.eval_only:
                     pre = snap_from_state(str(ep.row["query_id"]), ep.st, component_id, harness_mask=ep.harness_mask)
+                    teacher_wm = None
+                    if _keep_teacher_context(mode, loss) or _keep_teacher_encode(mode, loss):
+                        teacher_wm = _teacher_wm_for_episode(ep)
+                    from trim.training.opd_prompt_encoding import attach_prompt_context
+
+                    attach_prompt_context(
+                        pre,
+                        acts=list(getattr(ep, "pending_prompt_acts", None) or []),
+                        wm_text=str(getattr(ep, "pending_wm_text", "") or ""),
+                        teacher_wm_text=teacher_wm,
+                    )
                     ep.pending_pre = pre
                 else:
                     ep.pending_pre = None
-                if _keep_dual_view(mode) and ep.pending_pre is not None:
+                if _keep_dual_view(mode, loss) and ep.pending_pre is not None:
                     from trim.training.opd_dataset import render_student_prompt
 
                     ep.pending_prefix = render_student_prompt(ep.pending_pre, component_id=component_id)
@@ -645,6 +706,7 @@ def rollout_queries_batched(
     reasoning_effort: str | None = None,
     graph_index: Any | None = None,
     collection_mode: str = COLLECTION_MODE_RL_OPD,
+    opd_loss: str = "",
 ) -> list[HybridRolloutGroup]:
     """Batch across queries and group members; step the env between turns.
 
@@ -699,6 +761,7 @@ def rollout_queries_batched(
             doc_store_for_row=doc_store_for_row,
             teacher_mode=teacher_mode,
             collection_mode=collection_mode,
+            opd_loss=opd_loss,
         )
         return episodes, time.perf_counter() - t0
 

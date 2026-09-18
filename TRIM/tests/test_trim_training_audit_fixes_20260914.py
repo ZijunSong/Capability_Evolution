@@ -164,7 +164,10 @@ def test_independent_component_projection_does_not_let_auto_steal():
         curated_ids=["d1"],
         accessible_doc_ids=["d1", "d2"],
         pool={"d1": {"id": "d1", "text": "Alice lectured at a university. " * 20, "score": 1.0}},
-        documents=[{"id": "d1", "text": "Alice lectured at a university. " * 20}],
+        documents=[
+            {"id": "d1", "text": "Alice lectured at a university. " * 20},
+            {"id": "d2", "text": "The author lectured from 2018 until his death. " * 16},
+        ],
     )
     point = _point(snap, turn_id=5)
 
