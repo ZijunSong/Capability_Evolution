@@ -5,12 +5,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
+import hashlib
 import json
 import os
 import queue
 import shutil
 import sys
 import threading
+import time
 
 from trim.eval.offline_credentials import ensure_local_offline_credentials
 from trim.eval.official_query_pool import default_bcp_root
@@ -120,6 +122,57 @@ def lucene_stored_text(raw: Any) -> str:
     return text
 
 
+def index_fingerprint(index_dir: Path) -> str:
+    path = Path(index_dir)
+    try:
+        resolved = path.resolve()
+        st = resolved.stat()
+        payload = f"{resolved}|{int(st.st_mtime)}|{int(st.st_size)}"
+    except OSError:
+        payload = str(path)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+class _ExactCache:
+    """Process-local exact cache with single-flight for identical keys."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._values: dict[Any, Any] = {}
+        self._inflight: dict[Any, threading.Event] = {}
+        self.hits = 0
+        self.misses = 0
+
+    def get_or_compute(self, key: Any, fn: Callable[[], Any]) -> Any:
+        with self._lock:
+            if key in self._values:
+                self.hits += 1
+                return self._values[key]
+            ev = self._inflight.get(key)
+            mine = False
+            if ev is None:
+                ev = threading.Event()
+                self._inflight[key] = ev
+                mine = True
+                self.misses += 1
+        if not mine:
+            ev.wait(timeout=120.0)
+            with self._lock:
+                if key in self._values:
+                    self.hits += 1
+                    return self._values[key]
+            raise TimeoutError(f"single-flight wait failed for {key!r}")
+        try:
+            value = fn()
+            with self._lock:
+                self._values[key] = value
+            return value
+        finally:
+            ev.set()
+            with self._lock:
+                self._inflight.pop(key, None)
+
+
 class PyseriniBackend(RetrievalBackend):
     name = "pyserini_lucene"
 
@@ -128,6 +181,24 @@ class PyseriniBackend(RetrievalBackend):
         # lucene/__init__ imports encode._openai, which constructs openai.OpenAI().
         ensure_local_offline_credentials()
         index = str(index_dir)
+        self.index_dir = Path(index_dir)
+        self.index_fp = index_fingerprint(self.index_dir)
+        self.bm25_k1: float | None = None
+        self.bm25_b: float | None = None
+        self.analyzer = "default"
+        self.fields = "default"
+        self.stats = {
+            "cache_hit": 0,
+            "cache_miss": 0,
+            "doc_cache_hit": 0,
+            "doc_cache_miss": 0,
+            "queue_wait_s": 0.0,
+            "lucene_search_s": 0.0,
+            "doc_fetch_s": 0.0,
+            "raw_parse_s": 0.0,
+        }
+        self._search_cache = _ExactCache()
+        self._doc_cache = _ExactCache()
         self._jni = _PyseriniThread.shared()
 
         def _construct():
@@ -138,6 +209,18 @@ class PyseriniBackend(RetrievalBackend):
             return LuceneSearcher(index)
 
         self._searcher = self._jni.call(_construct, timeout=300.0)
+        self._has_batch_search = callable(getattr(self._searcher, "batch_search", None))
+
+    def _search_key(self, query: str, k: int) -> tuple[Any, ...]:
+        return (
+            self.index_fp,
+            str(query),
+            int(k),
+            self.bm25_k1,
+            self.bm25_b,
+            self.analyzer,
+            self.fields,
+        )
 
     def num_docs(self) -> int:
         def _n() -> int:
@@ -155,43 +238,78 @@ class PyseriniBackend(RetrievalBackend):
             setter(float(k1), float(b))
 
         self._jni.call(_set)
+        self.bm25_k1 = float(k1)
+        self.bm25_b = float(b)
+
+    def _doc_from_searcher(self, docid: str, fallback: str | None = "") -> str | None:
+        t0 = time.perf_counter()
+        try:
+            doc = self._searcher.doc(str(docid))
+        except Exception:
+            doc = None
+        if doc is None:
+            if fallback is None:
+                self.stats["doc_fetch_s"] += time.perf_counter() - t0
+                return None
+            raw = fallback
+        else:
+            raw = doc.raw() or fallback or ""
+        self.stats["doc_fetch_s"] += time.perf_counter() - t0
+        t1 = time.perf_counter()
+        text = lucene_stored_text(raw)
+        self.stats["raw_parse_s"] += time.perf_counter() - t1
+        return text
+
+    def _cached_doc(self, docid: str, fallback: str | None = "") -> str | None:
+        key = (self.index_fp, str(docid))
+        before = self._doc_cache.hits
+        text = self._doc_cache.get_or_compute(key, lambda: self._doc_from_searcher(docid, fallback))
+        if self._doc_cache.hits > before:
+            self.stats["doc_cache_hit"] += 1
+        else:
+            self.stats["doc_cache_miss"] += 1
+        return text
 
     def search(self, query: str, k: int = 5) -> list[SearchHit]:
         q = str(query)
         kk = int(k)
+        key = self._search_key(q, kk)
 
         def _search() -> list[SearchHit]:
-            hits: list[SearchHit] = []
-            for hit in self._searcher.search(q, kk):
-                raw = ""
-                try:
-                    raw = self._searcher.doc(hit.docid).raw()
-                except Exception:
-                    raw = getattr(hit, "raw", "") or ""
-                hits.append(
-                    SearchHit(
-                        str(hit.docid),
-                        lucene_stored_text(raw),
-                        float(getattr(hit, "score", 0.0) or 0.0),
-                    )
-                )
-            return hits
+            t0 = time.perf_counter()
 
-        return list(self._jni.call(_search, timeout=120.0) or [])
+            def _jni() -> list[SearchHit]:
+                t_search = time.perf_counter()
+                raw_hits = list(self._searcher.search(q, kk))
+                self.stats["lucene_search_s"] += time.perf_counter() - t_search
+                hits: list[SearchHit] = []
+                for hit in raw_hits:
+                    fallback = getattr(hit, "raw", "") or ""
+                    text = self._cached_doc(str(hit.docid), fallback=str(fallback))
+                    hits.append(
+                        SearchHit(
+                            str(hit.docid),
+                            text,
+                            float(getattr(hit, "score", 0.0) or 0.0),
+                        )
+                    )
+                return hits
+
+            result = list(self._jni.call(_jni, timeout=120.0) or [])
+            self.stats["queue_wait_s"] += time.perf_counter() - t0
+            return result
+
+        before = self._search_cache.hits
+        hits = list(self._search_cache.get_or_compute(key, _search))
+        if self._search_cache.hits > before:
+            self.stats["cache_hit"] += 1
+        else:
+            self.stats["cache_miss"] += 1
+        return [SearchHit(h.docid, h.text, h.score) for h in hits]
 
     def get_doc(self, docid: str) -> str | None:
         did = str(docid)
-
-        def _get() -> str | None:
-            try:
-                doc = self._searcher.doc(did)
-            except Exception:
-                return None
-            if doc is None:
-                return None
-            return lucene_stored_text(doc.raw() or "")
-
-        return self._jni.call(_get, timeout=60.0)
+        return self._jni.call(lambda: self._cached_doc(did, fallback=None), timeout=60.0)
 
 
 class LocalJsonlBackend(RetrievalBackend):

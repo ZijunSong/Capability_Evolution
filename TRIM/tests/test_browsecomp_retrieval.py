@@ -7,8 +7,10 @@ import pytest
 from trim.eval.browsecomp_retrieval import (
     RetrievalBackend,
     SearchHit,
+    _ExactCache,
     _PyseriniThread,
     assert_retrieval_ready,
+    index_fingerprint,
 )
 
 
@@ -104,3 +106,41 @@ def test_open_retrieval_from_short_lived_thread_still_hits():
     hits = holder["searcher"].search("history", 5)
     assert hits
     assert hits[0].docid
+
+
+def test_exact_cache_single_flight_and_hit():
+    box = _ExactCache()
+    calls = {"n": 0}
+    barrier = threading.Event()
+    entered = threading.Event()
+
+    def compute() -> str:
+        calls["n"] += 1
+        entered.set()
+        barrier.wait(timeout=2.0)
+        return "hit"
+
+    def worker() -> None:
+        box.get_or_compute("q", compute)
+
+    t1 = threading.Thread(target=worker)
+    t2 = threading.Thread(target=lambda: (entered.wait(timeout=2.0), box.get_or_compute("q", compute)))
+    t1.start()
+    t2.start()
+    entered.wait(timeout=2.0)
+    barrier.set()
+    t1.join(timeout=2.0)
+    t2.join(timeout=2.0)
+    assert calls["n"] == 1
+    assert box.get_or_compute("q", compute) == "hit"
+    assert box.hits >= 1
+
+
+def test_index_fingerprint_stable(tmp_path):
+    d = tmp_path / "idx"
+    d.mkdir()
+    (d / "segments").write_text("x", encoding="utf-8")
+    a = index_fingerprint(d)
+    b = index_fingerprint(d)
+    assert a == b
+    assert len(a) == 16

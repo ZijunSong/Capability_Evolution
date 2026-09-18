@@ -507,7 +507,9 @@ class VLLMGenerateClient:
             path = self.session_dir / name
             if path.exists():
                 path.unlink()
-        env = os.environ.copy()
+        from trim.training.dist_runtime import isolate_inference_child_env
+
+        env = isolate_inference_child_env(os.environ)
         env.update(self.extra_env)
         env.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
         trim_root = str(Path(__file__).resolve().parents[2])

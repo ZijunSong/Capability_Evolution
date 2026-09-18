@@ -7,9 +7,14 @@ import pytest
 
 from trim.cli.launch import parse_train_args
 from trim.training.dist_runtime import (
+    TRIM_CUDA_PARENT_VISIBLE_ENV,
+    TRIM_CUDA_PHYSICAL_ENV,
+    TRIM_CUDA_PINNED_ENV,
+    TRIM_TRAIN_WORKER_ENV,
     DistLaunchConfig,
     format_launch_help,
     gather_sharded_objects,
+    isolate_inference_child_env,
     interleave_round_robin,
     needs_torchrun,
     parse_dist_argv,
@@ -147,6 +152,7 @@ def test_parse_host_list():
 def test_pin_local_cuda_device_single_proc(monkeypatch):
     monkeypatch.delenv("LOCAL_RANK", raising=False)
     monkeypatch.delenv("LOCAL_WORLD_SIZE", raising=False)
+    monkeypatch.delenv(TRIM_CUDA_PINNED_ENV, raising=False)
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1,2,3,4,5,6,7")
     payload = pin_local_cuda_device()
     assert payload["pinned"] is False
@@ -157,9 +163,104 @@ def test_pin_local_cuda_device_nproc8(monkeypatch):
     monkeypatch.setenv("LOCAL_RANK", "3")
     monkeypatch.setenv("LOCAL_WORLD_SIZE", "8")
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1,2,3,4,5,6,7")
+    monkeypatch.delenv(TRIM_CUDA_PINNED_ENV, raising=False)
+    monkeypatch.delenv(TRIM_CUDA_PARENT_VISIBLE_ENV, raising=False)
+    monkeypatch.delenv(TRIM_CUDA_PHYSICAL_ENV, raising=False)
     payload = pin_local_cuda_device()
     assert payload["pinned"] is True
     assert os.environ["CUDA_VISIBLE_DEVICES"] == "3"
+    again = pin_local_cuda_device()
+    assert again["pinned"] is True
+    assert os.environ["CUDA_VISIBLE_DEVICES"] == "3"
+    assert again["physical_id"] == "3"
+
+
+def test_pin_local_cuda_device_repeat_rank1_does_not_index_error(monkeypatch):
+    monkeypatch.setenv("LOCAL_RANK", "1")
+    monkeypatch.setenv("LOCAL_WORLD_SIZE", "8")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1,2,3,4,5,6,7")
+    monkeypatch.delenv(TRIM_CUDA_PINNED_ENV, raising=False)
+    first = pin_local_cuda_device()
+    assert first["cuda_visible_devices"] == "1"
+    second = pin_local_cuda_device()
+    assert second["cuda_visible_devices"] == "1"
+
+
+def test_pin_rejects_bare_single_visible_device(monkeypatch):
+    monkeypatch.setenv("LOCAL_RANK", "1")
+    monkeypatch.setenv("LOCAL_WORLD_SIZE", "8")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
+    monkeypatch.delenv(TRIM_CUDA_PINNED_ENV, raising=False)
+    with pytest.raises(RuntimeError, match="single-element"):
+        pin_local_cuda_device()
+
+
+def test_leftover_rank_world_size_does_not_count_as_worker(monkeypatch):
+    monkeypatch.setenv("RANK", "0")
+    monkeypatch.setenv("WORLD_SIZE", "1")
+    monkeypatch.delenv("LOCAL_RANK", raising=False)
+    monkeypatch.delenv("LOCAL_WORLD_SIZE", raising=False)
+    monkeypatch.delenv("TORCHELASTIC_RUN_ID", raising=False)
+    monkeypatch.delenv(TRIM_TRAIN_WORKER_ENV, raising=False)
+    monkeypatch.delenv("PET_NPROC_PER_NODE", raising=False)
+    assert under_torchrun() is False
+    cfg, _rest = parse_dist_argv(["--nproc-per-node", "8", "--training-backend", "verl"])
+    assert cfg.already_worker is False
+    assert cfg.expected_world_size == 8
+    assert needs_torchrun(cfg) is True
+
+
+def test_cloudml_pytorchjob_injection_does_not_skip_torchrun(monkeypatch):
+    """CloudML init-pytorch injects RANK/WORLD_SIZE=1 and PET_NPROC_PER_NODE=auto."""
+    monkeypatch.setenv("RANK", "0")
+    monkeypatch.setenv("WORLD_SIZE", "1")
+    monkeypatch.setenv("LOCAL_RANK", "0")
+    monkeypatch.setenv("LOCAL_WORLD_SIZE", "1")
+    monkeypatch.setenv("PET_NPROC_PER_NODE", "auto")
+    monkeypatch.setenv("TORCHELASTIC_RUN_ID", "cloudml-injected")
+    monkeypatch.delenv(TRIM_TRAIN_WORKER_ENV, raising=False)
+    assert under_torchrun() is False
+    cfg, _rest = parse_dist_argv(["--nproc-per-node", "8", "--training-backend", "verl"])
+    assert cfg.nproc_per_node == 8
+    assert cfg.already_worker is False
+    assert needs_torchrun(cfg) is True
+
+
+def test_plan_a_world_size_gt_1_or_real_pet_nproc_is_worker(monkeypatch):
+    monkeypatch.delenv(TRIM_TRAIN_WORKER_ENV, raising=False)
+    monkeypatch.setenv("RANK", "0")
+    monkeypatch.setenv("WORLD_SIZE", "8")
+    monkeypatch.setenv("PET_NPROC_PER_NODE", "auto")
+    assert under_torchrun() is True
+    monkeypatch.setenv("WORLD_SIZE", "1")
+    monkeypatch.setenv("PET_NPROC_PER_NODE", "8")
+    assert under_torchrun() is True
+
+
+def test_complete_torchrun_env_is_worker(monkeypatch):
+    monkeypatch.setenv("RANK", "0")
+    monkeypatch.setenv("WORLD_SIZE", "8")
+    monkeypatch.setenv("LOCAL_RANK", "0")
+    monkeypatch.setenv("LOCAL_WORLD_SIZE", "8")
+    monkeypatch.setenv("TORCHELASTIC_RUN_ID", "elastic-test")
+    monkeypatch.delenv(TRIM_TRAIN_WORKER_ENV, raising=False)
+    monkeypatch.delenv("PET_NPROC_PER_NODE", raising=False)
+    assert under_torchrun() is True
+
+
+def test_isolate_inference_child_env_drops_rank_keeps_cuda(monkeypatch):
+    monkeypatch.setenv("RANK", "3")
+    monkeypatch.setenv("WORLD_SIZE", "8")
+    monkeypatch.setenv("LOCAL_RANK", "3")
+    monkeypatch.setenv("LOCAL_WORLD_SIZE", "8")
+    monkeypatch.setenv("TORCHELASTIC_RUN_ID", "elastic-test")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "3")
+    monkeypatch.setenv(TRIM_TRAIN_WORKER_ENV, "1")
+    child = isolate_inference_child_env()
+    assert child["CUDA_VISIBLE_DEVICES"] == "3"
+    assert "RANK" not in child
+    assert "WORLD_SIZE" not in child
+    assert TRIM_TRAIN_WORKER_ENV not in child
 
 
 def test_visible_cuda_count_and_backend_argv(monkeypatch):

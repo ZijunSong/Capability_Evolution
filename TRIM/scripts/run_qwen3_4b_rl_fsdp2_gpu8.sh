@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Single-node 8-GPU TRIM RL: per-rank vLLM TP=1 rollout + FSDP2 CISPO.
+# Single-node 8-GPU TRIM RL: per-rank vLLM TP=1 rollout + DDP LoRA CISPO.
 #
-# This is NOT Scheme A (device_map=auto). run_train.py sees
-# --training-backend verl and torchruns nproc=8. Each rank pins one GPU,
-# rolls out, closes vLLM, then runs one FSDP2 optimizer.step.
+# This is NOT Scheme A (device_map=auto) and NOT native verl.
+# Default --training-backend torch_ddp_lora torchruns nproc=8. Each rank
+# pins one GPU, rolls out, closes vLLM, then one DDP optimizer.step.
+# Pass TRAINING_BACKEND=verl to use the repaired FSDP2 wrap instead.
 #
 # CUDA_VISIBLE_DEVICES must list eight ids (0,1,2,3,4,5,6,7). Do not pass
 # 0-8; that is nine cards. Do not put a comment after a line-continuation
@@ -36,7 +37,7 @@ SCAPE="${TRIM_ROOT}/../SCAPE-EasyOPD"
 
 PYTHONPATH="${PYTHONPATH:-}:${TRIM_ROOT}:${SCAPE}" \
 "${PY}" scripts/run_train.py \
-  --training-backend verl \
+  --training-backend "${TRAINING_BACKEND:-torch_ddp_lora}" \
   --nproc-per-node 8 \
   --harness Harness-1 \
   --benchmark bcplus_full \

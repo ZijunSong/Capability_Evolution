@@ -604,13 +604,21 @@ def add_train_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     parser.add_argument(
         "--training-backend",
         dest="training_backend",
-        choices=("hf_debug", "verl", "fsdp2"),
+        choices=("hf_debug", "verl", "fsdp2", "verl_fsdp2", "torch_ddp_lora"),
         default="hf_debug",
         help=(
             "hf_debug = single-process vLLM then HF device_map=auto. "
-            "verl/fsdp2 = torchrun 8-rank FSDP2 CISPO with per-rank vLLM TP=1. "
-            "Single-node 8 GPU: pass --training-backend verl and the launcher will torchrun."
+            "torch_ddp_lora = 8-rank PyTorch DDP LoRA CISPO with per-rank vLLM TP=1. "
+            "verl/fsdp2 = same loop with FSDP2 wrap (not native verl engine). "
+            "Single-node 8 GPU: the launcher will torchrun."
         ),
+    )
+    parser.add_argument(
+        "--expected-world-size",
+        dest="expected_world_size",
+        type=int,
+        default=None,
+        help="Requested torch.distributed world size. Dist backends abort on mismatch.",
     )
     parser.add_argument(
         "--already-worker",

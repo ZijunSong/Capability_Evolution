@@ -511,6 +511,18 @@ def format_aware_char_mask(text: str) -> list[bool]:
     return mask
 
 
+DEFAULT_PROMPT_HISTORY_KEEP = 12
+
+
+def prompt_history_keep(enc: Any = None, *, harness_mask: dict[str, bool] | None = None) -> int:
+    """Window actually consumed by the renderer. Do not hardcode per-model without reading it."""
+    del harness_mask
+    raw = getattr(enc, "prompt_history_keep", None)
+    if raw not in {None, ""}:
+        return max(1, int(raw))
+    return DEFAULT_PROMPT_HISTORY_KEEP
+
+
 def recent_actions_obs(actions_obs: list[tuple[Any, Any]], *, keep: int = 12) -> list[tuple[Any, Any]]:
     """Keep the latest tool-call / observation pairs so prompts stay in context."""
     if keep <= 0 or len(actions_obs) <= keep:
