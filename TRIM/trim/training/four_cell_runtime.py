@@ -111,6 +111,7 @@ from trim.training.rl_opd_types import (
     uses_sampled_opd,
 )
 from trim.training.parse_rollout_action import parse_generated_action
+from trim.training.opd_train_contract import opd_loss_from_args
 from trim.training.teacher_isolation import COMPONENT_KIND, run_teacher_branch_isolated
 from trim.training.teacher_branch import component_implementation_table
 from trim.training.auto_populate_teacher import teacher_events_from_point as auto_populate_events_from_point
@@ -539,11 +540,7 @@ def _resolved_vllm_config(args: argparse.Namespace, *, tp: int) -> dict[str, Any
 def build_manifest(args: argparse.Namespace, *, extra: dict[str, Any] | None = None) -> dict[str, Any]:
     mode = getattr(args, "training_mode", "four_cell")
     lam = 0.0 if mode == TRAINING_MODE_RL else float(args.lambda_opd)
-    opd_loss = str(getattr(args, "opd_loss", None) or "sr_opd_ce")
-    if mode == TRAINING_MODE_SCAPE_RL:
-        opd_loss = str(getattr(args, "opd_loss", None) or OPD_LOSS_SAMPLED_GAP)
-    elif mode == TRAINING_MODE_SCAPE_SEED:
-        opd_loss = str(getattr(args, "opd_loss", None) or OPD_LOSS_PROJECTED_GAP)
+    opd_loss = opd_loss_from_args(args, method=mode)
     from trim.eval.model_profiles import classify_profile_by_name
 
     profile = classify_profile_by_name(str(getattr(args, "base_model", "") or ""))
@@ -2397,9 +2394,9 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
             collection_mode=collection_mode_for_cell(
                 cell,
                 cell_lambda(cell, getattr(args, "lambda_opd", 0.0) or 0.0),
-                str(getattr(args, "opd_loss", None) or ""),
+                opd_loss_from_args(args),
             ),
-            opd_loss=str(getattr(args, "opd_loss", None) or ""),
+            opd_loss=opd_loss_from_args(args),
         )
         all_rows = list(rows)
         work_rows = shard_for_rank(all_rows, rank=dist.rank, world_size=dist.world_size)
@@ -2675,7 +2672,7 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
                             opd_states_per_trajectory=args.opd_states_per_trajectory,
                             component_id=args.component,
                             teacher_fn=teacher_fn,
-                            opd_loss=str(getattr(args, "opd_loss", None) or "sr_opd_ce"),
+                            opd_loss=opd_loss_from_args(args),
                             opd_gate_beta=float(
                                 getattr(args, "opd_gate_beta", SCAPE_RL_OPD_GATE_BETA)
                                 or SCAPE_RL_OPD_GATE_BETA
@@ -2843,7 +2840,7 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
                             opd_states_per_trajectory=args.opd_states_per_trajectory,
                             component_id=args.component,
                             teacher_fn=teacher_fn,
-                            opd_loss=str(getattr(args, "opd_loss", None) or "sr_opd_ce"),
+                            opd_loss=opd_loss_from_args(args),
                             opd_gate_beta=float(
                                 getattr(args, "opd_gate_beta", SCAPE_RL_OPD_GATE_BETA)
                                 or SCAPE_RL_OPD_GATE_BETA
@@ -3207,7 +3204,7 @@ def run_seeded_four_cell(args: argparse.Namespace) -> dict[str, Any]:
         per_seed[str(seed)] = run_four_cell(child)
     payload = {
         "component": args.component,
-        "opd_loss": str(getattr(args, "opd_loss", None) or "sr_opd_ce"),
+        "opd_loss": opd_loss_from_args(args),
         "rl_loss_fn": "cispo",
         "seeds": seeds,
         "score_split": SCORE_SPLIT_830 if uses_bcplus_830_eval(args) else SCORE_SPLIT_166,

@@ -57,10 +57,11 @@ def test_gap_needs_teacher_context_ce_does_not():
 
 def test_gap_missing_teacher_ids_are_dropped_not_rebuilt():
     step = _step(target_text="aa", metadata={"student_prompt_token_ids": [9, 8]})
-    datums = build_projected_seed_datums(
+    datums, stats = build_projected_seed_datums(
         [step], lambda_opd=0.01, encode_fn=lambda t: [1] * len(t), policy_version="v1"
     )
     assert datums == []
+    assert stats["n_skip_missing_teacher"] == 1
 
 
 def test_gap_does_not_copy_student_snapshot_as_teacher():
@@ -91,6 +92,15 @@ def test_gap_recovers_teacher_from_explicit_prompt_full():
         snapshot=None,
         encode=lambda t: [7] * len(t),
         model_enc=None,
+    )
+    assert ids == []
+    ids = recover_teacher_prompt_ids(
+        teacher_ids=None,
+        metadata={"prompt_full": "FULL"},
+        snapshot=None,
+        encode=lambda t: [7] * len(t),
+        model_enc=None,
+        allow_offline=True,
     )
     assert ids == [7, 7, 7, 7]
 
@@ -150,13 +160,14 @@ def test_projected_gap_uses_effective_weight_and_skips_zero():
     from trim.training.tinker_opd_datum import build_projected_seed_datums, supervised_weight_sum
 
     steps = [
-        _step(target_text="aa", weight=1.0, metadata={"student_prompt_token_ids": [1], "prompt_full": "T"}),
-        _step(target_text="aa", weight=0.01, metadata={"student_prompt_token_ids": [1], "prompt_full": "T"}),
-        _step(target_text="aa", weight=0.0, metadata={"student_prompt_token_ids": [1], "prompt_full": "T"}),
+        _step(target_text="aa", weight=1.0, metadata={"student_prompt_token_ids": [1], "teacher_prompt_token_ids": [3, 4]}),
+        _step(target_text="aa", weight=0.01, metadata={"student_prompt_token_ids": [1], "teacher_prompt_token_ids": [3, 4]}),
+        _step(target_text="aa", weight=0.0, metadata={"student_prompt_token_ids": [1], "teacher_prompt_token_ids": [3, 4]}),
     ]
-    datums = build_projected_seed_datums(
+    datums, stats = build_projected_seed_datums(
         steps, lambda_opd=0.01, encode_fn=lambda t: [1] * len(t), policy_version="v1"
     )
+    assert stats["n_skip_zero_mask"] == 1
     assert len(datums) == 2
     w0 = sum(datums[0].weights)
     w1 = sum(datums[1].weights)
@@ -313,13 +324,27 @@ def test_projection_audit_splits_attempt_and_unregistered():
     assert stats["supervised_whitespace_tokens"] == stats["supervised_tokens"]
 
 
-def test_train_contract_rejects_verl_gap_and_accepts_ce():
-    from trim.training.opd_train_contract import assert_train_contract, weights_look_like_unnormalized_gap_mask
+def test_train_contract_accepts_trim_gap_on_verl_and_rejects_trim_ce():
+    from trim.training.opd_train_contract import (
+        assert_train_contract,
+        normalize_opd_loss,
+        weights_look_like_unnormalized_gap_mask,
+    )
 
+    assert normalize_opd_loss(None, method="trim") == "sr_opd_projected_gap"
+    assert normalize_opd_loss("", method="trim") == "sr_opd_projected_gap"
+    payload = assert_train_contract("trim", "sr_opd_projected_gap", "verl")
+    assert payload["actor_objective"] == "gap"
+    assert payload["actor_wrap"] == "fsdp2"
+    payload_ddp = assert_train_contract("trim", None, "torch_ddp_lora")
+    assert payload_ddp["opd_loss"] == "sr_opd_projected_gap"
+    assert payload_ddp["actor_wrap"] == "ddp"
     assert_train_contract("rl", "sr_opd_ce", "verl")
     assert_train_contract("rl+opd", "sr_opd_ce", "fsdp2")
     with pytest.raises(SystemExit):
-        assert_train_contract("trim", "sr_opd_projected_gap", "verl")
+        assert_train_contract("trim", "sr_opd_ce", "verl")
+    with pytest.raises(SystemExit):
+        assert_train_contract("trim", "sr_opd_sampled_gap", "hf_debug")
     with pytest.raises(SystemExit):
         assert_train_contract("rl+opd", "sr_opd_projected_gap", "verl")
     assert weights_look_like_unnormalized_gap_mask([1.0, 1.0, 0.0]) is True

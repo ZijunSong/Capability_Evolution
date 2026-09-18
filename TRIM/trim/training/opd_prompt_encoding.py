@@ -204,17 +204,22 @@ def encode_teacher_rollout_style_prompt(
     acts: Sequence[tuple[Any, Any]] | None = None,
     wm_text: str = "",
 ) -> tuple[list[int], str]:
-    """Full-harness teacher prefix at the same decision timestep as the student."""
+    """Full-harness teacher prefix at the same decision timestep as the student.
+
+    Empty action history still uses the continuation template when teacher WM
+    is non-empty, so first-turn capability observations are not dropped.
+    """
     use_acts = _harmony_safe_actions_obs(acts)
+    has_wm = bool(str(wm_text or "").strip())
     if enc is not None and hasattr(enc, "build_first_turn_prompt_ids"):
-        if not use_acts:
+        if not use_acts and not has_wm:
             return list(enc.build_first_turn_prompt_ids(query)), query
         return list(
             enc.build_continuation_prompt_ids(query, actions_obs=use_acts, wm_text=wm_text)
         ), query
     from trim.eval.harmony_runtime import build_continuation_prompt_ids, build_first_turn_prompt_ids
 
-    if not use_acts:
+    if not use_acts and not has_wm:
         return build_first_turn_prompt_ids(query, enc=enc), query
     return build_continuation_prompt_ids(
         query, actions_obs=use_acts, wm_text=wm_text, enc=enc

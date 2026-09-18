@@ -31,6 +31,7 @@ from trim.training.rl_opd_types import (
     OPD_LOSS_PROJECTED_GAP,
     OPD_LOSS_SAMPLED_GAP,
     OPD_WEIGHT_NORMALIZATION,
+    PROJECTED_GAP_OBJECTIVE_VERSION,
     SCAPE_RL_OPD_GATE_BETA,
     StudentDecisionPoint,
 )
@@ -54,14 +55,60 @@ class TinkerOPDDatum:
     opd_loss: str = "sr_opd_ce"
 
     def to_dict(self) -> dict[str, Any]:
+        n_p = len(self.prompt_token_ids)
+        meta = dict(self.metadata or {})
         return {
+            "schema_version": str(meta.get("schema_version") or "tinker_opd_datum_v2"),
             "model_input": self.model_input,
+            "prompt_token_ids": list(self.prompt_token_ids),
+            "prompt_ids": list(self.prompt_token_ids),
             "target_tokens": list(self.target_tokens),
+            "target_ids": list(self.target_tokens[n_p:] if len(self.target_tokens) >= n_p else self.target_tokens),
             "weights": list(self.weights),
             "policy_version": self.policy_version,
             "n_supervised_tokens": self.n_supervised_tokens,
-            "opd_weight_normalization": OPD_WEIGHT_NORMALIZATION,
+            "projection_confidence": self.projection_confidence,
+            "target_action": dict(self.target_action or {}),
+            "metadata": meta,
+            "teacher_prompt_token_ids": list(self.teacher_prompt_token_ids or []),
+            "teacher_prompt_ids": list(self.teacher_prompt_token_ids or []),
+            "opd_loss": self.opd_loss,
+            "loss_id": self.opd_loss,
+            "lambda_opd": meta.get("lambda_opd"),
+            "gate_beta": meta.get("gate_beta"),
+            "opd_weight_normalization": meta.get("opd_weight_normalization", OPD_WEIGHT_NORMALIZATION),
         }
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> "TinkerOPDDatum":
+        loss = str(raw.get("opd_loss") or raw.get("loss_id") or "")
+        if not loss:
+            raise ValueError("TinkerOPDDatum.from_dict missing loss_id / opd_loss; refuse CE fallback")
+        prompt = [int(x) for x in list(raw.get("prompt_token_ids") or raw.get("prompt_ids") or [])]
+        targets = [int(x) for x in list(raw.get("target_tokens") or [])]
+        if not targets:
+            resp = [int(x) for x in list(raw.get("target_ids") or [])]
+            targets = [0] * len(prompt) + resp
+        weights = [float(x) for x in list(raw.get("weights") or [])]
+        meta = dict(raw.get("metadata") or {})
+        if raw.get("lambda_opd") is not None:
+            meta.setdefault("lambda_opd", float(raw["lambda_opd"]))
+        if raw.get("gate_beta") is not None:
+            meta.setdefault("gate_beta", float(raw["gate_beta"]))
+        teacher = [int(x) for x in list(raw.get("teacher_prompt_token_ids") or raw.get("teacher_prompt_ids") or [])]
+        return cls(
+            model_input=str(raw.get("model_input") or ""),
+            prompt_token_ids=prompt,
+            target_tokens=targets,
+            weights=weights,
+            policy_version=str(raw.get("policy_version") or ""),
+            n_supervised_tokens=int(raw.get("n_supervised_tokens") or 0),
+            projection_confidence=float(raw.get("projection_confidence") or 1.0),
+            target_action=dict(raw.get("target_action") or {}),
+            metadata=meta,
+            teacher_prompt_token_ids=teacher,
+            opd_loss=loss,
+        )
 
 
 def default_encode(text: str) -> list[int]:
@@ -98,6 +145,32 @@ def _step_snapshot(step: ProjectedTrainingStep) -> Any:
         return None
 
 
+def teacher_context_hash(
+    *,
+    teacher_ids: Sequence[int],
+    target_ids: Sequence[int],
+    policy_version: str,
+    branch_id: str = "",
+    source_type: str = "",
+    template: str = "",
+) -> str:
+    """Cache/version key: prompt IDs + target + branch, not snapshot hash alone."""
+    import hashlib
+    import json
+
+    payload = {
+        "teacher_ids": [int(x) for x in teacher_ids],
+        "target_ids": [int(x) for x in target_ids],
+        "policy_version": str(policy_version),
+        "branch_id": str(branch_id),
+        "source_type": str(source_type),
+        "template": str(template),
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
 def recover_teacher_prompt_ids(
     *,
     teacher_ids: Sequence[int] | None,
@@ -105,8 +178,13 @@ def recover_teacher_prompt_ids(
     snapshot: Any = None,
     encode: EncodeFn,
     model_enc: Any | None = None,
+    allow_offline: bool = False,
 ) -> list[int]:
-    """Use collected teacher IDs or recoverable decision-time refs. No student copy."""
+    """Use collected teacher IDs or recoverable decision-time refs. No student copy.
+
+    Online training refuses ``prompt_full`` debug text. Pass ``allow_offline=True``
+    only for archived datums that never stored token IDs.
+    """
     if teacher_ids:
         return [int(x) for x in list(teacher_ids)]
     meta = dict(metadata or {})
@@ -114,6 +192,8 @@ def recover_teacher_prompt_ids(
         return [int(x) for x in list(meta["teacher_prompt_token_ids"])]
     prompt_full = str(meta.get("prompt_full") or "")
     if prompt_full:
+        if not allow_offline:
+            return []
         return list(encode(prompt_full))
     snap = snapshot
     if snap is None:
@@ -223,6 +303,7 @@ def build_tinker_opd_datums(
             snapshot=_step_snapshot(step),
             encode=encode,
             model_enc=model_enc,
+            allow_offline=allow_offline,
         )
         token_w = float(lambda_opd) * weight / denom
         target_weights = [token_w if bit else 0.0 for bit in mask]
@@ -266,23 +347,32 @@ def build_projected_seed_datums(
     gate_beta: float = SCAPE_RL_OPD_GATE_BETA,
     opd_loss: str = OPD_LOSS_PROJECTED_GAP,
     model_enc: Any | None = None,
-) -> list[TinkerOPDDatum]:
+    allow_offline: bool = False,
+) -> tuple[list[TinkerOPDDatum], dict[str, Any]]:
     """SEED-scale OPD on projected student-legal actions.
 
     Target tokens are the projected action ``a*``, not the CISPO sample.
-    Weights are a 0/1 mask; ``λ × token-mean(g · (sg[ℓ^T] − ℓ^S))`` is
-    applied at FB time. Student prefix is the reduced DualView; teacher
-    prefix is DualView ``H_full``.
+    Token weights are ``effective_weight × mask`` and do **not** include
+    lambda or the global Z_gap; ``λ / Z_gap × Σ w g (sg[ℓ^T] − ℓ^S)`` is
+    applied at FB time. Student prefix is the on-policy reduced IDs;
+    teacher prefix is DualView ``H_full`` from decision-time refs.
     """
     encode = encode_fn or default_encode
+    stats = {
+        "n_skip_missing_teacher": 0,
+        "n_skip_missing_student": 0,
+        "n_skip_zero_mask": 0,
+        "n_skip_empty_target": 0,
+        "n_kept": 0,
+        "objective_version": PROJECTED_GAP_OBJECTIVE_VERSION,
+        "lambda_opd": float(lambda_opd),
+        "gate_beta": float(gate_beta),
+    }
     if float(lambda_opd) <= 0.0 or not steps:
-        return []
+        return [], stats
     lam = float(lambda_opd)
     beta = float(gate_beta)
     datums: list[TinkerOPDDatum] = []
-    n_skip_missing_teacher = 0
-    n_skip_missing_student = 0
-    n_skip_zero_mask = 0
 
     for step in steps:
         meta = dict(step.metadata or {})
@@ -291,7 +381,7 @@ def build_projected_seed_datums(
         if meta.get("student_prompt_token_ids"):
             prompt_ids = [int(x) for x in list(meta["student_prompt_token_ids"])]
         else:
-            n_skip_missing_student += 1
+            stats["n_skip_missing_student"] += 1
             continue
         encoded = encode_supervised_action(
             target_action=step.target_action,
@@ -301,6 +391,7 @@ def build_projected_seed_datums(
         )
         target_ids = list(encoded.target_ids)
         if not target_ids:
+            stats["n_skip_empty_target"] += 1
             continue
         teacher_ids = recover_teacher_prompt_ids(
             teacher_ids=meta.get("teacher_prompt_token_ids"),
@@ -308,9 +399,10 @@ def build_projected_seed_datums(
             snapshot=_step_snapshot(step),
             encode=encode,
             model_enc=model_enc,
+            allow_offline=allow_offline,
         )
         if not teacher_ids:
-            n_skip_missing_teacher += 1
+            stats["n_skip_missing_teacher"] += 1
             continue
         mask = list(step.token_mask) if step.token_mask is not None else list(encoded.supervision_mask)
         if len(mask) != len(target_ids):
@@ -322,7 +414,7 @@ def build_projected_seed_datums(
             metadata=meta,
         )
         if weight == 0.0 or n_tok <= 0:
-            n_skip_zero_mask += 1
+            stats["n_skip_zero_mask"] += 1
             continue
         visible = visible_doc_ids_for_decision(
             snapshot=_step_snapshot(step),
@@ -332,19 +424,31 @@ def build_projected_seed_datums(
         )
         if visible is not None and step.target_action:
             assert_action_visible(step.target_action, visible)
+        branch_id = str(meta.get("branch_id") or meta.get("component_id") or "")
+        ctx_hash = teacher_context_hash(
+            teacher_ids=teacher_ids,
+            target_ids=target_ids,
+            policy_version=policy_version,
+            branch_id=branch_id,
+            source_type=str(meta.get("teacher_branch_source_type") or ""),
+        )
         meta.update(
             {
                 "projection_kind": step.projection_kind,
                 "source_event_ids": list(step.source_event_ids),
                 "sampled_action": False,
                 "projector_used": True,
+                "target_source": "projected",
                 "lambda_opd": lam,
                 "gate_beta": beta,
                 "opd_weight_normalization": "seed_token_mean",
+                "objective_version": PROJECTED_GAP_OBJECTIVE_VERSION,
+                "schema_version": "tinker_opd_datum_v2",
                 "effective_weight": weight,
                 "projected_action_token_ids": list(target_ids),
                 "supervised_mask": [1 if bit else 0 for bit in mask],
-                "n_skip_missing_teacher": n_skip_missing_teacher,
+                "context_hash": ctx_hash,
+                "loss_id": str(opd_loss),
             }
         )
         datums.append(
@@ -362,11 +466,8 @@ def build_projected_seed_datums(
                 metadata=meta,
             )
         )
-    if datums:
-        datums[0].metadata["n_skip_missing_teacher"] = n_skip_missing_teacher
-        datums[0].metadata["n_skip_missing_student"] = n_skip_missing_student
-        datums[0].metadata["n_skip_zero_mask"] = n_skip_zero_mask
-    return datums
+    stats["n_kept"] = len(datums)
+    return datums, stats
 
 
 def _student_prefix_ids(
@@ -424,6 +525,7 @@ def build_sampled_opd_datums(
                 snapshot=point.pre_action_snapshot,
                 encode=encode,
                 model_enc=model_enc,
+                allow_offline=False,
             )
         if not teacher_ids:
             continue

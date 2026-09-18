@@ -54,6 +54,37 @@ class TeacherBranchResult:
         return payload
 
 
+def coerce_teacher_branch(
+    raw: Any,
+    *,
+    point: Any,
+    component_id: str,
+) -> TeacherBranchResult:
+    """Accept TeacherBranchResult or a legacy event list from teacher_for()."""
+    if isinstance(raw, TeacherBranchResult):
+        return raw
+    events = list(raw or [])
+    skip = teacher_skip_kind(events)
+    triggered = skip is None and bool(events)
+    source = skip or SOURCE_CAPABILITY
+    condition: dict[str, Any] = {}
+    for event in events:
+        meta = getattr(event, "metadata", None) or {}
+        if isinstance(meta, dict) and meta.get("teacher_condition"):
+            condition = dict(meta["teacher_condition"])
+            break
+    return TeacherBranchResult(
+        decision_state_id=str(getattr(point, "decision_point_id", "") or ""),
+        component_id=str(component_id),
+        triggered=bool(triggered and skip is None),
+        source_type=source,
+        events=events,
+        teacher_condition=condition,
+        skip_reason=skip,
+        worth_supervising=skip is None,
+    )
+
+
 def skip_teacher_events(
     component_id: str,
     *,

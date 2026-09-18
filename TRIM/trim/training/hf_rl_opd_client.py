@@ -395,9 +395,9 @@ class HFDebugTrainingClient:
             return prompt_ids, resp_ids, teacher_ids, meta
         prompt_ids = list(raw.get("prompt_ids") or self.backend.encode(raw["prompt"]))
         resp_ids = list(raw.get("target_ids") or self.backend.encode(raw["target_text"]))
-        teacher_ids = list(raw.get("teacher_prompt_ids") or [])
+        teacher_ids = list(raw.get("teacher_prompt_ids") or raw.get("teacher_prompt_token_ids") or [])
         if not teacher_ids and raw.get("prompt_full"):
-            teacher_ids = list(self.backend.encode(str(raw["prompt_full"])))
+            raise ValueError("online gap refused prompt_full debug text; provide teacher_prompt_token_ids")
         meta = dict(raw.get("metadata") or {})
         if raw.get("lambda_opd") is not None:
             meta["lambda_opd"] = float(raw["lambda_opd"])
@@ -408,7 +408,7 @@ class HFDebugTrainingClient:
 
     def _opd_sampled_gap(self, datums: Sequence[Any]) -> dict[str, float]:
         """SEED: λ × token-mean[g · (sg[ℓ^T] − ℓ^S)] on CISPO sampled tokens."""
-        from trim.training.sr_opd_loss import gated_sampled_gap_per_token
+        from trim.training.sr_opd_loss import gated_action_gap_per_token
 
         prepared: list[tuple[list[int], list[int], list[int], list[float], float, float]] = []
         n_total = 0
@@ -485,7 +485,7 @@ class HFDebugTrainingClient:
                 if student_lp.numel() != teacher_lp.numel():
                     raise ValueError("teacher/student target length mismatch in OPD gap")
                 w = torch.tensor(weights[: len(student_lp)], device=student_lp.device, dtype=torch.float32)
-                gap = gated_sampled_gap_per_token(student_lp.float(), teacher_lp.detach().float(), gate_beta=beta)
+                gap = gated_action_gap_per_token(student_lp.float(), teacher_lp.detach().float(), gate_beta=beta)
                 losses.append((gap * w).sum() * (float(lam) / denom))
                 n += 1
             if losses:

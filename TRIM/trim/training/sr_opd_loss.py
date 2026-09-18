@@ -85,7 +85,7 @@ def compute_sr_opd_reverse_kl(
     return (kl * weight).sum() / denom
 
 
-def gated_sampled_gap_per_token(
+def gated_action_gap_per_token(
     student_logprobs: torch.Tensor,
     teacher_logprobs: torch.Tensor,
     *,
@@ -94,18 +94,70 @@ def gated_sampled_gap_per_token(
     """SEED per-token term ``g · (sg[ℓ^T] − ℓ^S)`` with ``ℓ = log π(a)``.
 
     ``g = σ(β · sg[ℓ^T − ℓ^S])``. Teacher logprobs are detached; the gradient
-    is a gated NLL on the sampled action, not a full-vocab reverse KL.
+    is a gated NLL on the scored action, not a full-vocab reverse KL.
+    Length mismatch is an error; silent ``min()`` truncation is forbidden.
     """
     teacher = teacher_logprobs.detach().to(
         device=student_logprobs.device, dtype=student_logprobs.dtype
-    )
-    student = student_logprobs
-    n = min(teacher.numel(), student.numel())
-    teacher = teacher.reshape(-1)[:n]
-    student = student.reshape(-1)[:n]
+    ).reshape(-1)
+    student = student_logprobs.reshape(-1)
+    if teacher.numel() != student.numel():
+        raise ValueError(
+            f"gated action-gap length mismatch: teacher={teacher.numel()} "
+            f"student={student.numel()}"
+        )
     delta = (teacher - student).detach()
     gate = torch.sigmoid(delta * float(gate_beta))
     return gate * (teacher - student)
+
+
+def gated_action_gap_weighted_sum(
+    student_logprobs: torch.Tensor,
+    teacher_logprobs: torch.Tensor,
+    weights: torch.Tensor,
+    *,
+    gate_beta: float = DEFAULT_OPD_GATE_BETA,
+) -> torch.Tensor:
+    """``sum_k w_k g_k (sg[ℓ^T_k] − ℓ^S_k)``. Lambda and Z_gap are applied by the caller."""
+    gap = gated_action_gap_per_token(
+        student_logprobs, teacher_logprobs, gate_beta=gate_beta
+    )
+    weight = weights.to(device=gap.device, dtype=gap.dtype).reshape(-1)
+    if weight.numel() != gap.numel():
+        raise ValueError(
+            f"gated action-gap weight length mismatch: weights={weight.numel()} "
+            f"gap={gap.numel()}"
+        )
+    return (weight * gap).sum()
+
+
+def scale_projected_gap_loss(
+    numerator: torch.Tensor,
+    *,
+    lambda_opd: float,
+    z_gap: float,
+    world_size: int,
+) -> torch.Tensor:
+    """Undo DDP/FSDP mean reduction: ``world_size * λ * numer / Z_gap``.
+
+    ``Z_gap`` is the coordinator's global weight sum. Do not all_reduce it.
+    A zero denominator skips real gap grads without ``clamp_min(1)``.
+    """
+    if float(z_gap) <= 0.0:
+        return numerator * 0.0
+    return float(world_size) * float(lambda_opd) * numerator / float(z_gap)
+
+
+def gated_sampled_gap_per_token(
+    student_logprobs: torch.Tensor,
+    teacher_logprobs: torch.Tensor,
+    *,
+    gate_beta: float = DEFAULT_OPD_GATE_BETA,
+) -> torch.Tensor:
+    """Back-compat alias of ``gated_action_gap_per_token`` (strict lengths)."""
+    return gated_action_gap_per_token(
+        student_logprobs, teacher_logprobs, gate_beta=gate_beta
+    )
 
 
 def compute_sr_opd_sampled_gap(
@@ -124,9 +176,11 @@ def compute_sr_opd_sampled_gap(
     if token_mask is None:
         weight = torch.ones_like(gap)
     else:
-        weight = token_mask.to(device=gap.device, dtype=gap.dtype).reshape(-1)[: gap.numel()]
+        weight = token_mask.to(device=gap.device, dtype=gap.dtype).reshape(-1)
         if weight.numel() != gap.numel():
-            weight = torch.ones_like(gap)
+            raise ValueError(
+                f"sampled-gap mask length mismatch: mask={weight.numel()} gap={gap.numel()}"
+            )
     denom = weight.sum().clamp_min(1e-8)
     return (gap * weight).sum() / denom
 
