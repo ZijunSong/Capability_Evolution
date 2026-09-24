@@ -34,6 +34,7 @@ from trim.training.tinker_opd_datum import (
     build_sampled_opd_datums,
     build_tinker_opd_datums,
     default_encode,
+    explain_teacher_recovery_failure,
     recover_teacher_prompt_ids,
 )
 from trim.training.rl_opd_types import (
@@ -134,20 +135,62 @@ def materialize_teacher_prompt_ids(
     *,
     encode_fn: EncodeFn,
     model_enc: Any | None = None,
+    recovery_stats: dict[str, Any] | None = None,
 ) -> list[StudentDecisionPoint]:
-    """Encode teacher prefixes only for selected OPD states, from saved refs."""
+    """Encode teacher prefixes only for selected OPD states, from saved refs.
+
+    ``recovery_stats`` records why a decision could not be recovered. Failures
+    are not filled with the student prefix or debug ``prompt_full`` text.
+    """
+    n_already = 0
+    n_recovered = 0
+    n_failed = 0
+    reasons: dict[str, int] = {}
+    examples: dict[str, list[str]] = {}
     for point in points:
         if point.teacher_prompt_token_ids:
+            n_already += 1
             continue
-        recovered = recover_teacher_prompt_ids(
-            teacher_ids=None,
-            metadata={},
-            snapshot=point.pre_action_snapshot,
-            encode=encode_fn,
-            model_enc=model_enc,
-        )
+        reason = ""
+        try:
+            recovered = recover_teacher_prompt_ids(
+                teacher_ids=None,
+                metadata={},
+                snapshot=point.pre_action_snapshot,
+                encode=encode_fn,
+                model_enc=model_enc,
+                allow_offline=False,
+            )
+        except Exception as exc:
+            recovered = []
+            reason = f"snapshot_encode_error:{type(exc).__name__}"
         if recovered:
             point.teacher_prompt_token_ids = list(recovered)
+            n_recovered += 1
+            continue
+        n_failed += 1
+        if not reason:
+            reason = explain_teacher_recovery_failure(
+                metadata={},
+                snapshot=point.pre_action_snapshot,
+                model_enc=model_enc,
+                allow_offline=False,
+            )
+        reasons[reason] = int(reasons.get(reason) or 0) + 1
+        shown = examples.setdefault(reason, [])
+        if len(shown) < 8:
+            shown.append(str(point.decision_point_id))
+    if recovery_stats is not None:
+        recovery_stats.clear()
+        recovery_stats.update(
+            {
+                "n_already": n_already,
+                "n_recovered": n_recovered,
+                "n_failed": n_failed,
+                "reasons": reasons,
+                "examples": examples,
+            }
+        )
     return list(points)
 
 
@@ -427,12 +470,23 @@ def prepare_hybrid_batch(
         else:
             if teacher_event_fn is None:
                 raise ValueError("teacher_event_fn is required when lambda_opd > 0")
+            recovery_stats: dict[str, Any] | None = None
+            if uses_projected_seed(opd_loss):
+                recovery_stats = {}
+                sampled = materialize_teacher_prompt_ids(
+                    sampled,
+                    encode_fn=encode_fn or default_encode,
+                    model_enc=model_enc,
+                    recovery_stats=recovery_stats,
+                )
             steps, audit, extras = project_on_policy_decisions(
                 sampled,
                 teacher_event_fn=teacher_event_fn,
                 component_id=component_id,
                 projector=projector,
             )
+            if recovery_stats is not None:
+                extras["teacher_recovery"] = dict(recovery_stats)
             if uses_projected_seed(opd_loss):
                 opd_datums, build_stats = build_projected_seed_datums(
                     steps,
@@ -509,6 +563,13 @@ def prepare_hybrid_batch(
         projection_stats.setdefault("n_skip_missing_teacher", build_stats.get("n_skip_missing_teacher", 0))
         projection_stats.setdefault("n_skip_missing_student", build_stats.get("n_skip_missing_student", 0))
         projection_stats.setdefault("n_skip_zero_mask", build_stats.get("n_skip_zero_mask", 0))
+        projection_stats.setdefault("n_skip_empty_target", build_stats.get("n_skip_empty_target", 0))
+        projection_stats.setdefault("n_kept", build_stats.get("n_kept", 0))
+        if build_stats.get("missing_teacher_reasons"):
+            projection_stats["missing_teacher_reasons"] = dict(build_stats["missing_teacher_reasons"])
+    projection_stats["n_decision_points"] = len(all_points)
+    projection_stats["n_structurally_valid"] = sum(1 for point in all_points if point.structurally_valid)
+    projection_stats.setdefault("n_sampled_decision_points", 0)
 
     rewards = [r for g in groups for r in g.terminal_rewards]
     return HybridTrainingBatch(

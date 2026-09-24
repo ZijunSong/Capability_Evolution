@@ -165,6 +165,13 @@ class EpisodeTiming:
     finished_at: float | None = None
     model_sec: float = 0.0
     harness_sec: float = 0.0
+    freeze_sec: float = 0.0
+    menu_sec: float = 0.0
+    parse_sec: float = 0.0
+    execute_sec: float = 0.0
+    prompt_sec: float = 0.0
+    snapshot_sec: float = 0.0
+    peak_rss_mb: float | None = None
 
     def add_model(self, dt: float) -> None:
         self.model_sec += max(0.0, float(dt))
@@ -183,6 +190,13 @@ class EpisodeTiming:
             "e2e_sec": e2e,
             "model_sec": self.model_sec,
             "harness_sec": self.harness_sec,
+            "freeze_sec": self.freeze_sec,
+            "menu_sec": self.menu_sec,
+            "parse_sec": self.parse_sec,
+            "execute_sec": self.execute_sec,
+            "prompt_sec": self.prompt_sec,
+            "snapshot_sec": self.snapshot_sec,
+            "peak_rss_mb": self.peak_rss_mb,
             "elapsed_s": e2e,
         }
 
@@ -198,6 +212,18 @@ def timed_section(timing: EpisodeTiming | None, kind: str) -> Iterator[None]:
         dt = time.perf_counter() - t0
         if kind == "model":
             timing.add_model(dt)
+        elif kind == "freeze":
+            timing.freeze_sec += max(0.0, dt)
+        elif kind == "menu":
+            timing.menu_sec += max(0.0, dt)
+        elif kind == "parse":
+            timing.parse_sec += max(0.0, dt)
+        elif kind == "execute":
+            timing.execute_sec += max(0.0, dt)
+        elif kind == "prompt":
+            timing.prompt_sec += max(0.0, dt)
+        elif kind == "snapshot":
+            timing.snapshot_sec += max(0.0, dt)
         else:
             timing.add_harness(dt)
 
@@ -323,6 +349,9 @@ def episode_quality_metrics(
     }
     if timing:
         payload.update({k: float(timing[k]) for k in TIMING_KEYS if k in timing})
+        for extra_key in ("parse_sec", "execute_sec", "freeze_sec", "prompt_sec", "snapshot_sec"):
+            if extra_key in timing and timing[extra_key] is not None:
+                payload[extra_key] = float(timing[extra_key])
         if "elapsed_s" in timing:
             payload["elapsed_s"] = float(timing["elapsed_s"])
     return payload

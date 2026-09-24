@@ -177,7 +177,10 @@ def main() -> int:
         kind = _wait_flag(job_flag, shutdown=shutdown_flag)
         if kind == "shutdown":
             break
+        from trim.training.dist_runtime import atomic_write_text
+
         job = json.loads((session / "job.json").read_text(encoding="utf-8"))
+        job_id = str(job.get("job_id") or "")
         if job_flag.exists():
             job_flag.unlink()
         try:
@@ -252,13 +255,14 @@ def main() -> int:
                 }
                 with events_path.open("a", encoding="utf-8") as event_handle:
                     event_handle.write(json.dumps(event, ensure_ascii=False) + "\n")
-            (session / "result.json").write_text(
-                json.dumps({"ok": True, "outputs": rows}) + "\n", encoding="utf-8"
+            atomic_write_text(
+                session / "result.json",
+                json.dumps({"ok": True, "job_id": job_id, "outputs": rows}) + "\n",
             )
         except Exception as exc:  # noqa: BLE001
-            (session / "result.json").write_text(
-                json.dumps({"ok": False, "error": repr(exc), "outputs": []}) + "\n",
-                encoding="utf-8",
+            atomic_write_text(
+                session / "result.json",
+                json.dumps({"ok": False, "job_id": job_id, "error": repr(exc), "outputs": []}) + "\n",
             )
         (session / "RESULT").write_text("1\n", encoding="utf-8")
     return 0

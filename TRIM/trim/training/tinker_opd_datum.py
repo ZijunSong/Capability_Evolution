@@ -182,8 +182,10 @@ def recover_teacher_prompt_ids(
 ) -> list[int]:
     """Use collected teacher IDs or recoverable decision-time refs. No student copy.
 
-    Online training refuses ``prompt_full`` debug text. Pass ``allow_offline=True``
-    only for archived datums that never stored token IDs.
+    Explicit token IDs win. Online training ignores ``prompt_full`` debug text and
+    keeps recovering from the decision-time snapshot. Pass ``allow_offline=True``
+    only for archived datums that never stored token IDs; that path may encode
+    ``prompt_full``. Do not copy the student prefix into the teacher prefix.
     """
     if teacher_ids:
         return [int(x) for x in list(teacher_ids)]
@@ -191,9 +193,7 @@ def recover_teacher_prompt_ids(
     if meta.get("teacher_prompt_token_ids"):
         return [int(x) for x in list(meta["teacher_prompt_token_ids"])]
     prompt_full = str(meta.get("prompt_full") or "")
-    if prompt_full:
-        if not allow_offline:
-            return []
+    if prompt_full and allow_offline:
         return list(encode(prompt_full))
     snap = snapshot
     if snap is None:
@@ -225,6 +225,46 @@ def recover_teacher_prompt_ids(
         wm_text=teacher_wm,
     )
     return list(ids)
+
+
+def explain_teacher_recovery_failure(
+    *,
+    metadata: dict[str, Any] | None,
+    snapshot: Any = None,
+    model_enc: Any | None = None,
+    allow_offline: bool = False,
+) -> str:
+    """Why ``recover_teacher_prompt_ids`` returned no IDs. Does not invent context."""
+    meta = dict(metadata or {})
+    prompt_full = str(meta.get("prompt_full") or "")
+    if prompt_full and allow_offline:
+        return "offline_prompt_full_empty"
+    snap = snapshot
+    if snap is None:
+        if prompt_full:
+            return "online_debug_prompt_full_without_snapshot"
+        return "missing_snapshot"
+    if isinstance(snap, dict):
+        from trim.state.snapshot import EnvironmentSnapshot
+
+        try:
+            snap = EnvironmentSnapshot.from_dict(snap)
+        except Exception:
+            return "snapshot_decode_failed"
+    from trim.training.opd_prompt_encoding import (
+        _snapshot_acts_and_wm,
+        snapshot_teacher_wm_text,
+    )
+
+    acts, _student_wm = _snapshot_acts_and_wm(snap)
+    teacher_wm = snapshot_teacher_wm_text(snap)
+    if not acts and not teacher_wm:
+        if prompt_full and not allow_offline:
+            return "online_debug_prompt_full_snapshot_has_no_teacher_context"
+        return "snapshot_missing_teacher_context"
+    if model_enc is None:
+        return "missing_model_encoder"
+    return "snapshot_encode_empty"
 
 
 def build_tinker_opd_datums(
@@ -403,6 +443,14 @@ def build_projected_seed_datums(
         )
         if not teacher_ids:
             stats["n_skip_missing_teacher"] += 1
+            reason = explain_teacher_recovery_failure(
+                metadata=meta,
+                snapshot=_step_snapshot(step),
+                model_enc=model_enc,
+                allow_offline=allow_offline,
+            )
+            reasons = stats.setdefault("missing_teacher_reasons", {})
+            reasons[reason] = int(reasons.get(reason) or 0) + 1
             continue
         mask = list(step.token_mask) if step.token_mask is not None else list(encoded.supervision_mask)
         if len(mask) != len(target_ids):

@@ -13,8 +13,9 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Mapping, Sequence
 import time
+import traceback
 
 from trim.eval.browsecomp_retrieval import RetrievalBackend
 from trim.eval.harness1_metrics import EpisodeTiming, episode_quality_metrics, timed_section, trace_fields
@@ -82,6 +83,8 @@ class LiveEpisode:
     n_turns: int = 0
     pending_prompt_acts: list[tuple[Any, Any]] = field(default_factory=list)
     pending_wm_text: str = ""
+    prompt_budget: dict[str, Any] = field(default_factory=dict)
+    turn_diags: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _needs_for(ep_or_mode: Any, opd_loss: str | None = None) -> CollectionNeeds:
@@ -111,12 +114,33 @@ def _keep_dual_view(mode: str, opd_loss: str | None = None) -> bool:
     return _needs_for(mode, opd_loss).need_debug_view
 
 
+def _prompt_budget(enc) -> tuple[int, int]:
+    max_model_len = getattr(enc, "max_model_len", None) if enc is not None else None
+    max_new = getattr(enc, "max_new_tokens", None) if enc is not None else None
+    if max_model_len in (None, 0):
+        max_model_len = 8192
+    if max_new in (None, 0):
+        max_new = 2048
+    return int(max_model_len), int(max_new)
+
+
 def _build_prompt_ids(ep: LiveEpisode, enc) -> list[int]:
     from trim.adapters.harness_profiles import is_harness_g
     from trim.eval.harmony_runtime import build_continuation_prompt_ids, build_first_turn_prompt_ids
     from trim.training.upstream_train_env import is_upstream_state, wm_text_for_train_state
 
     query = str(ep.row["query"])
+    max_model_len, max_new = _prompt_budget(enc)
+    budget = max(1, max_model_len - max(1, max_new))
+    trim_report = {
+        "max_model_len": max_model_len,
+        "max_new_tokens": max_new,
+        "history_budget": None,
+        "dropped_history": 0,
+        "pre_len": None,
+        "post_len": None,
+        "dropped_category": [],
+    }
     if is_harness_g(mask=ep.harness_mask, component_ids=ep.component_id):
         from trim.eval.harness_g_env import wm_text
         from trim.eval.harness_g_runtime import build_prompt_ids as build_g_prompt_ids
@@ -126,23 +150,36 @@ def _build_prompt_ids(ep: LiveEpisode, enc) -> list[int]:
 
         keep = prompt_history_keep(enc, harness_mask=ep.harness_mask)
         acts = recent_actions_obs(list(ep.acts), keep=keep)
-        max_model_len = int(getattr(enc, "max_model_len", 8192) or 8192) if enc is not None else 8192
-        max_new = int(getattr(enc, "max_new_tokens", 2048) or 2048) if enc is not None else 2048
-        budget = max(1, max_model_len - max(1, max_new))
+        trim_report["history_budget"] = keep
         ids = build_g_prompt_ids(
             query, wm_text(ep.st), enc, harness_mask=ep.harness_mask, actions_obs=acts,
             reasoning_effort=ep.reasoning_effort,
         )
+        trim_report["pre_len"] = len(ids)
+        dropped_hist = 0
         while len(ids) > budget and len(acts) > 1:
             acts = acts[1:]
+            dropped_hist += 1
             ids = build_g_prompt_ids(
                 query, wm_text(ep.st), enc, harness_mask=ep.harness_mask, actions_obs=acts,
                 reasoning_effort=ep.reasoning_effort,
             )
+        if dropped_hist:
+            trim_report["dropped_category"].append("history")
+            trim_report["dropped_history"] = dropped_hist
         if len(ids) > budget:
             ids = fit_prompt_ids_to_context(ids, max_model_len=max_model_len, max_new_tokens=max_new)
+            trim_report["dropped_category"].append("token_tail")
+        trim_report["post_len"] = len(ids)
+        trim_report["prompt_truncated"] = bool(trim_report["dropped_category"]) or int(trim_report["post_len"] or 0) < int(
+            trim_report["pre_len"] or 0
+        )
         ep.pending_prompt_acts = list(acts)
         ep.pending_wm_text = str(wm_text(ep.st) or "")
+        ep.prompt_budget = dict(trim_report)
+        ep.st["prompt_budget"] = trim_report
+        vis = list(ep.st.get("visible_sids") or [])
+        ep.st["prompt_visible_sids"] = list(vis)
         return ids
     wm = wm_text_for_train_state(ep.st) if is_upstream_state(ep.st) else None
     if wm is None:
@@ -153,8 +190,6 @@ def _build_prompt_ids(ep: LiveEpisode, enc) -> list[int]:
 
     keep = prompt_history_keep(enc, harness_mask=ep.harness_mask)
     acts = recent_actions_obs(list(ep.acts), keep=keep)
-    max_model_len = int(getattr(enc, "max_model_len", 8192) or 8192) if enc is not None else 8192
-    max_new = int(getattr(enc, "max_new_tokens", 2048) or 2048) if enc is not None else 2048
 
     def _encode(use_acts: list) -> list[int]:
         if enc is not None and hasattr(enc, "build_first_turn_prompt_ids"):
@@ -171,16 +206,28 @@ def _build_prompt_ids(ep: LiveEpisode, enc) -> list[int]:
         )
 
     ids = _encode(acts)
-    budget = max(1, max_model_len - max(1, max_new))
+    pre_len = len(ids)
+    n_acts_before = len(acts)
     while len(ids) > budget and len(acts) > 1:
         acts = acts[1:]
         ids = _encode(acts)
+    token_trimmed = False
     if len(ids) > budget:
         from trim.eval.harmony_runtime import fit_prompt_ids_to_context
 
         ids = fit_prompt_ids_to_context(ids, max_model_len=max_model_len, max_new_tokens=max_new)
+        token_trimmed = True
     ep.pending_prompt_acts = list(acts)
     ep.pending_wm_text = str(wm or "")
+    ep.prompt_budget = {
+        "max_model_len": max_model_len,
+        "max_new_tokens": max_new,
+        "history_budget": keep,
+        "pre_len": pre_len,
+        "post_len": len(ids),
+        "dropped_history": n_acts_before - len(acts),
+        "prompt_truncated": bool(token_trimmed or len(acts) < n_acts_before),
+    }
     return ids
 
 
@@ -195,6 +242,186 @@ def _teacher_wm_for_episode(ep: LiveEpisode) -> str:
     from trim.eval.local_search_env import wm_text as local_wm_text
 
     return str(local_wm_text(teacher_st) or "")
+
+
+def _named_len(state: Mapping[str, Any], keys: Sequence[str]) -> int | None:
+    for key in keys:
+        val = state.get(key)
+        if isinstance(val, (list, tuple, set, dict)):
+            return len(val)
+    return None
+
+
+def _append_turn_diag(
+    ep: LiveEpisode,
+    *,
+    action: Mapping[str, Any],
+    valid: bool,
+    executed_ok: bool,
+    gen: GenerateResult,
+    turn_id: int,
+    qid: str,
+    curated_before: int | None,
+    pool_before: int | None,
+    prompt_ids: Sequence[int],
+) -> None:
+    """Compact per-turn record. Full token IDs stay on the RL row and are sampled later."""
+    name = str(action.get("name") or "")
+    finish = str(getattr(gen, "finish_reason", "") or "")
+    duplicate = False
+    if len(ep.actions) >= 2:
+        prev = ep.actions[-2]
+        duplicate = str(prev.get("name") or "") == name and dict(prev.get("arguments") or {}) == dict(
+            action.get("arguments") or {}
+        )
+    budget = dict(getattr(ep, "prompt_budget", None) or {})
+    curated_after = _named_len(ep.st, ("curated", "curated_ids", "selected_docids"))
+    pool_after = _named_len(ep.st, ("pool", "observed_docids", "documents"))
+    if valid and name not in {"truncated", "unknown", ""}:
+        parse_method = "tool_call"
+        parse_error = ""
+    elif finish == "length" or name == "truncated":
+        parse_method = "length"
+        parse_error = "generation_length"
+    else:
+        parse_method = "parse_failed"
+        parse_error = name or "unparsed"
+    ep.turn_diags.append(
+        {
+            "request_id": str(getattr(gen, "request_id", "") or ""),
+            "query_id": qid,
+            "episode_id": f"{qid}_r{ep.rollout_idx}",
+            "turn_id": int(turn_id),
+            "policy_version": str(ep.policy_version),
+            "parse_method": parse_method,
+            "parse_error": parse_error,
+            "tool_name": name,
+            "structurally_valid": bool(valid),
+            "executed_ok": bool(executed_ok),
+            "generation_finish_reason": finish,
+            "episode_end_reason": str(ep.st.get("end_reason") or "") if ep.st.get("ended") else "",
+            "new_doc_count": None if pool_before is None or pool_after is None else max(0, pool_after - pool_before),
+            "curated_delta": None
+            if curated_before is None or curated_after is None
+            else int(curated_after - curated_before),
+            "duplicate_action": bool(duplicate),
+            "prompt_truncated": bool(budget.get("prompt_truncated")),
+            "prompt_pre_len": budget.get("pre_len"),
+            "prompt_post_len": budget.get("post_len"),
+            "n_prompt_ids": len(list(prompt_ids)),
+        }
+    )
+
+
+def _finalize_episode_diags(ep: LiveEpisode, *, max_turns: int) -> list[dict[str, Any]]:
+    diags = [dict(item) for item in (ep.turn_diags or [])]
+    if not diags:
+        return []
+    ended = bool(ep.st.get("ended"))
+    if ended:
+        end_reason = str(ep.st.get("end_reason") or "ended")
+    elif len(ep.names) >= int(max_turns):
+        end_reason = "turn_limit"
+    else:
+        end_reason = ""
+    last_turn = diags[-1].get("turn_id")
+    for item in diags:
+        item["episode_end_reason"] = end_reason if item.get("turn_id") == last_turn else ""
+        item["last_turn_id"] = last_turn
+    return diags
+
+
+def turn_audit_from_groups(groups: Sequence[Any]) -> dict[str, Any]:
+    """Aggregate lightweight turn diagnostics and keep one sample of each kind."""
+    counts = {
+        "n_turns": 0,
+        "n_episodes": 0,
+        "n_tool_call": 0,
+        "n_end_search": 0,
+        "n_parse_failed": 0,
+        "n_length": 0,
+        "n_turn_limit_episodes": 0,
+        "n_duplicate_action": 0,
+        "n_prompt_truncated": 0,
+        "n_ended": 0,
+    }
+    samples: dict[str, dict[str, Any]] = {}
+    for group in groups:
+        tg = getattr(group, "trajectory_group", None) or {}
+        if not isinstance(tg, dict):
+            continue
+        diags = list(tg.get("turn_diags") or [])
+        rows = list(tg.get("rl_rows") or [])
+        by_turn: dict[tuple[str, int], dict[str, Any]] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            by_turn[(str(row.get("episode_id") or ""), int(row.get("turn_id") or 0))] = row
+        seen_eps: set[str] = set()
+        episode_end: dict[str, str] = {}
+        for diag in diags:
+            if not isinstance(diag, dict):
+                continue
+            counts["n_turns"] += 1
+            episode_id = str(diag.get("episode_id") or "")
+            if episode_id:
+                seen_eps.add(episode_id)
+                if diag.get("episode_end_reason"):
+                    episode_end[episode_id] = str(diag.get("episode_end_reason") or "")
+            if diag.get("duplicate_action"):
+                counts["n_duplicate_action"] += 1
+            if diag.get("prompt_truncated"):
+                counts["n_prompt_truncated"] += 1
+            kind = _turn_diag_kind(diag)
+            if kind == "tool_call":
+                counts["n_tool_call"] += 1
+            elif kind == "end_search":
+                counts["n_end_search"] += 1
+            elif kind == "parse_failed":
+                counts["n_parse_failed"] += 1
+            elif kind == "length":
+                counts["n_length"] += 1
+            if kind and kind not in samples:
+                row = by_turn.get((episode_id, int(diag.get("turn_id") or 0))) or {}
+                samples[kind] = {
+                    "kind": kind,
+                    **diag,
+                    "prompt_token_ids": list(row.get("effective_prompt_ids") or row.get("prompt_ids") or []),
+                    "action_token_ids": list(row.get("action_ids") or row.get("target_ids") or []),
+                }
+        counts["n_episodes"] += len(seen_eps)
+        for reason in episode_end.values():
+            if reason == "turn_limit":
+                counts["n_turn_limit_episodes"] += 1
+            elif reason:
+                counts["n_ended"] += 1
+        if any(str(d.get("episode_end_reason") or "") == "turn_limit" for d in diags if isinstance(d, dict)):
+            if "turn_limit" not in samples:
+                last = next(d for d in reversed(diags) if isinstance(d, dict))
+                episode_id = str(last.get("episode_id") or "")
+                row = by_turn.get((episode_id, int(last.get("turn_id") or 0))) or {}
+                samples["turn_limit"] = {
+                    "kind": "turn_limit",
+                    **last,
+                    "prompt_token_ids": list(row.get("effective_prompt_ids") or row.get("prompt_ids") or []),
+                    "action_token_ids": list(row.get("action_ids") or row.get("target_ids") or []),
+                }
+    return {"counts": counts, "samples": [samples[key] for key in ("tool_call", "end_search", "parse_failed", "length", "turn_limit") if key in samples]}
+
+
+def _turn_diag_kind(diag: Mapping[str, Any]) -> str:
+    finish = str(diag.get("generation_finish_reason") or "")
+    name = str(diag.get("tool_name") or "")
+    if finish == "length" or name == "truncated" or diag.get("parse_method") == "length":
+        return "length"
+    if not diag.get("structurally_valid"):
+        return "parse_failed"
+    end_reason = str(diag.get("episode_end_reason") or "")
+    if name == "end_search" and diag.get("executed_ok") and end_reason not in {"", "turn_limit"}:
+        return "end_search"
+    if diag.get("structurally_valid") and diag.get("executed_ok") and name not in {"end_search", "truncated", "unknown", ""}:
+        return "tool_call"
+    return ""
 
 
 def _apply_generation(
@@ -221,11 +448,10 @@ def _apply_generation(
         from trim.eval.local_search_env import execute_tool
 
     qid = str(ep.row["query_id"])
-    frozen_st = freeze_train_state(ep.st)
+    eval_only = bool(getattr(ep, "eval_only", False) or ep.policy_version == "eval")
     frozen_acts = list(ep.acts)
     teacher_prompt_ids: list[int] = []
     teacher_snapshot_hash = ""
-    eval_only = bool(getattr(ep, "eval_only", False) or ep.policy_version == "eval")
     mode = str(getattr(ep, "collection_mode", None) or COLLECTION_MODE_RL_OPD)
     loss = str(getattr(ep, "opd_loss", "") or "")
     if (
@@ -234,6 +460,7 @@ def _apply_generation(
         and not eval_only
         and _keep_teacher_encode(mode, loss)
     ):
+        frozen_st = freeze_train_state(ep.st)
         teacher_prompt_ids, _ = encode_aligned_teacher_prompt(
             enc,
             str(ep.row["query"]),
@@ -244,19 +471,71 @@ def _apply_generation(
         teacher_snapshot_hash = snap_from_state(
             qid, frozen_st, ep.component_id, harness_mask=ep.harness_mask
         ).content_hash()
-    action, valid = parse_generated_action(
-        gen.text,
-        gen.token_ids,
-        enc,
-        harness_mask=ep.harness_mask,
-        teacher_mode=bool(ep.teacher_mode),
-        action_map=ep.st.get("action_map"),
-        finish_reason=str(getattr(gen, "finish_reason", "") or ""),
-    )
+    g_eval = is_harness_g(mask=ep.harness_mask, component_ids=ep.component_id)
+    attempt: dict[str, Any] | None = None
+    if g_eval:
+        from trim.eval.harness_g_env import _evidence_sig, _menu_hash
+
+        attempt = {
+            "query_id": qid,
+            "rollout_id": int(ep.rollout_idx),
+            "turn_id": int(ep.n_turns),
+            "attempt_id": f"{qid}:e{ep.rollout_idx}:t{ep.n_turns}",
+            "raw_output": str(gen.text or "")[:4000],
+            "finish_reason": str(getattr(gen, "finish_reason", "") or ""),
+            "parse_ok": None,
+            "schema_ok": None,
+            "menu_ok": None,
+            "execution_ok": None,
+            "normalized_action": None,
+            "pre_state_hash": _evidence_sig(ep.st),
+            "pre_menu_hash": _menu_hash(ep.st),
+            "error_stage": None,
+            "error_type": None,
+            "error_message": None,
+            "traceback_ref": None,
+            "post_state_hash": None,
+            "state_committed": False,
+            "termination_reason": None,
+        }
+    action = {"name": "unknown", "arguments": {}}
+    valid = False
+    curated_before = _named_len(ep.st, ("curated", "curated_ids", "selected_docids"))
+    pool_before = _named_len(ep.st, ("pool", "observed_docids", "documents"))
+    try:
+        with timed_section(ep.timing, "parse"):
+            action, valid = parse_generated_action(
+                gen.text,
+                gen.token_ids,
+                enc,
+                harness_mask=ep.harness_mask,
+                teacher_mode=bool(ep.teacher_mode),
+                action_map=ep.st.get("action_map"),
+                finish_reason=str(getattr(gen, "finish_reason", "") or ""),
+            )
+    except Exception as exc:  # noqa: BLE001
+        if not g_eval:
+            raise
+        tb = traceback.format_exc()
+        valid = False
+        action = {"name": "unknown", "arguments": {}}
+        if attempt is not None:
+            attempt["error_stage"] = "parse"
+            attempt["error_type"] = type(exc).__name__
+            attempt["error_message"] = str(exc)
+            attempt["traceback_ref"] = tb[-4000:]
+    if attempt is not None:
+        attempt["parse_ok"] = bool(valid)
+        attempt["schema_ok"] = bool(valid)
+        attempt["normalized_action"] = {
+            "name": action.get("name"),
+            "arguments": dict(action.get("arguments") or {}),
+        }
     ep.valids.append(valid)
     ep.actions.append(action)
     ep.names.append(str(action.get("name")))
     _ok = False
+    obs = ""
     with timed_section(ep.timing, "harness"):
         try:
             if is_upstream_state(ep.st):
@@ -269,16 +548,31 @@ def _apply_generation(
                     mods=ep.st.get("_upstream_mods"),
                     execute_local=execute_tool,
                 )
-            elif is_harness_g(mask=ep.harness_mask, component_ids=ep.component_id):
+            elif g_eval:
                 if not valid:
+                    from trim.eval.harness_g_env import record_nonexecution_failure
+
                     name = str(action.get("name") or "unknown")
                     if name == "truncated":
                         code, msg = "truncated_output", "generation hit length limit without a complete tool call."
                     else:
                         code, msg = "parse_failed", "could not parse an executable tool call from model output."
-                    ep.st["invalid_tools"] = int(ep.st.get("invalid_tools") or 0) + 1
-                    obs = f"ERROR [{code}]: {msg}"
-                    _ok = False
+                    if attempt is not None:
+                        attempt["parse_ok"] = False
+                        attempt["schema_ok"] = False
+                        attempt["error_stage"] = "parse"
+                        attempt["error_type"] = code
+                        attempt["error_message"] = msg
+                    ep.st, obs, _ok = record_nonexecution_failure(
+                        ep.st,
+                        name,
+                        dict(action.get("arguments") or {}),
+                        code=code,
+                        msg=msg,
+                        parse_ok=False,
+                        schema_ok=False,
+                        error_class="protocol",
+                    )
                 else:
                     ep.st, obs, exec_ok = execute_tool(
                         ep.st,
@@ -298,9 +592,68 @@ def _apply_generation(
                     execute_local=execute_tool,
                 )
         except Exception as exc:  # noqa: BLE001
-            ep.st["invalid_tools"] = int(ep.st.get("invalid_tools") or 0) + 1
-            obs = f"ERROR: tool failed ({type(exc).__name__})."
-            _ok = False
+            tb = traceback.format_exc()
+            if g_eval:
+                from trim.eval.harness_g_env import record_nonexecution_failure
+
+                if attempt is not None:
+                    attempt["error_stage"] = "execute"
+                    attempt["error_type"] = type(exc).__name__
+                    attempt["error_message"] = str(exc)
+                    attempt["traceback_ref"] = tb[-4000:]
+                ep.st, obs, _ok = record_nonexecution_failure(
+                    ep.st,
+                    str(action.get("name") or "unknown"),
+                    dict(action.get("arguments") or {}),
+                    code="infrastructure_failure",
+                    msg=f"{type(exc).__name__}: {exc}",
+                    parse_ok=bool(valid),
+                    schema_ok=bool(valid),
+                    error_class="infrastructure",
+                    traceback_ref=tb[-4000:],
+                )
+            else:
+                ep.st["invalid_tools"] = int(ep.st.get("invalid_tools") or 0) + 1
+                obs = f"ERROR: tool failed ({type(exc).__name__})."
+                _ok = False
+        finally:
+            if g_eval:
+                from trim.eval.harness_g_env import _evidence_sig, _menu_hash
+
+                hist = list(ep.st.get("tool_history") or [])
+                last_hist = hist[-1] if hist else {}
+                last_event = (list(ep.st.get("turn_events") or []) or [{}])[-1]
+                sealed = dict(attempt or {})
+                sealed["parse_ok"] = bool(
+                    sealed.get("parse_ok")
+                    if sealed.get("parse_ok") is not None
+                    else last_hist.get("parse_ok")
+                )
+                sealed["schema_ok"] = bool(
+                    sealed.get("schema_ok")
+                    if sealed.get("schema_ok") is not None
+                    else last_hist.get("schema_ok")
+                )
+                sealed["menu_ok"] = bool(
+                    last_hist.get("menu_ok")
+                    if last_hist.get("menu_ok") is not None
+                    else last_hist.get("target_ok")
+                )
+                sealed["execution_ok"] = bool(_ok)
+                sealed["post_state_hash"] = _evidence_sig(ep.st)
+                sealed["post_menu_hash"] = _menu_hash(ep.st)
+                sealed["state_committed"] = bool(_ok)
+                sealed["termination_reason"] = ep.st.get("end_reason") if ep.st.get("ended") else None
+                sealed["n_tokens"] = len(list(gen.token_ids))
+                if last_hist.get("error_code") and not sealed.get("error_type"):
+                    sealed["error_type"] = last_hist.get("error_code")
+                if last_event.get("traceback_ref") and not sealed.get("traceback_ref"):
+                    sealed["traceback_ref"] = last_event.get("traceback_ref")
+                    sealed["error_class"] = last_event.get("error_class") or sealed.get("error_class")
+                events = list(ep.st.get("attempt_events") or [])
+                events.append(sealed)
+                ep.st["attempt_events"] = events
+                ep.turn_events.append(dict(sealed))
         if is_harness_g(mask=ep.harness_mask, component_ids=ep.component_id):
             from trim.eval.harness_g_runtime import make_protocol_feedback
 
@@ -341,14 +694,6 @@ def _apply_generation(
         post = None
         if (_keep_snapshots(mode, loss) or ep.teacher_mode) and not eval_only:
             post = snap_from_state(qid, ep.st, ep.component_id, harness_mask=ep.harness_mask)
-        if is_harness_g(mask=ep.harness_mask, component_ids=ep.component_id):
-            last = list((ep.st.get("turn_events") or [])[-1:])
-            ep.turn_events.extend(last)
-            if last:
-                last[0]["raw_output"] = str(gen.text or "")[:4000]
-                last[0]["finish_reason"] = str(getattr(gen, "finish_reason", "") or "")
-                last[0]["parse_ok"] = bool(valid)
-                last[0]["n_tokens"] = len(action_ids)
     turn_id = int(ep.n_turns)
     ep.n_turns += 1
     if (_keep_snapshots(mode, loss) or ep.teacher_mode) and ep.pending_pre is not None and not eval_only:
@@ -406,6 +751,18 @@ def _apply_generation(
         rec["truncated_generation"] = True
     if not eval_only:
         ep.rl_rows.append(rec)
+    _append_turn_diag(
+        ep,
+        action=action,
+        valid=valid,
+        executed_ok=bool(_ok),
+        gen=gen,
+        turn_id=turn_id,
+        qid=qid,
+        curated_before=curated_before,
+        pool_before=pool_before,
+        prompt_ids=effective_prompt_ids,
+    )
 
 
 def _prepare_chunk_episodes(
@@ -480,8 +837,9 @@ def _run_episode_turns(
         request_slots: list[int] = []
         apply_jobs: list[tuple[LiveEpisode, GenerateResult]] = []
         for i, ep in enumerate(live):
-            with timed_section(ep.timing, "harness"):
+            with timed_section(ep.timing, "prompt"):
                 pids = _build_prompt_ids(ep, enc)
+            with timed_section(ep.timing, "snapshot"):
                 mode = str(getattr(ep, "collection_mode", None) or COLLECTION_MODE_RL_OPD)
                 loss = str(getattr(ep, "opd_loss", "") or "")
                 if (_keep_snapshots(mode, loss) or ep.teacher_mode) and not ep.eval_only:
@@ -603,6 +961,7 @@ def _groups_from_episodes(
         gold_ids = [str(x) for x in (row.get("gold_docids") or row.get("evidence_docids") or [])]
         query = str(row["query"])
         episode_stats: list[dict[str, Any]] = []
+        turn_diags: list[dict[str, Any]] = []
         for ep in members:
             from trim.training.four_cell_runtime import terminal_reward_breakdown
 
@@ -652,6 +1011,7 @@ def _groups_from_episodes(
                 }
             )
             episode_stats.append(quality)
+            turn_diags.extend(_finalize_episode_diags(ep, max_turns=max_turns))
         from trim.training.hf_rl_opd_client import episode_relative_advantages
 
         adv = episode_relative_advantages(rl_rows)
@@ -666,6 +1026,7 @@ def _groups_from_episodes(
                     "query": row.get("query"),
                     "tool_seqs": tool_seqs,
                     "episode_stats": episode_stats,
+                    "turn_diags": turn_diags,
                 },
                 decision_points=points,
                 terminal_rewards=rewards,

@@ -14,7 +14,6 @@ from dataclasses import dataclass
 from typing import Any, Callable, Iterator, Sequence
 
 import torch
-import torch.nn.functional as F
 
 HF_DEFAULT_GROUPS_PER_STEP = 32
 HF_DEFAULT_MICRO_BATCH = 4
@@ -163,29 +162,83 @@ def pack_left_pad_teacher_forced(
     )
 
 
+# Backward recomputes softmax over vocab chunks so the FP32 log-softmax tensor
+# is never materialized. The value is exact: logit[token] - logsumexp(logits).
+_LOGPROB_VOCAB_CHUNK = 4096
+
+
+class _SelectedTokenLogprob(torch.autograd.Function):
+    """log p(token) = logit[token] - logsumexp(logits), with chunked backward."""
+
+    @staticmethod
+    def forward(ctx, logits: torch.Tensor, token_index: torch.Tensor) -> torch.Tensor:
+        if logits.ndim != 2:
+            raise ValueError(f"expected [N, V] logits, got {tuple(logits.shape)}")
+        index = token_index.reshape(-1).to(device=logits.device, dtype=torch.long)
+        logits_f = logits.float()
+        gathered = logits_f.gather(1, index.view(-1, 1)).squeeze(1)
+        lse = torch.logsumexp(logits_f, dim=-1)
+        ctx.save_for_backward(logits, index)
+        return gathered - lse
+
+    @staticmethod
+    def backward(ctx, grad_output: torch.Tensor):
+        logits, token_index = ctx.saved_tensors
+        grad_out = grad_output.reshape(-1).float().unsqueeze(1)
+        logits_f = logits.float()
+        lse = torch.logsumexp(logits_f, dim=-1, keepdim=True)
+        grad = torch.empty_like(logits_f)
+        vocab = int(logits_f.shape[-1])
+        chunk = max(1, int(_LOGPROB_VOCAB_CHUNK))
+        for start in range(0, vocab, chunk):
+            end = min(vocab, start + chunk)
+            prob = torch.exp(logits_f[:, start:end] - lse)
+            grad[:, start:end] = -prob * grad_out
+        grad.scatter_add_(1, token_index.view(-1, 1), grad_out)
+        if grad.dtype != logits.dtype:
+            grad = grad.to(dtype=logits.dtype)
+        return grad, None
+
+
 def gather_response_logprobs(
     kept_logits: torch.Tensor,
     response_ids: Sequence[Sequence[int]],
     *,
     max_resp: int,
 ) -> list[torch.Tensor]:
-    """Slice last-K logits (``logits_to_keep = max_resp + 1``) into per-row logprobs."""
+    """Per-token logprob of the sampled ids. Exact logsumexp, not a top-k denominator.
+
+    ``logits_to_keep = max_resp + 1`` still drops the prompt logits upstream.
+    This function does not allocate an FP32 log-softmax over the vocabulary.
+    """
     if kept_logits.ndim != 3:
         raise ValueError(f"expected [B, T, V] logits, got {tuple(kept_logits.shape)}")
     window = kept_logits[:, :-1, :] if kept_logits.shape[1] > 1 else kept_logits
-    logp = F.log_softmax(window.float(), dim=-1)
-    out: list[torch.Tensor] = []
-    width = int(logp.shape[1])
-    cap = min(int(max_resp), width)
+    batch, width, vocab = window.shape
+    cap = min(int(max_resp), int(width))
+    empty = torch.zeros(0, dtype=torch.float32, device=window.device)
+    if width <= 0 or vocab <= 0 or batch <= 0:
+        return [empty for _ in response_ids]
+    index = torch.zeros(batch, width, dtype=torch.long, device=window.device)
+    spans: list[tuple[int, int]] = []
     for i, resp in enumerate(response_ids):
         n_resp = len(resp)
         if n_resp <= 0:
-            out.append(logp.new_zeros(0))
+            spans.append((0, 0))
             continue
         start = max(0, cap - n_resp)
-        row = logp[i, start : start + n_resp]
-        ids = torch.tensor(list(resp)[: row.shape[0]], device=logp.device, dtype=torch.long)
-        if ids.numel() != row.shape[0]:
-            row = row[: ids.numel()]
-        out.append(row.gather(1, ids.unsqueeze(1)).squeeze(1))
+        row_len = min(n_resp, width - start)
+        ids = [int(tok) for tok in list(resp)[:row_len]]
+        row_len = min(row_len, len(ids))
+        if row_len > 0:
+            index[i, start : start + row_len] = torch.tensor(ids, dtype=torch.long, device=window.device)
+        spans.append((start, row_len))
+    flat = _SelectedTokenLogprob.apply(window.reshape(batch * width, vocab), index.reshape(batch * width))
+    logp = flat.view(batch, width)
+    out: list[torch.Tensor] = []
+    for row, (start, row_len) in enumerate(spans):
+        if row_len <= 0:
+            out.append(logp.new_zeros(0))
+        else:
+            out.append(logp[row, start : start + row_len])
     return out
