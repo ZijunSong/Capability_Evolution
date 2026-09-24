@@ -569,16 +569,23 @@ class VLLMGenerateClient:
                     "effective_prompt_ids": list(prompt_ids),
                 }
             )
-        payload = {"cmd": "generate", "requests": prompt_rows}
-        (self.session_dir / "job.json").write_text(
-            json.dumps(payload) + "\n", encoding="utf-8"
-        )
+        import uuid
+
+        from trim.training.dist_runtime import atomic_write_text
+
+        job_id = uuid.uuid4().hex
+        payload = {"cmd": "generate", "job_id": job_id, "requests": prompt_rows}
+        atomic_write_text(self.session_dir / "job.json", json.dumps(payload) + "\n")
         result_flag = self.session_dir / "RESULT"
         if result_flag.exists():
             result_flag.unlink()
         (self.session_dir / "JOB").write_text("1\n", encoding="utf-8")
         self._wait_flag("RESULT", self.generate_timeout_s, what="vLLM generate")
         blob = json.loads((self.session_dir / "result.json").read_text(encoding="utf-8"))
+        if blob.get("job_id") not in {None, "", job_id}:
+            raise RuntimeError(
+                f"vLLM result job_id={blob.get('job_id')!r} does not match request {job_id}"
+            )
         if blob.get("error"):
             raise RuntimeError(f"vLLM generate failed: {blob['error']}\n{_tail(self.log_path)}")
         decoder = self._decoder()

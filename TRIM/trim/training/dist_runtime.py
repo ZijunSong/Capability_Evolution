@@ -457,15 +457,82 @@ def interleave_round_robin(shards: Sequence[Sequence[T]]) -> list[T]:
     return merged
 
 
+def _safe_tag(tag: str) -> str:
+    return "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in str(tag))
+
+
+def resolve_rollout_shard_dir(*, out: Path, run_id: str, single_node: bool) -> Path:
+    """Job-local scratch for rollout IPC.
+
+    Single-node jobs use a run-scoped directory under ``/tmp`` (or
+    ``TRIM_ROLLOUT_SHARD_DIR``). The directory includes ``run_id`` so two jobs
+    on one machine do not share ``bN`` files.
+    """
+    safe = _safe_tag(run_id) or "run"
+    override = os.environ.get("TRIM_ROLLOUT_SHARD_DIR")
+    if override:
+        path = Path(override) / safe / "rollout_shards"
+    elif single_node:
+        path = Path("/tmp") / "trim" / safe / "rollout_shards"
+    else:
+        path = Path(out) / "tmp" / "rollout_shards" / safe
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def write_policy_pickle(path: Path, items: Sequence[Any], *, policy_version: str | None) -> None:
+    """Atomically publish a shard. A policy version is stored when provided."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if policy_version is None:
+        payload: Any = list(items)
+    else:
+        payload = {"policy_version": str(policy_version), "items": list(items)}
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    with tmp.open("wb") as handle:
+        pickle.dump(payload, handle, protocol=pickle.HIGHEST_PROTOCOL)
+        handle.flush()
+        try:
+            os.fsync(handle.fileno())
+        except OSError:
+            pass
+    os.replace(tmp, path)
+
+
+def read_policy_pickle(path: Path, *, policy_version: str | None) -> list[Any]:
+    with Path(path).open("rb") as handle:
+        payload = pickle.load(handle)
+    if policy_version is None:
+        if isinstance(payload, dict) and "items" in payload:
+            return list(payload["items"])
+        return list(payload)
+    found = payload.get("policy_version") if isinstance(payload, dict) else None
+    if not isinstance(payload, dict) or str(found or "") != str(policy_version):
+        raise RuntimeError(
+            f"rollout shard {path} policy_version={found!r} does not match expected {policy_version!r}"
+        )
+    return list(payload.get("items") or [])
+
+
+def atomic_write_text(path: Path, text: str) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
 def gather_sharded_objects(
     local: Sequence[T],
     *,
     shard_dir: Path,
     tag: str,
+    policy_version: str | None = None,
 ) -> list[T]:
     """Write per-rank pickles to shared disk, rank 0 interleaves them.
 
     Trajectories can be large; file gather avoids NCCL object-size limits.
+    ``policy_version`` rejects a shard left by another policy in the same directory.
     """
     info = dist_info()
     items = list(local)
@@ -473,10 +540,9 @@ def gather_sharded_objects(
         return items
     shard_dir = Path(shard_dir)
     shard_dir.mkdir(parents=True, exist_ok=True)
-    safe_tag = "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in str(tag))
+    safe_tag = _safe_tag(tag)
     path = shard_dir / f"{safe_tag}.rank{int(info.rank):04d}.pkl"
-    with path.open("wb") as handle:
-        pickle.dump(items, handle, protocol=pickle.HIGHEST_PROTOCOL)
+    write_policy_pickle(path, items, policy_version=policy_version)
     barrier()
     if not info.is_coordinator:
         barrier()
@@ -487,8 +553,7 @@ def gather_sharded_objects(
             shard_path = shard_dir / f"{safe_tag}.rank{rank:04d}.pkl"
             if not shard_path.is_file():
                 raise FileNotFoundError(f"missing rollout shard {shard_path}")
-            with shard_path.open("rb") as handle:
-                shards.append(list(pickle.load(handle)))
+            shards.append(read_policy_pickle(shard_path, policy_version=policy_version))
     finally:
         for rank in range(int(info.world_size)):
             shard_path = shard_dir / f"{safe_tag}.rank{rank:04d}.pkl"
@@ -501,21 +566,24 @@ def gather_sharded_objects(
     return merged
 
 
-def all_gather_via_disk(local: Sequence[T], *, shard_dir: Path, tag: str) -> list[T]:
+def all_gather_via_disk(
+    local: Sequence[T],
+    *,
+    shard_dir: Path,
+    tag: str,
+    policy_version: str | None = None,
+) -> list[T]:
     """Like gather_sharded_objects, then share the merged list with every rank."""
     info = dist_info()
-    merged = gather_sharded_objects(local, shard_dir=shard_dir, tag=tag)
+    merged = gather_sharded_objects(local, shard_dir=shard_dir, tag=tag, policy_version=policy_version)
     if info.world_size <= 1:
         return merged
-    blob_path = Path(shard_dir) / f"{''.join(ch if ch.isalnum() or ch in '-_.' else '_' for ch in str(tag))}.all.pkl"
+    blob_path = Path(shard_dir) / f"{_safe_tag(tag)}.all.pkl"
     if info.is_coordinator:
-        blob_path.parent.mkdir(parents=True, exist_ok=True)
-        with blob_path.open("wb") as handle:
-            pickle.dump(list(merged), handle, protocol=pickle.HIGHEST_PROTOCOL)
+        write_policy_pickle(blob_path, merged, policy_version=policy_version)
     barrier()
     if not info.is_coordinator:
-        with blob_path.open("rb") as handle:
-            merged = list(pickle.load(handle))
+        merged = read_policy_pickle(blob_path, policy_version=policy_version)
     barrier()
     if info.is_coordinator:
         try:

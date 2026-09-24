@@ -24,6 +24,7 @@ from trim.training.dist_runtime import (
     TRIM_OUTER_RANK_ENV_JSON,
     TRIM_TRAIN_WORKER_ENV,
     all_gather_via_disk,
+    resolve_rollout_shard_dir,
     assert_expected_world_size,
     assert_unique_local_gpu_uuids,
     barrier,
@@ -106,6 +107,59 @@ def _gather_probes(local: dict[str, Any]) -> list[dict[str, Any]]:
     return [dict(row or {}) for row in payload]
 
 
+def _broadcast_run_id(out: Path) -> str:
+    raw = os.environ.get("TRIM_RUN_ID") or os.environ.get("TORCHELASTIC_RUN_ID") or ""
+    if is_coordinator() and not str(raw).strip():
+        raw = f"{out.name}-{int(time.time())}-{os.getpid()}"
+    run_id = broadcast_object(str(raw) if is_coordinator() else None)
+    safe = "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in str(run_id or "run"))
+    return safe or "run"
+
+
+def _rollout_component_seconds(groups: list[Any]) -> dict[str, float]:
+    keys = ("model_sec", "prompt_sec", "snapshot_sec", "parse_sec", "execute_sec", "freeze_sec", "harness_sec")
+    acc = {f"rollout_component_{key}": 0.0 for key in keys}
+    for group in groups:
+        trajectory = getattr(group, "trajectory_group", None) or {}
+        if not isinstance(trajectory, dict):
+            continue
+        for episode in trajectory.get("episode_stats") or []:
+            if not isinstance(episode, dict):
+                continue
+            for key in keys:
+                acc[f"rollout_component_{key}"] += float(episode.get(key) or 0.0)
+    return acc
+
+
+def _emit_step_timing(
+    marks: dict[str, Any],
+    *,
+    timing_path: Path,
+    step: int | None,
+    rollout_batch_id: int,
+    status: str,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, float]:
+    from trim.training.runtime_manifest import finalize_step_timing, summarize_rank_timings
+
+    local = finalize_step_timing(marks)
+    rows = _gather_probes(local)
+    if is_coordinator():
+        record = {
+            "step": step,
+            "rollout_batch_id": int(rollout_batch_id),
+            "status": status,
+            "ranks": rows,
+            "summary": summarize_rank_timings(rows),
+        }
+        if extra:
+            record["extra"] = extra
+        timing_path.parent.mkdir(parents=True, exist_ok=True)
+        with timing_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, default=str) + "\n")
+    return local
+
+
 def _actor_wrap(backend: str) -> str:
     return "ddp" if str(backend).lower().replace("-", "_") == "torch_ddp_lora" else "fsdp2"
 
@@ -158,7 +212,8 @@ def run_verl_fsdp2_train(args: Any) -> dict[str, Any]:
     )
 
     from trim.eval.model_tokenizer import load_model_encoding
-    from trim.training.batched_env_rollout import rollout_queries_batched
+    from trim.training.batched_env_rollout import rollout_queries_batched, turn_audit_from_groups
+    from trim.training.opd_batch_health import assess_opd_health
     from trim.training.four_cell_runtime import (
         cell_lambda,
         coerce_runtime_args,
@@ -336,10 +391,33 @@ def run_verl_fsdp2_train(args: Any) -> dict[str, Any]:
 
     target = int(args.train_steps)
     max_empty = int(getattr(args, "max_empty_rollouts", 8) or 8)
+    max_empty_opd = int(getattr(args, "max_empty_opd_batches", 3) or 3)
     empty_streak = 0
+    opd_empty_streak = 0
     metrics_path = out / cell / "metrics.jsonl"
+    timing_path = out / cell / "step_timing.jsonl"
+    sample_path = out / cell / "turn_samples.jsonl"
     session_root = out / "vllm_sessions"
-    shard_dir = out / "tmp" / "rollout_shards"
+    run_id = _broadcast_run_id(out)
+    local_world = int(getattr(dist, "local_world_size", 0) or 0)
+    single_node = local_world > 0 and int(dist.world_size) == local_world
+    shard_dir = resolve_rollout_shard_dir(out=out, run_id=run_id, single_node=single_node)
+    if is_coordinator():
+        resolved["run_id"] = run_id
+        resolved["rollout_shard_dir"] = str(shard_dir)
+        resolved["single_node_ipc"] = single_node
+        _write_resolved_config(out, resolved)
+        print(
+            json.dumps(
+                {
+                    "event": "rollout_shard_dir",
+                    "run_id": run_id,
+                    "path": str(shard_dir),
+                    "single_node": single_node,
+                }
+            ),
+            flush=True,
+        )
     from trim.integrations.verl.fsdp2_actor import DDPLoraActor, FSDP2CispoActor
 
     actor: FSDP2CispoActor | DDPLoraActor | None = None
@@ -347,11 +425,14 @@ def run_verl_fsdp2_train(args: Any) -> dict[str, Any]:
     while already < target:
         if empty_streak >= max_empty:
             raise RuntimeError(f"too many empty-signal rollouts ({empty_streak}) before {target} updates")
+        t_step = time.perf_counter()
+        marks: dict[str, Any] = {}
         if is_coordinator():
             step_rows, sample_meta = sampler.sample_for_rollout()
             sampler.note_rollout_start()
         else:
             step_rows, sample_meta = [], {}
+        t_sample = time.perf_counter()
         packed = broadcast_object(
             {
                 "rows": step_rows if is_coordinator() else None,
@@ -359,16 +440,19 @@ def run_verl_fsdp2_train(args: Any) -> dict[str, Any]:
                 "sampler": sampler.state.to_dict() if is_coordinator() else None,
             }
         )
+        marks["sample_broadcast_s"] = time.perf_counter() - t_sample
         step_rows = list(packed["rows"])
         sample_meta = dict(packed["meta"])
         sampler.state = QuerySamplerState.from_dict(packed["sampler"])
         rollout_batch_id = int(sampler.state.global_rollout_batch)
         local_rows = shard_for_rank(step_rows, rank=int(dist.rank), world_size=int(dist.world_size))
+        t_switch = time.perf_counter()
         wait_gpus_quiet()
         if actor is not None:
             actor.close()
             actor = None
             wait_gpus_quiet()
+        marks["phase_switch_s"] = time.perf_counter() - t_switch
         tag = f"{cell}_b{rollout_batch_id}_r{int(dist.rank)}"
         session_dir = session_root / tag
         session_dir.mkdir(parents=True, exist_ok=True)
@@ -392,9 +476,13 @@ def run_verl_fsdp2_train(args: Any) -> dict[str, Any]:
             f"opt={already}/{target} local_queries={len(local_rows)} eager={client.enforce_eager}",
             flush=True,
         )
-        t_roll = time.perf_counter()
+        rollout_s = 0.0
+        groups: list[Any] = []
         try:
+            t_engine = time.perf_counter()
             client.start()
+            marks["rollout_engine_start_s"] = time.perf_counter() - t_engine
+            t_gen = time.perf_counter()
             groups = rollout_queries_batched(
                 client.generate_batch,
                 local_rows,
@@ -412,16 +500,33 @@ def run_verl_fsdp2_train(args: Any) -> dict[str, Any]:
                 collection_mode=collection_mode,
                 opd_loss=opd_loss,
             )
+            marks["rollout_generate_s"] = time.perf_counter() - t_gen
+            rollout_s = float(marks["rollout_engine_start_s"]) + float(marks["rollout_generate_s"])
         finally:
+            t_close = time.perf_counter()
             client.close()
             wait_gpus_quiet()
-        rollout_s = time.perf_counter() - t_roll
-        all_groups = all_gather_via_disk(groups, shard_dir=shard_dir, tag=f"b{rollout_batch_id}")
+            marks["rollout_engine_close_s"] = time.perf_counter() - t_close
+        marks.update(_rollout_component_seconds(groups))
+        t_gather = time.perf_counter()
+        all_groups = all_gather_via_disk(
+            groups,
+            shard_dir=shard_dir,
+            tag=f"b{rollout_batch_id}_pv{loop.policy_version}",
+            policy_version=str(loop.policy_version),
+        )
+        marks["gather_s"] = time.perf_counter() - t_gather
         rl_groups, n_const = drop_constant_reward_groups(all_groups)
         opd_datums: list[Any] = []
+        projection_stats: dict[str, Any] = {}
+        turn_audit = turn_audit_from_groups(all_groups)
         if lambda_opd > 0 and teacher_fn is not None:
+            t_build = time.perf_counter()
+            payload = None
+            build_err = None
             if is_coordinator():
-                batch = prepare_hybrid_batch(
+                try:
+                    batch = prepare_hybrid_batch(
                     groups=all_groups,
                     rl_datums_by_query={
                         g.query_id: list((g.trajectory_group or {}).get("rl_rows") or []) for g in all_groups
@@ -442,15 +547,79 @@ def run_verl_fsdp2_train(args: Any) -> dict[str, Any]:
                     seed=int(args.seed) + rollout_batch_id,
                     opd_loss=opd_loss,
                     opd_gate_beta=float(getattr(args, "opd_gate_beta", 5.0) or 5.0),
+                    )
+                    payload = {
+                        "opd_datums": list(batch.opd_datums),
+                        "projection_stats": dict(batch.projection_stats),
+                    }
+                except Exception as exc:
+                    build_err = f"{type(exc).__name__}: {exc}"
+            blob = broadcast_object({"err": build_err, "payload": payload} if is_coordinator() else None)
+            marks["teacher_projector_build_s"] = time.perf_counter() - t_build
+            if blob and blob.get("err"):
+                marks["_wall"] = time.perf_counter() - t_step
+                _emit_step_timing(
+                    marks,
+                    timing_path=timing_path,
+                    step=already,
+                    rollout_batch_id=rollout_batch_id,
+                    status="fatal_opd_build",
+                    extra={"message": blob["err"], "turn_audit": turn_audit.get("counts")},
                 )
-                opd_datums = list(batch.opd_datums)
-            opd_datums = broadcast_object(opd_datums)
+                raise RuntimeError(str(blob["err"]))
+            got = (blob or {}).get("payload") or {}
+            opd_datums = list(got.get("opd_datums") or [])
+            projection_stats = dict(got.get("projection_stats") or {})
         rl_rows = training_rows_from_groups(rl_groups)
+        health = assess_opd_health(
+            lambda_opd=float(lambda_opd),
+            opd_loss=str(opd_loss),
+            n_rl=len(rl_rows),
+            n_opd=len(opd_datums),
+            projection_stats=projection_stats,
+            opd_empty_streak=opd_empty_streak,
+            max_empty_opd=max_empty_opd,
+        )
+        opd_empty_streak = int(health["opd_empty_streak"])
+        if health["fatal"]:
+            marks["_wall"] = time.perf_counter() - t_step
+            if is_coordinator() and turn_audit.get("samples"):
+                sample_path.parent.mkdir(parents=True, exist_ok=True)
+                with sample_path.open("a", encoding="utf-8") as handle:
+                    for sample in turn_audit["samples"]:
+                        handle.write(
+                            json.dumps({"step": already, "rollout_batch_id": rollout_batch_id, **sample}, default=str)
+                            + "\n"
+                        )
+            _emit_step_timing(
+                marks,
+                timing_path=timing_path,
+                step=already,
+                rollout_batch_id=rollout_batch_id,
+                status="fatal_opd",
+                extra={
+                    "message": health["message"],
+                    "effective_update_type": health["effective_update_type"],
+                    "projection": health["fields"],
+                    "turn_audit": turn_audit.get("counts"),
+                },
+            )
+            raise RuntimeError(health["message"])
         if not rl_rows and not opd_datums:
             empty_streak += 1
+            marks["_wall"] = time.perf_counter() - t_step
             if is_coordinator():
                 print(f"[verl-fsdp2] skip empty batch={rollout_batch_id} const_groups={n_const}", flush=True)
+            _emit_step_timing(
+                marks,
+                timing_path=timing_path,
+                step=already,
+                rollout_batch_id=rollout_batch_id,
+                status="skip_empty",
+                extra={"effective_update_type": health["effective_update_type"], "turn_audit": turn_audit.get("counts")},
+            )
             continue
+        t_plan = time.perf_counter()
         plan = plan_joint_sync_batches(
             rl_rows,
             list(opd_datums),
@@ -458,12 +627,14 @@ def run_verl_fsdp2_train(args: Any) -> dict[str, Any]:
             world_size=int(dist.world_size),
             micro_batch_size=int(getattr(args, "train_micro_batch_size", 4) or 4),
         )
+        marks["batch_plan_s"] = time.perf_counter() - t_plan
         opt_path = None
         if last_ckpt:
             opt_path = resolve_resume_optimizer_path(
                 last_ckpt, rank=int(dist.rank), world_size=int(dist.world_size), wrap=wrap
             )
         actor_cls = DDPLoraActor if wrap == "ddp" else FSDP2CispoActor
+        t_load = time.perf_counter()
         actor = actor_cls(
             model_path=str(args.base_model or args.model_name),
             adapter_dir=adapter_live,
@@ -474,9 +645,30 @@ def run_verl_fsdp2_train(args: Any) -> dict[str, Any]:
             wrap=wrap,
             heartbeat_every=int(getattr(args, "train_heartbeat_every", 8) or 8),
         )
+        if is_coordinator() and getattr(actor, "runtime_info", None):
+            (out / "RUNTIME_MANIFEST.json").write_text(
+                json.dumps(
+                    {
+                        **dict(actor.runtime_info),
+                        "rollout_batch_id": rollout_batch_id,
+                        "optimizer_step_before": already,
+                        "run_id": run_id,
+                    },
+                    indent=2,
+                    default=str,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+        barrier()
+        marks["actor_load_s"] = time.perf_counter() - t_load
         t_train = time.perf_counter()
         part = actor.update(rl_rows, list(opd_datums), lambda_opd=lambda_opd, plan=plan)
         train_s = time.perf_counter() - t_train
+        for key in ("teacher_score_s", "student_forward_s", "loss_s", "backward_s", "grad_sync_s", "optimizer_s"):
+            marks[key] = float(part.get(key) or 0.0)
+        inner = sum(float(marks[key]) for key in ("teacher_score_s", "student_forward_s", "loss_s", "backward_s", "grad_sync_s", "optimizer_s"))
+        marks["actor_update_other_s"] = max(0.0, train_s - inner)
         n_opt = int(part.get("n_optimizer_steps") or 0)
         if n_opt > 0:
             sampler.note_update_complete()
@@ -487,17 +679,22 @@ def run_verl_fsdp2_train(args: Any) -> dict[str, Any]:
             ckpt_final = out / "checkpoints" / cell / f"step_{already:06d}"
             adapter_step = ckpt_tmp / "adapter"
             ckpt_tmp.mkdir(parents=True, exist_ok=True)
+            t_adapter = time.perf_counter()
             actor.save_adapter(adapter_step)
+            marks["adapter_save_s"] = time.perf_counter() - t_adapter
             import torch
 
+            t_opt_save = time.perf_counter()
             state = actor.optimizer.state_dict()
             if wrap == "ddp":
                 if is_coordinator():
                     torch.save(state, ckpt_tmp / "optimizer.pt")
-                    torch.save(state, ckpt_tmp / "optimizer.rank0000.pt")
             else:
                 torch.save(state, ckpt_tmp / f"optimizer.rank{int(dist.rank):04d}.pt")
+            del state
             barrier()
+            marks["optimizer_save_s"] = time.perf_counter() - t_opt_save
+            t_publish = time.perf_counter()
             if is_coordinator():
                 save_rng_state(ckpt_tmp / "rng.json")
                 (ckpt_tmp / "sampler.json").write_text(
@@ -531,6 +728,10 @@ def run_verl_fsdp2_train(args: Any) -> dict[str, Any]:
                         "global_rl_tokens": plan.global_rl_tokens,
                         "global_opd_weight": plan.global_opd_weight,
                     },
+                    "effective_update_type": health["effective_update_type"],
+                    "projection": health["fields"],
+                    "turn_audit": turn_audit.get("counts"),
+                    "run_id": run_id,
                 }
                 metrics_path.parent.mkdir(parents=True, exist_ok=True)
                 with metrics_path.open("a", encoding="utf-8") as handle:
@@ -544,7 +745,26 @@ def run_verl_fsdp2_train(args: Any) -> dict[str, Any]:
                         "train_s": round(train_s, 3),
                         "successful_optimizer_step": already,
                         "policy_version": loop.policy_version,
-                    }) + "\n")
+                        "effective_update_type": health["effective_update_type"],
+                        "opd_empty_streak": opd_empty_streak,
+                        "Z_gap": part.get("Z_gap"),
+                        "teacher_score_s": part.get("teacher_score_s"),
+                        "projected_gap_raw": part.get("projected_gap_raw"),
+                        "opd_objective": part.get("opd_objective"),
+                        **health["fields"],
+                        "turn_audit": turn_audit.get("counts"),
+                    }, default=str) + "\n")
+                if turn_audit.get("samples"):
+                    sample_path.parent.mkdir(parents=True, exist_ok=True)
+                    with sample_path.open("a", encoding="utf-8") as handle:
+                        for sample in turn_audit["samples"]:
+                            handle.write(
+                                json.dumps(
+                                    {"step": already, "rollout_batch_id": rollout_batch_id, **sample},
+                                    default=str,
+                                )
+                                + "\n"
+                            )
                 publish_step_checkpoint(ckpt_tmp, ckpt_final, manifest=manifest)
                 live = out / "adapters" / cell
                 live.mkdir(parents=True, exist_ok=True)
@@ -561,13 +781,36 @@ def run_verl_fsdp2_train(args: Any) -> dict[str, Any]:
             sampler.state = QuerySamplerState.from_dict(
                 broadcast_object(sampler.state.to_dict() if is_coordinator() else None)
             )
+            marks["adapter_publish_s"] = time.perf_counter() - t_publish
             already = int(sampler.state.global_optimizer_step)
+            step_status = "updated"
         else:
             empty_streak += 1
+            step_status = "no_optimizer_step"
+        t_tail = time.perf_counter()
         actor.close()
         actor = None
         wait_gpus_quiet()
+        t_barrier = time.perf_counter()
+        marks["phase_switch_s"] = float(marks.get("phase_switch_s") or 0.0) + (t_barrier - t_tail)
         barrier()
+        marks["barrier_wait_s"] = time.perf_counter() - t_barrier
+        marks["_wall"] = time.perf_counter() - t_step
+        _emit_step_timing(
+            marks,
+            timing_path=timing_path,
+            step=already,
+            rollout_batch_id=rollout_batch_id,
+            status=step_status,
+            extra={
+                "effective_update_type": health["effective_update_type"],
+                "n_rl_datums": len(rl_rows),
+                "n_opd_datums": len(opd_datums),
+                "turn_audit": turn_audit.get("counts"),
+                "train_s": round(train_s, 3),
+                "rollout_s": round(rollout_s, 3),
+            },
+        )
 
     if is_coordinator():
         print(json.dumps({"ok": True, "successful_optimizer_steps": already, "backend": "verl_fsdp2"}), flush=True)

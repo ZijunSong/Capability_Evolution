@@ -224,6 +224,13 @@ class FSDP2CispoActor:
         self.wrapper_type = "none"
         self._logged_logits_fallback = False
         self._logged_logits_shape = False
+        self.phase_seconds = {
+            "student_forward_s": 0.0,
+            "loss_s": 0.0,
+            "backward_s": 0.0,
+            "grad_sync_s": 0.0,
+        }
+        self.runtime_info: dict[str, Any] = {}
         self._load()
 
     def _load(self) -> None:
@@ -303,6 +310,36 @@ class FSDP2CispoActor:
                 raise FileNotFoundError(f"optimizer state missing: {path}")
             payload = torch.load(path, map_location="cpu", weights_only=False)
             self.optimizer.load_state_dict(payload)
+            del payload
+        self.runtime_info = self._collect_runtime_info()
+        if self.rank == 0:
+            import json
+
+            brief = {
+                "event": "actor_runtime",
+                "wrap": self.wrap,
+                "wrapper": self.wrapper_type,
+                "requested_dtype": self.runtime_info.get("requested_dtype"),
+                "expert_classes": self.runtime_info.get("expert_classes"),
+                "attention_classes": self.runtime_info.get("attention_classes"),
+                "attention_implementation": self.runtime_info.get("attention_implementation"),
+                "quantizer_class": self.runtime_info.get("quantizer_class"),
+                "quantization_fallback": self.runtime_info.get("quantization_fallback"),
+                "parameter_dtypes": self.runtime_info.get("effective_parameter_dtypes"),
+                "trainable_params": self.runtime_info.get("trainable_params"),
+                "allocated_mb": self.runtime_info.get("allocated_mb"),
+                "reserved_mb": self.runtime_info.get("reserved_mb"),
+                "versions": self.runtime_info.get("versions"),
+            }
+            print(json.dumps(brief, default=str), flush=True)
+
+    def _collect_runtime_info(self) -> dict[str, Any]:
+        try:
+            from trim.training.runtime_manifest import collect_actor_runtime
+
+            return collect_actor_runtime(self, requested_dtype="bfloat16")
+        except Exception as exc:
+            return {"error": f"{type(exc).__name__}: {exc}", "requested_dtype": "bfloat16"}
 
     def close(self) -> None:
         self.optimizer = None
@@ -314,6 +351,8 @@ class FSDP2CispoActor:
         self,
         pairs: Sequence[tuple[list[int], list[int]]],
         extra: Sequence[dict[str, Any]],
+        *,
+        time_bucket: str | None = "student_forward_s",
     ) -> tuple[list[torch.Tensor], list[dict[str, Any]]]:
         pad_id = int(self.tokenizer.pad_token_id or 0)
         packed = pack_left_pad_teacher_forced(
@@ -325,6 +364,7 @@ class FSDP2CispoActor:
             "use_cache": False,
         }
         keep = int(packed.max_resp) + 1
+        t_fwd = time.perf_counter()
         try:
             out = self.model(**kwargs, logits_to_keep=keep)
         except TypeError:
@@ -336,6 +376,10 @@ class FSDP2CispoActor:
                 )
                 self._logged_logits_fallback = True
             out = self.model(**kwargs)
+        if time_bucket:
+            self.phase_seconds[time_bucket] = float(self.phase_seconds.get(time_bucket) or 0.0) + (
+                time.perf_counter() - t_fwd
+            )
         logits = out.logits
         if not self._logged_logits_shape:
             print(
@@ -346,7 +390,12 @@ class FSDP2CispoActor:
             self._logged_logits_shape = True
         if logits.shape[1] > keep:
             logits = logits[:, -keep:, :]
+        t_lp = time.perf_counter()
         logps = gather_response_logprobs(logits, packed.response_ids, max_resp=packed.max_resp)
+        if time_bucket:
+            self.phase_seconds[time_bucket] = float(self.phase_seconds.get(time_bucket) or 0.0) + (
+                time.perf_counter() - t_lp
+            )
         aligned = []
         for row, resp in zip(extra, packed.response_ids):
             item = dict(row)
@@ -484,7 +533,7 @@ class FSDP2CispoActor:
             pairs.append((row["teacher_ids"], row["resp_ids"]))
             unpacked_rows.append(row)
         with torch.no_grad():
-            logps, _ = self._forward_response_logprobs(pairs, [{} for _ in pairs])
+            logps, _ = self._forward_response_logprobs(pairs, [{} for _ in pairs], time_bucket=None)
         out: list[torch.Tensor] = []
         for row, logp in zip(unpacked_rows, logps):
             lp = logp.detach().float().reshape(-1)
@@ -644,6 +693,12 @@ class FSDP2CispoActor:
                         f"distributed actor implements projected-gap only; refused {loss!r}"
                     )
         assert self.model is not None and self.optimizer is not None
+        self.phase_seconds = {
+            "student_forward_s": 0.0,
+            "loss_s": 0.0,
+            "backward_s": 0.0,
+            "grad_sync_s": 0.0,
+        }
         self.model.train()
         self.optimizer.zero_grad(set_to_none=True)
         steps = scheduled.steps()
@@ -712,6 +767,8 @@ class FSDP2CispoActor:
             )
             ctx = self._sync_context(sync_now)
             with ctx:
+                fwd_before = float(self.phase_seconds.get("student_forward_s") or 0.0)
+                t_block = time.perf_counter()
                 if kind == "rl":
                     numer, hits, tot, n_in = self._rl_numerator(chunk)
                     ratio_hits += hits
@@ -739,8 +796,17 @@ class FSDP2CispoActor:
                     # Weights already include lambda; keep the original sum, only undo DDP mean.
                     numer, n_in = self._opd_numerator(chunk)
                     loss = scale * numer
+                block_s = time.perf_counter() - t_block
+                fwd_dt = float(self.phase_seconds.get("student_forward_s") or 0.0) - fwd_before
+                self.phase_seconds["loss_s"] = float(self.phase_seconds.get("loss_s") or 0.0) + max(0.0, block_s - fwd_dt)
+                t_backward = time.perf_counter()
                 if loss.requires_grad:
                     loss.backward()
+                backward_dt = time.perf_counter() - t_backward
+                if sync_now and self.world_size > 1:
+                    self.phase_seconds["grad_sync_s"] = float(self.phase_seconds.get("grad_sync_s") or 0.0) + backward_dt
+                else:
+                    self.phase_seconds["backward_s"] = float(self.phase_seconds.get("backward_s") or 0.0) + backward_dt
                 loss_sum += float(loss.detach().item())
                 del loss, numer
             input_tokens += n_in
@@ -791,6 +857,10 @@ class FSDP2CispoActor:
                 "projected_gap_raw": gap_raw if gap_mode else None,
                 "gate_mean": (gate_mean_acc / gate_n) if gate_n else None,
                 "teacher_score_s": round(teacher_score_s, 3) if gap_mode else None,
+                "student_forward_s": round(float(self.phase_seconds.get("student_forward_s") or 0.0), 3),
+                "loss_s": round(float(self.phase_seconds.get("loss_s") or 0.0), 3),
+                "backward_s": round(float(self.phase_seconds.get("backward_s") or 0.0), 3),
+                "grad_sync_s": round(float(self.phase_seconds.get("grad_sync_s") or 0.0), 3),
                 "ratio_clip_fraction": (ratio_hits / max(1, ratio_total)),
                 "clip_low": self.clip_low,
                 "clip_high": self.clip_high,
@@ -823,6 +893,9 @@ class FSDP2CispoActor:
 
     def save_adapter(self, path: Path) -> None:
         path = Path(path)
+        if self.wrap == "ddp":
+            self._save_ddp_adapter(path)
+            return
         if self.rank == 0:
             path.mkdir(parents=True, exist_ok=True)
         if self.world_size > 1:
@@ -866,6 +939,49 @@ class FSDP2CispoActor:
             self.tokenizer.save_pretrained(str(path))
         if self.world_size > 1:
             dist.barrier()
+
+    def _save_ddp_adapter(self, path: Path) -> None:
+        """Rank 0 writes the PEFT adapter only. Other ranks wait and share failures.
+
+        This path assumes q/k/v/o LoRA with ``bias=none`` and frozen embeddings.
+        It is not a correct FSDP2 shard gather.
+        """
+        err: str | None = None
+        if self.world_size > 1:
+            dist.barrier()
+        if self.rank == 0:
+            try:
+                path.mkdir(parents=True, exist_ok=True)
+                core = self.model
+                seen: set[int] = set()
+                while hasattr(core, "module") and id(core) not in seen:
+                    seen.add(id(core))
+                    nxt = core.module
+                    if nxt is None or nxt is core:
+                        break
+                    core = nxt
+                if not hasattr(core, "peft_config"):
+                    raise RuntimeError("DDP adapter save expected a PEFT model after unwrapping")
+                try:
+                    core.save_pretrained(
+                        str(path),
+                        safe_serialization=True,
+                        save_embedding_layers=False,
+                    )
+                except TypeError:
+                    core.save_pretrained(str(path), safe_serialization=True)
+                if self.tokenizer is None:
+                    raise RuntimeError("tokenizer missing during DDP adapter save")
+                self.tokenizer.save_pretrained(str(path))
+            except Exception as exc:
+                err = f"{type(exc).__name__}: {exc}"
+        if self.world_size > 1:
+            from trim.training.dist_runtime import broadcast_object
+
+            err = broadcast_object(err)
+            dist.barrier()
+        if err:
+            raise RuntimeError(f"DDP LoRA adapter save failed: {err}")
 
 
 class DDPLoraActor(FSDP2CispoActor):
