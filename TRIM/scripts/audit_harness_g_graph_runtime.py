@@ -15,7 +15,7 @@ if str(_TRIM) not in sys.path:
 from trim.adapters.harness_profiles import zero_mask_for
 from trim.eval.harness1_metrics import episode_quality_metrics
 from trim.eval.harness_g_contract import is_corpus_scope, validate_loaded_graph
-from trim.eval.harness_g_env import execute_tool, new_state, GRAPH_MAX_FRONTIER_SIDS
+from trim.eval.harness_g_env import execute_tool, new_state, GRAPH_MAX_FRONTIER_SIDS, _menu_hash
 from trim.eval.harness_g_graph import GRAPH_MAX_ENTITY_DOCS, GRAPH_MAX_ENTITY_SIDS, load_graph_index
 from trim.eval.transfer_benchmarks import load_eval_benchmark, open_eval_retrieval
 
@@ -98,19 +98,32 @@ def _pick_lookup(state: dict, gold: set[str]) -> str | None:
     return best
 
 
-def run_query(row: dict, graph, searcher, search_k: int, max_lookups: int) -> dict:
+def run_query(
+    row: dict,
+    graph,
+    searcher,
+    search_k: int,
+    max_lookups: int,
+    *,
+    altered_menu_oracle: bool = False,
+    harness_mask=None,
+) -> dict:
     gold = {str(x) for x in (row.get("gold_docids") or [])}
     query = str(row.get("query") or "")
     hits = searcher.search(query, int(search_k)) if searcher is not None else []
     store = {str(h.docid): {"id": str(h.docid), "text": str(h.text or "")} for h in hits}
-    st = new_state(query, store, harness_mask=zero_mask_for("Harness-G"), graph_index=graph)
+    mask = harness_mask if harness_mask is not None else zero_mask_for("Harness-G")
+    st = new_state(query, store, harness_mask=mask, graph_index=graph)
     st, _, ok = execute_tool(st, "init", {}, searcher=searcher, search_k=search_k)
     if not ok:
         return {"query_id": row.get("query_id"), "ok": False, "reason": "init_failed"}
-    _inject_gold_bridges(st, graph, gold)
+    if altered_menu_oracle:
+        _inject_gold_bridges(st, graph, gold)
     init_docs = set(st.get("observed_docids") or [])
+    init_candidates = set(st.get("candidate_docids") or st.get("initial_bm25_docids") or [])
     tools = ["init"]
     menu0 = _menu_eids(st)
+    menu_hashes = [_menu_hash(st)]
     n_bridge_obs = 0
     n_bridge_menu = 0
     for eid in menu0:
@@ -130,17 +143,29 @@ def run_query(row: dict, graph, searcher, search_k: int, max_lookups: int) -> di
             n_bridge_obs += 1
 
     for _ in range(max_lookups):
-        if gold & set(st.get("observed_docids") or []):
+        displayed = set(st.get("observed_docids") or [])
+        if gold & displayed:
             break
-        _inject_gold_bridges(st, graph, gold)
+        if altered_menu_oracle:
+            _inject_gold_bridges(st, graph, gold)
+        pre_menu = _menu_hash(st)
         eid = _pick_lookup(st, gold)
         if not eid:
             break
+        if eid not in set(_menu_eids(st)):
+            return {
+                "query_id": row.get("query_id"),
+                "ok": False,
+                "reason": "action_not_in_production_menu",
+                "menu_hash": pre_menu,
+            }
         st, _, ok = execute_tool(st, "lookup", {"eid": eid}, searcher=searcher, search_k=search_k)
         tools.append("lookup")
+        menu_hashes.append(_menu_hash(st))
         if not ok:
             break
-    observed = set(st.get("observed_docids") or [])
+    displayed = set(st.get("observed_docids") or [])
+    candidates = set(st.get("candidate_docids") or []) | set(st.get("graph_expanded_docids") or [])
     gold_sids = [
         sid
         for sid in (st.get("visible_sids") or [])
@@ -160,8 +185,11 @@ def run_query(row: dict, graph, searcher, search_k: int, max_lookups: int) -> di
     return {
         "query_id": row.get("query_id"),
         "ok": True,
+        "oracle_kind": "altered_menu" if altered_menu_oracle else "legal_menu",
         "init_hit": bool(init_docs & gold),
-        "observed_hit": bool(observed & gold),
+        "candidate_hit": bool((init_candidates | candidates) & gold),
+        "displayed_hit": bool(displayed & gold),
+        "observed_hit": bool(displayed & gold),
         "selected_hit": bool(set(st.get("selected_docids") or []) & gold),
         "recall": stats.get("recall"),
         "graph_scope": st.get("graph_scope"),
@@ -171,6 +199,7 @@ def run_query(row: dict, graph, searcher, search_k: int, max_lookups: int) -> di
         "lexical_lookup_calls": int(effects.get("lexical_lookup_calls") or 0),
         "n_lookups": sum(1 for name in tools if name == "lookup"),
         "n_menu": len(menu0),
+        "menu_hashes": menu_hashes,
         "n_bridge_obs": n_bridge_obs,
         "n_bridge_menu": n_bridge_menu,
     }
@@ -183,6 +212,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--search-k", type=int, default=10)
     parser.add_argument("--max-lookups", type=int, default=6)
     parser.add_argument("--max-queries", type=int, default=12)
+    parser.add_argument("--altered-menu-oracle", action="store_true", help="Inject gold entities into the menu. Diagnostic only; cannot gate production.")
+    parser.add_argument("--cell", choices=("zero", "all"), default="zero")
     parser.add_argument("--out", type=Path, default=None)
     args = parser.parse_args(argv)
 
@@ -192,18 +223,34 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(f"non-corpus graph scope: {graph.scope}")
     rows, _pool = load_eval_benchmark(args.benchmark)
     searcher = open_eval_retrieval(args.benchmark, formal=True)
+    from trim.adapters.harness_profiles import full_mask_for
+
+    mask = zero_mask_for("Harness-G") if args.cell == "zero" else full_mask_for("Harness-G")
     results = []
     for row in rows[: max(1, int(args.max_queries))]:
-        rec = run_query(row, graph, searcher, args.search_k, args.max_lookups)
+        rec = run_query(
+            row,
+            graph,
+            searcher,
+            args.search_k,
+            args.max_lookups,
+            altered_menu_oracle=bool(args.altered_menu_oracle),
+            harness_mask=mask,
+        )
         results.append(rec)
         print(json.dumps(rec, ensure_ascii=False), flush=True)
-    miss_then_hit = [r for r in results if r.get("ok") and (not r.get("init_hit")) and r.get("observed_hit")]
+    miss_then_hit = [r for r in results if r.get("ok") and (not r.get("init_hit")) and r.get("displayed_hit")]
     lookup_used = [r for r in results if int(r.get("graph_lookup_calls") or 0) > 0]
     graph_new_docs_total = sum(int(r.get("graph_new_docs") or 0) for r in results)
     payload = {
         "n_queries": len(results),
+        "oracle_kind": "altered_menu" if args.altered_menu_oracle else "legal_menu",
+        "cell": args.cell,
         "n_init_hits": sum(1 for r in results if r.get("init_hit")),
+        "n_candidate_hits": sum(1 for r in results if r.get("candidate_hit")),
+        "n_displayed_hits": sum(1 for r in results if r.get("displayed_hit")),
         "n_observed_hits": sum(1 for r in results if r.get("observed_hit")),
+        "n_selected_hits": sum(1 for r in results if r.get("selected_hit")),
         "n_init_miss_lookup_hit": len(miss_then_hit),
         "n_graph_lookup_used": len(lookup_used),
         "graph_new_docs_total": graph_new_docs_total,
@@ -214,11 +261,13 @@ def main(argv: list[str] | None = None) -> int:
     print(json.dumps({k: v for k, v in payload.items() if k != "results"}, indent=2), flush=True)
     if args.out:
         args.out.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    if args.altered_menu_oracle:
+        return 0
     if not lookup_used:
         return 1
     if payload["lexical_lookup_calls_total"] != 0:
         return 1
-    if payload["n_observed_hits"] == 0:
+    if payload["n_displayed_hits"] == 0 and payload["n_selected_hits"] == 0:
         return 1
     if graph_new_docs_total <= 0:
         return 1

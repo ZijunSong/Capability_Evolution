@@ -123,6 +123,21 @@ _DATASET_ALIASES = {
     "browsecomp_plus": "browsecompplus",
     "bc+": "browsecompplus",
     "BC+": "browsecompplus",
+    "bcplus": "browsecompplus",
+    "bcplus_test_166": "browsecompplus",
+    "bcplus_test_50": "browsecompplus",
+    "bcplus_full": "browsecompplus",
+    "bcplus_830": "browsecompplus",
+    "longseal": "longsealqa",
+    "longsealqa": "longsealqa",
+    "frames": "frames",
+    "frames_benchmark": "frames",
+    "hotpotqa": "hotpotqa",
+    "hotpot": "hotpotqa",
+    "hotpot_qa": "hotpotqa",
+    "hotpotqa_subset": "hotpotqa",
+    "web": "web",
+    "patents": "patents",
 }
 
 
@@ -135,19 +150,34 @@ def retrieval_from_args(args: Any) -> RetrievalConfig:
     backend = str(getattr(args, "retrieval_backend", None) or RETRIEVAL_UPSTREAM)
     reranker = str(getattr(args, "reranker", None) or DEFAULT_RERANKER)
     notes: list[str] = []
+    index_path = _opt_path(args, "index_path")
+    corpus_path = _opt_path(args, "corpus_path")
+    dataset_raw = getattr(args, "upstream_dataset", None) or getattr(args, "benchmark", None) or "browsecompplus"
     if backend == RETRIEVAL_LOCAL_BM25:
         notes.append("upstream_core_local_bm25; not a paper-hybrid Chroma reproduction")
+        if not index_path or (not corpus_path and not _opt_path(args, "docstore_path")):
+            from trim.eval.transfer_benchmarks import resolve_local_bm25_corpus
+
+            corpus = resolve_local_bm25_corpus(str(getattr(args, "benchmark", None) or dataset_raw))
+            if not index_path:
+                index_path = str(corpus.index_path)
+            if not corpus_path and not _opt_path(args, "docstore_path"):
+                corpus_path = str(corpus.corpus_path)
+            dataset_raw = getattr(args, "upstream_dataset", None) or corpus.dataset
+        if reranker == DEFAULT_RERANKER:
+            reranker = "none"
+            notes.append("local_bm25 defaulted reranker=none (cloud baseten is not used)")
     if backend == RETRIEVAL_SUBSTITUTE_BM25:
         notes.append("retired name; use local_bm25")
     return RetrievalConfig(
         backend=backend,
-        dataset=canonical_dataset_name(getattr(args, "upstream_dataset", None) or "browsecompplus"),
+        dataset=canonical_dataset_name(dataset_raw),
         collection_split=str(getattr(args, "collection_split", None) or "test"),
         reranker=reranker,
         verify_model=str(getattr(args, "verify_model", None) or DEFAULT_VERIFY_MODEL),
         notes=tuple(notes),
-        index_path=_opt_path(args, "index_path"),
-        corpus_path=_opt_path(args, "corpus_path"),
+        index_path=index_path,
+        corpus_path=corpus_path,
         docstore_path=_opt_path(args, "docstore_path"),
         id_map_path=_opt_path(args, "id_map_path"),
         corpus_manifest=_opt_path(args, "corpus_manifest"),
@@ -155,5 +185,5 @@ def retrieval_from_args(args: Any) -> RetrievalConfig:
         verify_base_url=str(getattr(args, "verify_base_url", None) or ""),
         reranker_base_url=str(getattr(args, "reranker_base_url", None) or ""),
         reranker_model=str(getattr(args, "reranker_model", None) or ""),
-        offline=bool(getattr(args, "offline", False)),
+        offline=bool(getattr(args, "offline", False) or backend == RETRIEVAL_LOCAL_BM25),
     )

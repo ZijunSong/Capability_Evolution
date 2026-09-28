@@ -13,9 +13,10 @@ is never selected automatically when the official path fails.
 Harness-G still uses its graph runtime.
 
 Pass ``--api-base-url`` and ``--api-model`` for the served actor. Default retrieval
-is ``--retrieval-backend upstream`` (original Chroma tools). Pass
-``--retrieval-backend local_bm25`` with ``--index-path`` and a full-text corpus to
-keep the original env while dropping Chroma. Do not use ``legacy_local``.
+is ``--retrieval-backend local_bm25``: ``--index-path`` and ``--corpus-path`` are
+filled from ``--benchmark`` (BC+, longsealqa, frames, hotpotqa). Pass
+``--retrieval-backend upstream`` only for original Chroma tools. Do not use
+``legacy_local``.
 """
 
 from __future__ import annotations
@@ -135,11 +136,34 @@ def load_eval_graph(args, spec, harness_mask) -> tuple[Any, dict]:
     if not path:
         return None, {"graph_required": False, "graph_index_path": None, "graph_enabled": False}
     require_graph_exists(path)
-    from trim.eval.harness_g_graph import load_graph_index
+    from trim.eval.harness_g_graph import (
+        load_graph_index,
+        read_graph_metadata_sidecar,
+        write_graph_metadata_sidecar,
+    )
 
+    replicas = int(getattr(args, "eval_replicas", 1) or 1)
+    if replicas > 1:
+        side = read_graph_metadata_sidecar(path)
+        if side:
+            if formal:
+                scope = str(side.get("graph_scope") or "")
+                if not scope or not str(side.get("graph_fingerprint") or ""):
+                    side = None
+            if side:
+                side["graph_required"] = formal
+                side["graph_index_path"] = path
+                side["graph_loaded_in_parent"] = False
+                side["graph_enabled"] = bool(side.get("graph_enabled", True))
+                return None, side
     graph = load_graph_index(path)
     meta = validate_loaded_graph(graph, required=formal, path=path)
     meta["graph_required"] = formal
+    meta["graph_loaded_in_parent"] = True
+    try:
+        write_graph_metadata_sidecar(path, meta)
+    except OSError:
+        pass
     return graph, meta
 
 
@@ -285,6 +309,19 @@ def main(argv: list[str] | None = None) -> int:
                 "max_model_len": int(args.max_model_len),
                 "seed": int(args.seed),
             }
+            from trim.eval.model_profiles import is_harmony_model
+
+            effort = getattr(args, "reasoning_effort", None)
+            if effort is None and is_harmony_model(
+                identity.api_model or identity.base_model or getattr(args, "model_name", None)
+            ):
+                # gpt-oss high-effort reasoning often fills max_tokens before a tool call.
+                effort = "medium"
+            if effort:
+                worker_extra["sampling_extra"] = {
+                    "reasoning_effort": effort,
+                    "chat_template_kwargs": {"reasoning_effort": effort},
+                }
             api_eval_kwargs = dict(
                 rows=rows,
                 out=spec.out / "upstream_api",
@@ -368,6 +405,18 @@ def main(argv: list[str] | None = None) -> int:
         "graph_build_version", "graph_source_corpus",
     )})
     launch["graph_index_path"] = graph_meta.get("graph_index_path") or getattr(args, "graph_index_path", None)
+    launch["planned_query_ids"] = [str(r.get("query_id")) for r in rows]
+    launch["n_expected"] = len(rows)
+    launch["n_queries"] = len(rows)
+    launch["env_workers"] = getattr(args, "env_workers", None)
+    launch["doc_store_workers"] = getattr(args, "doc_store_workers", None)
+    launch["eval_chunk_size"] = getattr(args, "eval_chunk_size", None)
+    try:
+        from trim.eval.contract_fingerprint import runtime_module_fingerprints
+
+        launch["runtime_modules"] = runtime_module_fingerprints()
+    except Exception:
+        launch["runtime_modules"] = None
     (spec.out / "LAUNCH.json").write_text(json.dumps(launch, indent=2) + "\n", encoding="utf-8")
     print(json.dumps({k: v for k, v in launch.items() if k != "harness_mask"} | {"eval_mode": mode}, indent=2), flush=True)
 
@@ -390,6 +439,8 @@ def main(argv: list[str] | None = None) -> int:
                 "gpu_memory_utilization": float(args.gpu_memory_utilization),
                 "max_num_seqs": int(getattr(args, "max_num_seqs", 256) or 256),
                 "eval_chunk_size": getattr(args, "eval_chunk_size", None),
+                "doc_store_workers": getattr(args, "doc_store_workers", None),
+                "env_workers": getattr(args, "env_workers", None),
                 "seed": int(args.seed),
                 "primary_split": score_split,
                 "benchmark": spec.benchmark,
@@ -453,6 +504,8 @@ def main(argv: list[str] | None = None) -> int:
                         primary_split=score_split,
                         reasoning_effort=getattr(args, "reasoning_effort", None),
                         graph_index=graph_index,
+                        doc_store_workers=getattr(args, "doc_store_workers", None),
+                        env_workers=getattr(args, "env_workers", None),
                     )
                 finally:
                     runtime.detach_vllm()
@@ -505,6 +558,8 @@ def main(argv: list[str] | None = None) -> int:
                     primary_split=score_split,
                     reasoning_effort=getattr(args, "reasoning_effort", None),
                     graph_index=graph_index,
+                    doc_store_workers=getattr(args, "doc_store_workers", None),
+                    env_workers=getattr(args, "env_workers", None),
                 )
                 ev["setting"] = cell
                 ev["eval_mode"] = mode

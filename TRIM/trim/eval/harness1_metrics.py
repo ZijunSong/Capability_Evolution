@@ -44,6 +44,26 @@ HARNESS1_QUALITY_KEYS: tuple[str, ...] = (
 
 TIMING_KEYS: tuple[str, ...] = ("e2e_sec", "model_sec", "harness_sec")
 
+# Child stages. Parents stay in TIMING_KEYS. Summaries must not add a child into its parent.
+# Missing keys on old traces stay missing; do not impute 0.
+TIMING_SCHEMA_VERSION = "harness_g_timing_v1"
+STAGE_TIMING_KEYS: tuple[str, ...] = (
+    "queue_wait_sec",
+    "prompt_sec",
+    "parse_sec",
+    "execute_sec",
+    "menu_sec",
+    "init_retrieve_sec",
+    "lookup_candidates_sec",
+    "lookup_rank_sec",
+    "frontier_sec",
+    "bridge_sec",
+    "serialize_sec",
+    "freeze_sec",
+    "snapshot_sec",
+    "model_sec_allocated",
+)
+
 METRIC_SPLIT_KEYS: tuple[str, ...] = (
     "gold_recall",
     "trajectory_gold_recall",
@@ -73,18 +93,36 @@ TRACE_EXPORT_KEYS: tuple[str, ...] = HARNESS1_QUALITY_KEYS + TIMING_KEYS + METRI
     "tool_history",
     "successful_select",
     "unique_selected_docs",
+    "n_generated",
     "n_parse_ok",
     "n_schema_ok",
     "n_menu_ok",
     "n_execution_ok",
-    "n_generated",
+    "n_attempt_events",
+    "n_infrastructure_failures",
+    "gold_docids",
+    "evidence_docids",
+    "official_split",
+    "candidate_docids",
+    "displayed_sids",
+    "prompt_visible_sids",
+    "legacy_retrieved_union_docids",
+    "attempt_events",
+    "termination_kind",
+    "termination_diagnostics",
+    "component_funnel",
     "graph_scope",
     "graph_fingerprint",
     "graph_enabled",
     "graph_index_path",
     "graph_lookups",
     "real_search_calls",
-)
+    "timing_schema_version",
+    "model_sec_kind",
+    "generate_batches",
+    "stage_counts",
+    "stage_cpu_sec",
+) + STAGE_TIMING_KEYS
 
 # Summary aliases matching the original eval table labels.
 SUMMARY_LABELS: dict[str, str] = {
@@ -109,8 +147,12 @@ SUMMARY_LABELS: dict[str, str] = {
     "execution_ok_rate_micro": "Execution-OK Rate (micro)",
     "test_evidence_recall_at_5": "Initial BM25 Recall@5",
     "test_evidence_recall_at_100": "Initial BM25 Recall@100",
-    "initial_bm25_recall_at_5": "Initial BM25 Recall@5",
-    "initial_bm25_recall_at_100": "Initial BM25 Recall@100",
+    "initial_bm25_recall_at_5": "Initial BM25 Evidence Recall@5 (compat alias)",
+    "initial_bm25_recall_at_100": "Initial BM25 Evidence Recall@100 (compat alias)",
+    "initial_bm25_gold_recall_at_5": "Initial BM25 Gold Recall@5",
+    "initial_bm25_gold_recall_at_100": "Initial BM25 Gold Recall@100",
+    "initial_bm25_evidence_recall_at_5": "Initial BM25 Evidence Recall@5",
+    "initial_bm25_evidence_recall_at_100": "Initial BM25 Evidence Recall@100",
     "mean_tool_calls_per_query": "Tool Calls",
     "tool_search_cost": "Search Calls",
     "mean_e2e_sec": "E2E Time (s)",
@@ -171,10 +213,28 @@ class EpisodeTiming:
     execute_sec: float = 0.0
     prompt_sec: float = 0.0
     snapshot_sec: float = 0.0
+    queue_wait_sec: float = 0.0
+    init_retrieve_sec: float = 0.0
+    lookup_candidates_sec: float = 0.0
+    lookup_rank_sec: float = 0.0
+    frontier_sec: float = 0.0
+    bridge_sec: float = 0.0
+    serialize_sec: float = 0.0
     peak_rss_mb: float | None = None
+    generate_batches: list[dict[str, Any]] = field(default_factory=list)
+    stage_cpu_sec: dict[str, float] = field(default_factory=dict)
 
     def add_model(self, dt: float) -> None:
         self.model_sec += max(0.0, float(dt))
+
+    def note_generate_batch(self, batch_id: str, wall_sec: float, n_requests: int) -> None:
+        self.generate_batches.append(
+            {
+                "batch_id": str(batch_id),
+                "wall_sec": max(0.0, float(wall_sec)),
+                "n_requests": int(n_requests),
+            }
+        )
 
     def add_harness(self, dt: float) -> None:
         self.harness_sec += max(0.0, float(dt))
@@ -196,36 +256,72 @@ class EpisodeTiming:
             "execute_sec": self.execute_sec,
             "prompt_sec": self.prompt_sec,
             "snapshot_sec": self.snapshot_sec,
+            "queue_wait_sec": self.queue_wait_sec,
+            "init_retrieve_sec": self.init_retrieve_sec,
+            "lookup_candidates_sec": self.lookup_candidates_sec,
+            "lookup_rank_sec": self.lookup_rank_sec,
+            "frontier_sec": self.frontier_sec,
+            "bridge_sec": self.bridge_sec,
+            "serialize_sec": self.serialize_sec,
+            "model_sec_allocated": self.model_sec,
+            "model_sec_kind": "allocated_share",
+            "timing_schema_version": TIMING_SCHEMA_VERSION,
+            "generate_batches": list(self.generate_batches),
+            "stage_cpu_sec": dict(self.stage_cpu_sec),
             "peak_rss_mb": self.peak_rss_mb,
             "elapsed_s": e2e,
         }
 
 
+def _add_stage_wall(timing: EpisodeTiming, kind: str, dt: float) -> None:
+    dt = max(0.0, float(dt))
+    if kind == "model":
+        timing.add_model(dt)
+    elif kind == "freeze":
+        timing.freeze_sec += dt
+    elif kind == "menu":
+        timing.menu_sec += dt
+    elif kind == "parse":
+        timing.parse_sec += dt
+    elif kind == "execute":
+        # Inclusive parent is harness_sec; execute_sec is the child interval.
+        timing.execute_sec += dt
+        timing.add_harness(dt)
+    elif kind == "prompt":
+        timing.prompt_sec += dt
+    elif kind == "snapshot":
+        timing.snapshot_sec += dt
+    elif kind == "queue_wait":
+        timing.queue_wait_sec += dt
+    elif kind == "init_retrieve":
+        timing.init_retrieve_sec += dt
+    elif kind == "lookup_candidates":
+        timing.lookup_candidates_sec += dt
+    elif kind == "lookup_rank":
+        timing.lookup_rank_sec += dt
+    elif kind == "frontier":
+        timing.frontier_sec += dt
+    elif kind == "bridge":
+        timing.bridge_sec += dt
+    elif kind == "serialize":
+        timing.serialize_sec += dt
+    else:
+        timing.add_harness(dt)
+
+
 @contextmanager
 def timed_section(timing: EpisodeTiming | None, kind: str) -> Iterator[None]:
     t0 = time.perf_counter()
+    cpu0 = time.thread_time()
     try:
         yield
     finally:
         if timing is None:
             return
         dt = time.perf_counter() - t0
-        if kind == "model":
-            timing.add_model(dt)
-        elif kind == "freeze":
-            timing.freeze_sec += max(0.0, dt)
-        elif kind == "menu":
-            timing.menu_sec += max(0.0, dt)
-        elif kind == "parse":
-            timing.parse_sec += max(0.0, dt)
-        elif kind == "execute":
-            timing.execute_sec += max(0.0, dt)
-        elif kind == "prompt":
-            timing.prompt_sec += max(0.0, dt)
-        elif kind == "snapshot":
-            timing.snapshot_sec += max(0.0, dt)
-        else:
-            timing.add_harness(dt)
+        cpu = max(0.0, time.thread_time() - cpu0)
+        _add_stage_wall(timing, kind, dt)
+        timing.stage_cpu_sec[kind] = float(timing.stage_cpu_sec.get(kind) or 0.0) + cpu
 
 
 def episode_quality_metrics(
@@ -249,8 +345,13 @@ def episode_quality_metrics(
         traversed = pool | curated
     evidence = _id_set(row.get("evidence_docids"))
     gold = _id_set(row.get("gold_docids"))
-    # Official evaluation target: gold_docids when present, else evidence.
-    official_relevant = gold or evidence
+    g_state = bool(state.get("sentences") is not None or state.get("graph") is not None or state.get("action_map"))
+    if g_state:
+        official_relevant = gold
+        missing_gold = not gold
+    else:
+        official_relevant = gold or evidence
+        missing_gold = False
 
     recall = set_recall(curated, official_relevant)
     precision = set_precision(curated, official_relevant)
@@ -272,11 +373,19 @@ def episode_quality_metrics(
     if max_turns is not None and n_turns >= int(max_turns) and not ended:
         max_turns_reached = 1.0
     hist = list(state.get("tool_history") or [])
-    n_parse_ok = sum(1 for h in hist if h.get("parse_ok"))
-    n_schema_ok = sum(1 for h in hist if h.get("schema_ok"))
-    n_menu_ok = sum(1 for h in hist if h.get("target_ok") or h.get("menu_ok"))
-    n_exec_ok = sum(1 for h in hist if h.get("execution_ok"))
-    g_state = bool(state.get("sentences") is not None or state.get("graph") is not None or state.get("action_map"))
+    attempts = list(state.get("attempt_events") or [])
+    n_generated = len(attempts) if attempts else n_turns
+    if attempts:
+        n_parse_ok = sum(1 for a in attempts if a.get("parse_ok"))
+        n_schema_ok = sum(1 for a in attempts if a.get("schema_ok"))
+        n_menu_ok = sum(1 for a in attempts if a.get("menu_ok"))
+        n_exec_ok = sum(1 for a in attempts if a.get("execution_ok"))
+    else:
+        n_parse_ok = sum(1 for h in hist if h.get("parse_ok"))
+        n_schema_ok = sum(1 for h in hist if h.get("schema_ok"))
+        n_menu_ok = sum(1 for h in hist if h.get("target_ok") or h.get("menu_ok"))
+        n_exec_ok = sum(1 for h in hist if h.get("execution_ok"))
+    n_infra = sum(1 for a in attempts if str(a.get("error_class") or a.get("error_type") or "") in {"infrastructure", "infrastructure_failure"} or a.get("error_stage") == "execute" and a.get("traceback_ref"))
     n_select_ok = sum(1 for h in hist if str(h.get("name") or "") == "select" and h.get("execution_ok"))
 
     payload: dict[str, Any] = {
@@ -334,11 +443,25 @@ def episode_quality_metrics(
         "tool_history": hist,
         "successful_select": float(n_select_ok) if g_state else None,
         "unique_selected_docs": float(len(_id_set(state.get("selected_docids")))) if g_state else None,
-        "n_generated": n_turns,
+        "n_generated": n_generated,
         "n_parse_ok": n_parse_ok,
         "n_schema_ok": n_schema_ok,
         "n_menu_ok": n_menu_ok,
         "n_execution_ok": n_exec_ok,
+        "n_attempt_events": len(attempts),
+        "n_infrastructure_failures": n_infra,
+        "gold_docids": sorted(gold),
+        "evidence_docids": sorted(evidence),
+        "official_split": row.get("official_split"),
+        "missing_gold_docids": bool(missing_gold),
+        "candidate_docids": list(state.get("candidate_docids") or []),
+        "displayed_sids": list(state.get("displayed_sids") or []),
+        "prompt_visible_sids": list(state.get("prompt_visible_sids") or []),
+        "legacy_retrieved_union_docids": list(state.get("legacy_retrieved_union_docids") or []),
+        "attempt_events": attempts,
+        "termination_kind": state.get("termination_kind") or (state.get("end_reason") if ended else None),
+        "termination_diagnostics": dict(state.get("termination_diagnostics") or {}),
+        "component_funnel": dict(state.get("component_funnel") or {}),
         "graph_scope": state.get("graph_scope"),
         "graph_fingerprint": state.get("graph_fingerprint"),
         "graph_enabled": bool(state.get("graph_enabled")),
@@ -347,13 +470,24 @@ def episode_quality_metrics(
         "real_search_calls": int(state.get("real_search_calls") or 0),
         "prefetch_docs": int(state.get("prefetch_docs") or 0),
     }
+    stage_counts = state.get("_stage_counts") or state.get("stage_counts")
+    if isinstance(stage_counts, Mapping) and stage_counts:
+        payload["stage_counts"] = {str(k): dict(v) if isinstance(v, Mapping) else v for k, v in stage_counts.items()}
     if timing:
-        payload.update({k: float(timing[k]) for k in TIMING_KEYS if k in timing})
-        for extra_key in ("parse_sec", "execute_sec", "freeze_sec", "prompt_sec", "snapshot_sec"):
+        payload.update({k: float(timing[k]) for k in TIMING_KEYS if k in timing and timing[k] is not None})
+        for extra_key in STAGE_TIMING_KEYS:
             if extra_key in timing and timing[extra_key] is not None:
                 payload[extra_key] = float(timing[extra_key])
-        if "elapsed_s" in timing:
+        if "elapsed_s" in timing and timing["elapsed_s"] is not None:
             payload["elapsed_s"] = float(timing["elapsed_s"])
+        if timing.get("model_sec_kind"):
+            payload["model_sec_kind"] = timing["model_sec_kind"]
+        if timing.get("timing_schema_version"):
+            payload["timing_schema_version"] = timing["timing_schema_version"]
+        if timing.get("generate_batches"):
+            payload["generate_batches"] = list(timing["generate_batches"])
+        if isinstance(timing.get("stage_cpu_sec"), Mapping) and timing.get("stage_cpu_sec"):
+            payload["stage_cpu_sec"] = dict(timing["stage_cpu_sec"])
     return payload
 
 
@@ -387,12 +521,33 @@ def summarize_quality_and_timing(traces: Sequence[Mapping[str, Any]]) -> dict[st
     out["used_curate_rate"] = _mean([float(t.get("used_curate") or 0.0) for t in traces]) if n else 0.0
     out["recall_gt0_rate"] = _mean([1.0 if float(t.get("recall") or 0.0) > 0 else 0.0 for t in traces]) if n else 0.0
     for key in TIMING_KEYS:
-        vals = [float(t[key]) for t in traces if t.get(key) is not None]
+        vals = [float(t[key]) for t in traces if key in t and t.get(key) is not None]
         out[f"mean_{key}"] = _mean(vals) if vals else None
         out[f"p50_{key}"] = _percentile(vals, 50) if vals else None
         out[f"p95_{key}"] = _percentile(vals, 95) if vals else None
         out[f"sum_{key}"] = sum(vals) if vals else None
+    for key in STAGE_TIMING_KEYS:
+        if not any(key in t and t.get(key) is not None for t in traces):
+            continue
+        vals = [float(t[key]) for t in traces if key in t and t.get(key) is not None]
+        out[f"mean_{key}"] = _mean(vals) if vals else None
+        out[f"sum_{key}"] = sum(vals) if vals else None
+    batch_walls: dict[str, float] = {}
+    for trace in traces:
+        for batch in trace.get("generate_batches") or []:
+            if not isinstance(batch, Mapping):
+                continue
+            batch_id = str(batch.get("batch_id") or "")
+            if not batch_id:
+                continue
+            batch_walls[batch_id] = float(batch.get("wall_sec") or 0.0)
+    if batch_walls:
+        out["n_generate_batches"] = len(batch_walls)
+        out["sum_generate_batch_wall_sec"] = sum(batch_walls.values())
     out["elapsed_s"] = out.get("mean_e2e_sec")
+    schema = next((t.get("timing_schema_version") for t in traces if t.get("timing_schema_version")), None)
+    if schema:
+        out["timing_schema_version"] = schema
     return out
 
 

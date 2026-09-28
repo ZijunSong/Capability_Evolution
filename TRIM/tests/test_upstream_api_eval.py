@@ -7,6 +7,7 @@ import json
 from trim.cli.launch import eval_mask_for_ids, parse_eval_args, student_mask_for_ids, teacher_mask_for_ids
 from trim.upstream_harness1.api_adapter import (
     ServerParseError,
+    canonicalize_api_tool_name,
     parse_chat_completion,
     request_fingerprint,
     rewrite_premature_user_text,
@@ -181,7 +182,7 @@ def test_retry_fingerprint_is_stable():
     assert request_fingerprint(body) == request_fingerprint(dict(body))
 
 
-def test_parse_rejects_corrupted_tool_name():
+def test_parse_recovers_channel_leak_tool_name():
     parsed = parse_chat_completion(
         {
             "choices": [
@@ -202,9 +203,39 @@ def test_parse_rejects_corrupted_tool_name():
             ]
         }
     )
-    assert parsed.ok is False
-    assert parsed.protocol_error is not None
-    assert "Corrupted tool name" in parsed.protocol_error
+    assert parsed.ok is True
+    assert parsed.tool_calls[0]["name"] == "search_corpus"
+    assert parsed.tool_calls[0]["arguments"] == {"query": "test"}
+
+
+def test_parse_recovers_tool_name_aliases():
+    assert canonicalize_api_tool_name("fanout_search") == "fan_out_search"
+    assert canonicalize_api_tool_name("crawl") == "read_document"
+    assert canonicalize_api_tool_name("fetch_doc<|channel|>commentary") == "read_document"
+    assert canonicalize_api_tool_name("read_document—assistant") == "read_document"
+    parsed = parse_chat_completion(
+        {
+            "choices": [
+                {
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "tool_calls": [
+                            {
+                                "id": "c1",
+                                "function": {
+                                    "name": "fanout_search<|channel|>commentary",
+                                    "arguments": '{"queries": ["a"]}',
+                                },
+                            }
+                        ]
+                    },
+                }
+            ]
+        }
+    )
+    assert parsed.ok is True
+    assert parsed.tool_calls[0]["name"] == "fan_out_search"
+    assert parsed.tool_calls[0]["arguments"] == {"queries": ["a"]}
 
 
 def test_parse_length_truncation_not_implicit_end():
@@ -223,7 +254,7 @@ def test_parse_length_truncation_not_implicit_end():
     assert parsed.tool_calls == []
 
 
-def test_parse_tool_call_in_content_without_structured_calls():
+def test_parse_recovers_openai_tool_json_in_content():
     parsed = parse_chat_completion(
         {
             "choices": [
@@ -236,8 +267,9 @@ def test_parse_tool_call_in_content_without_structured_calls():
             ]
         }
     )
-    assert parsed.ok is False
-    assert parsed.protocol_error == "tool_call_in_content"
+    assert parsed.ok is True
+    assert parsed.tool_calls[0]["name"] == "search_corpus"
+    assert parsed.tool_calls[0]["arguments"] == {"query": "foo"}
 
 
 def test_parse_recovers_gemma_pythonic_curate_missing_commas():

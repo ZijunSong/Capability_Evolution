@@ -457,6 +457,8 @@ class ModelEncoding:
     tokenizer: Any | None = None
     harmony: Any | None = None
     prompt_history_keep: int = 12
+    max_model_len: int | None = None
+    max_new_tokens: int | None = None
 
     def decode_tokens(self, ids: Sequence[int]) -> str:
         tokens = [int(x) for x in ids]
@@ -574,7 +576,12 @@ class ModelEncoding:
         )
 
 
-def load_model_encoding(model_path: str | None = None) -> ModelEncoding:
+def load_model_encoding(
+    model_path: str | None = None,
+    *,
+    max_model_len: int | None = None,
+    max_new_tokens: int | None = None,
+) -> ModelEncoding:
     source = str(model_path or "")
     profile = resolve_model_profile(source)
     if profile.stack != STACK_HARMONY:
@@ -595,6 +602,8 @@ def load_model_encoding(model_path: str | None = None) -> ModelEncoding:
             encoding_name=str(audit["encoding"]),
             stop_token_ids=list(audit["stop_token_ids"]),
             tokenizer=tokenizer,
+            max_model_len=max_model_len,
+            max_new_tokens=max_new_tokens,
         )
     return ModelEncoding(
         family=FAMILY_GPTOSS,
@@ -602,4 +611,6 @@ def load_model_encoding(model_path: str | None = None) -> ModelEncoding:
         encoding_name=O200K_HARMONY,
         stop_token_ids=list(CANONICAL_STOP_TOKEN_IDS),
         harmony=load_harmony_enc(source or None),
+        max_model_len=max_model_len,
+        max_new_tokens=max_new_tokens,
     )

@@ -85,6 +85,7 @@ class LiveEpisode:
     pending_wm_text: str = ""
     prompt_budget: dict[str, Any] = field(default_factory=dict)
     turn_diags: list[dict[str, Any]] = field(default_factory=list)
+    ready_at: float | None = None
 
 
 def _needs_for(ep_or_mode: Any, opd_loss: str | None = None) -> CollectionNeeds:
@@ -536,7 +537,7 @@ def _apply_generation(
     ep.names.append(str(action.get("name")))
     _ok = False
     obs = ""
-    with timed_section(ep.timing, "harness"):
+    with timed_section(ep.timing, "execute" if g_eval else "harness"):
         try:
             if is_upstream_state(ep.st):
                 ep.st, obs, _ok = apply_train_action(
@@ -763,6 +764,24 @@ def _apply_generation(
         pool_before=pool_before,
         prompt_ids=effective_prompt_ids,
     )
+    _absorb_stage_timing(ep)
+    ep.ready_at = time.perf_counter()
+
+
+def _absorb_stage_timing(ep: LiveEpisode) -> None:
+    """Copy cumulative env stage seconds onto the episode timer. Assignment, not addition."""
+    stages = ep.st.get("_stage_sec") or {}
+    for key in (
+        "frontier_sec",
+        "bridge_sec",
+        "menu_sec",
+        "init_retrieve_sec",
+        "lookup_candidates_sec",
+        "lookup_rank_sec",
+        "serialize_sec",
+    ):
+        if key in stages:
+            setattr(ep.timing, key, float(stages[key]))
 
 
 def _prepare_chunk_episodes(
@@ -828,111 +847,126 @@ def _run_episode_turns(
     snap_from_state,
     env_workers: int = 1,
 ) -> None:
-    for turn in range(max_turns):
-        live = [ep for ep in episodes if not ep.st.get("ended")]
-        if not live:
-            break
-        reqs: list[GenerateRequest] = []
-        generated: list[GenerateResult | None] = [None] * len(live)
-        request_slots: list[int] = []
-        apply_jobs: list[tuple[LiveEpisode, GenerateResult]] = []
-        for i, ep in enumerate(live):
-            with timed_section(ep.timing, "prompt"):
-                pids = _build_prompt_ids(ep, enc)
-            with timed_section(ep.timing, "snapshot"):
-                mode = str(getattr(ep, "collection_mode", None) or COLLECTION_MODE_RL_OPD)
-                loss = str(getattr(ep, "opd_loss", "") or "")
-                if (_keep_snapshots(mode, loss) or ep.teacher_mode) and not ep.eval_only:
-                    pre = snap_from_state(str(ep.row["query_id"]), ep.st, component_id, harness_mask=ep.harness_mask)
-                    teacher_wm = None
-                    if _keep_teacher_context(mode, loss) or _keep_teacher_encode(mode, loss):
-                        teacher_wm = _teacher_wm_for_episode(ep)
-                    from trim.training.opd_prompt_encoding import attach_prompt_context
+    workers = max(1, int(env_workers or 1))
+    pool = ThreadPoolExecutor(max_workers=workers) if workers > 1 else None
+    try:
+        for turn in range(max_turns):
+            live = [ep for ep in episodes if not ep.st.get("ended")]
+            if not live:
+                break
+            reqs: list[GenerateRequest] = []
+            generated: list[GenerateResult | None] = [None] * len(live)
+            request_slots: list[int] = []
+            apply_jobs: list[tuple[LiveEpisode, GenerateResult]] = []
+            now = time.perf_counter()
+            for ep in live:
+                ready = ep.ready_at if ep.ready_at is not None else ep.timing.e2e_start
+                ep.timing.queue_wait_sec += max(0.0, now - ready)
+            for i, ep in enumerate(live):
+                with timed_section(ep.timing, "prompt"):
+                    pids = _build_prompt_ids(ep, enc)
+                with timed_section(ep.timing, "snapshot"):
+                    mode = str(getattr(ep, "collection_mode", None) or COLLECTION_MODE_RL_OPD)
+                    loss = str(getattr(ep, "opd_loss", "") or "")
+                    if (_keep_snapshots(mode, loss) or ep.teacher_mode) and not ep.eval_only:
+                        pre = snap_from_state(str(ep.row["query_id"]), ep.st, component_id, harness_mask=ep.harness_mask)
+                        teacher_wm = None
+                        if _keep_teacher_context(mode, loss) or _keep_teacher_encode(mode, loss):
+                            teacher_wm = _teacher_wm_for_episode(ep)
+                        from trim.training.opd_prompt_encoding import attach_prompt_context
 
-                    attach_prompt_context(
-                        pre,
-                        acts=list(getattr(ep, "pending_prompt_acts", None) or []),
-                        wm_text=str(getattr(ep, "pending_wm_text", "") or ""),
-                        teacher_wm_text=teacher_wm,
+                        attach_prompt_context(
+                            pre,
+                            acts=list(getattr(ep, "pending_prompt_acts", None) or []),
+                            wm_text=str(getattr(ep, "pending_wm_text", "") or ""),
+                            teacher_wm_text=teacher_wm,
+                        )
+                        ep.pending_pre = pre
+                    else:
+                        ep.pending_pre = None
+                    if _keep_dual_view(mode, loss) and ep.pending_pre is not None:
+                        from trim.training.opd_dataset import render_student_prompt
+
+                        ep.pending_prefix = render_student_prompt(ep.pending_pre, component_id=component_id)
+                    else:
+                        ep.pending_prefix = ""
+                    ep.pending_pids = pids
+                if teacher_mode:
+                    from trim.training.action_codec import render_action
+                    from trim.training.four_cell_runtime import teacher_action_from_point
+                    from trim.training.rl_opd_types import StudentDecisionPoint
+
+                    point = StudentDecisionPoint(
+                        episode_id=f"{ep.row['query_id']}_r{ep.rollout_idx}",
+                        query_id=str(ep.row["query_id"]),
+                        rollout_idx=ep.rollout_idx,
+                        turn_id=int(ep.n_turns),
+                        policy_version=policy_version,
+                        pre_action_snapshot=pre,
+                        pre_action_snapshot_hash=pre.content_hash(),
+                        student_model_input=ep.pending_prefix,
+                        student_action_tokens=[],
+                        student_action_text="",
+                        action_tool_names=[],
+                        post_action_snapshot=pre,
+                        reward=None,
+                        structurally_valid=True,
                     )
-                    ep.pending_pre = pre
-                else:
-                    ep.pending_pre = None
-                if _keep_dual_view(mode, loss) and ep.pending_pre is not None:
-                    from trim.training.opd_dataset import render_student_prompt
-
-                    ep.pending_prefix = render_student_prompt(ep.pending_pre, component_id=component_id)
-                else:
-                    ep.pending_prefix = ""
-                ep.pending_pids = pids
-            if teacher_mode:
-                from trim.training.action_codec import render_action
-                from trim.training.four_cell_runtime import teacher_action_from_point
-                from trim.training.rl_opd_types import StudentDecisionPoint
-
-                point = StudentDecisionPoint(
-                    episode_id=f"{ep.row['query_id']}_r{ep.rollout_idx}",
-                    query_id=str(ep.row["query_id"]),
-                    rollout_idx=ep.rollout_idx,
-                    turn_id=int(ep.n_turns),
-                    policy_version=policy_version,
-                    pre_action_snapshot=pre,
-                    pre_action_snapshot_hash=pre.content_hash(),
-                    student_model_input=ep.pending_prefix,
-                    student_action_tokens=[],
-                    student_action_text="",
-                    action_tool_names=[],
-                    post_action_snapshot=pre,
-                    reward=None,
-                    structurally_valid=True,
-                )
-                action = teacher_action_from_point(point, component_id)
-                text = render_action(action)
-                token_ids = list(enc.encode(text))
-                generated[i] = GenerateResult(
-                    request_id=f"{ep.row['query_id']}:e{ep.rollout_idx}:t{int(ep.n_turns)}",
-                    token_ids=token_ids,
-                    token_logprobs=[0.0] * len(token_ids),
-                    text=text,
-                    logprob_old=0.0,
-                    logprob_provenance="teacher_projected_action",
-                )
-            else:
-                request_slots.append(i)
-                reqs.append(
-                    GenerateRequest(
+                    action = teacher_action_from_point(point, component_id)
+                    text = render_action(action)
+                    token_ids = list(enc.encode(text))
+                    generated[i] = GenerateResult(
                         request_id=f"{ep.row['query_id']}:e{ep.rollout_idx}:t{int(ep.n_turns)}",
-                        prompt_token_ids=pids,
-                        max_new_tokens=max_new,
-                        temperature=temperature,
-                        seed=ep.seed + 31 * turn,
+                        token_ids=token_ids,
+                        token_logprobs=[0.0] * len(token_ids),
+                        text=text,
+                        logprob_old=0.0,
+                        logprob_provenance="teacher_projected_action",
                     )
-                )
-        if reqs:
-            t_gen = time.perf_counter()
-            gens = generate_batch(reqs)
-            gen_dt = time.perf_counter() - t_gen
-            share = gen_dt / max(1, len(reqs))
-            if len(gens) != len(reqs):
-                raise RuntimeError(f"generate_batch returned {len(gens)} for {len(reqs)} requests")
-            for slot, gen in zip(request_slots, gens):
-                generated[slot] = gen
-                live[slot].timing.add_model(share)
-        for ep, gen in zip(live, generated):
-            if gen is None:
-                raise RuntimeError("missing generation for live episode")
-            apply_jobs.append((ep, gen))
-        workers = max(1, int(env_workers or 1))
-        if workers == 1 or len(apply_jobs) <= 1:
-            for ep, gen in apply_jobs:
-                _apply_generation(ep, gen, enc=enc, searcher=searcher, search_k=search_k)
-        else:
-            def apply_one(job: tuple[LiveEpisode, GenerateResult]) -> None:
-                ep, gen = job
-                _apply_generation(ep, gen, enc=enc, searcher=searcher, search_k=search_k)
+                else:
+                    request_slots.append(i)
+                    reqs.append(
+                        GenerateRequest(
+                            request_id=f"{ep.row['query_id']}:e{ep.rollout_idx}:t{int(ep.n_turns)}",
+                            prompt_token_ids=pids,
+                            max_new_tokens=max_new,
+                            temperature=temperature,
+                            seed=ep.seed + 31 * turn,
+                        )
+                    )
+            if reqs:
+                t_gen = time.perf_counter()
+                gens = generate_batch(reqs)
+                gen_dt = time.perf_counter() - t_gen
+                share = gen_dt / max(1, len(reqs))
+                if len(gens) != len(reqs):
+                    raise RuntimeError(f"generate_batch returned {len(gens)} for {len(reqs)} requests")
+                batch_id = f"{id(episodes)}:turn{turn}:{len(reqs)}"
+                for slot, gen in zip(request_slots, gens):
+                    generated[slot] = gen
+                    live[slot].timing.add_model(share)
+                    live[slot].timing.note_generate_batch(batch_id, gen_dt, len(reqs))
+            for ep, gen in zip(live, generated):
+                if gen is None:
+                    raise RuntimeError("missing generation for live episode")
+                apply_jobs.append((ep, gen))
+            workers = max(1, int(env_workers or 1))
+            if workers == 1 or len(apply_jobs) <= 1:
+                for ep, gen in apply_jobs:
+                    _apply_generation(ep, gen, enc=enc, searcher=searcher, search_k=search_k)
+            else:
+                def apply_one(job: tuple[LiveEpisode, GenerateResult]) -> None:
+                    ep, gen = job
+                    _apply_generation(ep, gen, enc=enc, searcher=searcher, search_k=search_k)
 
-            with ThreadPoolExecutor(max_workers=min(workers, len(apply_jobs))) as pool:
-                list(pool.map(apply_one, apply_jobs))
+                if pool is None:
+                    with ThreadPoolExecutor(max_workers=min(workers, len(apply_jobs))) as turn_pool:
+                        list(turn_pool.map(apply_one, apply_jobs))
+                else:
+                    list(pool.map(apply_one, apply_jobs))
+    finally:
+        if pool is not None:
+            pool.shutdown(wait=True)
     for ep in episodes:
         ep.timing.mark_finished()
 
@@ -1061,6 +1095,7 @@ def rollout_queries_batched(
     doc_store_k: int = 12,
     query_batch_size: int | None = None,
     doc_store_workers: int = DEFAULT_DOC_STORE_WORKERS,
+    env_workers: int | None = None,
     train_env: str = "local_legacy",
     train_session: Any | None = None,
     rollout_backend: str = "vllm",
@@ -1093,7 +1128,8 @@ def rollout_queries_batched(
         component_id, harness_mask=harness_mask, teacher_mode=teacher_mode
     )
     batch = resolved_query_batch_size(len(rows), group_size, query_batch_size)
-    workers = max(1, int(doc_store_workers or 1))
+    prep_workers = max(1, int(doc_store_workers or 1))
+    apply_workers = prep_workers if env_workers is None else max(1, int(env_workers))
     chunks = [rows[i : i + batch] for i in range(0, len(rows), batch)]
     temperature = 0.0 if not sample else float(temperature if temperature is not None else 1.0)
     g = is_harness_g(mask=harness_mask, component_ids=component_id)
@@ -1117,7 +1153,7 @@ def rollout_queries_batched(
             harness_mask=harness_mask,
             searcher=searcher,
             doc_store_k=doc_store_k,
-            doc_store_workers=workers,
+            doc_store_workers=prep_workers,
             new_state=new_state,
             doc_store_for_row=doc_store_for_row,
             teacher_mode=teacher_mode,
@@ -1138,7 +1174,8 @@ def rollout_queries_batched(
                 ep.eval_only = bool(ep.eval_only or policy_version == "eval")
             print(
                 f"[rollout] chunk {i + 1}/{len(chunks)} queries={len(chunk)} "
-                f"episodes={len(episodes)} prep={prep_s:.1f}s backend={rollout_backend}",
+                f"episodes={len(episodes)} prep={prep_s:.1f}s backend={rollout_backend} "
+                f"doc_store_workers={prep_workers} env_workers={apply_workers}",
                 flush=True,
             )
             _run_episode_turns(
@@ -1154,7 +1191,7 @@ def rollout_queries_batched(
                 temperature=temperature,
                 search_k=search_k,
                 snap_from_state=snap_from_state,
-                env_workers=workers,
+                env_workers=apply_workers,
             )
             groups.extend(
                 _groups_from_episodes(
@@ -1199,15 +1236,21 @@ def traces_from_groups(
                 leak += 1
         search_q = str(row.get("query") or "")
         sm = (
-            search_metrics(searcher, search_q, list(row.get("evidence_docids") or []), cache=bm25_cache)
+            search_metrics(
+                searcher,
+                search_q,
+                list(row.get("evidence_docids") or []),
+                gold=list(row.get("gold_docids") or []),
+                cache=bm25_cache,
+            )
             if searcher is not None
             else {}
         )
         if sm:
             sm = {
                 **sm,
-                "initial_bm25_recall_at_5": sm.get("evidence_recall_at_5"),
-                "initial_bm25_recall_at_100": sm.get("evidence_recall_at_100"),
+                "initial_bm25_recall_at_5": sm.get("initial_bm25_evidence_recall_at_5") or sm.get("evidence_recall_at_5"),
+                "initial_bm25_recall_at_100": sm.get("initial_bm25_evidence_recall_at_100") or sm.get("evidence_recall_at_100"),
             }
         traces.append(
             {
@@ -1215,6 +1258,9 @@ def traces_from_groups(
                 "tool_names": list(stats.get("names") or []),
                 **trace_fields(stats),
                 **sm,
+                "gold_docids": list(row.get("gold_docids") or stats.get("gold_docids") or []),
+                "evidence_docids": list(row.get("evidence_docids") or stats.get("evidence_docids") or []),
+                "official_split": row.get("official_split") or stats.get("official_split"),
             }
         )
     return traces, leak

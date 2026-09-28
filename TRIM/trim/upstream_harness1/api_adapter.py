@@ -195,6 +195,27 @@ _KNOWN_TOOL_NAMES = frozenset(
     }
 )
 
+_TOOL_NAME_ALIASES = {
+    "fanout_search": "fan_out_search",
+    "fan_out": "fan_out_search",
+    "crawl": "read_document",
+    "fetch_doc": "read_document",
+    "fetch_document": "read_document",
+    "open_document": "read_document",
+    "read_doc": "read_document",
+    "browse": "search_corpus",
+    "web_search": "search_corpus",
+}
+
+_TOOL_CALL_TAG_RE = re.compile(r"</?tool_call>", re.IGNORECASE)
+_IDENT_PREFIX_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_CTRL_TOKEN_RE = re.compile(r"<\|[^|>]+\|>")
+_CHANNEL_LEAK_RE = re.compile(
+    r"(?:commentary|analysis|channel|constrain|json|assistant|functions|"
+    r"message|call|start|end|return)+",
+    re.I,
+)
+
 _TOOL_NAMES_PATTERN = (
     r"search_corpus|curate|end_search|grep_corpus|read_document|verify|fan_out_search|review_docs|prune_chunks"
 )
@@ -266,6 +287,154 @@ _TOOL_ARG_ONLY_KEYS = frozenset(
         "importance",
     }
 )
+
+
+def canonicalize_api_tool_name(name: str | None) -> str:
+    """Recover a schema tool from Harmony channel leaks and common aliases.
+
+    gpt-oss frequently emits ``fan_out_search<|channel|>commentary`` or
+    ``read_document—assistant`` as the OpenAI tool name. Execute the intended
+    tool instead of failing the turn as ``invalid_tool_name``.
+    """
+    raw = str(name or "").strip()
+    if not raw:
+        return ""
+    from trim.eval.harmony_runtime import _canonicalize_tool_name
+
+    recovered = str(_canonicalize_tool_name(raw) or "").strip()
+    lowered_recovered = recovered.lower()
+    if lowered_recovered in _KNOWN_TOOL_NAMES:
+        return lowered_recovered
+    alias = _TOOL_NAME_ALIASES.get(lowered_recovered)
+    if alias:
+        return alias
+
+    cleaned = _CTRL_TOKEN_RE.sub("", raw).replace("functions.", "").strip()
+    lowered = cleaned.lower().replace("-", "_")
+    if lowered in _KNOWN_TOOL_NAMES:
+        return lowered
+    alias = _TOOL_NAME_ALIASES.get(lowered)
+    if alias:
+        return alias
+    candidates = sorted((*_KNOWN_TOOL_NAMES, *_TOOL_NAME_ALIASES), key=len, reverse=True)
+    for tool in candidates:
+        if not lowered.startswith(tool):
+            continue
+        rest = re.sub(r"[^A-Za-z0-9]+", "", lowered[len(tool) :])
+        if rest == "" or _CHANNEL_LEAK_RE.fullmatch(rest):
+            return _TOOL_NAME_ALIASES.get(tool, tool)
+    ident = _IDENT_PREFIX_RE.match(lowered)
+    if ident:
+        base = ident.group(0)
+        if base in _KNOWN_TOOL_NAMES:
+            return base
+        alias = _TOOL_NAME_ALIASES.get(base)
+        if alias:
+            return alias
+    return recovered or raw
+
+
+def _prepare_content_for_json(text: str) -> str:
+    raw = _unwrap_markdown_fences(_strip_code_fences(str(text or "").strip()))
+    return _TOOL_CALL_TAG_RE.sub("", raw).strip()
+
+
+def _args_from_mapping(obj: Mapping[str, Any], *, drop: set[str]) -> dict[str, Any]:
+    return {str(k): v for k, v in obj.items() if str(k) not in drop}
+
+
+def _recover_json_tool_calls(
+    text: str, known_tool_names: frozenset[str] | None = None
+) -> list[dict[str, Any]] | None:
+    """Recover a complete known-tool JSON object leaked into assistant content."""
+    names = known_tool_names or _KNOWN_TOOL_NAMES
+    raw = _prepare_content_for_json(text)
+    if not raw.startswith("{") and not raw.startswith("["):
+        return None
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+
+    def _from_obj(obj: Mapping[str, Any]) -> dict[str, Any] | None:
+        if not isinstance(obj, Mapping):
+            return None
+        if isinstance(obj.get("name"), str):
+            name = canonicalize_api_tool_name(str(obj.get("name")))
+            if name not in names:
+                return None
+            args = obj.get("arguments")
+            if args is None:
+                args = obj.get("parameters")
+            if isinstance(args, str):
+                args = _json_args(args)
+            if args is None:
+                args = _args_from_mapping(obj, drop={"name", "arguments", "parameters", "id"})
+            if isinstance(args, Mapping):
+                return {"name": name, "arguments": dict(args), "id": "agent"}
+            return None
+        for key in ("type", "operation", "function"):
+            val = obj.get(key)
+            if not isinstance(val, str):
+                continue
+            name = canonicalize_api_tool_name(val)
+            if name not in names:
+                continue
+            args = obj.get("arguments")
+            if args is None:
+                args = obj.get("parameters")
+            if isinstance(args, str):
+                args = _json_args(args)
+            if args is None:
+                args = _args_from_mapping(
+                    obj, drop={key, "name", "arguments", "parameters", "id", "type", "operation", "function"}
+                )
+            if isinstance(args, Mapping):
+                return {"name": name, "arguments": dict(args), "id": "agent"}
+        recipient = obj.get("recipient")
+        if isinstance(recipient, str):
+            name = canonicalize_api_tool_name(recipient)
+            if name in names:
+                args = _args_from_mapping(obj, drop={"recipient", "name", "id"})
+                return {"name": name, "arguments": args, "id": "agent"}
+        tool_keys = [
+            key
+            for key in obj
+            if canonicalize_api_tool_name(str(key)) in names and isinstance(obj.get(key), Mapping)
+        ]
+        if len(tool_keys) == 1:
+            name = canonicalize_api_tool_name(str(tool_keys[0]))
+            return {"name": name, "arguments": dict(obj[tool_keys[0]]), "id": "agent"}
+        return None
+
+    if isinstance(payload, list):
+        recovered: list[dict[str, Any]] = []
+        for item in payload:
+            call = _from_obj(item) if isinstance(item, Mapping) else None
+            if call is None:
+                return None
+            recovered.append(call)
+        return recovered or None
+    if isinstance(payload, Mapping):
+        call = _from_obj(payload)
+        return [call] if call is not None else None
+    return None
+
+
+def _recover_harmony_tool_calls(text: str) -> list[dict[str, Any]] | None:
+    raw = str(text or "").strip()
+    if "<|" not in raw:
+        return None
+    from trim.eval.harmony_runtime import parse_harmony_tool_call
+
+    parsed = parse_harmony_tool_call(raw)
+    if not parsed.parsed or not parsed.legal or not parsed.tool_name:
+        return None
+    name = canonicalize_api_tool_name(parsed.tool_name)
+    if name not in _KNOWN_TOOL_NAMES:
+        return None
+    args = parsed.arguments if isinstance(parsed.arguments, Mapping) else {}
+    return [{"name": name, "arguments": dict(args), "id": "agent"}]
 
 
 def _strip_code_fences(text: str) -> str:
@@ -453,6 +622,17 @@ def _insert_missing_pythonic_commas(src: str) -> str:
     return _MISSING_PYTHONIC_COMMA_RE.sub(",", src)
 
 
+def _contains_ellipsis(value: Any) -> bool:
+    """True when pythonic ``...`` leaked into recovered tool arguments."""
+    if value is Ellipsis:
+        return True
+    if isinstance(value, Mapping):
+        return any(_contains_ellipsis(k) or _contains_ellipsis(v) for k, v in value.items())
+    if isinstance(value, (list, tuple, set)):
+        return any(_contains_ellipsis(v) for v in value)
+    return False
+
+
 def _pythonic_call_to_tool(call: ast.Call, names: frozenset[str]) -> dict[str, Any] | None:
     if not isinstance(call.func, ast.Name):
         return None
@@ -467,6 +647,10 @@ def _pythonic_call_to_tool(call: ast.Call, names: frozenset[str]) -> dict[str, A
         try:
             arguments[kw.arg] = ast.literal_eval(kw.value)
         except (ValueError, TypeError, SyntaxError, MemoryError):
+            return None
+        if _contains_ellipsis(arguments[kw.arg]):
+            # ``curate(add_ids=[...])`` is not a real argument list. Recovering
+            # it would later crash json.dumps of TURNS.jsonl as infra_error.
             return None
     return {"name": name, "arguments": arguments, "id": "agent"}
 
@@ -555,12 +739,19 @@ def _try_parse_pythonic_tool_calls(
 
 
 def _apply_recovered_tool_calls(parsed: ParsedApiAction, calls: list[dict[str, Any]]) -> ParsedApiAction:
-    parsed.tool_calls = calls
+    normalized: list[dict[str, Any]] = []
+    for call in calls:
+        name = canonicalize_api_tool_name(str(call.get("name") or ""))
+        item = dict(call)
+        if name:
+            item["name"] = name
+        normalized.append(item)
+    parsed.tool_calls = normalized
     parsed.parse_error = None
     parsed.protocol_error = None
     parsed.episode_finish_reason = (
         "explicit_end_search"
-        if any(str(c.get("name") or "") == "end_search" for c in calls)
+        if any(str(c.get("name") or "") == "end_search" for c in normalized)
         else None
     )
     return parsed
@@ -609,13 +800,16 @@ def parse_chat_completion(response: Mapping[str, Any]) -> ParsedApiAction:
             return parsed
         for call in tool_calls:
             fn = call.get("function") or {}
-            name = str(fn.get("name") or "")
-            if not name:
+            raw_name = str(fn.get("name") or "")
+            if not raw_name:
                 parsed.parse_error = "Tool call is missing function name"
                 parsed.tool_calls = []
                 return parsed
-            if "<|channel|>" in name or name.startswith("functions-"):
-                parsed.protocol_error = f"Corrupted tool name: {name!r}"
+            name = canonicalize_api_tool_name(raw_name) or raw_name
+            if name not in _KNOWN_TOOL_NAMES and (
+                "<|" in raw_name or raw_name.startswith("functions-") or "—" in raw_name
+            ):
+                parsed.protocol_error = f"Corrupted tool name: {raw_name!r}"
                 parsed.tool_calls = []
                 return parsed
             args_raw = fn.get("arguments") or "{}"
@@ -623,7 +817,7 @@ def parse_chat_completion(response: Mapping[str, Any]) -> ParsedApiAction:
                 params = dict(args_raw)
             else:
                 try:
-                    params = json.loads(args_raw)
+                    params = json.loads(args_raw) if str(args_raw).strip() else {}
                 except json.JSONDecodeError as exc:
                     parsed.parse_error = f"Invalid JSON arguments for tool {name}: {exc}"
                     parsed.tool_calls = []
@@ -648,6 +842,12 @@ def parse_chat_completion(response: Mapping[str, Any]) -> ParsedApiAction:
     if recovered:
         return _apply_recovered_tool_calls(parsed, recovered)
     recovered = _try_parse_glm0414_tool_calls(text) if text else None
+    if recovered:
+        return _apply_recovered_tool_calls(parsed, recovered)
+    recovered = _recover_json_tool_calls(text) if text else None
+    if recovered:
+        return _apply_recovered_tool_calls(parsed, recovered)
+    recovered = _recover_harmony_tool_calls(text) if text else None
     if recovered:
         return _apply_recovered_tool_calls(parsed, recovered)
     if text and _content_looks_like_tool_call(text):
@@ -710,6 +910,12 @@ def rewrite_premature_user_text(
     if recovered:
         return _apply_recovered_tool_calls(parsed, recovered)
     recovered = _try_parse_glm0414_tool_calls(text) if text else None
+    if recovered:
+        return _apply_recovered_tool_calls(parsed, recovered)
+    recovered = _recover_json_tool_calls(text) if text else None
+    if recovered:
+        return _apply_recovered_tool_calls(parsed, recovered)
+    recovered = _recover_harmony_tool_calls(text) if text else None
     if recovered:
         return _apply_recovered_tool_calls(parsed, recovered)
     if text and _content_looks_like_tool_call(text):

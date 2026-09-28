@@ -72,7 +72,7 @@ def _conversation_tool_names(conv) -> set[str]:
 def test_harness_g_conversation_uses_g_tools_not_harness1():
     conv = build_harness_g_conversation("When was Apple founded?", "[WM]\nstep=0")
     names = _conversation_tool_names(conv)
-    assert names == {"init", "select", "lookup", "answer"}
+    assert names == {"init", "select", "lookup", "page", "answer"}
     assert "search_corpus" not in names
     assert "answer_with" not in names
 
@@ -93,7 +93,7 @@ def test_gptoss_build_prompt_ids_uses_harmony_renderer_not_raw_encode():
     assert harmony.encode_calls == 0
     assert len(harmony.conversations) == 1
     conv, _role = harmony.conversations[0]
-    assert _conversation_tool_names(conv) == {"init", "select", "lookup", "answer"}
+    assert _conversation_tool_names(conv) == {"init", "select", "lookup", "page", "answer"}
 
 
 def test_gptoss_missing_harmony_backend_refuses_raw_encode():

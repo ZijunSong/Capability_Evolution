@@ -826,8 +826,10 @@ LEGAL_REWARD_WEIGHT = 0.10
 SHAPING_CAP = 0.10
 
 
-def freeze_train_state(st: Mapping[str, Any]) -> dict[str, Any]:
-    """Shallow-copy live env state so teacher prompts can freeze s_t."""
+def freeze_train_state(st: Mapping[str, Any], *, eval_only: bool = False) -> dict[str, Any]:
+    """Copy episode overlay only. Graph sentence/entity maps stay read-only references."""
+    if eval_only:
+        return dict(st)
     out = dict(st)
     for key in (
         "pool",
@@ -836,15 +838,16 @@ def freeze_train_state(st: Mapping[str, Any]) -> dict[str, Any]:
         "doc_store",
         "harness_mask",
         "runtime_effects",
-        "evidence_graph",
-        "sentences",
-        "entities",
         "action_map",
+        "component_funnel",
+        "fail_counts",
     ):
         val = st.get(key)
         if isinstance(val, dict):
             out[key] = dict(val)
     out["tool_history"] = list(st.get("tool_history") or [])
+    out["turn_events"] = list(st.get("turn_events") or [])
+    out["attempt_events"] = list(st.get("attempt_events") or [])
     return out
 
 
@@ -1565,6 +1568,7 @@ def eval_closed_loop(
     doc_store_k: int | None = None,
     query_batch_size: int | None = None,
     doc_store_workers: int | None = None,
+    env_workers: int | None = None,
     primary_split: str = "official_test",
     train_env: str = "local_legacy",
     train_session: Any | None = None,
@@ -1585,7 +1589,16 @@ def eval_closed_loop(
     )
     g_eval = is_harness_g(mask=harness_mask, component_ids=component_id)
     runtime_audit = None
-    if not g_eval:
+    if g_eval:
+        runtime_audit = {
+            "harness": "Harness-G",
+            "kind": "component_funnel",
+            "pass": True,
+            "claim_usable_for_full_vs_zero": False,
+            "claim_status": "DIAGNOSTIC_FUNNEL_ONLY",
+            "reason": "Harness-G reports enabled→delta funnels; this is not H1 wiring audit and not all-vs-zero proof.",
+        }
+    elif not g_eval:
         from trim.eval.runtime_effect_audit import audit_mask_wiring, merge_audits, summarize_live_effects
 
         runtime_audit = merge_audits(audit_mask_wiring(harness_mask))
@@ -1613,19 +1626,30 @@ def eval_closed_loop(
             doc_store_k=doc_store_k,
             query_batch_size=query_batch_size,
             doc_store_workers=8 if doc_store_workers is None else int(doc_store_workers),
+            env_workers=env_workers,
             train_env=train_env,
             train_session=train_session,
             reasoning_effort=reasoning_effort,
             graph_index=graph_index,
         )
         traces, leak = traces_from_groups(groups, rows, searcher=searcher)
-        if runtime_audit is not None:
+        if runtime_audit is not None and not g_eval:
             from trim.eval.runtime_effect_audit import merge_audits, summarize_live_effects
 
             live = summarize_live_effects(traces, harness_mask)
             runtime_audit = merge_audits(runtime_audit.get("wiring") or runtime_audit, live)
             if not live.get("pass"):
                 raise RuntimeError("; ".join(live.get("failures") or ["live effect gate failed"]))
+        if g_eval and runtime_audit is not None:
+            funnels = [dict(t.get("component_funnel") or {}) for t in traces]
+            runtime_audit = {
+                **runtime_audit,
+                "n_queries": len(traces),
+                "component_funnels": funnels,
+                "n_generated": sum(int(t.get("n_generated") or 0) for t in traces),
+                "n_attempt_events": sum(len(t.get("attempt_events") or []) for t in traces),
+                "n_infrastructure_failures": sum(int(t.get("n_infrastructure_failures") or 0) for t in traces),
+            }
         retrieval_name = searcher.name if searcher is not None else "none"
         split = split_summaries(
             traces,
@@ -1685,7 +1709,16 @@ def eval_closed_loop(
         if "compressed_teacher_view" in prefix or "VERIFY_RESULT_SECRET" in prefix:
             leak += 1
         search_q = str(row.get("query") or "")
-        sm = search_metrics(searcher, search_q, list(row.get("evidence_docids") or [])) if searcher is not None else {}
+        sm = (
+            search_metrics(
+                searcher,
+                search_q,
+                list(row.get("evidence_docids") or []),
+                gold=list(row.get("gold_docids") or []),
+            )
+            if searcher is not None
+            else {}
+        )
         from trim.eval.harness1_metrics import trace_fields
 
         traces.append(
@@ -1694,16 +1727,24 @@ def eval_closed_loop(
                 "tool_names": list(stats["names"]),
                 **trace_fields(stats),
                 **sm,
+                "gold_docids": list(row.get("gold_docids") or []),
+                "evidence_docids": list(row.get("evidence_docids") or []),
             }
         )
     retrieval_name = searcher.name if searcher is not None else "none"
-    if runtime_audit is not None:
+    if runtime_audit is not None and not g_eval:
         from trim.eval.runtime_effect_audit import merge_audits, summarize_live_effects
 
         live = summarize_live_effects(traces, harness_mask)
         runtime_audit = merge_audits(runtime_audit.get("wiring") or runtime_audit, live)
         if not live.get("pass"):
             raise RuntimeError("; ".join(live.get("failures") or ["live effect gate failed"]))
+    if g_eval and runtime_audit is not None:
+        runtime_audit = {
+            **runtime_audit,
+            "n_queries": len(traces),
+            "component_funnels": [dict(t.get("component_funnel") or {}) for t in traces],
+        }
     split = split_summaries(
         traces,
         setting="closed_loop",

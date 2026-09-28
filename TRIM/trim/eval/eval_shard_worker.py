@@ -4,7 +4,10 @@
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import sys
+import time
 from pathlib import Path
 
 _TRIM = Path(__file__).resolve().parents[2]
@@ -56,7 +59,11 @@ def _run_vllm(cfg: dict, rows: list[dict], harness_mask: dict) -> tuple[dict, li
         # Tokenizer/Harmony only. Pyserini/JNI must not start on this short-lived thread:
         # LuceneSearcher.search() then silently returns empty hits.
         try:
-            holder["enc"] = load_model_encoding(str(cfg.get("model_path") or ""))
+            holder["enc"] = load_model_encoding(
+                str(cfg.get("model_path") or ""),
+                max_model_len=int(cfg.get("max_model_len") or 32768),
+                max_new_tokens=int(cfg.get("max_new_tokens") or 2048),
+            )
         except BaseException as exc:
             errors.append(exc)
 
@@ -115,7 +122,11 @@ def _run_hf(cfg: dict, rows: list[dict], harness_mask: dict) -> tuple[dict, list
     keepalive = GpuKeepAlive()
     keepalive.start()
     try:
-        enc = load_model_encoding(str(cfg.get("model_path") or ""))
+        enc = load_model_encoding(
+            str(cfg.get("model_path") or ""),
+            max_model_len=int(cfg.get("max_model_len") or 32768),
+            max_new_tokens=int(cfg.get("max_new_tokens") or 2048),
+        )
         searcher = open_eval_retrieval(str(cfg.get("benchmark") or "BC+"), formal=True)
         keepalive.pause()
         backend = ScapeHFToolOPD(model_path=str(cfg["model_path"]), device_map="cuda:0", use_lora=True)
@@ -142,6 +153,97 @@ def _run_hf(cfg: dict, rows: list[dict], harness_mask: dict) -> tuple[dict, list
     )
 
 
+def _query_result_path(out: Path, query_id: str) -> Path:
+    safe = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in str(query_id)) or "query"
+    return out / "query_results" / f"{safe}.json"
+
+
+def _write_atomic_json(path: Path, payload: dict) -> float:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    started = time.perf_counter()
+    tmp.write_text(json.dumps(payload, ensure_ascii=False) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+    return time.perf_counter() - started
+
+
+def _contract_identity(cfg: dict, graph) -> tuple[dict, dict]:
+    from trim.eval.contract_fingerprint import collect_contract_fingerprint, runtime_module_fingerprints
+
+    graph_fp = ""
+    graph_scope = None
+    if graph is not None and hasattr(graph, "content_fingerprint"):
+        graph_fp = str(graph.content_fingerprint() or "")
+        graph_scope = getattr(graph, "scope", None)
+    fingerprint = collect_contract_fingerprint(
+        model_path=str(cfg.get("model_path") or ""),
+        graph_fingerprint=graph_fp or None,
+        graph_scope=graph_scope,
+        corpus_path=str(cfg.get("graph_index_path") or "") or None,
+        sampling={
+            "max_turns": cfg.get("max_turns"),
+            "max_new_tokens": cfg.get("max_new_tokens"),
+            "temperature": cfg.get("temperature"),
+            "search_k": cfg.get("search_k"),
+            "reasoning_effort": cfg.get("reasoning_effort"),
+            "seed": cfg.get("seed"),
+            "component": cfg.get("component"),
+            "env_workers": cfg.get("env_workers"),
+            "doc_store_workers": cfg.get("doc_store_workers"),
+            "eval_chunk_size": cfg.get("eval_chunk_size"),
+        },
+        extra={"runtime_modules": runtime_module_fingerprints()},
+    )
+    identity = {
+        "contract_sha256": fingerprint.get("contract_sha256"),
+        "graph_fingerprint": graph_fp,
+        "model_path": str(cfg.get("model_path") or ""),
+        "component": str(cfg.get("component") or ""),
+        "seed": int(cfg.get("seed") or 0),
+        "max_turns": int(cfg.get("max_turns") or 0),
+        "max_new_tokens": int(cfg.get("max_new_tokens") or 0),
+    }
+    return identity, fingerprint
+
+
+def _load_completed_queries(out: Path, identity: dict) -> dict[str, dict]:
+    root = out / "query_results"
+    if not root.is_dir():
+        return {}
+    done: dict[str, dict] = {}
+    for path in sorted(root.glob("*.json")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if payload.get("status") != "completed":
+            continue
+        if payload.get("contract") != identity:
+            continue
+        trace = payload.get("trace")
+        qid = str(payload.get("query_id") or "")
+        if not isinstance(trace, dict) or str(trace.get("query_id") or "") != qid or not qid:
+            continue
+        done[qid] = trace
+    return done
+
+
+def _persist_query(out: Path, trace: dict, identity: dict) -> dict:
+    qid = str(trace.get("query_id") or "")
+    row = dict(trace)
+    row["contract_sha256"] = identity.get("contract_sha256")
+    payload = {
+        "status": "completed",
+        "query_id": qid,
+        "attempt": 1,
+        "contract": identity,
+        "trace": row,
+    }
+    dt = _write_atomic_json(_query_result_path(out, qid), payload)
+    row["serialize_sec"] = float(row.get("serialize_sec") or 0.0) + dt
+    return row
+
+
 def _eval_chunks(cfg, rows, *, harness_mask, enc, searcher, generate_batch, backend):
     from trim.adapters.harness_profiles import is_harness_g
     from trim.eval.eval_parallel import merge_traces, summarize_merged_traces
@@ -149,13 +251,36 @@ def _eval_chunks(cfg, rows, *, harness_mask, enc, searcher, generate_batch, back
 
     g_eval = is_harness_g(mask=harness_mask, component_ids=cfg.get("component"))
     answer_with_enabled = bool((harness_mask or {}).get("answer_with"))
+    out = Path(cfg["out"])
+    graph = _load_graph_index(cfg)
+    identity, fingerprint = _contract_identity(cfg, graph)
+    cfg["_contract_fingerprint"] = fingerprint
+    resumed = _load_completed_queries(out, identity)
+    pending = [row for row in rows if str(row.get("query_id") or "") not in resumed]
+    by_id = dict(resumed)
 
     chunk = int(cfg.get("eval_chunk_size") or 0)
-    parts = [rows] if chunk <= 0 or chunk >= len(rows) else [rows[i : i + chunk] for i in range(0, len(rows), chunk)]
-    all_traces: list[list[dict]] = []
+    parts = [pending] if chunk <= 0 or chunk >= len(pending) else [
+        pending[i : i + chunk] for i in range(0, len(pending), chunk)
+    ]
+    if not pending:
+        parts = []
     leak_count = 0
     last_ev: dict = {}
-    for part in parts:
+    doc_workers = cfg.get("doc_store_workers")
+    env_workers = cfg.get("env_workers")
+    for index, part in enumerate(parts):
+        _write_atomic_json(
+            out / "PROGRESS.json",
+            {
+                "phase": "rollout",
+                "chunk_index": index,
+                "n_chunks": len(parts),
+                "query_ids": [str(row.get("query_id") or "") for row in part],
+                "resumed": len(resumed),
+                "heartbeat_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            },
+        )
         ev, traces = eval_closed_loop(
             backend,
             part,
@@ -171,12 +296,20 @@ def _eval_chunks(cfg, rows, *, harness_mask, enc, searcher, generate_batch, back
             search_k=int(cfg.get("search_k") or 10),
             primary_split=str(cfg.get("primary_split") or "official_test"),
             reasoning_effort=cfg.get("reasoning_effort"),
-            graph_index=_load_graph_index(cfg),
+            graph_index=graph,
+            doc_store_workers=None if doc_workers is None else int(doc_workers),
+            env_workers=None if env_workers is None else int(env_workers),
         )
         leak_count += int(ev.get("teacher_leak_count") or 0)
-        all_traces.append(traces)
         last_ev = ev
-    traces = merge_traces(all_traces, rows)
+        for trace in traces:
+            saved = _persist_query(out, trace, identity)
+            by_id[str(saved.get("query_id") or "")] = saved
+    missing = [str(row.get("query_id") or "") for row in rows if str(row.get("query_id") or "") not in by_id]
+    if missing:
+        raise RuntimeError(f"queries not persisted: {missing[:8]}")
+    ordered = [by_id[str(row.get("query_id") or "")] for row in rows]
+    traces = merge_traces([ordered], rows)
     extra = {
         k: last_ev.get(k)
         for k in ("max_turns", "max_new_tokens", "temperature", "search_k", "doc_store_k", "sample")

@@ -75,18 +75,16 @@ def main(argv: list[str] | None = None) -> int:
         init_hits += int(init_ok)
         reached_now = set(initial)
         hop_ok = {}
+        hop_recall = {}
         for hop in range(1, args.max_hops + 1):
-            if reached_now & gold:
-                hop_ok[hop] = True
-                hop_hits[hop] += 1
-                continue
             reached_now = graph.expand_docs(
                 reached_now or initial,
                 hops=1,
                 max_entity_docs=args.max_entity_docs,
-                stop_docids=gold,
+                stop_docids=None,
             ) | reached_now
             hop_ok[hop] = bool(reached_now & gold)
+            hop_recall[hop] = metric_recall(reached_now, gold)
             hop_hits[hop] += int(hop_ok[hop])
         if (not init_ok) and any(hop_ok.values()):
             miss_then_reach += 1
@@ -95,6 +93,9 @@ def main(argv: list[str] | None = None) -> int:
                 "query_id": row.get("query_id"),
                 "initial_hit": init_ok,
                 "hop_hit": hop_ok,
+                "initial_hit_rate_row": 1.0 if init_ok else 0.0,
+                "initial_document_recall": metric_recall(initial, gold),
+                "hop_document_recall": hop_recall,
                 "initial_recall": metric_recall(initial, gold),
             }
         )
@@ -111,11 +112,23 @@ def main(argv: list[str] | None = None) -> int:
         )
     payload = {
         "n_queries": n,
+        "initial_hit_rate": init_hits / max(1, n),
         "initial_recall": init_hits / max(1, n),
+        "initial_document_recall": (
+            sum(float(d.get("initial_document_recall") or 0.0) for d in details) / max(1, n)
+        ),
+        "graph_oracle_hit_rate": {str(h): hop_hits[h] / max(1, n) for h in hop_hits},
         "graph_oracle_recall": {str(h): hop_hits[h] / max(1, n) for h in hop_hits},
+        "graph_oracle_document_recall": {
+            str(h): (
+                sum(float((d.get("hop_document_recall") or {}).get(h) or 0.0) for d in details) / max(1, n)
+            )
+            for h in hop_hits
+        },
         "initial_miss_graph_reachable": miss_then_reach,
         "oracle_beats_initial": (hop_hits[args.max_hops] / max(1, n)) > (init_hits / max(1, n)),
         "max_entity_docs": args.max_entity_docs,
+        "note": "initial_recall/graph_oracle_recall remain hit-rate aliases; document recall is the per-query gold-doc mean.",
     }
     print(json.dumps(payload, indent=2, ensure_ascii=False))
     if args.out:

@@ -13,7 +13,7 @@ if str(HARNESS_ROOT) not in sys.path:
     sys.path.insert(0, str(HARNESS_ROOT))
 
 from harness.tools import SEARCH_CORPUS_SCHEMA  # noqa: E402
-from trim.eval.harness1_api_eval import _env_turn_count  # noqa: E402
+from trim.eval.harness1_api_eval import _append_jsonl, _env_turn_count, json_safe  # noqa: E402
 from trim.upstream_harness1.api_adapter import parse_chat_completion  # noqa: E402
 from trim.upstream_harness1.env_bridge import _validate_tool_params  # noqa: E402
 
@@ -29,8 +29,11 @@ def test_parse_nested_search_corpus_in_content():
     parsed = parse_chat_completion(
         {"choices": [{"finish_reason": "stop", "message": {"content": body}}]}
     )
-    assert parsed.ok is False
-    assert parsed.protocol_error == "tool_call_in_content"
+    assert parsed.ok is True
+    assert parsed.tool_calls[0]["name"] == "search_corpus"
+    assert parsed.tool_calls[0]["arguments"] == {
+        "query": "W L article updated 2023 quotes F H 2019 study",
+    }
 
 
 def test_parse_type_fan_out_search_in_content():
@@ -38,8 +41,9 @@ def test_parse_type_fan_out_search_in_content():
     parsed = parse_chat_completion(
         {"choices": [{"finish_reason": "stop", "message": {"content": body}}]}
     )
-    assert parsed.ok is False
-    assert parsed.protocol_error == "tool_call_in_content"
+    assert parsed.ok is True
+    assert parsed.tool_calls[0]["name"] == "fan_out_search"
+    assert parsed.tool_calls[0]["arguments"] == {"queries": ["a", "b"]}
 
 
 def test_parse_recipient_functions_search_in_content():
@@ -53,8 +57,9 @@ def test_parse_recipient_functions_search_in_content():
             ]
         }
     )
-    assert parsed.ok is False
-    assert parsed.protocol_error == "tool_call_in_content"
+    assert parsed.ok is True
+    assert parsed.tool_calls[0]["name"] == "search_corpus"
+    assert parsed.tool_calls[0]["arguments"] == {"query": "foo"}
 
 
 def test_validate_tool_params_requires_add_ids():
@@ -116,3 +121,33 @@ def test_parse_rejects_functions_pkg_search_corpus():
 
 def test_parse_rejects_add_ids_only_codeblock():
     _assert_rejects_toolish_content("```json\n{\"add_ids\": [\"123_0\"]}\n```")
+
+
+def test_parse_rejects_pythonic_curate_with_ellipsis_placeholder():
+    parsed = parse_chat_completion(
+        {
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {"content": "curate(add_ids=[...], remove_ids=[])"},
+                }
+            ]
+        }
+    )
+    assert parsed.ok is False
+    assert parsed.protocol_error == "tool_call_in_content"
+    assert parsed.tool_calls == []
+
+
+def test_json_safe_and_append_jsonl_tolerate_ellipsis(tmp_path):
+    payload = {
+        "query_id": "q1",
+        "pending_failed_attempt": {
+            "tool_calls": [{"name": "curate", "arguments": {"add_ids": [...]}}],
+        },
+    }
+    assert json_safe(payload)["pending_failed_attempt"]["tool_calls"][0]["arguments"]["add_ids"] == [None]
+    path = tmp_path / "TURNS.jsonl"
+    _append_jsonl(path, payload)
+    row = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
+    assert row["pending_failed_attempt"]["tool_calls"][0]["arguments"]["add_ids"] == [None]

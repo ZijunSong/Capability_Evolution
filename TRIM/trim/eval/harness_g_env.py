@@ -1,6 +1,6 @@
 """TRIM-native Harness-G episode over a graph index + optional searcher.
 
-Always-on runtime: INIT / SELECT / LOOKUP / ANSWER. Advanced components
+Always-on runtime: INIT / SELECT / LOOKUP / PAGE / ANSWER. Advanced components
 (answer_with, bridges, synonyms, neighbors, hybrid INIT, lexical hints)
 are mask-gated. Public protocol correctness (menu refresh, JSON, order,
 readability) is shared by zero and all.
@@ -10,7 +10,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
+import time
+import traceback
 from typing import Any, Mapping
 
 from trim.adapters.harness_g_components import RUNTIME_TOOLS
@@ -21,11 +24,14 @@ from trim.eval.harness_g_graph import (
     GRAPH_MAX_ENTITY_SIDS,
     HarnessGGraphIndex,
     _ENTITY_RE,
+    begin_scan_bucket,
     build_graph_from_documents,
     canonical_eid,
+    drain_scan_bucket,
     is_metadata_only_line,
     keep_entity_surface,
     lexical_score,
+    take_lookup_stats,
     mixquery_text,
     normalize_entity_surface,
     text_to_sentence_parts,
@@ -223,13 +229,26 @@ def new_state(
         "prefetch_docs": len(doc_store or {}),
         "observed_docids": [],
         "observed_sids": [],
+        "displayed_sids": [],
+        "displayed_docids": [],
+        "prompt_visible_sids": [],
+        "candidate_docids": [],
+        "candidate_sids": [],
+        "legacy_retrieved_union_docids": [],
         "selected_docids": [],
         "graph_expanded_docids": [],
+        "lookup_candidates": [],
+        "lookup_window_offset": 0,
+        "nav_frontier_eids": [],
+        "attempt_events": [],
+        "component_funnel": {},
         "runtime_effects": {},
         "last_mixquery": None,
         "last_mixquery_meta": {},
         "fail_counts": {},
         "protocol_failure": False,
+        "infrastructure_failure": False,
+        "termination_kind": None,
     }
 
 
@@ -270,6 +289,8 @@ def allowed_menu_pairs(state: Mapping[str, Any]) -> set[tuple[str, str | None]]:
             pairs.add((typ, str(action["sid"])))
         elif typ == "LOOKUP" and action.get("eid"):
             pairs.add((typ, str(action["eid"])))
+        elif typ == "PAGE":
+            pairs.add((typ, str(action.get("direction") or "next")))
         elif typ in {"ANSWER", "INIT"}:
             pairs.add((typ, None))
     return pairs
@@ -321,16 +342,34 @@ def _lookup_specs_from_visible(state: dict[str, Any], sids: list[str]) -> list[s
     return _frontier_from_sids(state, sids)
 
 
-def _observed_doc_list(state: Mapping[str, Any]) -> list[str]:
+def _note_funnel(state: dict[str, Any], component_id: str, **fields: Any) -> None:
+    funnel = dict(state.get("component_funnel") or {})
+    rec = dict(funnel.get(component_id) or {})
+    rec.setdefault("enabled", _mask_on(state, component_id))
+    for key, value in fields.items():
+        if key.endswith("_delta") or key in {"invoked", "eligible"}:
+            rec[key] = int(rec.get(key) or 0) + int(value or 0)
+        else:
+            rec[key] = value
+    funnel[component_id] = rec
+    state["component_funnel"] = funnel
+
+
+def _candidate_doc_list(state: Mapping[str, Any]) -> list[str]:
     out: list[str] = []
     seen: set[str] = set()
-    for key in ("observed_docids", "initial_bm25_docids", "graph_expanded_docids"):
+    for key in ("candidate_docids", "initial_bm25_docids", "graph_expanded_docids", "displayed_docids"):
         for did in state.get(key) or []:
             did = str(did or "")
             if did and did not in seen:
                 seen.add(did)
                 out.append(did)
     return out
+
+
+def _observed_doc_list(state: Mapping[str, Any]) -> list[str]:
+    """Docs eligible for navigation menus. Uses candidates, not hidden-as-observed."""
+    return _candidate_doc_list(state)
 
 
 def _query_eids(query: str) -> set[str]:
@@ -342,26 +381,79 @@ def _query_eids(query: str) -> set[str]:
     return out
 
 
+def _stage_add(state: dict[str, Any], key: str, dt: float) -> None:
+    bucket = state.setdefault("_stage_sec", {})
+    bucket[key] = float(bucket.get(key) or 0.0) + max(0.0, float(dt))
+
+
+def _merge_scan_counts(state: dict[str, Any]) -> None:
+    scans = drain_scan_bucket()
+    if not scans:
+        return
+    counts = state.setdefault("_stage_counts", {})
+    for kind, rec in scans.items():
+        dest = counts.setdefault(kind, {})
+        for key, value in rec.items():
+            dest[key] = int(dest.get(key) or 0) + int(value)
+
+
 def _frontier_from_observed_docs(state: Mapping[str, Any], *, cap: int) -> list[str]:
+    t0 = time.perf_counter()
+    begin_scan_bucket()
     graph = _graph(state)
     query = str(state.get("query") or "")
-    del query
-    local_sids: dict[str, int] = {}
-    for did in _observed_doc_list(state):
-        for sid in graph.doc_to_sids.get(did) or []:
-            for eid in graph.sentence_to_entities.get(sid) or []:
-                local_sids[str(eid)] = local_sids.get(str(eid), 0) + 1
-    scored: list[tuple[float, str]] = []
+    selected_sids = list(state.get("selected_sids") or [])
+    selected_text = " ".join(
+        str(((state.get("sentences") or {}).get(sid) or {}).get("text") or "")
+        for sid in selected_sids[-4:]
+    )
+    mix = f"{query} {selected_text}".strip()
+    docs = list(_candidate_doc_list(state))
+    counted = [str(x) for x in (state.get("_frontier_counted_docs") or [])]
+    local_sids = {str(k): int(v) for k, v in (state.get("_frontier_entity_counts") or {}).items()}
+    doc_set = set(docs)
+    if any(did not in doc_set for did in counted):
+        local_sids = {}
+        counted = []
+    counted_set = set(counted)
+    new_docs = [did for did in docs if did not in counted_set]
+    for did in new_docs:
+        for eid, n_mentions in graph.entity_mention_counts(did).items():
+            local_sids[str(eid)] = local_sids.get(str(eid), 0) + int(n_mentions)
+        counted.append(did)
+    if isinstance(state, dict):
+        state["_frontier_counted_docs"] = list(counted)
+        state["_frontier_entity_counts"] = dict(local_sids)
+        state["_frontier_last_new_docs"] = len(new_docs)
+    scored: list[tuple[float, str, dict[str, float]]] = []
     for eid, n_local in local_sids.items():
         rec = graph.entities.get(eid) or {}
         n_sids = len(rec.get("sids") or [])
         if not rec or n_sids > GRAPH_MAX_FRONTIER_SIDS:
             continue
-        external = n_sids > n_local
-        score = (1_000_000.0 if external else 0.0) - float(n_sids)
-        scored.append((score, eid))
+        surface = str(rec.get("surface") or "")
+        q_score = lexical_score(mix, surface)
+        ev_score = lexical_score(selected_text, surface) if selected_text else 0.0
+        hub_pen = min(4.0, math.log1p(max(0, n_sids)) / 3.0)
+        external = 1.0 if n_sids > n_local else 0.0
+        score = 3.0 * q_score + 1.5 * ev_score + 0.25 * external - 0.4 * hub_pen
+        scored.append((score, eid, {"q": q_score, "ev": ev_score, "hub": hub_pen, "ext": external}))
     scored.sort(key=lambda x: (-x[0], x[1]))
-    return [eid for _, eid in scored[: max(1, int(cap))]]
+    # Return the full ranked pool. Eligibility (visited/invalid) is applied in
+    # build_action_map before the menu budget, so visited-prefix rows can refill.
+    eids = [eid for _, eid, _ in scored]
+    if isinstance(state, dict):
+        state["_frontier_cache"] = {
+            "eids": list(eids),
+            "n_candidates": len(scored),
+            "n_new_docs": len(new_docs),
+            "rank_breakdown": [
+                {"eid": eid, "score": score, **parts} for score, eid, parts in scored[: max(1, int(cap))]
+            ],
+        }
+        _merge_scan_counts(state)
+        _stage_add(state, "frontier_sec", time.perf_counter() - t0)
+    return eids
 
 
 def _attach_lexical_hint(state: dict[str, Any], menu: dict[str, dict[str, Any]]) -> None:
@@ -392,6 +484,8 @@ def build_action_map(
     lookup_cap: int | None = None,
     lookup_eids: list[str] | None = None,
 ) -> dict[str, dict[str, Any]]:
+    t_menu = time.perf_counter()
+    bridge_before = float((state.get("_stage_sec") or {}).get("bridge_sec") or 0.0)
     menu: dict[str, dict[str, Any]] = {}
     n = 0
     selected = set(state.get("selected_sids") or [])
@@ -413,38 +507,92 @@ def build_action_map(
                 "evidence_preview": str(sentences[sid].get("text") or "")[:80],
             }
             n += 1
+            _note_funnel(state, "answer_with", enabled=True, eligible=1)
 
     lookup_eids = list(lookup_eids if lookup_eids is not None else (state.get("frontier_eids") or []))
+    pairs_before = {(str(a.get("type") or "").upper(), a.get("sid") or a.get("eid")) for a in menu.values()}
+    bridges: list[dict[str, Any]] = []
+    bridge_eids: list[str] = []
     if _mask_on(state, "bridge_entities"):
         graph = _graph(state)
+        _note_funnel(state, "bridge_entities", enabled=True, invoked=1)
+        begin_scan_bucket()
+        t_bridge = time.perf_counter()
         bridges = graph.propose_bridge_entities(
             lookup_eids,
             str(state.get("query") or ""),
             state.get("selected_sids") or [],
             topm=5,
         )
-        added_bridge = 0
+        _stage_add(state, "bridge_sec", time.perf_counter() - t_bridge)
+        _merge_scan_counts(state)
+        _note_funnel(state, "bridge_entities", eligible=len(bridges), candidate_delta=len(bridges))
         for cand in bridges:
             eid = str(cand.get("target_eid") or cand.get("eid") or "")
-            if eid and eid not in lookup_eids:
-                lookup_eids.append(eid)
-                added_bridge += 1
-        if added_bridge:
-            _note_effect(state, "bridge_entities_menu_delta", added_bridge)
+            if eid:
+                bridge_eids.append(eid)
 
     visited = set(state.get("visited_eids") or [])
-    added = 0
-    for eid in lookup_eids:
-        if added >= cap:
-            break
+    skip_reasons: dict[str, str] = {}
+
+    def _eligible(eid: str) -> tuple[bool, str | None]:
         rec = entities.get(eid)
         if not rec:
-            continue
+            return False, "missing_entity"
         if _mask_on(state, "lookup_dedup") and eid in visited:
-            continue
+            return False, "visited"
         if _mask_on(state, "invalid_target_filter") and _is_bad_lookup(rec):
-            _note_effect(state, "invalid_target_filtered")
+            return False, "invalid_target"
+        return True, None
+
+    reserved = 0
+    if bridge_eids:
+        reserved = min(2, max(1, cap // 4), len(bridge_eids), cap)
+    normal_budget = max(0, cap - reserved)
+    chosen: list[str] = []
+    for eid in lookup_eids:
+        ok, reason = _eligible(eid)
+        if not ok:
+            skip_reasons[eid] = str(reason)
+            if reason == "invalid_target":
+                _note_effect(state, "invalid_target_filtered")
+                _note_funnel(state, "invalid_target_filter", invoked=1, candidate_delta=1)
+            if reason == "visited":
+                _note_funnel(state, "lookup_dedup", invoked=1)
             continue
+        if eid in chosen:
+            continue
+        if len(chosen) >= normal_budget:
+            continue
+        chosen.append(eid)
+
+    added_bridge_temp = 0
+    added_bridge_menu = 0
+    for eid in bridge_eids:
+        added_bridge_temp += 1
+        if eid in chosen:
+            continue
+        ok, reason = _eligible(eid)
+        if not ok:
+            skip_reasons[eid] = str(reason)
+            continue
+        if len(chosen) >= cap:
+            continue
+        chosen.append(eid)
+        added_bridge_menu += 1
+
+    if len(chosen) < cap:
+        for eid in lookup_eids:
+            if len(chosen) >= cap:
+                break
+            if eid in chosen:
+                continue
+            ok, reason = _eligible(eid)
+            if ok:
+                chosen.append(eid)
+
+    for eid in chosen:
+        rec = entities.get(eid) or {}
         menu[f"A{n}"] = {
             "type": "LOOKUP",
             "eid": eid,
@@ -452,23 +600,72 @@ def build_action_map(
             "entity_surface": rec.get("surface"),
         }
         n += 1
-        added += 1
+
+    candidates = list(state.get("lookup_candidates") or [])
+    offset = int(state.get("lookup_window_offset") or 0)
+    if candidates and offset + VISIBLE_K < len(candidates):
+        menu[f"A{n}"] = {
+            "type": "PAGE",
+            "name": "page",
+            "direction": "next",
+            "window_offset": offset,
+            "n_candidates": len(candidates),
+        }
+        n += 1
 
     if include_answer:
         menu[f"A{n}"] = {"type": "ANSWER", "name": "answer"}
         n += 1
 
+    pairs_after = set()
+    for action in menu.values():
+        typ = str(action.get("type") or "").upper()
+        if typ in {"SELECT", "ANSWER_WITH"} and action.get("sid"):
+            pairs_after.add((typ, str(action["sid"])))
+        elif typ == "LOOKUP" and action.get("eid"):
+            pairs_after.add((typ, str(action["eid"])))
+        elif typ in {"ANSWER", "INIT", "PAGE"}:
+            pairs_after.add((typ, str(action.get("direction") or "")))
+    bridge_targets = {("LOOKUP", eid) for eid in bridge_eids}
+    actual_bridge_delta = len((pairs_after - pairs_before) & bridge_targets)
+    if _mask_on(state, "bridge_entities"):
+        _note_effect(state, "bridge_entities_candidate_delta", added_bridge_temp)
+        _note_effect(state, "bridge_entities_menu_delta", actual_bridge_delta)
+        _note_funnel(
+            state,
+            "bridge_entities",
+            menu_delta=actual_bridge_delta,
+            skip_reason=None if actual_bridge_delta else ("cap_full" if added_bridge_temp else "no_candidates"),
+        )
+    if _mask_on(state, "invalid_target_filter"):
+        _note_funnel(state, "invalid_target_filter", menu_delta=len(skip_reasons), enabled=True)
+    if _mask_on(state, "lookup_dedup"):
+        _note_funnel(state, "lookup_dedup", enabled=True, menu_delta=sum(1 for r in skip_reasons.values() if r == "visited"))
+    state["last_menu_skip_reasons"] = skip_reasons
+    state["last_frontier_diagnostics"] = {
+        "n_lookup_pool": len(lookup_eids),
+        "n_chosen": len(chosen),
+        "cap": cap,
+        "reserved_bridge": reserved,
+        "skip_reasons": skip_reasons,
+    }
     _attach_lexical_hint(state, menu)
+    if _mask_on(state, "snc_frontier"):
+        _note_funnel(state, "snc_frontier", enabled=True, invoked=1, menu_delta=0)
+    bridge_after = float((state.get("_stage_sec") or {}).get("bridge_sec") or 0.0)
+    _stage_add(state, "menu_sec", time.perf_counter() - t_menu - (bridge_after - bridge_before))
     return menu
 
 
 def _set_nav_menu(state: dict[str, Any], *, include_answer: bool, lookup_cap: int | None = None) -> None:
     corpus = is_corpus_scope(state.get("graph_scope"))
     cap = lookup_cap if lookup_cap is not None else (CORPUS_NAV_LOOKUP_K if corpus else NAV_LOOKUP_K)
+    pool_cap = max(int(cap), CORPUS_NAV_LOOKUP_K) * 4
     if corpus:
-        state["frontier_eids"] = _frontier_from_observed_docs(state, cap=max(cap, CORPUS_NAV_LOOKUP_K))
+        state["frontier_eids"] = _frontier_from_observed_docs(state, cap=pool_cap)
     else:
         state["frontier_eids"] = _lookup_specs_from_visible(state, list(state.get("visible_sids") or []))
+    state["nav_frontier_eids"] = list(state.get("frontier_eids") or [])
     state["action_map"] = build_action_map(
         state,
         include_answer=include_answer,
@@ -478,14 +675,15 @@ def _set_nav_menu(state: dict[str, Any], *, include_answer: bool, lookup_cap: in
 
 
 def _set_select_menu(state: dict[str, Any], sid: str) -> None:
-    frontier = _frontier_from_sids(state, [sid])
-    state["frontier_eids"] = frontier
-    lookup_eids = list(frontier)
+    selected_frontier = _frontier_from_sids(state, [sid])
+    nav_frontier = list(state.get("nav_frontier_eids") or state.get("frontier_eids") or [])
+    merged = list(dict.fromkeys(list(selected_frontier) + list(nav_frontier)))
+    state["frontier_eids"] = merged
     state["action_map"] = build_action_map(
         state,
         include_answer=True,
         lookup_cap=SELECT_LOOKUP_K,
-        lookup_eids=lookup_eids,
+        lookup_eids=merged,
     )
 
 
@@ -535,20 +733,46 @@ def _sync_curated(state: dict[str, Any]) -> None:
             rec = store.get(did) or {"id": did, "text": sent.get("text") or ""}
             pool[did] = rec if isinstance(rec, dict) else {"id": did, "text": str(rec)}
 
-    for did in state.get("graph_expanded_docids") or []:
+    displayed_sids = list(dict.fromkeys(list(state.get("visible_sids") or []) + list(state.get("selected_sids") or [])[-8:]))
+    displayed_docids = []
+    displayed_doc_set: set[str] = set()
+    for sid in displayed_sids:
+        did = _parent_docid(state, sid)
+        if did and did not in displayed_doc_set:
+            displayed_docids.append(did)
+            displayed_doc_set.add(did)
+
+    candidate_docids = list(state.get("candidate_docids") or [])
+    candidate_set = set(candidate_docids)
+    for did in list(state.get("initial_bm25_docids") or []) + list(state.get("graph_expanded_docids") or []) + displayed_docids:
         did = str(did or "")
-        if did and did not in observed_doc_set:
-            observed_docids.append(did)
-            observed_doc_set.add(did)
+        if did and did not in candidate_set:
+            candidate_docids.append(did)
+            candidate_set.add(did)
             if did not in pool:
                 rec = store.get(did) or {"id": did, "text": ""}
                 pool[did] = rec if isinstance(rec, dict) else {"id": did, "text": str(rec)}
+
+    candidate_sids = list(state.get("candidate_sids") or [])
+    cand_sid_set = set(candidate_sids)
+    for sid in list(state.get("visible_sids") or []) + list(row.get("sid") for row in (state.get("lookup_candidates") or []) if isinstance(row, dict)):
+        sid = str(sid or "")
+        if sid and sid not in cand_sid_set:
+            candidate_sids.append(sid)
+            cand_sid_set.add(sid)
+
+    legacy_union = list(dict.fromkeys(list(candidate_docids) + list(observed_docids)))
 
     state["curated"] = curated
     state["pool"] = pool
     state["curated_ids"] = list(curated)
     state["observed_docids"] = observed_docids
     state["observed_sids"] = observed_sids
+    state["displayed_sids"] = displayed_sids
+    state["displayed_docids"] = displayed_docids
+    state["candidate_docids"] = candidate_docids
+    state["candidate_sids"] = candidate_sids
+    state["legacy_retrieved_union_docids"] = legacy_union
     state["selected_docids"] = selected_docids
     state["selected_sids"] = deduped_selected
 
@@ -634,7 +858,23 @@ def _init_visible(state: dict[str, Any], *, searcher: Any | None, search_k: int)
     hybrid = _mask_on(state, "hybrid_init_retrieve")
     if hybrid:
         _note_effect(state, "hybrid_init_used")
+    t_init = time.perf_counter()
+    begin_scan_bucket()
     ranked = graph.rank_init_sids(query, topk=VISIBLE_K, doc_order=doc_order, hybrid=hybrid)
+    _stage_add(state, "init_retrieve_sec", time.perf_counter() - t_init)
+    _merge_scan_counts(state)
+    if hybrid:
+        channels = getattr(graph, "last_hybrid_channels", {}) or {}
+        _note_funnel(
+            state,
+            "hybrid_init_retrieve",
+            enabled=True,
+            invoked=1,
+            candidate_delta=len(channels.get("global_outside_whitelist") or []),
+            displayed_delta=len(ranked),
+            backend=channels.get("backend"),
+        )
+        state["init_hybrid_channels"] = channels
     return ranked
 
 
@@ -646,6 +886,9 @@ def _lookup_sids(
 ) -> list[str]:
     graph = _graph(state)
     mix = _lookup_mixquery(state)
+    offset = int(state.get("lookup_window_offset") or 0)
+    candidates: list[dict[str, Any]] = []
+    begin_scan_bucket()
     rows = graph.lookup_entity(
         eid,
         mix,
@@ -655,16 +898,46 @@ def _lookup_sids(
         extra_sids=None,
         observed_sids=state.get("observed_sids") or [],
         new_doc_ids=new_doc_ids,
+        window_offset=offset,
+        candidates_out=candidates,
     )
+    lookup_stats = take_lookup_stats()
+    _stage_add(state, "lookup_candidates_sec", float(lookup_stats.get("lookup_candidates_sec") or 0.0))
+    _stage_add(state, "lookup_rank_sec", float(lookup_stats.get("lookup_rank_sec") or 0.0))
+    _merge_scan_counts(state)
+    counts = state.setdefault("_stage_counts", {})
+    lookup_counts = counts.setdefault("lookup", {})
+    lookup_counts["n_candidates"] = int(lookup_counts.get("n_candidates") or 0) + int(lookup_stats.get("n_candidates") or 0)
+    lookup_counts["n_selected"] = int(lookup_counts.get("n_selected") or 0) + int(lookup_stats.get("n_selected") or 0)
+    state["lookup_candidates"] = candidates
+    state["last_lookup_n_candidates"] = len(candidates)
     if _mask_on(state, "entity_synonyms"):
         syn_n = sum(1 for row in rows if row.get("entity_source") == "synonym")
+        syn_cand = sum(1 for row in candidates if row.get("entity_source") == "synonym")
         _note_effect(state, "entity_synonyms_expanded", max(1, syn_n) if syn_n else 0)
-        _note_effect(state, "entity_synonyms_candidate_delta", syn_n)
+        _note_effect(state, "entity_synonyms_candidate_delta", syn_cand)
         _note_effect(state, "entity_synonyms_visible_delta", syn_n)
+        _note_funnel(
+            state,
+            "entity_synonyms",
+            enabled=True,
+            invoked=1,
+            candidate_delta=syn_cand,
+            displayed_delta=syn_n,
+        )
     if _mask_on(state, "sentence_neighbors"):
         nb = sum(1 for row in rows if row.get("entity_source") == "sentence_neighbor")
+        nb_cand = sum(1 for row in candidates if row.get("entity_source") == "sentence_neighbor")
         _note_effect(state, "sentence_neighbors_added", nb)
         _note_effect(state, "sentence_neighbors_visible_delta", nb)
+        _note_funnel(
+            state,
+            "sentence_neighbors",
+            enabled=True,
+            invoked=1,
+            candidate_delta=nb_cand,
+            displayed_delta=nb,
+        )
     state["last_lookup_rows"] = [{"sid": r["sid"], "score": r.get("score"), "source": r.get("entity_source"), "rank": r.get("rank")} for r in rows]
     return [str(r["sid"]) for r in rows]
 
@@ -718,6 +991,18 @@ def _append_event(state: dict[str, Any], event: dict[str, Any]) -> None:
     state["turn_events"] = events
 
 
+def _enter_failed_terminal(state: dict[str, Any], *, kind: str, code: str) -> None:
+    state["ended"] = True
+    state["end_reason"] = str(kind)
+    state["termination_kind"] = str(kind)
+    state["action_map"] = {}
+    if kind == "protocol_failure":
+        state["protocol_failure"] = True
+    if kind == "infrastructure_failure":
+        state["infrastructure_failure"] = True
+        state["protocol_failure"] = True
+
+
 def _fail(
     state: dict[str, Any],
     name: str,
@@ -729,22 +1014,38 @@ def _fail(
     schema_ok: bool = True,
     target_ok: bool = False,
     evidence_sig: str | None = None,
+    error_class: str = "protocol",
+    traceback_ref: str | None = None,
 ) -> tuple[dict[str, Any], str, bool]:
     key = json.dumps(
-        {"sig": evidence_sig or _evidence_sig(state), "name": name, "args": args, "code": code},
+        {
+            "sig": evidence_sig or _evidence_sig(state),
+            "name": str(name or "").lower(),
+            "args": {k: args.get(k) for k in sorted(args or {}) if k in {"sid", "eid", "id", "sids", "direction"}},
+            "code": code,
+            "class": error_class,
+        },
         sort_keys=True,
         ensure_ascii=False,
     )
     counts = dict(state.get("fail_counts") or {})
     counts[key] = int(counts.get(key) or 0) + 1
     state["fail_counts"] = counts
-    if counts[key] >= MAX_IDENTICAL_FAILURES:
+    terminal = False
+    if error_class == "infrastructure":
+        code = "infrastructure_failure"
+        state["infrastructure_failure"] = True
+        msg = f"internal error during `{name}`: {msg}"
+        _enter_failed_terminal(state, kind="infrastructure_failure", code=code)
+        terminal = True
+    elif counts[key] >= MAX_IDENTICAL_FAILURES:
         code = "protocol_failure"
-        state["protocol_failure"] = True
         msg = (
             f"same invalid `{name}` failed {counts[key]} times with {args}. "
             f"{_menu_hint(state, want=None)}"
         )
+        _enter_failed_terminal(state, kind="protocol_failure", code=code)
+        terminal = True
     hint = _menu_hint(state)
     if hint not in msg:
         msg = f"{msg} {hint}"
@@ -783,11 +1084,87 @@ def _fail(
             "menu_ok": target_ok,
             "execution_ok": False,
             "error_code": code,
+            "error_class": error_class,
+            "traceback_ref": traceback_ref,
             "menu_hash": _menu_hash(state),
             "mixquery": state.get("last_mixquery"),
+            "termination_kind": state.get("termination_kind") if terminal else None,
         },
     )
     return state, obs, False
+
+
+def _note_termination_diagnostics(state: dict[str, Any], *, reason: str) -> None:
+    candidates = list(state.get("lookup_candidates") or [])
+    visible = set(state.get("visible_sids") or [])
+    unshown = [row.get("sid") for row in candidates if isinstance(row, dict) and row.get("sid") not in visible]
+    state["termination_diagnostics"] = {
+        "reason": reason,
+        "termination_kind": state.get("termination_kind") or reason,
+        "empty_selection": not bool(state.get("selected_sids")),
+        "n_selected": len(state.get("selected_sids") or []),
+        "n_visible": len(visible),
+        "n_candidates": len(candidates),
+        "n_unshown_candidates": len([sid for sid in unshown if sid]),
+        "n_observed_sids": len(state.get("observed_sids") or []),
+        "n_candidate_docs": len(state.get("candidate_docids") or []),
+    }
+
+
+def summarize_component_funnels(state: Mapping[str, Any]) -> dict[str, Any]:
+    from trim.adapters.harness_g_components import COMPONENT_TAXONOMY
+
+    mask = state.get("harness_mask") or {}
+    funnel = dict(state.get("component_funnel") or {})
+    out: dict[str, Any] = {}
+    for cid in COMPONENT_TAXONOMY:
+        rec = dict(funnel.get(cid) or {})
+        rec.setdefault("enabled", bool(mask.get(cid)))
+        rec.setdefault("eligible", 0)
+        rec.setdefault("invoked", 0)
+        rec.setdefault("candidate_delta", 0)
+        rec.setdefault("menu_delta", 0)
+        rec.setdefault("displayed_delta", 0)
+        rec.setdefault("state_delta", 0)
+        if not rec.get("enabled"):
+            rec.setdefault("skip_reason", "disabled")
+        elif not rec.get("invoked") and not rec.get("eligible"):
+            rec.setdefault("skip_reason", rec.get("skip_reason") or "not_triggered")
+        out[cid] = rec
+    return out
+
+
+def record_nonexecution_failure(
+    state: dict[str, Any],
+    name: str,
+    args: dict[str, Any] | None,
+    *,
+    code: str,
+    msg: str,
+    parse_ok: bool = False,
+    schema_ok: bool = False,
+    error_class: str = "protocol",
+    traceback_ref: str | None = None,
+) -> tuple[dict[str, Any], str, bool]:
+    st = dict(state)
+    st["fail_counts"] = dict(state.get("fail_counts") or {})
+    st["tool_history"] = list(state.get("tool_history") or [])
+    st["turn_events"] = list(state.get("turn_events") or [])
+    st["harness_mask"] = dict(state.get("harness_mask") or zero_mask_for("Harness-G"))
+    st["action_map"] = dict(state.get("action_map") or {})
+    st["invalid_tools"] = int(state.get("invalid_tools") or 0)
+    return _fail(
+        st,
+        name,
+        dict(args or {}),
+        code=code,
+        msg=msg,
+        parse_ok=parse_ok,
+        schema_ok=schema_ok,
+        target_ok=False,
+        error_class=error_class,
+        traceback_ref=traceback_ref,
+    )
 
 
 def execute_tool(
@@ -814,6 +1191,15 @@ def execute_tool(
     st["runtime_effects"] = dict(state.get("runtime_effects") or {})
     st["observed_docids"] = list(state.get("observed_docids") or [])
     st["observed_sids"] = list(state.get("observed_sids") or [])
+    st["displayed_sids"] = list(state.get("displayed_sids") or [])
+    st["displayed_docids"] = list(state.get("displayed_docids") or [])
+    st["candidate_docids"] = list(state.get("candidate_docids") or [])
+    st["candidate_sids"] = list(state.get("candidate_sids") or [])
+    st["graph_expanded_docids"] = list(state.get("graph_expanded_docids") or [])
+    st["lookup_candidates"] = list(state.get("lookup_candidates") or [])
+    st["nav_frontier_eids"] = list(state.get("nav_frontier_eids") or [])
+    st["attempt_events"] = list(state.get("attempt_events") or [])
+    st["component_funnel"] = dict(state.get("component_funnel") or {})
     st["doc_store"] = dict(state.get("doc_store") or {})
     evidence_sig = _evidence_sig(state)
     st["step"] = int(state.get("step") or 0) + 1
@@ -821,9 +1207,46 @@ def execute_tool(
     args = dict(args or {})
     visible_before = list(st.get("visible_sids") or [])
     selected_before = list(st.get("selected_sids") or [])
+    try:
+        return _execute_tool_dispatch(
+            st,
+            name,
+            args,
+            searcher=searcher,
+            search_k=search_k,
+            evidence_sig=evidence_sig,
+            visible_before=visible_before,
+            selected_before=selected_before,
+        )
+    except Exception as exc:  # noqa: BLE001
+        tb = traceback.format_exc()
+        return _fail(
+            st,
+            str(name or "unknown"),
+            dict(args or {}),
+            code="infrastructure_failure",
+            msg=f"{type(exc).__name__}: {exc}",
+            error_class="infrastructure",
+            traceback_ref=tb[-4000:],
+            evidence_sig=evidence_sig,
+        )
+
+
+def _execute_tool_dispatch(
+    st: dict[str, Any],
+    name: str | None,
+    args: dict[str, Any],
+    *,
+    searcher: Any | None,
+    search_k: int,
+    evidence_sig: str,
+    visible_before: list[str],
+    selected_before: list[str],
+) -> tuple[dict[str, Any], str, bool]:
+    state_action_map = st.get("action_map") or {}
 
     if name and name.upper().startswith("A") and name[1:].isdigit():
-        mapped = (state.get("action_map") or {}).get(name) or (state.get("action_map") or {}).get(name.upper())
+        mapped = state_action_map.get(name) or state_action_map.get(str(name).upper())
         if mapped:
             name = str(mapped.get("name") or mapped.get("type") or name).lower()
             if mapped.get("sid") and "sid" not in args:
@@ -832,6 +1255,8 @@ def execute_tool(
                 args["eid"] = mapped["eid"]
             if mapped.get("sids") and "sids" not in args:
                 args["sids"] = list(mapped["sids"])
+            if mapped.get("direction") and "direction" not in args:
+                args["direction"] = mapped["direction"]
 
     name = str(name or "").lower()
     if name == "answer_with" and not _mask_on(st, "answer_with"):
@@ -858,12 +1283,9 @@ def execute_tool(
         hit_ids = [str(x) for x in (st.get("initial_bm25_docids") or []) if str(x)]
         if not hit_ids:
             hit_ids = [str(x) for x in (st.get("doc_store") or {}) if str(x)]
-        vis_docs = [_parent_docid(st, sid) for sid in st["visible_sids"]]
-        st["observed_docids"] = list(
-            dict.fromkeys(
-                [did for did in list(st.get("observed_docids") or []) + hit_ids + vis_docs if did]
-            )
-        )
+        vis_docs = [did for did in (_parent_docid(st, sid) for sid in st["visible_sids"]) if did]
+        st["candidate_docids"] = list(dict.fromkeys(list(st.get("candidate_docids") or []) + hit_ids))
+        st["observed_docids"] = list(dict.fromkeys(list(st.get("observed_docids") or []) + vis_docs))
         st["n_search_calls"] = int(st.get("n_search_calls") or 0) + 1
         st["search_count"] = int(st.get("search_count") or 0) + 1
         _set_nav_menu(st, include_answer=False)
@@ -959,6 +1381,7 @@ def execute_tool(
         added = 0
         observed_before = set(st.get("observed_docids") or [])
         observed_sids_before = set(st.get("observed_sids") or [])
+        candidate_before = set(st.get("candidate_docids") or [])
         corpus_mode = is_corpus_scope(st.get("graph_scope"))
         lexical_hits: list[Any] = []
         if (
@@ -982,6 +1405,7 @@ def execute_tool(
             _note_effect(st, "lookup_new_docids", len(new_doc_ids))
         st["n_search_calls"] = int(st.get("n_search_calls") or 0) + 1
         st["search_count"] = int(st.get("search_count") or 0) + 1
+        st["lookup_window_offset"] = 0
         st["visible_sids"] = _lookup_sids(st, eid, new_doc_ids=new_doc_ids or None)
         if corpus_mode:
             st["graph_lookups"] = int(st.get("graph_lookups") or 0) + 1
@@ -1002,12 +1426,19 @@ def execute_tool(
                     prev_expanded.append(did)
                     seen_exp.add(did)
             st["graph_expanded_docids"] = prev_expanded
+            cand = list(st.get("candidate_docids") or [])
+            cand_set = set(cand)
+            for did in expanded:
+                if did not in cand_set:
+                    cand.append(did)
+                    cand_set.add(did)
+            st["candidate_docids"] = cand
             graph_docs = set(expanded) | {
                 _parent_docid(st, sid)
                 for sid in st["visible_sids"]
                 if _parent_docid(st, sid)
             }
-            graph_new_docs = [did for did in graph_docs if did not in observed_before]
+            graph_new_docs = [did for did in graph_docs if did not in candidate_before]
             graph_new_sids = [sid for sid in st["visible_sids"] if sid not in observed_sids_before]
             _note_effect(st, "graph_candidate_docs", len(graph_docs))
             _note_effect(st, "graph_new_docs", len(graph_new_docs))
@@ -1024,6 +1455,36 @@ def execute_tool(
                 f'LOOKUP eid="{eid}" surface="{rec.get("surface")}": '
                 f"{len(st['visible_sids'])} sentences (added_docs={added})."
             )
+        exec_ok = True
+    elif name == "page":
+        if ("PAGE", "next") not in pairs and ("PAGE", "") not in pairs:
+            direction = str(args.get("direction") or "next")
+            if ("PAGE", direction) not in pairs:
+                return _fail(
+                    st,
+                    name,
+                    args,
+                    code="target_not_in_menu",
+                    msg="PAGE is not in the current menu.",
+                    target_ok=False,
+                    evidence_sig=evidence_sig,
+                )
+        candidates = list(st.get("lookup_candidates") or [])
+        if not candidates:
+            return _fail(st, name, args, code="no_lookup_candidates", msg="no LOOKUP candidates to page.", evidence_sig=evidence_sig)
+        direction = str(args.get("direction") or "next")
+        offset = int(st.get("lookup_window_offset") or 0)
+        if direction == "prev":
+            offset = max(0, offset - VISIBLE_K)
+        else:
+            offset = min(max(0, len(candidates) - VISIBLE_K), offset + VISIBLE_K)
+        window = candidates[offset : offset + VISIBLE_K]
+        if not window:
+            return _fail(st, name, args, code="no_more_candidates", msg="no remaining LOOKUP candidates.", evidence_sig=evidence_sig)
+        st["lookup_window_offset"] = offset
+        st["visible_sids"] = [str(row.get("sid") or "") for row in window if row.get("sid")]
+        _set_nav_menu(st, include_answer=True)
+        obs = f"PAGE offset={offset} showing={len(st['visible_sids'])} of {len(candidates)} candidates."
         exec_ok = True
     elif name == "answer_with":
         sids_arg = list(args.get("sids") or [])
@@ -1049,7 +1510,9 @@ def execute_tool(
             st["selected_sids"].append(sid)
         st["ended"] = True
         st["end_reason"] = "answer_with"
+        st["termination_kind"] = "model_answer"
         st["action_map"] = {}
+        _note_termination_diagnostics(st, reason="answer_with")
         _tool_history_append(
             st,
             name=name,
@@ -1086,7 +1549,9 @@ def execute_tool(
             )
         st["ended"] = True
         st["end_reason"] = str(args.get("reason") or args.get("reasoning") or "answer")
+        st["termination_kind"] = "model_answer"
         st["action_map"] = {}
+        _note_termination_diagnostics(st, reason=str(st["end_reason"]))
         _tool_history_append(
             st,
             name=name,
@@ -1111,7 +1576,7 @@ def execute_tool(
     else:
         return _fail(st, name, args, code="unhandled_tool", msg=f"unhandled tool `{name}`.", evidence_sig=evidence_sig)
 
-    if not st.get("ended") and name != "select" and name != "lookup":
+    if not st.get("ended") and name not in {"select", "lookup", "page"}:
         st["action_map"] = build_action_map(st, include_answer=True)
     _tool_history_append(
         st,

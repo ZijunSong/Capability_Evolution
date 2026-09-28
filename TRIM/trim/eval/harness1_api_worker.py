@@ -64,7 +64,13 @@ def main(argv: list[str] | None = None) -> int:
 
     ensure_harness1 = mods["root"]
     sys.path.insert(0, str(ensure_harness1))
-    dataset = load_scoring_dataset(retrieval.dataset)
+    rows = json.loads(Path(cfg["queries_path"]).read_text(encoding="utf-8"))
+    if retrieval.backend == RETRIEVAL_LOCAL_BM25:
+        from trim.eval.transfer_benchmarks import LocalQueryPoolDataset
+
+        dataset = LocalQueryPoolDataset(retrieval.dataset, rows)
+    else:
+        dataset = load_scoring_dataset(retrieval.dataset)
     token_counter, token_count_mode = resolve_token_counter(
         identity.base_model or cfg.get("model_path") or identity.api_model
     )
@@ -88,7 +94,6 @@ def main(argv: list[str] | None = None) -> int:
         temperature=temperature,
         max_tokens=max_new_tokens,
     )
-    rows = json.loads(Path(cfg["queries_path"]).read_text(encoding="utf-8"))
     out = Path(cfg["out"])
     assert_fresh_eval_dir(out)
     out.mkdir(parents=True, exist_ok=True)
