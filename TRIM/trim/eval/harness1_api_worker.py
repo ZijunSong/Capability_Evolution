@@ -138,6 +138,39 @@ def main(argv: list[str] | None = None) -> int:
                 env_kwargs["openai_client"] = pack.verifier_client
             try:
                 env = Env(**env_kwargs)
+                # Inject gold_docids from the query row into the env's scoring dataset.
+                # The env's recall/precision (train_rl.py::_evaluate_and_compute_reward) come
+                # from dataset.evaluate_results_recall(query_id, curated) which indexes
+                # dataset._query_index[query_id]["document_ids"]. When the scoring dataset
+                # does not contain this benchmark's query_ids (e.g. transfer benchmarks
+                # longsealqa/frames/hotpotqa evaluated against a default browsecompplus
+                # scoring dataset), _query_index misses the query_id -> KeyError swallowed
+                # -> recall=None -> f1_missing. The local queries.jsonl already carries
+                # gold_docids/evidence_docids (transfer_benchmarks._tag_test), so inject them
+                # into the dataset index and env._gold_doc_ids to make both the
+                # evaluate_results_recall path and the _fast_recall path resolve gold.
+                _gold = [str(x) for x in (row.get("gold_docids") or []) if x]
+                _evi = [str(x) for x in (row.get("evidence_docids") or _gold) if x]
+                if _gold or _evi:
+                    _ds = getattr(env, "dataset", None)
+                    if _ds is not None:
+                        _inner = getattr(_ds, "_inner", _ds)
+                        _qi = getattr(_inner, "_query_index", None)
+                        if isinstance(_qi, dict):
+                            _entry = _qi.setdefault(qid, {})
+                            if isinstance(_entry, dict):
+                                _entry.setdefault("document_ids", [str(x) for x in (_gold or _evi)])
+                        # BrowseCompPlusDataset._get_final_answer_document_ids reads a
+                        # SEPARATE _gold_document_ids dict (not _query_index), so
+                        # evaluate_results_final_answer_recall returns 0 unless we also
+                        # populate it. Inject the row's gold_docids there too.
+                        _gdict = getattr(_inner, "_gold_document_ids", None)
+                        if isinstance(_gdict, dict):
+                            _gdict[qid] = set(str(x) for x in (_gold or _evi))
+                    try:
+                        env._gold_doc_ids = set(_gold or _evi)
+                    except Exception:
+                        pass
                 deadline = None
                 if query_timeout_s is not None and query_timeout_s > 0:
                     deadline = time.monotonic() + float(query_timeout_s)

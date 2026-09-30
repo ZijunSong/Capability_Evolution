@@ -528,6 +528,14 @@ class VLLMGenerateClient:
             stderr=subprocess.STDOUT,
             env=env,
             cwd=str(Path(__file__).resolve().parents[2]),
+            # Start the worker in its own session/process group so close() can
+            # recycle the whole group (worker + vLLM V1 EngineCore grandchild).
+            # The grandchild binds a TCPStore port via
+            # torch.distributed.init_process_group; without group-kill it can
+            # survive proc.kill() and hold that port, causing EADDRINUSE on
+            # the next step's vLLM restart. See CLAUDE.md
+            # / trim-qwen4b-trim-ddp-200step-20260918-89uyy step4 failure.
+            start_new_session=True,
         )
         self._wait_flag("READY", self.startup_timeout_s, what="vLLM worker start")
         audit_path = self.session_dir / "tokenizer_audit.json"
@@ -620,14 +628,46 @@ class VLLMGenerateClient:
             (self.session_dir / "SHUTDOWN").write_text("1\n", encoding="utf-8")
         except Exception:
             pass
+        # Recycle the whole process group (worker + vLLM V1 EngineCore
+        # grandchild subprocess) so the TCPStore port bound by EngineCore's
+        # torch.distributed.init_process_group is released. start() opens the
+        # worker with start_new_session=True, so getpgid gives the group leader.
+        # Without this the grandchild can survive proc.kill() and hold its
+        # random distributed-init port, causing EADDRINUSE on the next step's
+        # vLLM restart. See CLAUDE.md / trim-qwen4b-trim-ddp-200step-20260918-89uyy.
+        pgid = None
+        try:
+            pgid = os.getpgid(proc.pid)
+        except (ProcessLookupError, OSError):
+            pgid = None
         try:
             proc.wait(timeout=90)
         except subprocess.TimeoutExpired:
-            proc.send_signal(signal.SIGTERM)
+            if pgid is not None:
+                try:
+                    os.killpg(pgid, signal.SIGTERM)
+                except (ProcessLookupError, OSError):
+                    pass
+            try:
+                proc.send_signal(signal.SIGTERM)
+            except (ProcessLookupError, OSError):
+                pass
             try:
                 proc.wait(timeout=30)
             except subprocess.TimeoutExpired:
-                proc.kill()
+                if pgid is not None:
+                    try:
+                        os.killpg(pgid, signal.SIGKILL)
+                    except (ProcessLookupError, OSError):
+                        pass
+                try:
+                    proc.kill()
+                except (ProcessLookupError, OSError):
+                    pass
+                try:
+                    proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    pass
         self.process = None
 
     def _wait_flag(self, name: str, timeout_s: float, *, what: str) -> None:

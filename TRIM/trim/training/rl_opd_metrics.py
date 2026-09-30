@@ -88,6 +88,14 @@ def reward_parts_group_stats(groups: Sequence[Any]) -> dict[str, Any]:
     n_end_search = 0
     n_timeout = 0
     n_episodes = 0
+    n_const_groups = 0
+    n_success = 0
+    n_success_eps = 0
+    n_tool_calls_all = 0
+    group_reward_std_sum = 0.0
+    group_reward_std_n = 0
+    n_curated_eps = 0
+    n_gold_eps = 0
     for group in groups:
         stats = list(((getattr(group, "trajectory_group", None) or {}).get("episode_stats") or []))
         parts = [dict(s.get("reward_parts") or {}) for s in stats if s.get("reward_parts")]
@@ -98,6 +106,8 @@ def reward_parts_group_stats(groups: Sequence[Any]) -> dict[str, Any]:
         legal = [float(p.get("legal") or 0.0) for p in parts]
         shaping = [float(p.get("shaping") or 0.0) for p in parts]
         total = [float(p.get("total") or 0.0) for p in parts]
+        turn_pen = [float(p.get("turn_penalty") or 0.0) for p in parts]
+        n_turns_ep = [float(p.get("n_turns") or 0.0) for p in parts]
         task_all.extend(task)
         legal_all.extend(legal)
         shaping_all.extend(shaping)
@@ -105,6 +115,13 @@ def reward_parts_group_stats(groups: Sequence[Any]) -> dict[str, Any]:
         total_var = sum((x - (sum(total) / len(total))) ** 2 for x in total) / len(total)
         if task_var < 1e-12 and total_var > 1e-12:
             n_task_zero_total_var += 1
+        # Group-internal reward std == the advantage normalization denominator
+        # (episode_relative_advantages divides by exactly this std). Averaging
+        # across groups gives the mean advantage-std for the step.
+        if total_var < 1e-12:
+            n_const_groups += 1
+        group_reward_std_sum += (total_var ** 0.5)
+        group_reward_std_n += 1
         for s in stats:
             n_episodes += 1
             names = list(s.get("names") or s.get("tool_names") or [])
@@ -116,6 +133,13 @@ def reward_parts_group_stats(groups: Sequence[Any]) -> dict[str, Any]:
             parse_valid += int(s.get("n_structurally_valid") or 0)
             n_exec += int(s.get("n_valids") or s.get("n_turns") or 0)
             exec_ok += int(s.get("n_exec_ok") or 0)
+            n_tool_calls_all += int(s.get("n_tool_calls") or s.get("n_turns") or 0)
+            # success = recall > 0 (an episode found at least one gold doc).
+            eps_recall = float(s.get("final_answer_recall") or s.get("task_recall") or 0.0)
+            if eps_recall > 0:
+                n_success_eps += 1
+            n_curated_eps += int(s.get("n_curated") or 0)
+            n_gold_eps += int(s.get("n_gold") or 0)
     def _mv(xs: list[float]) -> dict[str, float]:
         if not xs:
             return {"mean": 0.0, "var": 0.0, "n": 0.0}
@@ -128,6 +152,9 @@ def reward_parts_group_stats(groups: Sequence[Any]) -> dict[str, Any]:
         "task": _mv(task_all),
         "legal": _mv(legal_all),
         "shaping": _mv(shaping_all),
+        "turn_penalty": _mv(turn_pen),
+        "n_turns": _mv(n_turns_ep),
+        "reward_mode": (parts[0].get("reward_mode") if parts else None),
         "corr_task_legal": _corr(task_all, legal_all),
         "corr_task_shaping": _corr(task_all, shaping_all),
         "frac_task_var_zero_total_var_nonzero": (
@@ -138,4 +165,14 @@ def reward_parts_group_stats(groups: Sequence[Any]) -> dict[str, Any]:
         "end_search_rate": (n_end_search / max(1, n_episodes)) if n_episodes else None,
         "timeout_rate": (n_timeout / max(1, n_episodes)) if n_episodes else None,
         "reward_formula_unchanged": True,
+        # New fields for the recall-only RL tensorboard.
+        "n_const_reward_groups": n_const_groups,
+        "zero_variance_group_ratio": (n_const_groups / n_groups) if n_groups else 0.0,
+        "group_reward_std_mean": (group_reward_std_sum / group_reward_std_n) if group_reward_std_n else 0.0,
+        "success_rate": (n_success_eps / n_episodes) if n_episodes else 0.0,
+        "n_tool_calls_total": n_tool_calls_all,
+        "n_curated_eps": n_curated_eps,
+        "n_gold_eps": n_gold_eps,
+        "selected_ratio": (n_curated_eps / n_gold_eps) if n_gold_eps else 0.0,
+        "task_recall_mean": _mv(task_all)["mean"],
     }

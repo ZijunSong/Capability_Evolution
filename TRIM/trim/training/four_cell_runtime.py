@@ -11,6 +11,7 @@ import argparse
 import asyncio
 import hashlib
 import json
+import os
 import re
 import time
 from pathlib import Path
@@ -898,26 +899,20 @@ def terminal_reward_breakdown(
     actions: list[dict[str, Any]],
     exec_oks: list[bool] | None = None,
 ) -> dict[str, Any]:
-    """Task recall is the primary signal; non-task shaping is capped."""
+    """Reward = final-answer recall ONLY (curated ∩ gold / |gold|), in [0, 1].
+
+    The legacy combined reward (0.80*recall + 0.10*legal + <=0.10*shaping, with a
+    -0.2 invalid-episode penalty) has been collapsed to pure recall so that RL
+    optimizes the retrieval objective directly. Diagnostic fields (legal fraction,
+    shaping components, counts) are still populated for audit/metrics, but they no
+    longer contribute to ``total``.
+    """
     from trim.eval.local_search_env import curated_recall
 
     rec = float(curated_recall(st, gold_ids) or 0.0)
-    if not valids or not any(valids):
-        return {
-            "total": -0.2,
-            "task_recall": rec,
-            "task": 0.0,
-            "legal": 0.0,
-            "shaping": 0.0,
-            "ended": 0.0,
-            "query_overlap": 0.0,
-            "n_unique_tools": 0.0,
-            "n_curated": 0.0,
-            "n_pool": 0.0,
-            "n_exec_ok": 0,
-            "invalid_episode": True,
-        }
-    legal = sum(1 for v in valids if v) / len(valids)
+    invalid = (not valids) or (not any(valids))
+    # Diagnostic fields (kept for metrics/audit; do not feed into `total`).
+    legal = (sum(1 for v in valids if v) / len(valids)) if (valids and any(valids)) else 0.0
     invalid_names = {"unknown", "truncated", "None"}
     executed = [
         (a, v)
@@ -935,15 +930,47 @@ def terminal_reward_breakdown(
         + 0.03 * overlap_ratio
     )
     shaping = min(float(SHAPING_CAP), float(shaping_raw))
-    task = float(TASK_REWARD_WEIGHT) * rec
-    legal_term = float(LEGAL_REWARD_WEIGHT) * legal
-    total = task + legal_term + shaping
+    # Reward = final-answer recall. Invalid episodes recall 0 by construction
+    # (no curated answer set), so they get reward 0.0 — no special penalty.
+    #
+    # Optional turn-count penalty (env-gated, off by default to preserve the
+    # pure-recall baseline). Set TRIM_REWARD_MODE=recall_turn to enable:
+    #   total = recall - TRIM_TURN_PENALTY * (n_turns / TRIM_TURN_NORM) * [rec > 0]
+    # where n_turns = len(actions) (the episode's executed action count, already
+    # truncated at `ended`), and TRIM_TURN_NORM normalizes to [0,1] (default 40
+    # matches --max-turns 40). This makes RL prefer concise trajectories that
+    # still recall the answer, without touching the retrieval objective itself.
+    #
+    # The penalty is GATED on recall > 0: it only applies to episodes that
+    # actually recalled something. Without this gate the penalty is an
+    # *uncoupled*, monotonically-optimizable target — the model finds the
+    # shortcut "submit on turn 1 without searching" (n_turns=1 -> penalty
+    # ~0.004, near-zero cost) but curated is empty so rec=0; every rec=0
+    # episode then scores the same constant, groups become zero-variance,
+    # and the RL loop hits empty-signal until the circuit-breaker fires
+    # (trainer_adapter.py "too many empty-signal rollouts"). Gating makes
+    # turn count a pure tie-break AMONG episodes that already recalled
+    # ("do it right, then prefer fewer turns"), never an independent
+    # incentive to stop searching. A full-recall episode still scores highest.
+    reward_mode = str(os.environ.get("TRIM_REWARD_MODE", "recall")).strip()
+    n_turns = len(actions)
+    turn_penalty = 0.0
+    turn_penalty_raw = 0.0
+    if reward_mode == "recall_turn":
+        turn_coef = float(os.environ.get("TRIM_TURN_PENALTY", "0.15"))
+        turn_norm = max(1.0, float(os.environ.get("TRIM_TURN_NORM", "40")))
+        turn_penalty_raw = float(turn_coef) * min(1.0, n_turns / turn_norm)
+        # Gate: penalize turns ONLY when the episode recalled something.
+        if rec > 0.0:
+            turn_penalty = turn_penalty_raw
+    total = rec - turn_penalty
+    protocol = "final_answer_recall_only" if reward_mode != "recall_turn" else "final_answer_recall_gated_turn_penalty"
     return {
         "total": float(total),
         "task_recall": rec,
-        "task": task,
-        "legal": legal_term,
-        "shaping": shaping,
+        "task": rec,
+        "legal": 0.0,
+        "shaping": 0.0,
         "shaping_raw": float(shaping_raw),
         "ended": 0.03 if st.get("ended") else 0.0,
         "query_overlap": 0.03 * overlap_ratio,
@@ -951,8 +978,13 @@ def terminal_reward_breakdown(
         "n_curated": float(len(st.get("curated") or {})),
         "n_pool": float(len(st.get("pool") or {})),
         "n_exec_ok": n_exec,
-        "invalid_episode": False,
-        "protocol": "local_legacy_capped_shaping",
+        "n_turns": float(n_turns),
+        "turn_penalty": float(turn_penalty),
+        "turn_penalty_raw": float(turn_penalty_raw),
+        "turn_penalty_gated": bool(reward_mode == "recall_turn" and rec == 0.0 and turn_penalty_raw > 0.0),
+        "reward_mode": reward_mode,
+        "invalid_episode": bool(invalid),
+        "protocol": protocol,
     }
 
 

@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Sequence
 
 from trim.training.action_encoding import (
+    action_is_visible,
     assert_action_visible,
     encode_supervised_action,
     prompt_ids_hash,
@@ -289,6 +290,7 @@ def build_tinker_opd_datums(
 
     prepared: list[tuple[ProjectedTrainingStep, list[int], list[int], list[bool], float, int, dict[str, Any]]] = []
     denom = 0.0
+    n_skip_clipped_doc = 0
     for step in steps:
         if prompt_has_teacher_leak(step.prompt_reduced):
             raise ValueError("teacher-only observation leaked into Student prefix")
@@ -327,10 +329,23 @@ def build_tinker_opd_datums(
             enc=model_enc,
             metadata=meta,
         )
-        if visible is not None and step.target_action:
-            assert_action_visible(step.target_action, visible)
+        if visible is not None and step.target_action and not action_is_visible(step.target_action, visible):
+            # A teacher curate referenced docs that context clipping dropped from
+            # the Student's visible window. The step cannot be made
+            # Student-realizable, so skip it rather than abort the whole run
+            # (fail-closed is preserved for empty batches upstream; an
+            # unprojectable single step is dropped, not trained on).
+            n_skip_clipped_doc += 1
+            continue
         prepared.append((step, prompt_ids, target_ids, mask, weight, n_tok, encoded.canonical_action))
         denom += weight * n_tok
+    if n_skip_clipped_doc:
+        print(
+            f"[opd_datum] build_tinker_opd_datums skipped {n_skip_clipped_doc} step(s) whose "
+            f"projected curate referenced docs dropped by context clipping "
+            f"(Student-realizable projection unavailable); kept {len(prepared)} step(s).",
+            flush=True,
+        )
     if denom <= 0 or not prepared:
         return []
 
@@ -403,6 +418,7 @@ def build_projected_seed_datums(
         "n_skip_missing_student": 0,
         "n_skip_zero_mask": 0,
         "n_skip_empty_target": 0,
+        "n_skip_clipped_doc": 0,
         "n_kept": 0,
         "objective_version": PROJECTED_GAP_OBJECTIVE_VERSION,
         "lambda_opd": float(lambda_opd),
@@ -470,8 +486,12 @@ def build_projected_seed_datums(
             enc=model_enc,
             metadata=meta,
         )
-        if visible is not None and step.target_action:
-            assert_action_visible(step.target_action, visible)
+        if visible is not None and step.target_action and not action_is_visible(step.target_action, visible):
+            # A teacher curate referenced docs that context clipping dropped from
+            # the Student's visible window. The step cannot be made
+            # Student-realizable, so skip it rather than abort the whole run.
+            stats["n_skip_clipped_doc"] += 1
+            continue
         branch_id = str(meta.get("branch_id") or meta.get("component_id") or "")
         ctx_hash = teacher_context_hash(
             teacher_ids=teacher_ids,

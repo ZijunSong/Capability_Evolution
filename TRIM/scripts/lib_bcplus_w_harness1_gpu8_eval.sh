@@ -17,6 +17,19 @@ lib_bcplus_gpu8_init() {
 
   BCPLUS_INDEX="${REL_BCPLUS}/indexes/bm25"
   BCPLUS_CORPUS="${REL_BCPLUS}/data/browsecomp_plus_corpus_full.jsonl"
+  # Transfer benchmarks (longsealqa / frames / hotpotqa) → TRIM/manifests/transfer_local/{name}/.
+  # Mirrors run_bcplus_w_harness1_adapter_gpu8_eval.sh transfer routing so harness eval
+  # (no-adapter base-only) also resolves the per-benchmark index/corpus.
+  case "${BENCHMARK}" in
+    longsealqa|longseal|long_seal|long_seal_qa|longseal-qa) _TB_LIB=longsealqa ;;
+    frames|frames-benchmark|google_frames|frames_benchmark) _TB_LIB=frames ;;
+    hotpotqa|hotpot|hotpot_qa|hotpotqa_subset) _TB_LIB=hotpotqa ;;
+    *) _TB_LIB="" ;;
+  esac
+  if [ -n "${_TB_LIB}" ]; then
+    BCPLUS_INDEX="manifests/transfer_local/${_TB_LIB}/indexes/bm25"
+    BCPLUS_CORPUS="manifests/transfer_local/${_TB_LIB}/corpus.jsonl"
+  fi
   VERIFY_MODEL_PATH="${REL_MODELS}/harness-1"
 
   GPU="${GPU:-7}"

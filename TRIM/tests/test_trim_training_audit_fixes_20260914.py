@@ -215,6 +215,78 @@ def test_zero_recall_shaping_is_capped():
     assert terminal_reward(st, query="q", gold_ids=["gold"], valids=[True, True, True], actions=actions) == parts["total"]
 
 
+def test_recall_turn_penalty_gated_off_when_recall_zero(monkeypatch):
+    """turn penalty must NOT apply when rec==0, otherwise the model finds a
+    "submit on turn 1 without searching" shortcut (near-zero penalty, rec=0)
+    and every rec=0 episode scores the same constant -> zero-variance groups
+    -> empty-signal -> RL circuit-breaker. See four_cell_runtime.py."""
+    monkeypatch.setenv("TRIM_REWARD_MODE", "recall_turn")
+    monkeypatch.setenv("TRIM_TURN_PENALTY", "0.15")
+    monkeypatch.setenv("TRIM_TURN_NORM", "40")
+    # curated holds NO gold -> rec = 0. n_turns = 40 would normally saturate
+    # the penalty to 0.15, but the gate must zero it out.
+    st = {
+        "curated": {"d1": {"text": "unrelated"}, "d2": {"text": "also unrelated"}},
+        "pool": {"d1": {}, "d2": {}, "d3": {}},
+        "ended": True,
+    }
+    actions = [{"name": "search_corpus", "arguments": {"query": "q"}}] * 40
+    parts = terminal_reward_breakdown(
+        st, query="q", gold_ids=["gold"], valids=[True] * 40, actions=actions
+    )
+    assert parts["task_recall"] == 0.0
+    assert parts["turn_penalty_raw"] == 0.15  # raw would saturate at 40 turns
+    assert parts["turn_penalty"] == 0.0  # but gate zeroed it
+    assert parts["turn_penalty_gated"] is True
+    assert parts["total"] == 0.0
+    assert parts["reward_mode"] == "recall_turn"
+    assert parts["protocol"] == "final_answer_recall_gated_turn_penalty"
+
+
+def test_recall_turn_penalty_applies_when_recall_positive(monkeypatch):
+    """When rec>0 the turn penalty applies normally as a tie-break among
+    episodes that already recalled something."""
+    monkeypatch.setenv("TRIM_REWARD_MODE", "recall_turn")
+    monkeypatch.setenv("TRIM_TURN_PENALTY", "0.15")
+    monkeypatch.setenv("TRIM_TURN_NORM", "40")
+    # curated holds one of two golds -> rec = 0.5. n_turns = 40 -> penalty 0.15.
+    st = {
+        "curated": {"gold_a": {"text": "hit"}, "d2": {"text": "miss"}},
+        "pool": {"gold_a": {}, "d2": {}, "d3": {}},
+        "ended": True,
+    }
+    actions = [{"name": "search_corpus", "arguments": {"query": "q"}}] * 40
+    parts = terminal_reward_breakdown(
+        st, query="q", gold_ids=["gold_a", "gold_b"], valids=[True] * 40, actions=actions
+    )
+    assert parts["task_recall"] == 0.5
+    assert parts["turn_penalty_raw"] == 0.15
+    assert parts["turn_penalty"] == 0.15  # gate passes (rec>0)
+    assert parts["turn_penalty_gated"] is False
+    assert parts["total"] == 0.35  # 0.5 - 0.15
+    assert parts["protocol"] == "final_answer_recall_gated_turn_penalty"
+
+
+def test_recall_turn_penalty_few_turns_when_recall_positive(monkeypatch):
+    """Fewer turns -> smaller penalty, full-recall still scores highest."""
+    monkeypatch.setenv("TRIM_REWARD_MODE", "recall_turn")
+    monkeypatch.setenv("TRIM_TURN_PENALTY", "0.15")
+    monkeypatch.setenv("TRIM_TURN_NORM", "40")
+    st = {
+        "curated": {"gold": {"text": "hit"}},
+        "pool": {"gold": {}},
+        "ended": True,
+    }
+    # n_turns = 5 -> penalty = 0.15 * 5/40 = 0.01875
+    actions = [{"name": "search_corpus", "arguments": {"query": "q"}}] * 5
+    parts = terminal_reward_breakdown(
+        st, query="q", gold_ids=["gold"], valids=[True] * 5, actions=actions
+    )
+    assert parts["task_recall"] == 1.0
+    assert parts["turn_penalty"] == 0.01875
+    assert parts["total"] == 0.98125
+
+
 def test_teacher_prompt_uses_frozen_pre_state(tmp_path):
     frozen = {
         "query": "q",

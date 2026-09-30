@@ -120,14 +120,39 @@ SUMMARY_LABELS: dict[str, str] = {
 }
 
 
+def _parent_docid(docid: str) -> str:
+    """Strip the ``::c<N>`` chunk suffix so chunk ids match their parent doc id.
+
+    Transfer benchmarks (LongSealQA/FRAMES/HotpotQA) store corpus chunks as
+    ``<url>::c0`` / ``::c1`` ... but the gold/evidence docids are parent URLs
+    (no suffix). Without normalization, set_recall(selected, gold) always
+    returns 0 because the chunk id string never equals the parent id string.
+    BC+ docids are bare numerics (no ``::c``), so this is a no-op there.
+    """
+    text = str(docid or "")
+    if "::c" in text:
+        return text.rsplit("::c", 1)[0]
+    return text
+
+
 def _id_set(value: Any) -> set[str]:
     if not value:
         return set()
     if isinstance(value, Mapping):
-        return {str(k) for k in value if str(k)}
+        out = set()
+        for k in value:
+            if str(k):
+                out.add(str(k))
+                out.add(_parent_docid(str(k)))
+        return out
     if isinstance(value, (list, tuple, set)):
-        return {str(x) for x in value if str(x)}
-    return {str(value)}
+        out = set()
+        for x in value:
+            if str(x):
+                out.add(str(x))
+                out.add(_parent_docid(str(x)))
+        return out
+    return {str(value), _parent_docid(str(value))}
 
 
 def set_recall(got: Iterable[str], relevant: Iterable[str]) -> float:

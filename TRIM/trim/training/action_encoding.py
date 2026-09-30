@@ -175,6 +175,28 @@ def visible_doc_ids_for_decision(
     return None
 
 
+def action_is_visible(
+    action: Mapping[str, Any] | Any,
+    visible_doc_ids: Sequence[str],
+) -> bool:
+    """Whether a projected target only references docs still visible after clipping.
+
+    Unlike :func:`assert_action_visible` this never raises; callers that want to
+    tolerate a teacher ``curate`` referencing docs dropped by context clipping
+    (the step simply cannot be made Student-realizable) use this to skip the
+    step instead of aborting the whole training run.
+    """
+    canon = canonicalize_action(action)
+    name = str(canon.get("name") or "")
+    if name in TOOLS_WITHOUT_VISIBLE_DOC_REQUIREMENT:
+        return True
+    refs = referenced_doc_ids(canon)
+    if not refs:
+        return True
+    visible = {str(x) for x in visible_doc_ids}
+    return all(did in visible for did in refs)
+
+
 def assert_action_visible(
     action: Mapping[str, Any] | Any,
     visible_doc_ids: Sequence[str],
@@ -317,6 +339,7 @@ __all__ = [
     "TOOLS_WITHOUT_VISIBLE_DOC_REQUIREMENT",
     "SupervisedActionEncoding",
     "assert_action_visible",
+    "action_is_visible",
     "assert_supervised_action_matches",
     "decode_token_ids",
     "encode_rollout_style_action",

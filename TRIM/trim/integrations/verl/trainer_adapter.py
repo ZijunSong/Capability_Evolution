@@ -67,6 +67,50 @@ def _requested_world_size(args: Any, dist_world: int) -> int:
     return max(1, int(raw))
 
 
+def _make_tensorboard_writer(out: Path, cell: str):
+    """Instantiate a TensorBoard SummaryWriter on the coordinator rank only.
+
+    Honors the CloudML-injected ``$TENSORBOARD_LOG_PATH`` when ``enableTensorboard``
+    is set on the job (platform provisions and surfaces the directory). Falls back
+    to ``<OUT>/<cell>/tb`` so a local ``tensorboard --logdir`` works off-cluster.
+    Returns ``None`` if tensorboard is unavailable or on a non-coordinator rank.
+    """
+    if not is_coordinator():
+        return None
+    try:
+        from torch.utils.tensorboard import SummaryWriter
+    except Exception as exc:  # pragma: no cover - optional dep
+        print(json.dumps({"event": "tensorboard_unavailable", "error": str(exc)}), flush=True)
+        return None
+    env_path = os.environ.get("TENSORBOARD_LOG_PATH")
+    log_dir = Path(env_path) if env_path else (out / cell / "tb")
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    print(json.dumps({"event": "tensorboard_writer_init", "log_dir": str(log_dir)}), flush=True)
+    return SummaryWriter(log_dir=str(log_dir))
+
+
+def _tb_add_scalars(writer, prefix: str, step: int, fields: dict[str, Any]) -> None:
+    """Write numeric fields to tensorboard as ``<prefix>/<key>`` scalars."""
+    if writer is None:
+        return
+    for key, value in fields.items():
+        if value is None:
+            continue
+        try:
+            fval = float(value)
+        except (TypeError, ValueError):
+            continue
+        if fval != fval:  # NaN guard
+            continue
+        try:
+            writer.add_scalar(f"{prefix}/{key}", fval, step)
+        except Exception:
+            pass
+
+
 def resolve_resume_optimizer_path(
     ckpt_dir: str | Path,
     *,
@@ -397,6 +441,7 @@ def run_verl_fsdp2_train(args: Any) -> dict[str, Any]:
     metrics_path = out / cell / "metrics.jsonl"
     timing_path = out / cell / "step_timing.jsonl"
     sample_path = out / cell / "turn_samples.jsonl"
+    tb_writer = _make_tensorboard_writer(out, cell)
     session_root = out / "vllm_sessions"
     run_id = _broadcast_run_id(out)
     local_world = int(getattr(dist, "local_world_size", 0) or 0)
@@ -470,6 +515,12 @@ def run_verl_fsdp2_train(args: Any) -> dict[str, Any]:
             enforce_eager=bool(getattr(args, "enforce_eager", False)),
             max_num_seqs=max(8, int(getattr(args, "max_num_seqs", 256) or 256) // max(1, int(dist.world_size))),
             extra_env=isolate_inference_child_env(),
+            # gpt-oss-20b mxfp4 loads 3 safetensors shards over JuiceFS; torch_ddp_lora
+            # starts 8 independent TP=1 engines, each reading the full model, so the
+            # 8-way concurrent JuiceFS reads are slow (~7 min/shard, ~20 min/engine).
+            # The default 900s startup timeout expired (gsqvw failed); 3600s matches
+            # four_cell_runtime's open_vllm timeout. See CLAUDE.md recov2 fix.
+            startup_timeout_s=3600.0,
         )
         print(
             f"[verl-fsdp2 rank{dist.rank}] rollout batch={rollout_batch_id} "
@@ -480,7 +531,39 @@ def run_verl_fsdp2_train(args: Any) -> dict[str, Any]:
         groups: list[Any] = []
         try:
             t_engine = time.perf_counter()
-            client.start()
+            # vLLM 0.19.1 TP=1 engine binds a random distributed-init
+            # (TCPStore) port in the EngineCore grandchild. On step restart the
+            # previous grandchild may still hold it (TIME_WAIT / slow exit)
+            # despite close()'s process-group recycle, raising
+            # DistNetworkError(EADDRINUSE). Each rank's engine is independent
+            # (TP=1, world_size=1, no cross-rank rendezvous), so a per-rank
+            # start retry with close()+drain is safe and does not desync DDP.
+            # See CLAUDE.md / trim-qwen4b-rl-ddp-eaddrinuse-20260920.
+            _start_attempts = 0
+            while True:
+                _start_attempts += 1
+                try:
+                    client.start()
+                    break
+                except (RuntimeError, TimeoutError) as _e:
+                    _msg = f"{_e!s}"
+                    _port_busy = (
+                        "EADDRINUSE" in _msg or "address already in use" in _msg.lower()
+                    )
+                    if _start_attempts >= 4 or not _port_busy:
+                        raise
+                    print(
+                        f"[verl-fsdp2 rank{dist.rank}] vLLM start EADDRINUSE retry "
+                        f"{_start_attempts}/3 after close()+drain: "
+                        f"{type(_e).__name__}",
+                        flush=True,
+                    )
+                    try:
+                        client.close()
+                    except Exception:
+                        pass
+                    wait_gpus_quiet()
+                    time.sleep(15.0 + 5.0 * _start_attempts)
             marks["rollout_engine_start_s"] = time.perf_counter() - t_engine
             t_gen = time.perf_counter()
             groups = rollout_queries_batched(
@@ -507,6 +590,16 @@ def run_verl_fsdp2_train(args: Any) -> dict[str, Any]:
             client.close()
             wait_gpus_quiet()
             marks["rollout_engine_close_s"] = time.perf_counter() - t_close
+        # Release vLLM/triton residual CPU memory (EngineCore child procs, triton
+        # kernel cache, unpickler handles) before rank0 all_gather_via_disk
+        # merges 8 ranks' full trajectories into CPU. On mxfp4+triton path
+        # (vs bf16) vLLM leaves extra CPU residue; without this, step1+ gather
+        # OOM-SIGKILLs rank0 (recov3/zero/recov6 all died at runTime ~10200s).
+        # `client` is not referenced after close() in this block. See CLAUDE.md.
+        del client
+        import gc
+
+        gc.collect()
         marks.update(_rollout_component_seconds(groups))
         t_gather = time.perf_counter()
         all_groups = all_gather_via_disk(
@@ -734,6 +827,17 @@ def run_verl_fsdp2_train(args: Any) -> dict[str, Any]:
                     "run_id": run_id,
                 }
                 metrics_path.parent.mkdir(parents=True, exist_ok=True)
+                # Per-step metrics record. ALL tensorboard scalars are mirrored
+                # here so curves can be rebuilt from disk if the tensorboard UI
+                # is unavailable (tb_writer may be None on a missing package or
+                # a platform outage). tb_<group>_<key> mirrors the tb prefix;
+                # flat keys are kept for backward compat with existing readers.
+                _audit_for_jsonl = audit if isinstance(audit, dict) else {}
+                _audit_task_j = _audit_for_jsonl.get("task") if isinstance(_audit_for_jsonl.get("task"), dict) else {}
+                _ta_counts_j = turn_audit.get("counts") or {}
+                _n_eps_j = int(_audit_for_jsonl.get("n_episodes") or 0) or int(_ta_counts_j.get("n_episodes") or 0)
+                _n_turns_total_j = int(_ta_counts_j.get("n_turns") or 0)
+                _n_tool_calls_j = int(_audit_for_jsonl.get("n_tool_calls_total") or _ta_counts_j.get("n_tool_call") or 0)
                 with metrics_path.open("a", encoding="utf-8") as handle:
                     handle.write(json.dumps({
                         "step": already,
@@ -752,8 +856,171 @@ def run_verl_fsdp2_train(args: Any) -> dict[str, Any]:
                         "projected_gap_raw": part.get("projected_gap_raw"),
                         "opd_objective": part.get("opd_objective"),
                         **health["fields"],
-                        "turn_audit": turn_audit.get("counts"),
+                        "turn_audit": _ta_counts_j,
+                        # === Mirrored tensorboard scalars (tb-failure fallback) ===
+                        # performance/
+                        "tb_performance_reward_mean": _audit_for_jsonl.get("task_recall_mean", _audit_task_j.get("mean")),
+                        "tb_performance_success_rate": _audit_for_jsonl.get("success_rate"),
+                        "tb_performance_task_var": _audit_task_j.get("var"),
+                        "tb_performance_n_groups": _audit_for_jsonl.get("n_groups"),
+                        "tb_performance_n_episodes": _audit_for_jsonl.get("n_episodes"),
+                        # turn-count penalty (recall_turn reward mode only).
+                        "tb_performance_turn_penalty_mean": (_audit_for_jsonl.get("turn_penalty") or {}).get("mean") if isinstance(_audit_for_jsonl.get("turn_penalty"), dict) else None,
+                        "tb_performance_turn_penalty_var": (_audit_for_jsonl.get("turn_penalty") or {}).get("var") if isinstance(_audit_for_jsonl.get("turn_penalty"), dict) else None,
+                        "tb_performance_reward_mode": _audit_for_jsonl.get("reward_mode"),
+                        "tb_performance_n_turns_mean": (_audit_for_jsonl.get("n_turns") or {}).get("mean") if isinstance(_audit_for_jsonl.get("n_turns"), dict) else None,
+                        # agent/
+                        "tb_agent_turn_mean": ((_n_turns_total_j / _n_eps_j) if _n_eps_j else _audit_for_jsonl.get("n_turns", {}).get("mean") if isinstance(_audit_for_jsonl.get("n_turns"), dict) else None),
+                        "tb_agent_generated_tokens": part.get("rl_real_tokens"),
+                        "tb_agent_tool_calls": ((_n_tool_calls_j / _n_eps_j) if _n_eps_j else 0.0),
+                        "tb_agent_invalid_tool_rate": (1.0 - float(_audit_for_jsonl.get("parse_valid_rate") or 1.0)) if _audit_for_jsonl.get("parse_valid_rate") is not None else None,
+                        "tb_agent_parse_valid_rate": _audit_for_jsonl.get("parse_valid_rate"),
+                        "tb_agent_exec_ok_rate": _audit_for_jsonl.get("exec_ok_rate"),
+                        "tb_agent_end_search_rate": _audit_for_jsonl.get("end_search_rate"),
+                        "tb_agent_timeout_rate": _audit_for_jsonl.get("timeout_rate"),
+                        # optimization/
+                        "tb_optimization_policy_loss": part.get("policy_loss", part.get("loss")),
+                        "tb_optimization_entropy": part.get("entropy"),
+                        "tb_optimization_approx_kl": part.get("approx_kl"),
+                        "tb_optimization_grad_norm": part.get("grad_norm"),
+                        "tb_optimization_skipped_empty_supervision": part.get("skipped_empty_supervision"),
+                        # learning_signal/
+                        "tb_learning_signal_advantage_std": _audit_for_jsonl.get("group_reward_std_mean"),
+                        "tb_learning_signal_zero_variance_group_ratio": _audit_for_jsonl.get("zero_variance_group_ratio"),
+                        "tb_learning_signal_n_const_reward_groups": _audit_for_jsonl.get("n_const_reward_groups", n_const),
+                        # trim/
+                        "tb_trim_selected_ratio": _audit_for_jsonl.get("selected_ratio"),
+                        "tb_trim_n_curated_eps": _audit_for_jsonl.get("n_curated_eps"),
+                        "tb_trim_n_gold_eps": _audit_for_jsonl.get("n_gold_eps"),
+                        # legacy reward-parts breakdown + cispo + tokens + timing + mem (audit)
+                        "tb_reward_legal_mean": (_audit_for_jsonl.get("legal") or {}).get("mean") if isinstance(_audit_for_jsonl.get("legal"), dict) else None,
+                        "tb_reward_shaping_mean": (_audit_for_jsonl.get("shaping") or {}).get("mean") if isinstance(_audit_for_jsonl.get("shaping"), dict) else None,
+                        "tb_cispo_ratio_clip_fraction": part.get("ratio_clip_fraction"),
+                        "tb_cispo_clip_low": part.get("clip_low"),
+                        "tb_cispo_clip_high": part.get("clip_high"),
+                        "tb_cispo_gate_mean": part.get("gate_mean"),
+                        "tb_tokens_n_rl_tokens": part.get("n_rl_tokens"),
+                        "tb_tokens_n_microbatches": part.get("n_microbatches"),
+                        "tb_tokens_rl_padding_fraction": part.get("rl_padding_fraction"),
+                        "tb_tokens_n_global_rl_microbatches": part.get("n_global_rl_microbatches"),
+                        "tb_timing_s_student_forward": part.get("student_forward_s"),
+                        "tb_timing_s_loss": part.get("loss_s"),
+                        "tb_timing_s_backward": part.get("backward_s"),
+                        "tb_timing_s_grad_sync": part.get("grad_sync_s"),
+                        "tb_timing_s_optimizer": part.get("optimizer_s"),
+                        "tb_timing_s_update_wall": part.get("update_wall_s"),
+                        "tb_mem_peak_mem_mb": part.get("peak_mem_mb"),
                     }, default=str) + "\n")
+                # TensorBoard scalars (coordinator-only; writer is None elsewhere).
+                _audit = audit if isinstance(audit, dict) else {}
+                _audit_task = _audit.get("task") if isinstance(_audit.get("task"), dict) else {}
+                _audit_turns = _audit.get("n_turns") if isinstance(_audit.get("n_turns"), dict) else {}
+                _ta_counts = turn_audit.get("counts") or {}
+                _n_eps = int(_audit.get("n_episodes") or 0) or int(_ta_counts.get("n_episodes") or 0)
+                _n_turns_total = int(_ta_counts.get("n_turns") or 0)
+                _n_tool_calls = int(_audit.get("n_tool_calls_total") or _ta_counts.get("n_tool_call") or 0)
+                # performance/: the retrieval reward (recall) + success (recall>0).
+                _tb_add_scalars(tb_writer, "performance", already, {
+                    "reward_mean": _audit.get("task_recall_mean", _audit_task.get("mean")),
+                    "success_rate": _audit.get("success_rate"),
+                    "task_var": _audit_task.get("var"),
+                    "n_groups": _audit.get("n_groups"),
+                    "n_episodes": _audit.get("n_episodes"),
+                    # turn-count penalty (TRIM_REWARD_MODE=recall_turn only).
+                    # total = recall - gated_turn_penalty (penalty is 0 when
+                    # rec==0), so reward_mean already nets this out; these two
+                    # let you see the penalty magnitude and the active reward
+                    # mode at a glance.
+                    "turn_penalty_mean": (_audit.get("turn_penalty") or {}).get("mean") if isinstance(_audit.get("turn_penalty"), dict) else None,
+                    "turn_penalty_var": (_audit.get("turn_penalty") or {}).get("var") if isinstance(_audit.get("turn_penalty"), dict) else None,
+                    "reward_mode": _audit.get("reward_mode"),
+                })
+                # agent/: rollout/trajectory behavior.
+                _tb_add_scalars(tb_writer, "agent", already, {
+                    "turn_mean": ((_n_turns_total / _n_eps) if _n_eps else _audit_turns.get("mean")),
+                    "generated_tokens": part.get("rl_real_tokens"),
+                    "tool_calls": (_n_tool_calls / _n_eps) if _n_eps else 0.0,
+                    "invalid_tool_rate": (
+                        1.0 - float(_audit.get("parse_valid_rate") or 1.0)
+                        if _audit.get("parse_valid_rate") is not None
+                        else None
+                    ),
+                    "parse_valid_rate": _audit.get("parse_valid_rate"),
+                    "exec_ok_rate": _audit.get("exec_ok_rate"),
+                    "end_search_rate": _audit.get("end_search_rate"),
+                    "timeout_rate": _audit.get("timeout_rate"),
+                })
+                # optimization/: the trainer's policy gradient + stability signals.
+                _tb_add_scalars(tb_writer, "optimization", already, {
+                    "policy_loss": part.get("policy_loss", part.get("loss")),
+                    "entropy": part.get("entropy"),
+                    "approx_kl": part.get("approx_kl"),
+                    "grad_norm": part.get("grad_norm"),
+                    "n_optimizer_steps": part.get("n_optimizer_steps"),
+                    "skipped_empty_supervision": part.get("skipped_empty_supervision"),
+                })
+                # learning_signal/: advantage spread — is there a gradient signal?
+                _tb_add_scalars(tb_writer, "learning_signal", already, {
+                    "advantage_std": _audit.get("group_reward_std_mean"),
+                    "zero_variance_group_ratio": _audit.get("zero_variance_group_ratio"),
+                    "n_const_reward_groups": _audit.get("n_const_reward_groups", n_const),
+                    "task_var": _audit_task.get("var"),
+                })
+                # trim/: retrieval-specific selected-vs-gold ratio.
+                _tb_add_scalars(tb_writer, "trim", already, {
+                    "selected_ratio": _audit.get("selected_ratio"),
+                    "n_curated_eps": _audit.get("n_curated_eps"),
+                    "n_gold_eps": _audit.get("n_gold_eps"),
+                })
+                # legacy/reward : keep the original reward-parts breakdown for audit.
+                _tb_add_scalars(tb_writer, "reward", already, {
+                    "task_mean": _audit_task.get("mean"),
+                    "task_var": _audit_task.get("var"),
+                    "legal_mean": (_audit.get("legal") or {}).get("mean") if isinstance(_audit.get("legal"), dict) else None,
+                    "shaping_mean": (_audit.get("shaping") or {}).get("mean") if isinstance(_audit.get("shaping"), dict) else None,
+                    "n_const_reward_groups": _audit.get("n_const_reward_groups", n_const),
+                    "parse_valid_rate": _audit.get("parse_valid_rate"),
+                    "exec_ok_rate": _audit.get("exec_ok_rate"),
+                    "end_search_rate": _audit.get("end_search_rate"),
+                    "timeout_rate": _audit.get("timeout_rate"),
+                })
+                _tb_add_scalars(tb_writer, "cispo", already, {
+                    "ratio_clip_fraction": part.get("ratio_clip_fraction"),
+                    "clip_low": part.get("clip_low"),
+                    "clip_high": part.get("clip_high"),
+                    "gate_mean": part.get("gate_mean"),
+                    "skipped_gap_zero_Z": part.get("skipped_gap_zero_Z"),
+                })
+                _tb_add_scalars(tb_writer, "tokens", already, {
+                    "n_rl_rows_local": part.get("n_rl_rows_local"),
+                    "n_opd_rows_local": part.get("n_opd_rows_local"),
+                    "n_rl_tokens": part.get("n_rl_tokens"),
+                    "n_microbatches": part.get("n_microbatches"),
+                    "rl_padding_fraction": part.get("rl_padding_fraction"),
+                    "n_global_rl_microbatches": part.get("n_global_rl_microbatches"),
+                })
+                _tb_add_scalars(tb_writer, "timing_s", already, {
+                    "rollout": rollout_s,
+                    "train": train_s,
+                    "teacher_score": part.get("teacher_score_s"),
+                    "student_forward": part.get("student_forward_s"),
+                    "loss": part.get("loss_s"),
+                    "backward": part.get("backward_s"),
+                    "grad_sync": part.get("grad_sync_s"),
+                    "optimizer": part.get("optimizer_s"),
+                    "update_wall": part.get("update_wall_s"),
+                    "actor_update_other": marks.get("actor_update_other_s"),
+                    "adapter_save": marks.get("adapter_save_s"),
+                    "optimizer_save": marks.get("optimizer_save_s"),
+                })
+                _tb_add_scalars(tb_writer, "mem", already, {
+                    "peak_mem_mb": part.get("peak_mem_mb"),
+                })
+                if tb_writer is not None:
+                    try:
+                        tb_writer.flush()
+                    except Exception:
+                        pass
                 if turn_audit.get("samples"):
                     sample_path.parent.mkdir(parents=True, exist_ok=True)
                     with sample_path.open("a", encoding="utf-8") as handle:

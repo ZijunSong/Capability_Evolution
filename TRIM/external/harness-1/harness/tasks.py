@@ -60,11 +60,21 @@ def chunk_ids_to_doc_ids(chunks_ids: Set[str]) -> Set[str]:
         chunk_id = str(raw_chunk_id)
 
         # URLs are document IDs already. Keep path/query and strip fragments.
+        # Also strip a trailing chunk suffix like "::c0" used by local transfer
+        # corpora (longsealqa/frames/hotpotqa) whose chunk ids are
+        # "<url>::c<idx>" — the parent document id is the URL without the
+        # chunk suffix, matching the gold_docids form in queries.jsonl.
         if "://" in chunk_id:
             parsed = urlsplit(chunk_id)
+            path = parsed.path
+            if path.endswith("::c") or "::c" in path:
+                # strip the last "::c<digits>" chunk suffix on the path
+                head, sep, _tail = path.rpartition("::c")
+                if sep and head:
+                    path = head
             document_ids.add(
                 urlunsplit(
-                    (parsed.scheme, parsed.netloc, parsed.path, parsed.query, "")
+                    (parsed.scheme, parsed.netloc, path, parsed.query, "")
                 )
             )
             continue
@@ -75,6 +85,16 @@ def chunk_ids_to_doc_ids(chunks_ids: Set[str]) -> Set[str]:
         if chunk_suffix_match and "/" not in chunk_id:
             document_ids.add(chunk_suffix_match.group("base"))
             continue
+
+        # Strip a trailing "::c<digits>" chunk suffix used by local transfer
+        # corpora whose chunk ids are "<title>::c<idx>" (e.g. FRAMES, where the
+        # document id is a Wikipedia title, not a URL). The parent document id
+        # is the title without the chunk suffix, matching gold_docids.
+        if "::c" in chunk_id:
+            head, _sep, _tail = chunk_id.rpartition("::c")
+            if head:
+                document_ids.add(head)
+                continue
 
         document_ids.add(chunk_id)
 

@@ -111,6 +111,29 @@ REL_MODELS="../../models"
 
 BCPLUS_INDEX="${REL_BCPLUS}/indexes/bm25"
 BCPLUS_CORPUS="${REL_BCPLUS}/data/browsecomp_plus_corpus_full.jsonl"
+
+# --- Benchmark routing for index/corpus ---
+# BC+ family (bcplus_full / bcplus_test_50) → BrowseComp-Plus Lucene index above.
+# Transfer benchmarks (longsealqa / frames / hotpotqa) → TRIM/manifests/transfer_local/{name}/.
+# retrieval_from_args reads --index-path / --corpus-path verbatim (no benchmark auto-resolve
+# in the multi-replica worker path), so we MUST point at the right index per benchmark.
+case "${BENCHMARK}" in
+  longsealqa|longseal|long_seal|long_seal_qa|longseal-qa)
+    _TB=longsealqa ;;
+  frames|frames-benchmark|google_frames|frames_benchmark)
+    _TB=frames ;;
+  hotpotqa|hotpot|hotpot_qa|hotpotqa_subset)
+    _TB=hotpotqa ;;
+  *)
+    _TB="" ;;
+esac
+if [ -n "${_TB}" ]; then
+  REL_TRANSFER="manifests/transfer_local/${_TB}"
+  BCPLUS_INDEX="${REL_TRANSFER}/indexes/bm25"
+  BCPLUS_CORPUS="${REL_TRANSFER}/corpus.jsonl"
+  echo "[transfer] benchmark=${BENCHMARK} -> index=${BCPLUS_INDEX} corpus=${BCPLUS_CORPUS}"
+fi
+
 VERIFY_MODEL_PATH="${REL_MODELS}/harness-1"
 VERIFY_MODEL_NAME="${VERIFY_MODEL_NAME:-harness-1-verifier}"
 

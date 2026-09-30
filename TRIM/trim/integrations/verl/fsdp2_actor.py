@@ -396,8 +396,39 @@ class FSDP2CispoActor:
             self.phase_seconds[time_bucket] = float(self.phase_seconds.get(time_bucket) or 0.0) + (
                 time.perf_counter() - t_lp
             )
+        # Per-token action distribution entropy = -sum_v p_v * log p_v over the
+        # full vocabulary. Computed once here (the logits window [B, keep, V] is
+        # available before gather_response_logprobs narrows it). Stored per
+        # response, aligned to the response length, so _rl_numerator can mask +
+        # aggregate. log_softmax in fp32 over the kept window is the dominant
+        # cost; kept small via logits_to_keep = max_resp + 1.
+        per_token_entropy: list[torch.Tensor] = []
+        try:
+            window = logits[:, :-1, :] if logits.shape[1] > 1 else logits
+            cap = min(int(packed.max_resp), int(window.shape[1]))
+            if window.numel() > 0 and cap > 0:
+                log_probs = torch.log_softmax(window[:, :cap, :].float(), dim=-1)
+                ent_all = -(log_probs.exp() * log_probs).sum(dim=-1)  # [B, cap]
+                for i, resp in enumerate(packed.response_ids):
+                    n = len(resp)
+                    if n <= 0 or i >= ent_all.shape[0]:
+                        per_token_entropy.append(torch.zeros(0, dtype=torch.float32, device=logits.device))
+                        continue
+                    start = max(0, cap - n)
+                    row_len = min(n, cap - start)
+                    ent_row = ent_all[i, start:start + row_len].to(torch.float32)
+                    if row_len < n:
+                        ent_row = torch.cat(
+                            [ent_row, torch.zeros(n - row_len, dtype=torch.float32, device=ent_row.device)]
+                        )
+                    per_token_entropy.append(ent_row)
+            else:
+                per_token_entropy = [torch.zeros(0, dtype=torch.float32, device=logits.device) for _ in packed.response_ids]
+        except Exception as exc:
+            print(f"[actor rank{self.rank}] entropy aggregation failed: {exc}", flush=True)
+            per_token_entropy = [torch.zeros(0, dtype=torch.float32, device=logits.device) for _ in packed.response_ids]
         aligned = []
-        for row, resp in zip(extra, packed.response_ids):
+        for row, resp, ent in zip(extra, packed.response_ids, per_token_entropy):
             item = dict(row)
             n = len(resp)
             item["action_ids"] = list(resp)
@@ -409,6 +440,7 @@ class FSDP2CispoActor:
             else:
                 item["token_logprobs"] = []
             item["action_mask"] = list(item.get("action_mask") or [1] * n)[:n]
+            item["action_entropy"] = list(ent.detach().cpu().reshape(-1).tolist()) if ent.numel() else []
             aligned.append(item)
         return logps, aligned
 
@@ -476,6 +508,9 @@ class FSDP2CispoActor:
         ratio_hits = 0
         ratio_total = 0
         input_tokens = sum(len(p) + len(a) for p, a in pairs)
+        entropy_sum = 0.0
+        approx_kl_sum = 0.0
+        ent_kl_count = 0
         for row, new_lp in zip(aligned, logps):
             if new_lp.numel() == 0:
                 continue
@@ -504,12 +539,25 @@ class FSDP2CispoActor:
             ratio_total += int(mask.sum().item())
             adv = float(row.get("advantage") or 0.0)
             terms.append((-(weight * adv * new_lp * mask)).sum())
+            # Entropy (per-token mean, masked) and PPO approx_kl 0.5*(r-1)^2.
+            ent_raw = list(row.get("action_entropy") or [])
+            if ent_raw:
+                ent_t = torch.tensor(ent_raw[: new_lp.numel()], device=self.device, dtype=torch.float32)
+                if ent_t.numel() != mask.numel():
+                    ent_t = ent_t[: mask.numel()]
+                msum = float(mask.sum().item())
+                if msum > 0:
+                    entropy_sum += float((ent_t * mask).sum().item())
+                    approx_kl_sum += float((0.5 * (ratio - 1.0) ** 2 * mask).sum().item())
+                    ent_kl_count += msum
         if terms:
             numer = torch.stack(terms).sum()
         else:
             dummy = next(p for p in self.model.parameters() if p.requires_grad)
             numer = dummy.float().sum() * 0.0
-        return numer, ratio_hits, ratio_total, input_tokens
+        entropy_mean = (entropy_sum / ent_kl_count) if ent_kl_count else 0.0
+        approx_kl_mean = (approx_kl_sum / ent_kl_count) if ent_kl_count else 0.0
+        return numer, ratio_hits, ratio_total, input_tokens, entropy_mean, approx_kl_mean
 
     def _teacher_forward_context(self):
         """Disable gradient reduction during teacher scoring. FSDP2 still all-gathers."""
@@ -749,6 +797,9 @@ class FSDP2CispoActor:
         gap_raw = 0.0
         gate_mean_acc = 0.0
         gate_n = 0
+        entropy_acc = 0.0
+        approx_kl_acc = 0.0
+        ent_kl_count = 0
         started = time.perf_counter()
         last_hb = started
         last_len = 0
@@ -770,11 +821,14 @@ class FSDP2CispoActor:
                 fwd_before = float(self.phase_seconds.get("student_forward_s") or 0.0)
                 t_block = time.perf_counter()
                 if kind == "rl":
-                    numer, hits, tot, n_in = self._rl_numerator(chunk)
+                    numer, hits, tot, n_in, ent_mean, kl_mean = self._rl_numerator(chunk)
                     ratio_hits += hits
                     ratio_total += tot
                     supervised += tot
                     loss = scale * (numer / z_rl)
+                    entropy_acc += ent_mean * tot
+                    approx_kl_acc += kl_mean * tot
+                    ent_kl_count += tot
                 elif gap_mode:
                     t_lps = teacher_logps_by_chunk[opd_i]
                     numer, n_in, gap_stats = self._projected_gap_numerator(chunk, t_lps)
@@ -828,10 +882,11 @@ class FSDP2CispoActor:
                 last_hb = now
         params = [p for p in self.model.parameters() if p.requires_grad]
         clip_fn = getattr(self.model, "clip_grad_norm_", None)
+        grad_norm: float | None = None
         if callable(clip_fn):
-            clip_fn(1.0)
+            grad_norm = float(clip_fn(1.0))
         else:
-            torch.nn.utils.clip_grad_norm_(params, 1.0)
+            grad_norm = float(torch.nn.utils.clip_grad_norm_(params, 1.0))
         if self.device.type == "cuda":
             torch.cuda.synchronize()
         t_opt = time.perf_counter()
@@ -854,6 +909,10 @@ class FSDP2CispoActor:
                 "skipped_gap_zero_Z": skipped_gap,
                 "n_microbatches": len(steps),
                 "loss": loss_sum,
+                "policy_loss": loss_sum if has_rl else None,
+                "entropy": (entropy_acc / max(1, ent_kl_count)) if has_rl else None,
+                "approx_kl": (approx_kl_acc / max(1, ent_kl_count)) if has_rl else None,
+                "grad_norm": grad_norm,
                 "projected_gap_raw": gap_raw if gap_mode else None,
                 "gate_mean": (gate_mean_acc / gate_n) if gate_n else None,
                 "teacher_score_s": round(teacher_score_s, 3) if gap_mode else None,

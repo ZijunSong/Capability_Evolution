@@ -21,6 +21,18 @@ def validate_corpus_against_index(
     n_index = int(index_num_docs)
     probes = list(probe_docids or ("59931", "69324", "44797"))
     missing_probes = [did for did in probes if store.get_document(str(did)) is None]
+    # Transfer benchmarks (longsealqa/frames/hotpotqa) use URL-style doc ids
+    # (e.g. "https://en.wikipedia.org/...::c0"), not BrowseComp-Plus numeric
+    # ids. When the BC+ default probes all miss, fall back to probing the first
+    # few actual store ids — this verifies read_document works for this corpus
+    # without assuming the BC+ id scheme. BC+ corpora still hit the default
+    # probes and take the fast path.
+    if missing_probes and not probe_docids and n_store > 0:
+        sample_ids = list(store_ids)[: min(3, n_store)]
+        missing_sample = [did for did in sample_ids if store.get_document(str(did)) is None]
+        if not missing_sample:
+            probes = sample_ids
+            missing_probes = []
     report: dict[str, Any] = {
         "ok": n_store == n_index and not missing_probes,
         "index_path": str(index_path or store.manifest.index_path or ""),
