@@ -13,7 +13,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from trim.upstream_harness1.api_adapter import chat_tools_from_upstream_schemas
+from trim.upstream_harness1.api_adapter import (
+    canonicalize_api_tool_name,
+    chat_tools_from_upstream_schemas,
+)
 from trim.upstream_harness1.pin import HARNESS1_ROOT, ensure_harness1_on_path
 from trim.upstream_harness1.retrieval import (
     RETRIEVAL_LOCAL_BM25,
@@ -765,7 +768,7 @@ def action_from_parsed(parsed: Any, env: Any, mods: Mapping[str, Any]) -> Any:
 
     pending: list[tuple[str, dict[str, Any], str]] = []
     for call in parsed.tool_calls:
-        name = str(call.get("name") or "")
+        name = canonicalize_api_tool_name(str(call.get("name") or "")) or str(call.get("name") or "")
         params = dict(call.get("arguments") or {})
         source = str(call.get("id") or "agent")
         if name in {"user_text", "UserTextTool"}:

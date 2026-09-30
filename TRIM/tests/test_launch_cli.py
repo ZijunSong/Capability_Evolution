@@ -117,6 +117,7 @@ def test_parse_train_cli():
     assert spec.train_method == "rl+opd"
     assert spec.training_mode == TRAINING_MODE_RL_OPD
     assert spec.components == ("sentence_compress", "verify_tool")
+    assert args.retrieval_backend == "upstream"
     assert args.component == "sentence_compress,verify_tool"
     assert args.train_data == "sec"
     assert args.n_queries is None

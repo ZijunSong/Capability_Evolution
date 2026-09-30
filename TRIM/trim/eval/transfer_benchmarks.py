@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlsplit, urlunsplit
@@ -42,6 +44,7 @@ CHUNK_SEP = "::c"
 TRANSFER_BENCHMARKS = ("longsealqa", "frames", "hotpotqa")
 OPTIONAL_PRIVATE_BENCHMARKS = ("web", "patents")
 LOCAL_EVAL_BENCHMARKS = TRANSFER_BENCHMARKS + OPTIONAL_PRIVATE_BENCHMARKS
+_CHUNK_SUFFIX = re.compile(r"^(?P<base>.+)_(?P<chunk_idx>\d+)$")
 
 BCPLUS_BENCHMARKS = frozenset(
     {"BC+", "bcplus_test_166", "bcplus_test_50", "bcplus_full", "bcplus_830", "bcplus_50", "test_50"}
@@ -308,3 +311,171 @@ def score_split_for_eval_benchmark(benchmark: str) -> str | None:
     if key in {"bcplus_full", "bcplus_830"}:
         return SCORE_SPLIT_830
     return None
+
+
+@dataclass(frozen=True)
+class LocalEvalCorpus:
+    """Lucene index + jsonl corpus implied by ``--benchmark``."""
+
+    benchmark: str
+    dataset: str
+    index_path: Path
+    corpus_path: Path
+
+
+def dataset_name_for_benchmark(benchmark: str) -> str:
+    transfer = canonical_transfer_benchmark(benchmark)
+    if transfer:
+        return transfer
+    return "browsecompplus"
+
+
+def resolve_local_bm25_corpus(benchmark: str) -> LocalEvalCorpus:
+    """Map ``--benchmark`` onto the local BM25 index/corpus used by BC+ eval.
+
+    Transfer benches live under ``TRIM/manifests/transfer_local/{name}/``.
+    BC+ family uses BrowseComp-Plus ``indexes/bm25`` plus the full jsonl corpus.
+    Paths are returned even if the files are not on disk yet; eval fails later
+    with a build/index message instead of silently falling back to Chroma.
+    """
+    transfer = canonical_transfer_benchmark(benchmark)
+    if transfer:
+        base = transfer_dir(transfer)
+        return LocalEvalCorpus(
+            benchmark=transfer,
+            dataset=transfer,
+            index_path=base / "indexes" / "bm25",
+            corpus_path=base / "corpus.jsonl",
+        )
+    from trim.eval.official_query_pool import CANDIDATE_BCP_ROOTS, default_bcp_root
+
+    root = default_bcp_root() or CANDIDATE_BCP_ROOTS[0]
+    full = root / "data" / "browsecomp_plus_corpus_full.jsonl"
+    small = root / "data" / "browsecomp_plus_corpus.jsonl"
+    decrypted = root / "data" / "browsecomp_plus_decrypted.jsonl"
+    if full.is_file():
+        corpus = full
+    elif small.is_file():
+        corpus = small
+    else:
+        corpus = decrypted if decrypted.is_file() else full
+    return LocalEvalCorpus(
+        benchmark="browsecompplus",
+        dataset="browsecompplus",
+        index_path=root / "indexes" / "bm25",
+        corpus_path=corpus,
+    )
+
+
+def _unique_str_ids(values: Any) -> list[str]:
+    out: list[str] = []
+    if values is None:
+        return out
+    if isinstance(values, (str, bytes)):
+        values = [values]
+    seen: set[str] = set()
+    for raw in values:
+        text = str(raw or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+    return out
+
+
+def retrieved_doc_keys(docid: str) -> set[str]:
+    """Keys used to match a retrieved chunk/doc id against gold_docids."""
+    keys = recall_keys(docid)
+    text = str(docid or "")
+    match = _CHUNK_SUFFIX.match(text)
+    if match and "/" not in text and "://" not in text:
+        keys.add(match.group("base"))
+    return {k for k in keys if k}
+
+
+class LocalQueryPoolDataset:
+    """In-memory scoring dataset from TRIM eval rows. No HuggingFace / Chroma."""
+
+    evaluation_mode = "document"
+
+    def __init__(self, name: str, rows: list[dict[str, Any]]):
+        self.name = str(name or "local")
+        self._query_index: dict[str, dict[str, Any]] = {}
+        self._gold_document_ids: dict[str, set[str]] = {}
+        self._relevant_keys: dict[str, set[str]] = {}
+        for row in rows:
+            qid = str(row.get("query_id") or "").strip()
+            if not qid:
+                continue
+            gold = _unique_str_ids(row.get("gold_docids"))
+            evidence = _unique_str_ids(row.get("evidence_docids") or gold)
+            relevant = _unique_str_ids([*gold, *evidence])
+            self._query_index[qid] = {
+                "query_id": qid,
+                "query": str(row.get("query") or ""),
+                "document_ids": relevant,
+                "answer": str(row.get("answer") or ""),
+            }
+            self._gold_document_ids[qid] = set(gold)
+            self._relevant_keys[qid] = {k for did in relevant for k in retrieved_doc_keys(did)}
+
+    def get_query_text(self, query_id: str) -> str:
+        row = self._query_index.get(str(query_id)) or {}
+        return str(row.get("query") or "")
+
+    def get_query_by_id(self, query_id: str) -> tuple[str, str]:
+        qid = str(query_id)
+        row = self._query_index.get(qid) or {"query_id": qid, "query": ""}
+        return str(row["query_id"]), str(row.get("query") or "")
+
+    def get_expected_answer(self, query_id: str) -> str:
+        row = self._query_index.get(str(query_id)) or {}
+        return str(row.get("answer") or "")
+
+    def _hit_keys(self, retrieved_chunk_ids: list[str]) -> set[str]:
+        keys: set[str] = set()
+        for docid in retrieved_chunk_ids or []:
+            keys.update(retrieved_doc_keys(str(docid)))
+        return keys
+
+    def _matched_count(self, gold_keys: set[str], retrieved_chunk_ids: list[str]) -> int:
+        found = 0
+        for docid in retrieved_chunk_ids or []:
+            if retrieved_doc_keys(str(docid)) & gold_keys:
+                found += 1
+        return found
+
+    def _recall(self, gold_ids: list[str], retrieved_chunk_ids: list[str]) -> float:
+        if not gold_ids:
+            return 0.0
+        hit_keys = self._hit_keys(retrieved_chunk_ids)
+        found = sum(1 for gold in gold_ids if retrieved_doc_keys(gold) & hit_keys)
+        return found / len(gold_ids)
+
+    def evaluate_results_recall(self, query_id: str, retrieved_chunk_ids: list[str]) -> float:
+        row = self._query_index.get(str(query_id)) or {}
+        return self._recall(list(row.get("document_ids") or []), retrieved_chunk_ids)
+
+    def evaluate_results_final_answer_recall(
+        self, query_id: str, retrieved_chunk_ids: list[str]
+    ) -> float:
+        gold = sorted(self._gold_document_ids.get(str(query_id), set()))
+        if not gold:
+            row = self._query_index.get(str(query_id)) or {}
+            gold = list(row.get("document_ids") or [])
+        return self._recall(gold, retrieved_chunk_ids)
+
+    def evaluate_results_precision(self, query_id: str, retrieved_chunk_ids: list[str]) -> float:
+        retrieved = [str(x) for x in (retrieved_chunk_ids or [])]
+        if not retrieved:
+            return 0.0
+        relevant = self._relevant_keys.get(str(query_id), set())
+        matched = self._matched_count(relevant, retrieved)
+        return matched / len(retrieved)
+
+    def evaluate_results_f1_score(self, query_id: str, retrieved_chunk_ids: list[str]) -> float:
+        precision = self.evaluate_results_precision(query_id, retrieved_chunk_ids)
+        recall = self.evaluate_results_recall(query_id, retrieved_chunk_ids)
+        if precision + recall == 0:
+            return 0.0
+        return 2 * (precision * recall) / (precision + recall)

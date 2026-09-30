@@ -26,6 +26,7 @@ HARNESS_G_STUDENT_NATIVE_TOOLS = (
     "init",
     "select",
     "lookup",
+    "page",
     "answer",
 )
 # Teacher-only; never a reduced-Student native tool.

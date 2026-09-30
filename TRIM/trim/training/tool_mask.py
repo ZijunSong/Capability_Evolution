@@ -227,7 +227,7 @@ STUDENT_ALWAYS_LEGAL = [
     "grep",
 ]
 
-HARNESS_G_STUDENT_LEGAL = ["init", "select", "lookup", "answer"]
+HARNESS_G_STUDENT_LEGAL = ["init", "select", "lookup", "page", "answer"]
 
 CURATE_STUDENT_KEYS = frozenset({"add_ids", "remove_ids"})
 CURATE_PRIVILEGED_KEYS = frozenset({"importance"})
@@ -245,6 +245,7 @@ ACTION_ARG_SCHEMAS: dict[str, frozenset[str]] = {
     "lookup": frozenset({"eid", "id"}),
     "answer": frozenset({"reason", "reasoning"}),
     "init": frozenset(),
+    "page": frozenset({"direction"}),
     "answer_with": frozenset({"sid", "sids"}),
 }
 

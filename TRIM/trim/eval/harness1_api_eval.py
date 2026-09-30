@@ -298,10 +298,26 @@ def _terminal_metrics(env: Any) -> dict[str, Any]:
     return metrics
 
 
+def json_safe(value: Any) -> Any:
+    """Replace Ellipsis and other non-JSON values so trace writes cannot crash."""
+    if value is Ellipsis:
+        return None
+    if isinstance(value, Mapping):
+        out: dict[Any, Any] = {}
+        for key, item in value.items():
+            out["..." if key is Ellipsis else key] = json_safe(item)
+        return out
+    if isinstance(value, (list, tuple)):
+        return [json_safe(item) for item in value]
+    if isinstance(value, set):
+        return [json_safe(item) for item in value]
+    return value
+
+
 def _append_jsonl(path: Path, row: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+        handle.write(json.dumps(json_safe(dict(row)), ensure_ascii=False, default=str) + "\n")
 
 
 def _query_sampling_seed(base_seed: int | None, qid: str) -> int | None:

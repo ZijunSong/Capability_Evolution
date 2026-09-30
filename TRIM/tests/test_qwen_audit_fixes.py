@@ -76,8 +76,9 @@ def test_parse_hermes_tool_call_wrapper_in_content():
             ]
         }
     )
-    assert parsed.ok is False
-    assert parsed.protocol_error == "tool_call_in_content"
+    assert parsed.ok is True
+    assert parsed.tool_calls[0]["name"] == "review_docs"
+    assert parsed.tool_calls[0]["arguments"] == {"doc_ids": ["74795_0"]}
 
 
 def test_verifier_retries_on_length_with_empty_content():

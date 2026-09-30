@@ -278,10 +278,13 @@ def test_repeat_failure_caps_same_invalid_action():
     st, _, ok = execute_tool(st, "select", {"sid": sid})
     assert ok is True
     last_obs = ""
-    for _ in range(MAX_IDENTICAL_FAILURES):
+    for i in range(MAX_IDENTICAL_FAILURES):
         st, last_obs, ok = execute_tool(st, "select", {"sid": sid})
         assert ok is False
-        assert st.get("ended") is False
+        if i < MAX_IDENTICAL_FAILURES - 1:
+            assert st.get("ended") is False
+    assert st.get("ended") is True
+    assert st.get("end_reason") == "protocol_failure"
     assert "protocol_failure" in last_obs
 
 

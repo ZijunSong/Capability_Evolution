@@ -18,7 +18,7 @@ from typing import Any
 HARNESS_NAME = "Harness-G"
 
 # Always-on student tools. Analogous to Harness-1 search/read/curate/end_search.
-RUNTIME_TOOLS: tuple[str, ...] = ("init", "select", "lookup", "answer")
+RUNTIME_TOOLS: tuple[str, ...] = ("init", "select", "lookup", "page", "answer")
 
 # Teacher-only extra tool. Analogous to Harness-1 verify.
 TEACHER_ONLY_TOOLS: tuple[str, ...] = ("answer_with",)
@@ -73,7 +73,7 @@ COMPONENT_TAXONOMY: dict[str, dict[str, Any]] = {
         "changes_execution": True,
         "default_enabled": True,
         "runtime_anchor": False,
-        "note": "INIT fuses paragraph / sentence / entity channels.",
+        "note": "INIT fuses independent paragraph / global-sentence / global-entity channels. Backend is lexical postings unless a dense index is declared.",
     },
     "invalid_target_filter": {
         "upstream_flag": "HARNESS_G_INVALID_TARGET_FILTER",

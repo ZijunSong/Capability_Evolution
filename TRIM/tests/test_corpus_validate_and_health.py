@@ -25,6 +25,20 @@ def test_validate_corpus_against_index_accepts_matching_store():
     store = LocalCorpusStore.from_memory(docs)
     report = validate_corpus_against_index(store=store, index_num_docs=len(store.documents))
     assert report["ok"] is True
+    assert report["probe_docids"] == ["59931", "69324", "44797"]
+
+
+def test_validate_corpus_against_index_probes_transfer_ids():
+    docs = [
+        {"id": "https://example.com/gold::c0", "text": "brussels"},
+        {"id": "James Franck::c1", "text": "physics"},
+        {"id": "Heroes of History", "text": "book"},
+    ]
+    store = LocalCorpusStore.from_memory(docs)
+    report = validate_corpus_against_index(store=store, index_num_docs=3)
+    assert report["ok"] is True
+    assert "59931" not in report["probe_docids"]
+    assert report["probe_docids"][0] == "https://example.com/gold::c0"
 
 
 def test_extract_verifier_text_rejects_reasoning_only():

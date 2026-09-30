@@ -58,7 +58,7 @@ from trim.eval.official_query_pool import (
     canonical_score_split,
     score_split_for_benchmark,
 )
-from trim.eval.transfer_benchmarks import score_split_for_eval_benchmark
+from trim.eval.transfer_benchmarks import resolve_local_bm25_corpus, score_split_for_eval_benchmark
 from trim.eval.sec_corpus import default_sec_corpus_root, default_sec_rl_data
 from trim.training.sft_data import default_sft_pack
 from trim.training.sft_runtime import (
@@ -455,7 +455,8 @@ def add_common_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
         "--benchmark",
         default="BC+",
         help=(
-            "Evaluation benchmark. BC+ family: bcplus_test_166 / bcplus_test_50 / bcplus_full. "
+            "Evaluation benchmark. Selects the query pool and the local BM25 "
+            "index/corpus. BC+ family: bcplus_test_166 / bcplus_test_50 / bcplus_full. "
             "Local transfer: longsealqa, frames, hotpotqa. "
             "web / patents require a rebuilt private corpus."
         ),
@@ -523,10 +524,11 @@ def add_common_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     parser.add_argument(
         "--retrieval-backend",
         choices=("upstream", "local_bm25", "local_hybrid", "substitute_bm25"),
-        default="upstream",
+        default=None,
         help=(
-            "upstream = original Chroma ToolSet. local_bm25 = original env + local Lucene "
-            "search/grep/read (profile upstream_core_local_bm25). local_hybrid is reserved. "
+            "Eval default: local_bm25, with --index-path/--corpus-path filled from "
+            "--benchmark (same offline Lucene path as BC+). Train default: upstream. "
+            "Pass upstream to force original Chroma ToolSet. local_hybrid is reserved. "
             "substitute_bm25 is retired; use local_bm25."
         ),
     )
@@ -561,7 +563,10 @@ def add_common_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     parser.add_argument(
         "--upstream-dataset",
         default=None,
-        help="Original scoring dataset name (default browsecompplus).",
+        help=(
+            "Original scoring dataset name. Eval default follows --benchmark "
+            "(browsecompplus / longsealqa / frames / hotpotqa)."
+        ),
     )
     return parser
 
@@ -905,6 +910,16 @@ def add_eval_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
         help="Optional per-replica query chunk size. Default: the whole shard in one batched rollout.",
     )
     parser.add_argument(
+        "--env-workers",
+        type=int,
+        default=None,
+        help=(
+            "Threads for Harness-G environment steps inside a rollout. "
+            "Default keeps the historical coupling to --doc-store-workers. "
+            "Document prefetch stays on --doc-store-workers."
+        ),
+    )
+    parser.add_argument(
         "--max-num-seqs",
         type=int,
         default=256,
@@ -931,6 +946,26 @@ def add_eval_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
         help="Prebuilt Harness-G corpus graph (.pkl or .json). LOOKUP uses this index instead of a per-query top-k graph.",
     )
     return parser
+
+
+def apply_eval_local_retrieval(args: argparse.Namespace, spec: LaunchSpec) -> None:
+    """Eval uses BC+-style local BM25 unless Chroma is requested explicitly."""
+    backend = getattr(args, "retrieval_backend", None)
+    if backend == "upstream":
+        return
+    if backend not in {None, "local_bm25"}:
+        return
+    corpus = resolve_local_bm25_corpus(spec.benchmark)
+    args.retrieval_backend = "local_bm25"
+    if not getattr(args, "index_path", None):
+        args.index_path = str(corpus.index_path)
+    if not getattr(args, "corpus_path", None) and not getattr(args, "docstore_path", None):
+        args.corpus_path = str(corpus.corpus_path)
+    if not getattr(args, "upstream_dataset", None):
+        args.upstream_dataset = corpus.dataset
+    if str(getattr(args, "reranker", None) or "") == "baseten":
+        args.reranker = "none"
+    args.offline = True
 
 
 def _apply_score_split(args: argparse.Namespace, spec: LaunchSpec, *, default: str) -> None:
@@ -1037,6 +1072,8 @@ def parse_train_args(argv: Sequence[str] | None = None) -> tuple[argparse.Namesp
         args.rl_data = default_sec_rl_data()
     args.base_model = str(spec.base_model)
     args.out = spec.out
+    if getattr(args, "retrieval_backend", None) is None:
+        args.retrieval_backend = "upstream"
     return args, spec
 
 
@@ -1055,6 +1092,7 @@ def parse_eval_args(argv: Sequence[str] | None = None) -> tuple[argparse.Namespa
     args.base_model = str(spec.base_model)
     args.out = spec.out
     _apply_score_split(args, spec, default=SCORE_SPLIT_830)
+    apply_eval_local_retrieval(args, spec)
     replicas = getattr(args, "eval_replicas", 1)
     if replicas is None or int(replicas) < 1:
         raise LaunchError("--tp must be >= 1")

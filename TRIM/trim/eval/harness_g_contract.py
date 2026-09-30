@@ -7,6 +7,19 @@ from typing import Any, Mapping, Sequence
 
 EXPECTED_CORPUS_SCOPES = frozenset({"corpus", "corpus_graph", "bcplus_corpus", "global_corpus"})
 EPISODE_SCOPES = frozenset({"episode_doc_store", "local_episode", "episode"})
+# Official BC+ test split and its frozen subsets (test50, random-100, query-id filters).
+# The benchmark name stays the official pool; a query-id subset does not make the run informal.
+OFFICIAL_BCPLUS_TEST_BENCHMARKS = frozenset(
+    {
+        "bcplus_test_166",
+        "bcplus_166",
+        "test_166",
+        "bcplus_test_50",
+        "bcplus_50",
+        "test_50",
+        "bcplus_test50",
+    }
+)
 
 
 def is_corpus_scope(scope: str | None) -> bool:
@@ -31,7 +44,7 @@ def is_formal_harness_g_eval(
         return False
     if not is_harness_g(harness=harness, component_ids=component_ids, mask=mask):
         return False
-    return str(benchmark or "").strip() in {"bcplus_test_50", "bcplus_50", "test_50"}
+    return str(benchmark or "").strip() in OFFICIAL_BCPLUS_TEST_BENCHMARKS
 
 
 def require_graph_path(path: str | None, *, required: bool) -> str | None:

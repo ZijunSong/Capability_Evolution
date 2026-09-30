@@ -26,6 +26,17 @@ KEY_RELPATHS: tuple[str, ...] = (
     "scripts/run_eval.py",
     "scripts/run_bcplus_test50_harness_g_gpu34567_parallel.sh",
     "scripts/run_bcplus_test50_harness_g_gpu04567_eval.sh",
+    "scripts/run_bcplus_test100_harness_g_gpu036_eval.sh",
+    "trim/eval/harness_g_contract.py",
+    "trim/eval/harness_g_official.py",
+)
+
+RUNTIME_MODULES: tuple[str, ...] = (
+    "trim.eval.harness_g_graph",
+    "trim.eval.harness_g_env",
+    "trim.eval.harness1_metrics",
+    "trim.training.batched_env_rollout",
+    "trim.eval.eval_shard_worker",
 )
 
 
@@ -60,6 +71,25 @@ def _git_identity(root: Path) -> dict[str, Any]:
     except (OSError, subprocess.CalledProcessError):
         payload["error"] = "git_unavailable"
     return payload
+
+
+def runtime_module_fingerprints(names: tuple[str, ...] = RUNTIME_MODULES) -> dict[str, Any]:
+    """Hash the modules this process actually imported, not just the git worktree paths."""
+    import importlib
+
+    out: dict[str, Any] = {}
+    for name in names:
+        try:
+            module = importlib.import_module(name)
+        except Exception as exc:  # noqa: BLE001
+            out[name] = {"error": f"{type(exc).__name__}: {exc}"}
+            continue
+        path = getattr(module, "__file__", None)
+        out[name] = {
+            "file": str(path) if path else None,
+            "sha256": _sha256_file(Path(path)) if path else None,
+        }
+    return out
 
 
 def collect_contract_fingerprint(

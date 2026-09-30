@@ -48,24 +48,36 @@ def protocol_rate_block(traces: list[dict[str, Any]], *, harness_g: bool, answer
     ]
     gen = parse_ok = schema_ok = menu_ok = exec_ok = 0
     name_ok = 0
+    n_tool_history = 0
+    n_infra = 0
     allowed = set(HARNESS_G_STUDENT_NATIVE_TOOLS) if harness_g else set(STUDENT_NATIVE_TOOLS)
     if harness_g and answer_with_enabled:
         allowed.add("answer_with")
     invalid = {"unknown", "truncated", "None", None, ""}
     for t in traces:
         names = list(t.get("tool_names") or t.get("names") or [])
+        attempts = list(t.get("attempt_events") or [])
         hist = list(t.get("tool_history") or [])
-        gen += len(names) if names else int(t.get("n_generated") or t.get("n_turns") or 0)
-        if hist:
-            parse_ok += sum(1 for h in hist if h.get("parse_ok"))
-            schema_ok += sum(1 for h in hist if h.get("schema_ok"))
-            menu_ok += sum(1 for h in hist if h.get("menu_ok") or h.get("target_ok"))
-            exec_ok += sum(1 for h in hist if h.get("execution_ok"))
+        n_tool_history += len(hist)
+        n_infra += int(t.get("n_infrastructure_failures") or 0)
+        if attempts:
+            gen += len(attempts)
+            parse_ok += sum(1 for a in attempts if a.get("parse_ok"))
+            schema_ok += sum(1 for a in attempts if a.get("schema_ok"))
+            menu_ok += sum(1 for a in attempts if a.get("menu_ok"))
+            exec_ok += sum(1 for a in attempts if a.get("execution_ok"))
         else:
-            parse_ok += int(t.get("n_parse_ok") or 0)
-            schema_ok += int(t.get("n_schema_ok") or 0)
-            menu_ok += int(t.get("n_menu_ok") or 0)
-            exec_ok += int(t.get("n_execution_ok") or 0)
+            gen += int(t.get("n_generated") or (len(names) if names else t.get("n_turns") or 0) or 0)
+            if hist:
+                parse_ok += sum(1 for h in hist if h.get("parse_ok"))
+                schema_ok += sum(1 for h in hist if h.get("schema_ok"))
+                menu_ok += sum(1 for h in hist if h.get("menu_ok") or h.get("target_ok"))
+                exec_ok += sum(1 for h in hist if h.get("execution_ok"))
+            else:
+                parse_ok += int(t.get("n_parse_ok") or 0)
+                schema_ok += int(t.get("n_schema_ok") or 0)
+                menu_ok += int(t.get("n_menu_ok") or 0)
+                exec_ok += int(t.get("n_execution_ok") or 0)
         name_ok += sum(1 for n in names if n in allowed and n not in invalid)
     n = max(1, gen)
     n_q = max(1, len(traces))
@@ -74,14 +86,26 @@ def protocol_rate_block(traces: list[dict[str, Any]], *, harness_g: bool, answer
         "legal_action_rate_name_macro": sum(name_macro) / n_q,
         "legal_action_rate_name_micro": name_ok / n,
         "n_generated": gen,
+        "n_tool_history_rows": n_tool_history,
         "n_parse_ok": parse_ok,
         "n_schema_ok": schema_ok,
         "n_menu_ok": menu_ok,
         "n_execution_ok": exec_ok,
+        "n_infrastructure_failures": n_infra,
         "parse_ok_rate_micro": parse_ok / n,
         "schema_ok_rate_micro": schema_ok / n,
         "menu_ok_rate_micro": menu_ok / n,
         "execution_ok_rate_micro": exec_ok / n,
+        "parse_ok_numerator": parse_ok,
+        "parse_ok_denominator": gen,
+        "schema_ok_numerator": schema_ok,
+        "schema_ok_denominator": gen,
+        "menu_ok_numerator": menu_ok,
+        "menu_ok_denominator": gen,
+        "execution_ok_numerator": exec_ok,
+        "execution_ok_denominator": gen,
+        "name_ok_numerator": name_ok,
+        "name_ok_denominator": gen,
     }
 
 
@@ -95,9 +119,12 @@ def summarize_traces(
 ) -> dict[str, Any]:
     n = max(1, len(traces))
     protocol = protocol_rate_block(traces, harness_g=harness_g, answer_with_enabled=answer_with_enabled)
-    rec5 = [float(t.get("initial_bm25_recall_at_5") or t.get("evidence_recall_at_5") or 0.0) for t in traces]
-    rec100 = [float(t.get("initial_bm25_recall_at_100") or t.get("evidence_recall_at_100") or 0.0) for t in traces]
+    rec5 = [float(t.get("initial_bm25_evidence_recall_at_5") or t.get("evidence_recall_at_5") or t.get("initial_bm25_recall_at_5") or 0.0) for t in traces]
+    rec100 = [float(t.get("initial_bm25_evidence_recall_at_100") or t.get("evidence_recall_at_100") or t.get("initial_bm25_recall_at_100") or 0.0) for t in traces]
+    gold5 = [float(t.get("initial_bm25_gold_recall_at_5") or 0.0) for t in traces]
+    gold100 = [float(t.get("initial_bm25_gold_recall_at_100") or 0.0) for t in traces]
     tools = [float(t.get("n_tool_calls") or 0.0) for t in traces]
+    generated = [float(t.get("n_generated") or t.get("n_turns") or 0.0) for t in traces]
     searches = [float(t.get("n_search_calls") or 0.0) for t in traces]
     real_searches = [float(t.get("real_search_calls") or 0.0) for t in traces]
     graph_lookups = [float(t.get("graph_lookups") or 0.0) for t in traces]
@@ -109,7 +136,12 @@ def summarize_traces(
         "test_evidence_recall_at_100": sum(rec100) / n if retrieval_name != "none" else None,
         "initial_bm25_recall_at_5": sum(rec5) / n if retrieval_name != "none" else None,
         "initial_bm25_recall_at_100": sum(rec100) / n if retrieval_name != "none" else None,
+        "initial_bm25_evidence_recall_at_5": sum(rec5) / n if retrieval_name != "none" else None,
+        "initial_bm25_evidence_recall_at_100": sum(rec100) / n if retrieval_name != "none" else None,
+        "initial_bm25_gold_recall_at_5": sum(gold5) / n if retrieval_name != "none" else None,
+        "initial_bm25_gold_recall_at_100": sum(gold100) / n if retrieval_name != "none" else None,
         "mean_tool_calls_per_query": sum(tools) / n,
+        "mean_generated_per_query": sum(generated) / n,
         "tool_search_cost": sum(searches) / n,
         "mean_real_search_calls": sum(real_searches) / n,
         "mean_graph_lookups": sum(graph_lookups) / n,
@@ -117,10 +149,15 @@ def summarize_traces(
         "student_inference_privilege": False,
         "eval_harness": "Harness-G" if harness_g else "H_min",
         "legacy_tool_token_kl_used": False,
-        "opd_loss": "sr_opd_ce",
-        "rl_loss": "cispo",
         **summarize_quality_and_timing(traces),
     }
+    if harness_g:
+        payload["run_kind"] = "base_model_harness_g"
+        payload["opd_loss"] = "n/a"
+        payload["rl_loss"] = "n/a"
+    else:
+        payload["opd_loss"] = "sr_opd_ce"
+        payload["rl_loss"] = "cispo"
     payload["n_queries"] = len(traces)
     return payload
 
@@ -130,6 +167,7 @@ def search_metrics(
     query: str,
     evidence: list[str],
     *,
+    gold: list[str] | None = None,
     cache: dict[str, list[Any]] | None = None,
 ) -> dict[str, Any]:
     hits100: list[Any]
@@ -143,11 +181,18 @@ def search_metrics(
     normalize = getattr(searcher, "normalize_id", None)
     rec5 = evidence_recall([h.docid for h in hits5], evidence, normalize=normalize)
     rec100 = evidence_recall([h.docid for h in hits100], evidence, normalize=normalize)
+    gold_ids = list(gold or [])
+    gold5 = evidence_recall([h.docid for h in hits5], gold_ids, normalize=normalize) if gold_ids else 0.0
+    gold100 = evidence_recall([h.docid for h in hits100], gold_ids, normalize=normalize) if gold_ids else 0.0
     return {
         "retrieved_at_5": [h.docid for h in hits5],
         "retrieved_at_100": [h.docid for h in hits100],
         "evidence_recall_at_5": rec5,
         "evidence_recall_at_100": rec100,
+        "initial_bm25_evidence_recall_at_5": rec5,
+        "initial_bm25_evidence_recall_at_100": rec100,
+        "initial_bm25_gold_recall_at_5": gold5,
+        "initial_bm25_gold_recall_at_100": gold100,
         "initial_bm25_recall_at_5": rec5,
         "initial_bm25_recall_at_100": rec100,
     }

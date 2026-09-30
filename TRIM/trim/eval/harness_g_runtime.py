@@ -18,16 +18,16 @@ from typing import Any, Mapping
 
 from trim.training.action_codec import parse_action as parse_codec_action
 
-_HARNESS_G_TOOL_NAMES = frozenset({"init", "select", "lookup", "answer", "answer_with"})
+_HARNESS_G_TOOL_NAMES = frozenset({"init", "select", "lookup", "page", "answer", "answer_with"})
 _TO_RE = re.compile(
-    r"to=(?:functions\.)?(?P<name>select|lookup|answer|answer_with|init)\b",
+    r"to=(?:functions\.)?(?P<name>select|lookup|answer|answer_with|init|page)\b",
     re.I,
 )
 _JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
 _AID_FULL_RE = re.compile(r"^\s*(A\d+)\s*$", re.I)
 _TOOL_CALL_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
 _HARMONY_CALL_RE = re.compile(
-    r"to=functions\.(?P<name>init|select|lookup|answer|answer_with)\b"
+    r"to=functions\.(?P<name>init|select|lookup|page|answer|answer_with)\b"
     r"(?P<body>.*?)(?=<\|call\|>)",
     re.I | re.DOTALL,
 )
@@ -44,6 +44,7 @@ Basic runtime tools (always available):
 - init: first retrieve visible evidence sentences
 - select: commit a currently listed SELECT sid as evidence
 - lookup: follow a currently listed LOOKUP eid; the environment builds the retrieval query
+- page: show the next window of the current LOOKUP candidate list when PAGE is listed
 - answer: stop using already selected evidence. Only legal when ANSWER appears under actions.
 Optional when listed under actions:
 - answer_with: atomically SELECT one currently unselected visible sentence and stop. If evidence is already selected, call answer instead.
@@ -84,6 +85,17 @@ HARNESS_G_FUNCTION_TOOLS: tuple[dict[str, Any], ...] = (
         },
     },
     {
+        "name": "page",
+        "description": "Show the next window of the current LOOKUP candidate list. Legal only when PAGE is listed under actions.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "direction": {"type": "string", "description": "next or prev"}
+            },
+            "required": [],
+        },
+    },
+    {
         "name": "answer",
         "description": "Stop using already selected evidence. Legal only when ANSWER is listed under actions.",
         "parameters": {
@@ -117,6 +129,7 @@ _ALLOWED_ARGS: dict[str, frozenset[str]] = {
     "init": frozenset(),
     "select": frozenset({"sid"}),
     "lookup": frozenset({"eid"}),
+    "page": frozenset({"direction"}),
     "answer": frozenset({"reason", "reasoning"}),
     "answer_with": frozenset({"sid", "sids"}),
 }
@@ -130,7 +143,7 @@ def render_prompt(query: str, wm_text: str) -> str:
         SYSTEM_PROMPT
         + f"\nQuestion: {query}\n"
         + (wm_text or "")
-        + "\nEmit one tool call using init, select, lookup, or answer.\n"
+        + "\nEmit one tool call using init, select, lookup, page, or answer.\n"
     )
 
 
