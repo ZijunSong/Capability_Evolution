@@ -15,9 +15,18 @@ from typing import Any, Mapping
 
 
 def _canonical_bytes(obj: Any) -> bytes:
-    return json.dumps(obj, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode(
-        "utf-8"
-    )
+    def _default(value: Any) -> Any:
+        if isinstance(value, set):
+            return sorted(value, key=repr)
+        raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+    return json.dumps(
+        obj,
+        sort_keys=True,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        default=_default,
+    ).encode("utf-8")
 
 
 def stable_hash(obj: Any) -> str:

@@ -31,6 +31,7 @@ from trim.adapters.harness_profiles import (
     HARNESS_ALIASES as _PROFILE_HARNESS_ALIASES,
     aliases_for,
     infer_harness_from_ids,
+    is_harness_g,
 )
 from trim.eval.eval_defaults import (
     HARNESS1_EVAL_MAX_MODEL_LEN,
@@ -590,10 +591,11 @@ def add_train_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
         "--train-data",
         "--train-pool",
         dest="train_data",
-        default=TRAIN_DATA_SEC,
+        default=None,
         help=(
-            "Training query pool. Default sec = Harness-1 SEC RL (~3453 queries). "
-            "Pass bcplus_train_664 for the official BC+ train split."
+            "Training query pool. Harness-1 default: sec (SEC RL, ~3453 queries). "
+            "Harness-G default: bcplus_train_664, paired with the BC+ corpus graph. "
+            "Pass sec or bcplus_train_664 to override."
         ),
     )
     parser.add_argument(
@@ -779,6 +781,21 @@ def add_train_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         default=None,
         help="Pass disable_custom_all_reduce to vLLM LLM() when set (not via env var).",
+    )
+    parser.add_argument(
+        "--reasoning-effort",
+        choices=("low", "medium", "high"),
+        default=None,
+        help="gpt-oss Harmony reasoning effort for Harness-G training prompts. Default high.",
+    )
+    parser.add_argument(
+        "--graph-index-path",
+        default=None,
+        help=(
+            "Harness-G corpus graph (.pkl). Non-smoke training refuses to start "
+            "without it. Default: SCOPE/external/BrowseComp-Plus/indexes/"
+            "harness_g_corpus_graph.pkl when that file exists."
+        ),
     )
     return parser
 
@@ -1042,7 +1059,12 @@ def parse_train_args(argv: Sequence[str] | None = None) -> tuple[argparse.Namesp
     args.component_ids = list(spec.components)
     args.train_method = spec.train_method
     args.training_mode = spec.training_mode
-    args.train_data = canonical_train_data(getattr(args, "train_data", None))
+    g_train = is_harness_g(spec.harness)
+    raw_train = getattr(args, "train_data", None)
+    if raw_train in {None, ""}:
+        args.train_data = TRAIN_DATA_BCPLUS_664 if g_train else TRAIN_DATA_SEC
+    else:
+        args.train_data = canonical_train_data(raw_train)
     if args.opd_states_per_trajectory is None:
         args.opd_states_per_trajectory = (
             -1 if spec.train_method in {"scape+rl", "trim"} else 3
@@ -1073,7 +1095,13 @@ def parse_train_args(argv: Sequence[str] | None = None) -> tuple[argparse.Namesp
     args.base_model = str(spec.base_model)
     args.out = spec.out
     if getattr(args, "retrieval_backend", None) is None:
-        args.retrieval_backend = "upstream"
+        args.retrieval_backend = "local_bm25" if g_train else "upstream"
+    if g_train and not str(getattr(args, "graph_index_path", None) or "").strip():
+        from trim.training.harness_g_train import default_graph_path
+
+        found = default_graph_path()
+        if found:
+            args.graph_index_path = found
     return args, spec
 
 
