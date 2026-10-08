@@ -192,6 +192,7 @@ def build_train_launch_record(args, spec) -> dict:
         "on_policy_refresh": bool(args.on_policy_refresh),
         "train_env": getattr(args, "train_env", "upstream"),
         "teacher_kind": getattr(args, "teacher_kind", "upstream"),
+        "graph_index_path": getattr(args, "graph_index_path", None),
         "out": str(spec.out),
         "train_only": True,
         "official_eval": False,

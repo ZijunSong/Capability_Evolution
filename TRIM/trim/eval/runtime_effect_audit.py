@@ -399,6 +399,144 @@ def _opd_projection_probe(
     }
 
 
+def _g_probe_store() -> dict[str, Any]:
+    text = "Alice Smith visited Paris in 2019. The treaty named Bob Jones. " * 6
+    return {
+        "d1": {"id": "d1", "text": text},
+        "d2": {"id": "d2", "text": "Carol Adams later joined Alice Smith in Paris. The lecture continued."},
+    }
+
+
+def _g_init(mask: Mapping[str, bool]) -> tuple[dict[str, Any], bool]:
+    from trim.eval.harness_g_env import execute_tool, new_state
+
+    st = new_state("Alice Smith Paris 2019", _g_probe_store(), harness_mask=dict(mask))
+    st, _obs, ok = execute_tool(st, "init", {})
+    return st, bool(ok)
+
+
+def _g_opd_projection_probe(
+    component_id: str,
+    *,
+    harness: str | None,
+    student_mask: Mapping[str, bool],
+) -> dict[str, Any]:
+    from trim.training.four_cell_runtime import snap_from_state, teacher_for
+    from trim.training.opd_dataset import project_and_materialize
+    from trim.training.opd_projection import StudentActionSpaceProjector
+    from trim.training.rl_opd_types import StudentDecisionPoint
+
+    st, search_ok = _g_init(student_mask)
+    snap = snap_from_state("train_probe", st, component_id, harness_mask=dict(student_mask))
+    fn = teacher_for(component_id, harness=harness)
+    point = StudentDecisionPoint(
+        episode_id="train_probe",
+        query_id="train_probe",
+        rollout_idx=0,
+        turn_id=0,
+        policy_version="probe",
+        pre_action_snapshot=snap,
+        pre_action_snapshot_hash=snap.content_hash(),
+        student_model_input="",
+        student_action_tokens=[],
+        student_action_text="",
+        action_tool_names=[],
+        post_action_snapshot=snap,
+        structurally_valid=True,
+    )
+    events = fn(point) if fn is not None else []
+    projection, steps = project_and_materialize(
+        student_snapshot=snap,
+        teacher_events=events,
+        student_mask=snap.harness_mask,
+        component_id=component_id,
+        projector=StudentActionSpaceProjector(),
+    )
+    return {
+        "pass": len(steps) >= 1,
+        "n_teacher_events": len(events),
+        "n_projected_steps": len(steps),
+        "projection_kind": getattr(projection.kind, "value", str(projection.kind)),
+        "reject_reason": projection.reject_reason,
+        "init_ok": bool(search_ok),
+        "n_visible": len(st.get("visible_sids") or []),
+        "student_mask": dict(student_mask),
+    }
+
+
+def _audit_harness_g_train(
+    args: Any,
+    *,
+    harness: str,
+    component_id: Any,
+    mode: str,
+    out: Path | None,
+) -> dict[str, Any]:
+    """Student/teacher masks must reach the graph env. TRIM must project one step."""
+    from trim.training.four_cell_runtime import student_mask_for, teacher_mask_for
+    from trim.training.rl_opd_types import TRAINING_MODE_RL, uses_sampled_opd
+
+    student = student_mask_for(component_id, harness=harness)
+    teacher = teacher_mask_for(component_id, harness=harness)
+    student_st, student_ok = _g_init(student)
+    teacher_st, teacher_ok = _g_init(teacher)
+    failures: list[str] = []
+    if not student_ok:
+        failures.append("student init failed")
+    if not teacher_ok:
+        failures.append("teacher init failed")
+    if dict(student_st.get("harness_mask") or {}) != dict(student):
+        failures.append("student mask was not written into the live Harness-G state")
+    if dict(teacher_st.get("harness_mask") or {}) != dict(teacher):
+        failures.append("teacher mask was not written into the live Harness-G state")
+    if teacher.get("hybrid_init_retrieve") and not (teacher_st.get("runtime_effects") or {}).get("hybrid_init_used"):
+        failures.append("teacher hybrid_init_retrieve is ON but init did not fire it")
+    if not student.get("hybrid_init_retrieve") and (student_st.get("runtime_effects") or {}).get("hybrid_init_used"):
+        failures.append("student hybrid_init_retrieve is OFF but init fired it")
+
+    lam = 0.0 if mode == TRAINING_MODE_RL else float(getattr(args, "lambda_opd", 0.0) or 0.0)
+    opd_loss = str(getattr(args, "opd_loss", "") or "")
+    want_projection = lam > 0.0 and not uses_sampled_opd(opd_loss)
+    opd: dict[str, Any] | None = None
+    if want_projection:
+        opd = _g_opd_projection_probe(str(component_id), harness=harness, student_mask=student)
+        if not opd.get("pass"):
+            failures.append(
+                "TRIM/OPD projected 0 student-legal steps from the Harness-G teacher side-branch "
+                f"(kind={opd.get('projection_kind')} reject={opd.get('reject_reason')})"
+            )
+
+    passed = not failures
+    student_n_on = sum(1 for v in student.values() if v)
+    teacher_n_on = sum(1 for v in teacher.values() if v)
+    payload = {
+        "pass": passed,
+        "skipped": False,
+        "harness": harness,
+        "training_mode": mode,
+        "lambda_opd": lam,
+        "opd_loss": opd_loss,
+        "student_n_on": student_n_on,
+        "teacher_n_on": teacher_n_on,
+        "opd_n_projected_steps": None if opd is None else int(opd.get("n_projected_steps") or 0),
+        "student_mask": dict(student),
+        "teacher_mask": dict(teacher),
+        "opd_projection": opd,
+        "failures": failures,
+        "claim_usable_for_full_vs_zero": False,
+        "summary": (
+            "Harness-G train runtime wiring probe passed"
+            if passed
+            else "TRAIN_RUNTIME_AUDIT_FAILED: " + "; ".join(failures)
+        ),
+    }
+    if out is not None:
+        write_runtime_audit(out, payload)
+    if not passed:
+        raise RuntimeError(payload["summary"])
+    return payload
+
+
 def audit_train_runtime_or_raise(args: Any, *, out: Path | None = None) -> dict[str, Any]:
     """Fail-closed train start: student/teacher masks must wire, TRIM must project."""
     from trim.adapters.harness_profiles import infer_harness_from_ids, is_harness_g
@@ -409,16 +547,13 @@ def audit_train_runtime_or_raise(args: Any, *, out: Path | None = None) -> dict[
     harness = getattr(args, "harness", None) or infer_harness_from_ids(component_id)
     mode = str(getattr(args, "training_mode", "") or "")
     if is_harness_g(harness) or is_harness_g(component_ids=component_id):
-        payload = {
-            "pass": True,
-            "skipped": True,
-            "harness": harness,
-            "training_mode": mode,
-            "reason": "Harness-G train runtime uses a different env; H1 wiring probe skipped",
-        }
-        if out is not None:
-            write_runtime_audit(out, payload)
-        return payload
+        return _audit_harness_g_train(
+            args,
+            harness=harness if is_harness_g(harness) else "Harness-G",
+            component_id=component_id,
+            mode=mode,
+            out=out,
+        )
 
     student = student_mask_for(component_id, harness=harness)
     teacher = teacher_mask_for(component_id, harness=harness)

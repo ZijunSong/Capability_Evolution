@@ -261,6 +261,9 @@ def run_verl_fsdp2_train(args: Any) -> dict[str, Any]:
     barrier()
     out.mkdir(parents=True, exist_ok=True)
 
+    from trim.training.harness_g_train import load_train_graph
+
+    train_graph = load_train_graph(args)
     train_rows, eval_rows, pool_meta, _frozen_points = resolve_queries(args)
     del eval_rows
     train_searcher = open_train_retrieval(args, train_rows)
@@ -363,6 +366,8 @@ def run_verl_fsdp2_train(args: Any) -> dict[str, Any]:
         "group_size": int(args.group_size),
         "enforce_eager": bool(getattr(args, "enforce_eager", False)),
         "collection_mode": collection_mode,
+        "graph_index_path": getattr(train_graph, "source_path", None) if train_graph is not None else getattr(args, "graph_index_path", None),
+        "graph_scope": getattr(train_graph, "scope", None) if train_graph is not None else None,
         "pool": pool_meta,
         "probes": probes,
     }
@@ -497,6 +502,8 @@ def run_verl_fsdp2_train(args: Any) -> dict[str, Any]:
                 searcher=train_searcher,
                 harness_mask=resolved_rollout_mask(args.component, harness=getattr(args, "harness", None)),
                 train_env=str(getattr(args, "train_env", "local_legacy") or "local_legacy"),
+                graph_index=train_graph,
+                reasoning_effort=getattr(args, "reasoning_effort", None),
                 collection_mode=collection_mode,
                 opd_loss=opd_loss,
             )

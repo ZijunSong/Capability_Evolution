@@ -236,8 +236,17 @@ def _teacher_wm_for_episode(ep: LiveEpisode) -> str:
     from trim.training.four_cell_runtime import freeze_train_state, teacher_mask_for
     from trim.training.upstream_train_env import is_upstream_state, wm_text_for_train_state
 
+    from trim.adapters.harness_profiles import is_harness_g
+
+    g_state = is_harness_g(mask=ep.st.get("harness_mask"), component_ids=ep.component_id)
     teacher_st = freeze_train_state(ep.st)
-    teacher_st["harness_mask"] = teacher_mask_for(ep.component_id)
+    teacher_st["harness_mask"] = teacher_mask_for(
+        ep.component_id, harness="Harness-G" if g_state else None
+    )
+    if g_state:
+        from trim.eval.harness_g_env import wm_text as g_wm_text
+
+        return str(g_wm_text(teacher_st) or "")
     if is_upstream_state(teacher_st):
         return str(wm_text_for_train_state(teacher_st) or "")
     from trim.eval.local_search_env import wm_text as local_wm_text

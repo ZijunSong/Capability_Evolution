@@ -700,6 +700,21 @@ def doc_store_for_row(
     return remember({})
 
 
+def _snapshot_record(value: Any) -> Any:
+    """Drop graph-index internals so a Harness-G snapshot stays JSON-hashable."""
+    if isinstance(value, set):
+        return sorted((_snapshot_record(item) for item in value), key=repr)
+    if isinstance(value, dict):
+        return {
+            str(key): _snapshot_record(item)
+            for key, item in value.items()
+            if not str(key).startswith("_")
+        }
+    if isinstance(value, (list, tuple)):
+        return [_snapshot_record(item) for item in value]
+    return value
+
+
 def snap_from_state(qid: str, st: dict[str, Any], component_id: str, *, harness_mask: dict[str, bool] | None = None, teacher_mask: dict[str, bool] | None = None):
     from trim.training.upstream_train_env import is_upstream_state, sync_upstream_state
 
@@ -773,8 +788,8 @@ def snap_from_state(qid: str, st: dict[str, Any], component_id: str, *, harness_
         entities = st.get("entities") or {}
         frontier = list(st.get("frontier_eids") or [])
         visited = list(st.get("visited_eids") or [])
-        light_sents = {sid: sentences[sid] for sid in keep_sids if sid in sentences}
-        light_ents = {eid: entities[eid] for eid in frontier if eid in entities}
+        light_sents = {sid: _snapshot_record(sentences[sid]) for sid in keep_sids if sid in sentences}
+        light_ents = {eid: _snapshot_record(entities[eid]) for eid in frontier if eid in entities}
         wm.update(
             {
                 "visible_sids": vis,
@@ -783,7 +798,7 @@ def snap_from_state(qid: str, st: dict[str, Any], component_id: str, *, harness_
                 "visited_eids": visited,
                 "sentences": light_sents,
                 "entities": light_ents,
-                "action_map": st.get("action_map") or {},
+                "action_map": _snapshot_record(st.get("action_map") or {}),
                 "initialized": bool(st.get("initialized")),
                 "graph_scope": st.get("graph_scope"),
                 "last_mixquery": st.get("last_mixquery"),
@@ -870,13 +885,20 @@ def encode_aligned_teacher_prompt(
     from trim.training.upstream_train_env import is_upstream_state, wm_text_for_train_state
 
     teacher_st = freeze_train_state(frozen_st)
-    teacher_st["harness_mask"] = teacher_mask_for(component_id)
+    g_state = is_harness_g(mask=frozen_st.get("harness_mask"), component_ids=component_id)
+    teacher_st["harness_mask"] = teacher_mask_for(
+        component_id, harness="Harness-G" if g_state else None
+    )
     saved = teacher_wm_text
     if not saved:
         meta = teacher_st.get("metadata") if isinstance(teacher_st.get("metadata"), Mapping) else {}
         saved = (meta or {}).get("_teacher_wm_text") or teacher_st.get("_teacher_wm_text")
     if saved:
         wm = str(saved)
+    elif g_state:
+        from trim.eval.harness_g_env import wm_text as g_wm_text
+
+        wm = g_wm_text(teacher_st)
     elif is_upstream_state(teacher_st):
         wm = wm_text_for_train_state(teacher_st)
     else:
@@ -2136,6 +2158,15 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
             f"opd_steps={train_audit.get('opd_n_projected_steps')}",
             flush=True,
         )
+    from trim.training.harness_g_train import load_train_graph
+
+    train_graph = load_train_graph(args)
+    if train_graph is not None and is_coordinator():
+        print(
+            f"[{log_tag}] harness-g graph scope={getattr(train_graph, 'scope', None)} "
+            f"path={getattr(train_graph, 'source_path', None)}",
+            flush=True,
+        )
     train_rows, eval_rows, pool_meta, frozen_points = resolve_queries(args)
     train_searcher = open_train_retrieval(args, train_rows)
     eval_searcher = None if train_only else open_eval_retrieval(args)
@@ -2208,6 +2239,8 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
             ),
             "train_env": str(getattr(args, "train_env", "upstream") or "upstream"),
             "teacher_kind": str(getattr(args, "teacher_kind", "upstream") or "upstream"),
+            "graph_index_path": getattr(train_graph, "source_path", None) if train_graph is not None else getattr(args, "graph_index_path", None),
+            "graph_scope": getattr(train_graph, "scope", None) if train_graph is not None else None,
             "updates_per_rollout": int(getattr(args, "updates_per_rollout", 1) or 1),
             "tensor_parallel_size": tp,
             "rollout_replicas": rollout_replicas,
@@ -2432,6 +2465,8 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
             train_env=train_env,
             train_session=train_session,
             rollout_backend=rollout_backend,
+            graph_index=train_graph,
+            reasoning_effort=getattr(args, "reasoning_effort", None),
             collection_mode=collection_mode_for_cell(
                 cell,
                 cell_lambda(cell, getattr(args, "lambda_opd", 0.0) or 0.0),
@@ -2572,6 +2607,8 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
             doc_store_workers=int(getattr(args, "doc_store_workers", 8) or 8),
             train_env=train_env,
             train_session=train_session,
+            graph_index=train_graph,
+            reasoning_effort=getattr(args, "reasoning_effort", None),
         )
         rollout_backend = str(getattr(args, "rollout_backend", "vllm") or "vllm").lower()
         if rollout_backend == "vllm":
