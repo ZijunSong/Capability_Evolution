@@ -807,3 +807,38 @@ def test_run_train_entry_records_max_turns_40(monkeypatch, tmp_path: Path):
     launch = json.loads((tmp_path / "LAUNCH.json").read_text(encoding="utf-8"))
     assert launch["max_turns"] == 40
     assert launch["train_method"] == "trim"
+
+
+def test_parse_zero_placebo_and_full_sampled_gap_contracts():
+    from trim.training.opd_train_contract import training_cell_for_method
+    from trim.training.rl_opd_types import OPD_LOSS_SAMPLED_GAP
+
+    zero_args, zero_spec = parse_train_args(
+        ["--train_method", "zero-placebo", "--component", "zero", "--out", "/tmp/zp-cli"]
+    )
+    full_args, full_spec = parse_train_args(
+        ["--train_method", "full-sampled-gap", "--component", "all", "--out", "/tmp/fsg-cli"]
+    )
+    assert train_method_to_mode("zero-placebo") == "zero_placebo"
+    assert train_method_to_mode("full-sampled-gap") == "full_sampled_gap"
+    assert zero_spec.training_mode != full_spec.training_mode
+    assert training_cell_for_method("zero-placebo") == "zero_placebo"
+    assert training_cell_for_method("full-sampled-gap") == "full_sampled_gap"
+    assert zero_args.opd_loss == full_args.opd_loss == OPD_LOSS_SAMPLED_GAP
+    assert zero_args.lambda_opd == full_args.lambda_opd == 0.01
+    assert zero_args.opd_gate_beta == full_args.opd_gate_beta == 5.0
+    assert zero_args.opd_states_per_trajectory == full_args.opd_states_per_trajectory == -1
+    bare_zero, bare_zero_spec = parse_train_args(["--train_method", "zero-placebo", "--component", "zero"])
+    bare_full, bare_full_spec = parse_train_args(["--train_method", "full-sampled-gap", "--component", "all"])
+    assert "zero-placebo" in str(bare_zero_spec.out)
+    assert "full-sampled-gap" in str(bare_full_spec.out)
+    assert bare_zero_spec.out != bare_full_spec.out
+    del bare_zero, bare_full
+    with pytest.raises(LaunchError):
+        parse_train_args(
+            ["--train_method", "zero-placebo", "--component", "all", "--out", "/tmp/zp-bad"]
+        )
+    with pytest.raises(LaunchError):
+        parse_train_args(
+            ["--train_method", "full-sampled-gap", "--component", "zero", "--out", "/tmp/fsg-bad"]
+        )

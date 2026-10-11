@@ -210,3 +210,11 @@ def test_unsupported_verl_method_scape():
     except SystemExit:
         raised_ce = True
     assert raised_ce is True
+    _unsupported_method("zero-placebo", "sr_opd_sampled_gap", "torch_ddp_lora")
+    _unsupported_method("full-sampled-gap", "sr_opd_sampled_gap", "verl")
+    try:
+        _unsupported_method("scape+rl", "sr_opd_sampled_gap", "verl")
+        raised_scape = False
+    except SystemExit:
+        raised_scape = True
+    assert raised_scape is True

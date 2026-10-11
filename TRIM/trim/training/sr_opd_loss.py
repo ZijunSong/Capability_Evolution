@@ -148,6 +148,22 @@ def scale_projected_gap_loss(
     return float(world_size) * float(lambda_opd) * numerator / float(z_gap)
 
 
+def scale_gated_gap_loss(
+    numerator: torch.Tensor,
+    *,
+    lambda_opd: float,
+    z_gap: float,
+    world_size: int,
+) -> torch.Tensor:
+    """Same reduction as ``scale_projected_gap_loss`` for sampled or projected weights."""
+    return scale_projected_gap_loss(
+        numerator,
+        lambda_opd=lambda_opd,
+        z_gap=z_gap,
+        world_size=world_size,
+    )
+
+
 def gated_sampled_gap_per_token(
     student_logprobs: torch.Tensor,
     teacher_logprobs: torch.Tensor,

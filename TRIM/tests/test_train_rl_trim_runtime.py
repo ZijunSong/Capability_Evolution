@@ -354,3 +354,33 @@ def test_live_search_respects_student_mask_before_snapshot():
     assert resolved.get("auto_seed")
     snap = snap_from_state("q", resolved, "sentence_compress")
     assert snap.harness_mask == student
+
+
+def test_sampled_controls_keep_zero_student_and_distinct_cells():
+    from trim.training.four_cell_runtime import cells_for_mode, collection_mode_for_cell
+    from trim.training.opd_train_contract import training_cell_for_method
+    from trim.training.rl_opd_types import (
+        COLLECTION_MODE_RL_OPD,
+        COLLECTION_MODE_ZERO_PLACEBO,
+        TRAINING_MODE_FULL_SAMPLED_GAP,
+        TRAINING_MODE_ZERO_PLACEBO,
+    )
+
+    zero_args, zero_spec = parse_train_args(
+        ["--train_method", "zero-placebo", "--component", "zero", "--out", "/tmp/zp-runtime"]
+    )
+    full_args, full_spec = parse_train_args(
+        ["--train_method", "full-sampled-gap", "--component", "all", "--out", "/tmp/fsg-runtime"]
+    )
+    assert zero_spec.training_mode == TRAINING_MODE_ZERO_PLACEBO
+    assert full_spec.training_mode == TRAINING_MODE_FULL_SAMPLED_GAP
+    assert training_cell_for_method(zero_args.train_method) == "zero_placebo"
+    assert training_cell_for_method(full_args.train_method) == "full_sampled_gap"
+    assert cells_for_mode(TRAINING_MODE_ZERO_PLACEBO, train_only=True) == ("zero_placebo",)
+    assert cells_for_mode(TRAINING_MODE_FULL_SAMPLED_GAP, train_only=True) == ("full_sampled_gap",)
+    assert collection_mode_for_cell("zero_placebo", 0.01) == COLLECTION_MODE_ZERO_PLACEBO
+    assert collection_mode_for_cell("full_sampled_gap", 0.01) == COLLECTION_MODE_RL_OPD
+    assert student_mask_for("zero") == zero_mask()
+    assert student_mask_for(",".join(all_component_ids())) == zero_mask()
+    assert teacher_mask_for("zero") == zero_mask()
+    assert any(teacher_mask_for(",".join(all_component_ids())).values())

@@ -11,6 +11,8 @@ from trim.state.snapshot import EnvironmentSnapshot
 COLLECTION_MODE_RL = "rl"
 COLLECTION_MODE_RL_OPD = "rl+opd"
 COLLECTION_MODE_AUDIT_FULL = "audit_full"
+# zero-placebo keeps decision snapshots and skips redundant teacher-WM rendering.
+COLLECTION_MODE_ZERO_PLACEBO = "zero_placebo"
 TRAINING_MODE_RL = "rl"
 TRAINING_MODE_PURE_OPD = "pure_opd"
 TRAINING_MODE_RL_OPD = "rl_opd"
@@ -18,6 +20,20 @@ TRAINING_MODE_SCAPE_RL = "scape_rl"
 TRAINING_MODE_SCAPE_SEED = "scape_seed"
 # CLI name for scape+seed: --train_method trim. Internal cell stays scape_seed.
 TRAINING_MODE_TRIM = TRAINING_MODE_SCAPE_SEED
+# Independent cells. Not aliases of rl / trim / scape_rl.
+TRAINING_MODE_ZERO_PLACEBO = "zero_placebo"
+TRAINING_MODE_FULL_SAMPLED_GAP = "full_sampled_gap"
+CONTROL_VARIANT_ZERO_PLACEBO = "zero_placebo"
+CONTROL_VARIANT_FULL_SAMPLED_GAP = "full_sampled_gap"
+SAMPLED_CONTROL_VARIANTS = frozenset(
+    {CONTROL_VARIANT_ZERO_PLACEBO, CONTROL_VARIANT_FULL_SAMPLED_GAP}
+)
+GAP_VARIANT_PROJECTED = "projected"
+GAP_VARIANT_SAMPLED_ZERO_PLACEBO = "sampled_zero_placebo"
+GAP_VARIANT_SAMPLED_FULL = "sampled_full"
+SAMPLED_GAP_VARIANTS = frozenset(
+    {GAP_VARIANT_SAMPLED_ZERO_PLACEBO, GAP_VARIANT_SAMPLED_FULL}
+)
 
 # k < 0 means every structurally valid action on the trajectory.
 OPD_STATES_ALL = -1
@@ -73,6 +89,9 @@ def collection_needs(*, collection_mode: str, opd_loss: str | None = None) -> Co
         return CollectionNeeds(True, True, True)
     if mode == COLLECTION_MODE_RL:
         return CollectionNeeds(False, False, False)
+    if mode == COLLECTION_MODE_ZERO_PLACEBO:
+        # Same student prefix is copied later. Do not render a second Zero teacher WM.
+        return CollectionNeeds(True, False, False)
     gap = uses_seed_gap(loss) if loss else False
     return CollectionNeeds(
         need_student_snapshot=True,

@@ -48,8 +48,10 @@ from trim.training.rl_opd_types import (
     TRAINING_MODE_PURE_OPD,
     TRAINING_MODE_RL,
     TRAINING_MODE_RL_OPD,
+    TRAINING_MODE_FULL_SAMPLED_GAP,
     TRAINING_MODE_SCAPE_RL,
     TRAINING_MODE_SCAPE_SEED,
+    TRAINING_MODE_ZERO_PLACEBO,
 )
 from trim.eval.official_query_pool import (
     SCORE_SPLIT_166,
@@ -99,7 +101,17 @@ ALLOWED_BENCHMARKS = (
     "patents",
 )
 ALLOWED_MODEL_NAMES = ("harness-1",)
-ALLOWED_TRAIN_METHODS = ("opd", "rl+opd", "rl", "scape+rl", "trim", "scape+seed", "seed+opd")
+ALLOWED_TRAIN_METHODS = (
+    "opd",
+    "rl+opd",
+    "rl",
+    "scape+rl",
+    "trim",
+    "scape+seed",
+    "seed+opd",
+    "zero-placebo",
+    "full-sampled-gap",
+)
 TRAIN_DATA_SEC = "sec"
 TRAIN_DATA_BCPLUS_664 = "bcplus_train_664"
 ALLOWED_TRAIN_DATA = (TRAIN_DATA_SEC, TRAIN_DATA_BCPLUS_664)
@@ -168,6 +180,10 @@ _TRAIN_METHOD_ALIASES = {
     "seed+opd": "trim",
     "seed_opd": "trim",
     "seed-opd": "trim",
+    "zero-placebo": "zero-placebo",
+    "zero_placebo": "zero-placebo",
+    "full-sampled-gap": "full-sampled-gap",
+    "full_sampled_gap": "full-sampled-gap",
 }
 
 _COMPONENT_ALIASES = dict(aliases_for("Harness-1"))
@@ -185,6 +201,8 @@ _TRAIN_METHOD_TO_MODE = {
     "rl+opd": TRAINING_MODE_RL_OPD,
     "scape+rl": TRAINING_MODE_SCAPE_RL,
     "trim": TRAINING_MODE_SCAPE_SEED,
+    "zero-placebo": TRAINING_MODE_ZERO_PLACEBO,
+    "full-sampled-gap": TRAINING_MODE_FULL_SAMPLED_GAP,
 }
 
 _TRAIN_DATA_ALIASES = {
@@ -420,7 +438,17 @@ def discover_adapter_map(run_dir: Path | None) -> dict[str, str]:
         if adapters not in candidates:
             candidates.append(adapters)
     mapping: dict[str, str] = {}
-    preferred = ("scape_seed", "scape_rl", "rl_opd", "pure_opd", "rl", "before", "theta0")
+    preferred = (
+        "scape_seed",
+        "scape_rl",
+        "zero_placebo",
+        "full_sampled_gap",
+        "rl_opd",
+        "pure_opd",
+        "rl",
+        "before",
+        "theta0",
+    )
     for adapters in candidates:
         if not adapters.is_dir():
             continue
@@ -584,7 +612,11 @@ def add_train_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
             "opd = PURE OPD (sr_opd_ce); rl+opd = CISPO + CE OPD; rl = CISPO only; "
             "scape+rl = CISPO + SEED on sampled actions; "
             "trim = CISPO + projected actions + SEED-scale gap "
-            "(scape+seed / seed+opd are aliases)."
+            "(scape+seed / seed+opd are aliases); "
+            "zero-placebo = CISPO + sampled gap with identical Zero prefixes "
+            "(requires --component zero); "
+            "full-sampled-gap = CISPO + sampled gap vs same-state Full prefix "
+            "(requires --component all)."
         ),
     )
     parser.add_argument(
@@ -661,12 +693,20 @@ def add_train_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
         default=HF_DEFAULT_HEARTBEAT_EVERY,
         help="Log a [train] hf_fb heartbeat every N completed datums (plus first/last).",
     )
-    parser.add_argument("--lambda-opd", type=float, default=None, help="OPD coefficient. Default 0.1; scape+rl and trim use 0.01 (SEED).")
+    parser.add_argument(
+        "--lambda-opd",
+        type=float,
+        default=None,
+        help=(
+            "OPD coefficient. Default 0.1; scape+rl, trim, zero-placebo, and "
+            "full-sampled-gap use 0.01."
+        ),
+    )
     parser.add_argument(
         "--opd-gate-beta",
         type=float,
         default=SCAPE_RL_OPD_GATE_BETA,
-        help="SEED OPD gate β in σ(βΔ). Used by scape+rl and trim.",
+        help="SEED OPD gate beta in sigmoid(beta * delta). Default 5. Used by scape+rl, trim, and the sampled-gap controls.",
     )
     parser.add_argument("--group-size", type=int, default=8)
     parser.add_argument(
@@ -692,7 +732,11 @@ def add_train_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
         "--opd-states-per-trajectory",
         type=int,
         default=None,
-        help="k decision points per trajectory. Default 3 for opd/rl+opd; -1 (all actions) for scape+rl and trim.",
+        help=(
+            "k decision points per trajectory. Default 3 for opd/rl+opd; "
+            "-1 (all structurally valid completed actions) for scape+rl, trim, "
+            "zero-placebo, and full-sampled-gap."
+        ),
     )
     parser.add_argument(
         "--eval-max-turns",
@@ -1045,9 +1089,36 @@ def _spec_from_ns(args: argparse.Namespace, *, train: bool) -> LaunchSpec:
     )
 
 
+_SAMPLED_CONTROL_METHODS = frozenset({"zero-placebo", "full-sampled-gap"})
+
+
+def _assert_sampled_control_launch(spec: LaunchSpec, args: argparse.Namespace) -> None:
+    """Reject mismatched harness/component before any model or cluster launch."""
+    method = spec.train_method
+    if method not in _SAMPLED_CONTROL_METHODS:
+        return
+    if spec.harness != "Harness-1":
+        raise LaunchError(f"--train_method {method} requires --harness Harness-1")
+    if method == "zero-placebo" and spec.component_preset != "zero":
+        raise LaunchError(
+            "--train_method zero-placebo requires --component zero "
+            f"(got preset={spec.component_preset!r} component={spec.coalition!r})"
+        )
+    if method == "full-sampled-gap" and spec.component_preset != "all":
+        raise LaunchError(
+            "--train_method full-sampled-gap requires --component all "
+            f"(got preset={spec.component_preset!r} component={spec.coalition!r})"
+        )
+    if float(getattr(args, "lambda_opd", 0.0) or 0.0) <= 0.0:
+        raise LaunchError(f"--train_method {method} requires lambda_opd > 0")
+
+
 def parse_train_args(argv: Sequence[str] | None = None) -> tuple[argparse.Namespace, LaunchSpec]:
     parser = argparse.ArgumentParser(
-        description="One-click Harness-1 / Harness-G training (opd | rl+opd | rl | scape+rl | trim).",
+        description=(
+            "One-click Harness-1 / Harness-G training "
+            "(opd | rl+opd | rl | scape+rl | trim | zero-placebo | full-sampled-gap)."
+        ),
     )
     add_train_args(parser)
     args = parser.parse_args(argv)
@@ -1065,20 +1136,18 @@ def parse_train_args(argv: Sequence[str] | None = None) -> tuple[argparse.Namesp
         args.train_data = TRAIN_DATA_BCPLUS_664 if g_train else TRAIN_DATA_SEC
     else:
         args.train_data = canonical_train_data(raw_train)
+    seed_scale = spec.train_method in {"scape+rl", "trim"} or spec.train_method in _SAMPLED_CONTROL_METHODS
     if args.opd_states_per_trajectory is None:
-        args.opd_states_per_trajectory = (
-            -1 if spec.train_method in {"scape+rl", "trim"} else 3
-        )
-    if spec.train_method == "scape+rl":
-        args.opd_loss = OPD_LOSS_SAMPLED_GAP
-    elif spec.train_method == "trim":
+        args.opd_states_per_trajectory = -1 if seed_scale else 3
+    if spec.train_method == "trim":
         args.opd_loss = OPD_LOSS_PROJECTED_GAP
+    elif spec.train_method == "scape+rl" or spec.train_method in _SAMPLED_CONTROL_METHODS:
+        args.opd_loss = OPD_LOSS_SAMPLED_GAP
     else:
         args.opd_loss = "sr_opd_ce"
     if args.lambda_opd is None:
-        args.lambda_opd = (
-            SCAPE_RL_LAMBDA_OPD if spec.train_method in {"scape+rl", "trim"} else 0.1
-        )
+        args.lambda_opd = SCAPE_RL_LAMBDA_OPD if seed_scale else 0.1
+    _assert_sampled_control_launch(spec, args)
     if getattr(args, "opd_gate_beta", None) is None:
         args.opd_gate_beta = SCAPE_RL_OPD_GATE_BETA
     if args.n_queries is None and args.train_data != TRAIN_DATA_SEC:

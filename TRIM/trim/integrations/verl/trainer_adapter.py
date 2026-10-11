@@ -40,6 +40,8 @@ from trim.training.dist_runtime import (
 )
 from trim.training.opd_train_contract import (
     assert_train_contract,
+    control_variant_for_method,
+    gap_variant_for_method,
     opd_loss_from_args,
     training_cell_for_method,
 )
@@ -265,12 +267,15 @@ def run_verl_fsdp2_train(args: Any) -> dict[str, Any]:
         open_train_retrieval,
         resolved_rollout_mask,
         resolve_queries,
+        student_mask_for,
         teacher_for,
+        teacher_mask_for,
         training_output_occupied,
     )
     from trim.training.rl_opd_metrics import reward_parts_group_stats
     from trim.training.tinker_rl_opd_trainer import HybridLoopState, prepare_hybrid_batch
     from trim.training.train_checkpoint import (
+        assert_resume_identity,
         load_rng_state,
         load_training_resume,
         publish_step_checkpoint,
@@ -324,11 +329,16 @@ def run_verl_fsdp2_train(args: Any) -> dict[str, Any]:
         vllm_base = broadcast_object(vllm_base)
     cell = training_cell_for_method(method)
     lambda_opd = cell_lambda(cell, float(getattr(args, "lambda_opd", 0.0) or 0.0))
-    teacher_fn = None if lambda_opd <= 0 else teacher_for(
-        args.component,
-        harness=getattr(args, "harness", None),
-        teacher_kind=str(getattr(args, "teacher_kind", "upstream") or "upstream"),
-    )
+    control_variant = control_variant_for_method(method)
+    gap_variant = gap_variant_for_method(method)
+    if control_variant is not None:
+        teacher_fn = None
+    else:
+        teacher_fn = None if lambda_opd <= 0 else teacher_for(
+            args.component,
+            harness=getattr(args, "harness", None),
+            teacher_kind=str(getattr(args, "teacher_kind", "upstream") or "upstream"),
+        )
     collection_mode = collection_mode_for_cell(cell, lambda_opd, opd_loss)
     loop = HybridLoopState(policy_version="v0")
     sampler = QuerySampler(
@@ -353,6 +363,14 @@ def run_verl_fsdp2_train(args: Any) -> dict[str, Any]:
         last_ckpt = str(resume_state["checkpoint_dir"])
         if resume_state.get("rng_path"):
             load_rng_state(Path(resume_state["rng_path"]))
+        assert_resume_identity(
+            resume_state.get("manifest") or {},
+            train_method=method,
+            cell=cell,
+            opd_loss=opd_loss,
+            component=str(args.component),
+            gap_variant=gap_variant,
+        )
     sampler_state = broadcast_object(sampler.state.to_dict() if is_coordinator() else None)
     if not is_coordinator():
         sampler = QuerySampler(
@@ -393,9 +411,25 @@ def run_verl_fsdp2_train(args: Any) -> dict[str, Any]:
             "claimed_backend": backend,
         },
         "train_method": method,
+        "training_mode": str(getattr(args, "training_mode", "") or ""),
         "cell": cell,
         "opd_loss": opd_loss,
         "lambda_opd": float(lambda_opd),
+        "opd_gate_beta": float(getattr(args, "opd_gate_beta", 5.0) or 5.0),
+        "control_variant": control_variant,
+        "gap_variant": gap_variant,
+        "gap_target_source": (
+            "sampled" if control_variant else "projected" if gap_variant == "projected" else "none"
+        ),
+        "target_source": (
+            "student_on_policy_completion"
+            if control_variant
+            else "projected_student_legal"
+            if gap_variant == "projected"
+            else "none"
+        ),
+        "student_mask": student_mask_for(args.component, harness=getattr(args, "harness", None)),
+        "teacher_mask": teacher_mask_for(args.component, harness=getattr(args, "harness", None)),
         "actor_wrap": wrap,
         "n_gpus": int(dist.world_size),
         "tensor_parallel_size": 1,
@@ -620,7 +654,7 @@ def run_verl_fsdp2_train(args: Any) -> dict[str, Any]:
         opd_datums: list[Any] = []
         projection_stats: dict[str, Any] = {}
         turn_audit = turn_audit_from_groups(all_groups)
-        if lambda_opd > 0 and teacher_fn is not None:
+        if lambda_opd > 0 and (teacher_fn is not None or control_variant is not None):
             t_build = time.perf_counter()
             payload = None
             build_err = None
@@ -640,13 +674,17 @@ def run_verl_fsdp2_train(args: Any) -> dict[str, Any]:
                     opd_states_per_trajectory=(
                         int(args.opd_states_per_trajectory)
                         if getattr(args, "opd_states_per_trajectory", None) is not None
-                        else (-1 if cell == "scape_seed" else 3)
+                        else (-1 if cell in {"scape_seed", "zero_placebo", "full_sampled_gap"} else 3)
                     ),
                     remove_constant_reward_groups=False,
                     include_format_errors=False,
                     seed=int(args.seed) + rollout_batch_id,
                     opd_loss=opd_loss,
                     opd_gate_beta=float(getattr(args, "opd_gate_beta", 5.0) or 5.0),
+                    control_variant=control_variant,
+                    strict_privilege_diagnostic=bool(
+                        getattr(args, "strict_privilege_diagnostic", False)
+                    ),
                     )
                     payload = {
                         "opd_datums": list(batch.opd_datums),
@@ -679,6 +717,8 @@ def run_verl_fsdp2_train(args: Any) -> dict[str, Any]:
             projection_stats=projection_stats,
             opd_empty_streak=opd_empty_streak,
             max_empty_opd=max_empty_opd,
+            control_variant=control_variant,
+            strict_privilege_diagnostic=bool(getattr(args, "strict_privilege_diagnostic", False)),
         )
         opd_empty_streak = int(health["opd_empty_streak"])
         if health["fatal"]:
@@ -763,7 +803,13 @@ def run_verl_fsdp2_train(args: Any) -> dict[str, Any]:
         barrier()
         marks["actor_load_s"] = time.perf_counter() - t_load
         t_train = time.perf_counter()
-        part = actor.update(rl_rows, list(opd_datums), lambda_opd=lambda_opd, plan=plan)
+        part = actor.update(
+            rl_rows,
+            list(opd_datums),
+            lambda_opd=lambda_opd,
+            plan=plan,
+            gap_variant=gap_variant,
+        )
         train_s = time.perf_counter() - t_train
         for key in ("teacher_score_s", "student_forward_s", "loss_s", "backward_s", "grad_sync_s", "optimizer_s"):
             marks[key] = float(part.get(key) or 0.0)
@@ -816,8 +862,17 @@ def run_verl_fsdp2_train(args: Any) -> dict[str, Any]:
                     "layout": resolved["layout"],
                     "wrap": wrap,
                     "train_method": method,
+                    "cell": cell,
+                    "component": str(args.component),
                     "opd_loss": opd_loss,
                     "lambda_opd": float(lambda_opd),
+                    "opd_gate_beta": float(getattr(args, "opd_gate_beta", 5.0) or 5.0),
+                    "control_variant": control_variant,
+                    "gap_variant": gap_variant,
+                    "target_source": resolved.get("target_source"),
+                    "gap_target_source": resolved.get("gap_target_source"),
+                    "student_mask": resolved.get("student_mask"),
+                    "teacher_mask": resolved.get("teacher_mask"),
                     "requested_world_size": requested,
                     "effective_world_size": int(dist.world_size),
                     "batch_plan": {
@@ -861,6 +916,33 @@ def run_verl_fsdp2_train(args: Any) -> dict[str, Any]:
                         "Z_gap": part.get("Z_gap"),
                         "teacher_score_s": part.get("teacher_score_s"),
                         "projected_gap_raw": part.get("projected_gap_raw"),
+                        "gap_raw": part.get("gap_raw"),
+                        "sampled_gap_raw": part.get("sampled_gap_raw"),
+                        "gate_mean": part.get("gate_mean"),
+                        "delta_mean": part.get("delta_mean"),
+                        "gap_variant": gap_variant,
+                        "control_variant": control_variant,
+                        "opd_loss": opd_loss,
+                        "lambda_opd": float(lambda_opd),
+                        "opd_gate_beta": float(getattr(args, "opd_gate_beta", 5.0) or 5.0),
+                        "target_source": resolved.get("target_source"),
+                        "no_privilege_exposure": health.get("no_privilege_exposure"),
+                        "n_context_identical": projection_stats.get("n_context_identical"),
+                        "n_context_different": projection_stats.get("n_context_different"),
+                        "teacher_student_context_equal_rate": (
+                            (
+                                float(projection_stats.get("n_context_identical") or 0)
+                                / float(
+                                    int(projection_stats.get("n_context_identical") or 0)
+                                    + int(projection_stats.get("n_context_different") or 0)
+                                )
+                            )
+                            if (
+                                int(projection_stats.get("n_context_identical") or 0)
+                                + int(projection_stats.get("n_context_different") or 0)
+                            )
+                            else None
+                        ),
                         "opd_objective": part.get("opd_objective"),
                         **health["fields"],
                         "turn_audit": _ta_counts_j,

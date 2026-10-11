@@ -408,3 +408,27 @@ def test_scape_seed_projects_then_uses_seed_gap_weights():
     assert all(w in {0.0, 1.0} for w in datum.weights)
     assert batch.projection_stats.get("projector_used") is True
     assert batch.projection_stats.get("sampled_action_opd") is False
+
+
+def test_default_sampled_path_ignores_control_variant_metadata():
+    point = _point(episode="e0", qid="q0", turn=0, reward=1.0)
+    point.student_action_tokens = [11, 12]
+    group = HybridRolloutGroup(
+        query_id="q0",
+        policy_version="v0",
+        trajectory_group=None,
+        decision_points=[point],
+        terminal_rewards=[1.0, 0.0],
+    )
+    batch = prepare_hybrid_batch(
+        groups=[group],
+        rl_datums_by_query={"q0": [{"n_tokens": 2}]},
+        policy_version="v0",
+        lambda_opd=0.01,
+        component_id="auto_populate_first_search",
+        teacher_event_fn=None,
+        remove_constant_reward_groups=False,
+        opd_loss="sr_opd_sampled_gap",
+    )
+    assert "control_variant" not in batch.opd_datums[0].metadata
+    assert batch.opd_datums[0].metadata["projector_used"] is False
