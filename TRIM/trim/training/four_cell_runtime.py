@@ -829,7 +829,22 @@ def snap_from_state(qid: str, st: dict[str, Any], component_id: str, *, harness_
 
 def _query_overlap(action: dict[str, Any], query: str) -> float:
     args = action.get("arguments") or {}
-    blob = " ".join([str(args.get("query") or "")] + [str(x) for x in (args.get("queries") or [])]).lower()
+    # Defensive: `queries` should be a list[str], but some models (e.g. gpt-oss)
+    # emit an int (or a bare str) for this field. Iterating a non-iterable int
+    # raised TypeError -> job FAILED (33sd1/fvxd9 step14/15). Coerce to a list
+    # of strings so the overlap blob is always well-formed; a single int query
+    # id contributes its str repr (no overlap with natural-language query, so
+    # it effectively scores 0, matching the pre-bug intent without crashing).
+    _raw_queries = args.get("queries")
+    if isinstance(_raw_queries, (list, tuple)):
+        _queries_iter = [str(x) for x in _raw_queries]
+    elif _raw_queries is None:
+        _queries_iter = []
+    elif isinstance(_raw_queries, str):
+        _queries_iter = [_raw_queries]
+    else:  # int / float / other scalar -> single-element list
+        _queries_iter = [str(_raw_queries)]
+    blob = " ".join([str(args.get("query") or "")] + _queries_iter).lower()
     qset = set(re.findall(r"[a-z0-9]+", query.lower()))
     aset = set(re.findall(r"[a-z0-9]+", blob))
     if not qset or not aset:

@@ -204,11 +204,68 @@ def extract_sampled_logprobs(
                 f"sampled logprob missing for token_id={tid} pos={i} request_id={request_id}"
             )
         if not math.isfinite(logp):
+            _dump_nan_debug(ids, rows, request_id=request_id, nan_pos=i, nan_tid=int(tid), nan_logp=logp)
             raise ValueError(
                 f"non-finite sampled logprob {logp!r} token_id={tid} pos={i} request_id={request_id}"
             )
         out.append(float(logp))
     return out
+
+
+def _dump_nan_debug(
+    ids: list[int],
+    rows: Any,
+    *,
+    request_id: str,
+    nan_pos: int,
+    nan_tid: int,
+    nan_logp: float,
+) -> None:
+    """Dump full per-token logprob context for the NaN crash to a debug file.
+
+    Triggered when a sampled-token logprob is non-finite (nan/inf). Writes a
+    JSON dump of the full episode's token_ids + per-token logprob (NaN flagged)
+    + a window around the NaN position, so we can see which query/turn/position
+    produces the bad token (typically token_id=0 = pad/eos on GPT-OSS-20B under
+    recall_turn reward). The dump goes to $TRIM_NAN_DEBUG_PATH if set, else
+    /tmp/trim_nan_debug.jsonl. Does NOT raise; the caller still raises.
+    """
+    try:
+        per_pos: list[dict] = []
+        for i, tid in enumerate(ids):
+            slot = rows[i]
+            lp = _logprob_for_token(slot, int(tid), request_id=request_id, position=i)
+            per_pos.append({
+                "pos": i,
+                "token_id": int(tid),
+                "logprob": (float(lp) if lp is not None and math.isfinite(lp) else (None if lp is None else str(lp))),
+                "is_nan": (lp is not None and not math.isfinite(lp)),
+            })
+        lo = max(0, nan_pos - 8)
+        hi = min(len(ids), nan_pos + 9)
+        window = [{"pos": p["pos"], "token_id": p["token_id"], "logprob": p["logprob"]} for p in per_pos[lo:hi]]
+        rec = {
+            "request_id": request_id,
+            "nan_pos": nan_pos,
+            "nan_token_id": nan_tid,
+            "nan_logprob": str(nan_logp),
+            "n_tokens": len(ids),
+            "window_around_nan": window,
+            "nan_token_count": sum(1 for p in per_pos if p["is_nan"]),
+            "all_token_ids": [int(x) for x in ids],
+        }
+        path = os.environ.get("TRIM_NAN_DEBUG_PATH", "/tmp/trim_nan_debug.jsonl")
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        # Also echo a one-line summary to stdout so it shows in pod logs.
+        print(
+            f"NaN_DEBUG request_id={request_id} nan_pos={nan_pos} nan_tid={nan_tid} "
+            f"n_tokens={len(ids)} nan_count={rec['nan_token_count']} window={window} "
+            f"dumped->{path}",
+            flush=True,
+        )
+    except Exception as exc:  # never mask the original NaN error
+        print(f"NaN_DEBUG dump failed: {exc}", flush=True)
 
 
 def _logprob_for_token(

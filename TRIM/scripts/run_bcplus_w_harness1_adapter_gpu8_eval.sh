@@ -154,6 +154,22 @@ ACTOR_PORTS="${ACTOR_PORTS:-8040,8042,8044,8046,8048,8052,8054,8056}"
 VERIFY_GPU="${VERIFY_GPU:-7}"
 VERIFY_PORT="${VERIFY_PORT:-8050}"
 
+# verify_tool requires the harness-1 verifier vLLM: trim/upstream_harness1/env_bridge.py
+# raises RuntimeError("component includes verify_tool; local_bm25 requires --verify-base-url")
+# at eval-toolset build time when mask["verify_tool"] is true but no verifier client exists.
+# Trigger on COMPONENT=="all" OR any token == verify_tool in the comma list (e.g. MSC =
+# verify_tool,token_budget_marker). Coalitions without verify_tool (zero/ccso/rieve) stay on
+# the original 8-actor no-verifier layout.
+verify_tool_enabled() {
+  [[ "${COMPONENT}" == "all" ]] && return 0
+  local IFS=','
+  local tok
+  for tok in ${COMPONENT}; do
+    [[ "${tok}" == "verify_tool" ]] && return 0
+  done
+  return 1
+}
+
 export PYTHONPATH=".:${REL_SCAPE_EASYOPD}"
 export TRIM_GPU_KEEPALIVE=0
 # Hard-disable Chroma client construction in harness-1 (local_bm25 path only).
@@ -428,11 +444,11 @@ start_actors() {
 
   smoke_test_tool_call "${actor_ports[0]}" "${LORA_NAME}"
 
-  if [[ "${COMPONENT}" == "all" ]]; then
+  if verify_tool_enabled; then
     local gpu port
     for gpu in "${actor_gpus[@]}"; do
       if [[ "${gpu}" == "${VERIFY_GPU}" ]]; then
-        log "ACTOR_GPUS includes VERIFY_GPU=${VERIFY_GPU}; use disjoint GPUs for COMPONENT=all"
+        log "ACTOR_GPUS includes VERIFY_GPU=${VERIFY_GPU}; use disjoint GPUs when verify_tool is on"
         exit 1
       fi
     done
@@ -477,7 +493,7 @@ run_eval() {
   local log_path="${REL_LOGS}/eval_${COMPONENT}.log"
   local extra=()
 
-  if [[ "${COMPONENT}" == "all" ]]; then
+  if verify_tool_enabled; then
     extra+=(--verify-base-url "http://127.0.0.1:${VERIFY_PORT}/v1")
     extra+=(--verify-model "${VERIFY_MODEL_NAME}")
   fi
