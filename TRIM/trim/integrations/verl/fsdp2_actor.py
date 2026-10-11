@@ -159,7 +159,61 @@ def unpack_gap_row(raw: Any, *, require_projected: bool = True) -> dict[str, Any
         "opd_loss": loss,
         "projector_used": projector_used,
         "sampled_action": sampled_action,
+        "metadata": meta,
+        "control_variant": str(meta.get("control_variant") or ""),
     }
+
+
+def validate_gap_row_for_variant(row: dict[str, Any], *, gap_variant: str) -> None:
+    """Real-row contract for one gap variant. Dummy padding rows are ignored."""
+    from trim.training.rl_opd_types import (
+        CONTROL_VARIANT_FULL_SAMPLED_GAP,
+        CONTROL_VARIANT_ZERO_PLACEBO,
+        GAP_VARIANT_PROJECTED,
+        GAP_VARIANT_SAMPLED_FULL,
+        GAP_VARIANT_SAMPLED_ZERO_PLACEBO,
+        OPD_LOSS_PROJECTED_GAP,
+        OPD_LOSS_SAMPLED_GAP,
+    )
+
+    if row.get("dummy"):
+        return
+    loss = str(row.get("opd_loss") or "")
+    projector_used = bool(row.get("projector_used"))
+    sampled_action = bool(row.get("sampled_action"))
+    control = str(row.get("control_variant") or (row.get("metadata") or {}).get("control_variant") or "")
+    if gap_variant == GAP_VARIANT_PROJECTED:
+        if loss != OPD_LOSS_PROJECTED_GAP:
+            raise ValueError(
+                f"projected gap variant requires {OPD_LOSS_PROJECTED_GAP}, got {loss!r}"
+            )
+        if sampled_action or not projector_used:
+            raise ValueError(
+                "distributed gap actor requires projector_used=True and sampled_action=False "
+                f"(got projector_used={projector_used} sampled_action={sampled_action})"
+            )
+        return
+    if gap_variant == GAP_VARIANT_SAMPLED_ZERO_PLACEBO:
+        expected = CONTROL_VARIANT_ZERO_PLACEBO
+    elif gap_variant == GAP_VARIANT_SAMPLED_FULL:
+        expected = CONTROL_VARIANT_FULL_SAMPLED_GAP
+    else:
+        raise ValueError(f"unknown gap_variant {gap_variant!r}")
+    if loss != OPD_LOSS_SAMPLED_GAP:
+        raise ValueError(f"{gap_variant} requires {OPD_LOSS_SAMPLED_GAP}, got {loss!r}")
+    if projector_used or not sampled_action:
+        raise ValueError(
+            f"{gap_variant} requires projector_used=False and sampled_action=True "
+            f"(got projector_used={projector_used} sampled_action={sampled_action})"
+        )
+    if control != expected:
+        raise ValueError(
+            f"{gap_variant} requires control_variant={expected!r}, got {control!r}"
+        )
+    if gap_variant == GAP_VARIANT_SAMPLED_ZERO_PLACEBO and list(row.get("student_ids") or []) != list(
+        row.get("teacher_ids") or []
+    ):
+        raise ValueError("zero-placebo requires token-identical teacher and student prefixes")
 
 
 def detect_opd_objective(rows: Sequence[Any] | None) -> str:
@@ -521,11 +575,18 @@ class FSDP2CispoActor:
             _set_fsdp_grad_sync(self.model, False)
         return nullcontext()
 
-    def _score_teacher_chunk(self, chunk: Sequence[Any]) -> list[torch.Tensor]:
+    def _score_teacher_chunk(
+        self,
+        chunk: Sequence[Any],
+        *,
+        gap_variant: str = "projected",
+    ) -> list[torch.Tensor]:
         pairs = []
         unpacked_rows = []
         for raw in chunk:
-            row = unpack_gap_row(raw, require_projected=not bool(isinstance(raw, dict) and raw.get("is_dummy")))
+            dummy = bool(isinstance(raw, dict) and raw.get("is_dummy"))
+            row = unpack_gap_row(raw, require_projected=(gap_variant == "projected" and not dummy))
+            validate_gap_row_for_variant(row, gap_variant=gap_variant)
             if len(row["teacher_ids"]) + len(row["resp_ids"]) > self.max_full_tokens:
                 raise ValueError(
                     f"teacher sequence {len(row['teacher_ids'])+len(row['resp_ids'])} exceeds {self.max_full_tokens}"
@@ -548,13 +609,17 @@ class FSDP2CispoActor:
         self,
         chunk: Sequence[Any],
         teacher_lps: Sequence[torch.Tensor],
+        *,
+        gap_variant: str = "projected",
     ) -> tuple[torch.Tensor, int, dict[str, float]]:
         from trim.training.sr_opd_loss import gated_action_gap_weighted_sum
 
         prepared = []
         for raw in chunk:
             dummy = bool(isinstance(raw, dict) and raw.get("is_dummy"))
-            prepared.append(unpack_gap_row(raw, require_projected=not dummy))
+            row = unpack_gap_row(raw, require_projected=(gap_variant == "projected" and not dummy))
+            validate_gap_row_for_variant(row, gap_variant=gap_variant)
+            prepared.append(row)
         if len(prepared) != len(teacher_lps):
             raise ValueError("teacher logprob chunks drifted from student gap chunks")
         pairs = [(row["student_ids"], row["resp_ids"]) for row in prepared]
@@ -567,6 +632,7 @@ class FSDP2CispoActor:
         terms: list[torch.Tensor] = []
         input_tokens = 0
         gate_sum = 0.0
+        delta_sum = 0.0
         n_tok = 0
         student_lp_sum = 0.0
         teacher_lp_sum = 0.0
@@ -590,6 +656,7 @@ class FSDP2CispoActor:
                 gate = torch.sigmoid(delta * float(row["gate_beta"]))
                 n_keep = int((w != 0).sum().item())
                 gate_sum += float((gate * (w != 0).float()).sum().item())
+                delta_sum += float((delta * (w != 0).float()).sum().item())
                 n_tok += n_keep
                 student_lp_sum += float((s * (w != 0).float()).sum().item())
                 teacher_lp_sum += float((t * (w != 0).float()).sum().item())
@@ -600,6 +667,7 @@ class FSDP2CispoActor:
             numer = dummy_p.float().sum() * 0.0
         stats = {
             "gate_mean": (gate_sum / n_tok) if n_tok else 0.0,
+            "delta_mean": (delta_sum / n_tok) if n_tok else 0.0,
             "student_logp": (student_lp_sum / n_tok) if n_tok else 0.0,
             "teacher_logp": (teacher_lp_sum / n_tok) if n_tok else 0.0,
             "n_weighted_tokens": float(n_tok),
@@ -666,10 +734,17 @@ class FSDP2CispoActor:
         *,
         lambda_opd: float = 0.0,
         plan: RankBatchPlan | None = None,
+        gap_variant: str | None = None,
     ) -> dict[str, Any]:
         """Accumulate CISPO (+ CE or projected-gap) then one optimizer.step. All ranks must enter."""
-        from trim.training.rl_opd_types import PROJECTED_GAP_OBJECTIVE_VERSION, uses_projected_seed, uses_seed_gap
-        from trim.training.sr_opd_loss import scale_projected_gap_loss
+        from trim.training.rl_opd_types import (
+            GAP_VARIANT_PROJECTED,
+            PROJECTED_GAP_OBJECTIVE_VERSION,
+            SAMPLED_GAP_VARIANTS,
+            uses_projected_seed,
+            uses_seed_gap,
+        )
+        from trim.training.sr_opd_loss import scale_gated_gap_loss
 
         scheduled = plan or plan_joint_sync_batches(
             list(rl_rows),
@@ -683,15 +758,33 @@ class FSDP2CispoActor:
             inspect_rows.extend(chunk)
         objective = detect_opd_objective(inspect_rows)
         gap_mode = objective == "gap"
+        resolved_gap = None
         if gap_mode:
+            resolved_gap = str(gap_variant or GAP_VARIANT_PROJECTED)
+            if resolved_gap not in {GAP_VARIANT_PROJECTED, *SAMPLED_GAP_VARIANTS}:
+                raise ValueError(f"unknown gap_variant {resolved_gap!r}")
             for raw in inspect_rows:
                 if isinstance(raw, dict) and raw.get("is_dummy"):
                     continue
-                loss = _row_opd_loss(raw)
-                if loss and uses_seed_gap(loss) and not uses_projected_seed(loss):
-                    raise ValueError(
-                        f"distributed actor implements projected-gap only; refused {loss!r}"
-                    )
+                if resolved_gap == GAP_VARIANT_PROJECTED:
+                    loss = _row_opd_loss(raw)
+                    if loss and uses_seed_gap(loss) and not uses_projected_seed(loss):
+                        raise ValueError(
+                            f"distributed actor implements projected-gap only; refused {loss!r}"
+                        )
+                else:
+                    unpacked = unpack_gap_row(raw, require_projected=False)
+                    validate_gap_row_for_variant(unpacked, gap_variant=resolved_gap)
+        sampled_gap = resolved_gap in SAMPLED_GAP_VARIANTS
+        if gap_mode and sampled_gap:
+            objective_name = "sampled_gap"
+            objective_version = "sampled_gap_weighted_v1"
+        elif gap_mode:
+            objective_name = "projected_gap"
+            objective_version = PROJECTED_GAP_OBJECTIVE_VERSION
+        else:
+            objective_name = "ce"
+            objective_version = "ce_lambda_baked_v1"
         assert self.model is not None and self.optimizer is not None
         self.phase_seconds = {
             "student_forward_s": 0.0,
@@ -721,10 +814,13 @@ class FSDP2CispoActor:
             "opd_real_tokens": int(scheduled.opd_real_tokens),
             "wrap": self.wrap,
             "wrapper": self.wrapper_type,
-            "opd_objective": "projected_gap" if gap_mode else "ce",
-            "objective_version": PROJECTED_GAP_OBJECTIVE_VERSION if gap_mode else "ce_lambda_baked_v1",
+            "opd_objective": objective_name,
+            "objective_version": objective_version,
+            "gap_variant": resolved_gap,
             "Z_gap": z_gap if gap_mode else None,
-            "lambda_projected_gap": float(lambda_opd) if gap_mode else None,
+            "n_opd_tokens": int(scheduled.opd_real_tokens) if gap_mode else 0,
+            "lambda_projected_gap": float(lambda_opd) if gap_mode and not sampled_gap else None,
+            "lambda_opd": float(lambda_opd) if gap_mode else None,
         }
         if not steps:
             return metrics
@@ -736,7 +832,9 @@ class FSDP2CispoActor:
             ctx = self._teacher_forward_context()
             with ctx:
                 for chunk in scheduled.opd_chunks:
-                    teacher_logps_by_chunk.append(self._score_teacher_chunk(chunk))
+                    teacher_logps_by_chunk.append(
+                        self._score_teacher_chunk(chunk, gap_variant=resolved_gap or GAP_VARIANT_PROJECTED)
+                    )
             if self.wrap == "fsdp2":
                 _set_fsdp_grad_sync(self.model, True)
             teacher_score_s = time.perf_counter() - t_teacher
@@ -748,6 +846,7 @@ class FSDP2CispoActor:
         supervised = 0
         gap_raw = 0.0
         gate_mean_acc = 0.0
+        delta_mean_acc = 0.0
         gate_n = 0
         started = time.perf_counter()
         last_hb = started
@@ -777,11 +876,15 @@ class FSDP2CispoActor:
                     loss = scale * (numer / z_rl)
                 elif gap_mode:
                     t_lps = teacher_logps_by_chunk[opd_i]
-                    numer, n_in, gap_stats = self._projected_gap_numerator(chunk, t_lps)
+                    numer, n_in, gap_stats = self._projected_gap_numerator(
+                        chunk,
+                        t_lps,
+                        gap_variant=resolved_gap or GAP_VARIANT_PROJECTED,
+                    )
                     if skipped_gap:
                         loss = numer * 0.0
                     else:
-                        loss = scale_projected_gap_loss(
+                        loss = scale_gated_gap_loss(
                             numer,
                             lambda_opd=float(lambda_opd),
                             z_gap=z_gap,
@@ -790,6 +893,7 @@ class FSDP2CispoActor:
                     gap_raw += float(numer.detach().item())
                     if gap_stats["n_weighted_tokens"]:
                         gate_mean_acc += gap_stats["gate_mean"] * gap_stats["n_weighted_tokens"]
+                        delta_mean_acc += gap_stats["delta_mean"] * gap_stats["n_weighted_tokens"]
                         gate_n += gap_stats["n_weighted_tokens"]
                     opd_i += 1
                 else:
@@ -854,8 +958,11 @@ class FSDP2CispoActor:
                 "skipped_gap_zero_Z": skipped_gap,
                 "n_microbatches": len(steps),
                 "loss": loss_sum,
-                "projected_gap_raw": gap_raw if gap_mode else None,
+                "projected_gap_raw": gap_raw if gap_mode and not sampled_gap else None,
+                "gap_raw": gap_raw if gap_mode else None,
+                "sampled_gap_raw": gap_raw if sampled_gap else None,
                 "gate_mean": (gate_mean_acc / gate_n) if gate_n else None,
+                "delta_mean": (delta_mean_acc / gate_n) if gate_n else None,
                 "teacher_score_s": round(teacher_score_s, 3) if gap_mode else None,
                 "student_forward_s": round(float(self.phase_seconds.get("student_forward_s") or 0.0), 3),
                 "loss_s": round(float(self.phase_seconds.get("loss_s") or 0.0), 3),

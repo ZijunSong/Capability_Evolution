@@ -97,11 +97,13 @@ from trim.training.on_policy_collector import filter_component_states, write_col
 from trim.training.opd_dataset import render_student_prompt
 from trim.training.rl_opd_types import (
     PROTOCOL_COMPLETE_RL_OPD,
+    TRAINING_MODE_FULL_SAMPLED_GAP,
     TRAINING_MODE_PURE_OPD,
     TRAINING_MODE_RL,
     TRAINING_MODE_RL_OPD,
     TRAINING_MODE_SCAPE_RL,
     TRAINING_MODE_SCAPE_SEED,
+    TRAINING_MODE_ZERO_PLACEBO,
     HybridRolloutGroup,
     OPD_LOSS_PROJECTED_GAP,
     OPD_LOSS_SAMPLED_GAP,
@@ -111,7 +113,7 @@ from trim.training.rl_opd_types import (
     uses_sampled_opd,
 )
 from trim.training.parse_rollout_action import parse_generated_action
-from trim.training.opd_train_contract import opd_loss_from_args
+from trim.training.opd_train_contract import control_variant_for_method, opd_loss_from_args
 from trim.training.teacher_isolation import COMPONENT_KIND, run_teacher_branch_isolated
 from trim.training.teacher_branch import component_implementation_table
 from trim.training.auto_populate_teacher import teacher_events_from_point as auto_populate_events_from_point
@@ -424,11 +426,20 @@ def cell_lambda(name: str, lambda_opd: float) -> float:
 
 
 def collection_mode_for_cell(name: str, lambda_opd: float, opd_loss: str | None = None) -> str:
-    from trim.training.rl_opd_types import COLLECTION_MODE_AUDIT_FULL, COLLECTION_MODE_RL, COLLECTION_MODE_RL_OPD
+    from trim.training.rl_opd_types import (
+        COLLECTION_MODE_AUDIT_FULL,
+        COLLECTION_MODE_RL,
+        COLLECTION_MODE_RL_OPD,
+        COLLECTION_MODE_ZERO_PLACEBO,
+    )
 
     del opd_loss
     if name == "teacher":
         return COLLECTION_MODE_AUDIT_FULL
+    if name == "zero_placebo":
+        return COLLECTION_MODE_ZERO_PLACEBO
+    if name == "full_sampled_gap":
+        return COLLECTION_MODE_RL_OPD
     if name in {"before", "rl"} or float(lambda_opd or 0.0) <= 0.0:
         return COLLECTION_MODE_RL
     return COLLECTION_MODE_RL_OPD
@@ -442,11 +453,15 @@ def cells_for_mode(training_mode: str | None, *, train_only: bool = False) -> tu
         TRAINING_MODE_RL_OPD: ("rl_opd",),
         TRAINING_MODE_SCAPE_RL: ("scape_rl",),
         TRAINING_MODE_SCAPE_SEED: ("scape_seed",),
+        TRAINING_MODE_ZERO_PLACEBO: ("zero_placebo",),
+        TRAINING_MODE_FULL_SAMPLED_GAP: ("full_sampled_gap",),
         "rl_only": ("rl",),
         "pure_opd_only": ("pure_opd",),
         "rl_opd_only": ("rl_opd",),
         "scape_rl_only": ("scape_rl",),
         "scape_seed_only": ("scape_seed",),
+        "zero_placebo_only": ("zero_placebo",),
+        "full_sampled_gap_only": ("full_sampled_gap",),
     }
     if train_only and training_mode in only:
         return only[training_mode]
@@ -462,6 +477,10 @@ def cells_for_mode(training_mode: str | None, *, train_only: bool = False) -> tu
         return ("before", "scape_rl")
     if training_mode == TRAINING_MODE_SCAPE_SEED:
         return ("before", "scape_seed")
+    if training_mode == TRAINING_MODE_ZERO_PLACEBO:
+        return ("before", "zero_placebo")
+    if training_mode == TRAINING_MODE_FULL_SAMPLED_GAP:
+        return ("before", "full_sampled_gap")
     if training_mode in only:
         return only[training_mode]
     return CELLS
@@ -491,7 +510,12 @@ def uses_sec_train_data(args: argparse.Namespace | None = None, *, training_mode
 
 def is_seed_scale_mode(args: argparse.Namespace | None = None, *, training_mode: str | None = None) -> bool:
     mode = training_mode if training_mode is not None else str(getattr(args, "training_mode", "") or "")
-    return mode in {TRAINING_MODE_SCAPE_RL, TRAINING_MODE_SCAPE_SEED}
+    return mode in {
+        TRAINING_MODE_SCAPE_RL,
+        TRAINING_MODE_SCAPE_SEED,
+        TRAINING_MODE_ZERO_PLACEBO,
+        TRAINING_MODE_FULL_SAMPLED_GAP,
+    }
 
 
 def uses_bcplus_830_eval(args: argparse.Namespace) -> bool:
@@ -552,15 +576,47 @@ def build_manifest(args: argparse.Namespace, *, extra: dict[str, Any] | None = N
         args.component,
         harness=getattr(args, "harness", None),
     )
-    protocol_requested = mode in {
-        "four_cell",
-        TRAINING_MODE_RL_OPD,
-        TRAINING_MODE_SCAPE_RL,
-        TRAINING_MODE_SCAPE_SEED,
-    } and lam > 0
+    control_variant = control_variant_for_method(
+        getattr(args, "train_method", None) or mode
+    )
+    if control_variant == TRAINING_MODE_ZERO_PLACEBO:
+        gap_target_source = "sampled"
+        target_source = "student_on_policy_completion"
+        student_harness = "H_zero"
+        teacher_harness = "H_zero"
+        protocol_name = "sampled_completion_gap"
+        protocol_requested = False
+    elif control_variant == TRAINING_MODE_FULL_SAMPLED_GAP:
+        gap_target_source = "sampled"
+        target_source = "student_on_policy_completion"
+        student_harness = "H_zero"
+        teacher_harness = "H_full"
+        protocol_name = "sampled_completion_gap"
+        protocol_requested = False
+    else:
+        if opd_loss == OPD_LOSS_PROJECTED_GAP:
+            gap_target_source = "projected"
+            target_source = "projected_student_legal"
+        elif opd_loss == OPD_LOSS_SAMPLED_GAP:
+            gap_target_source = "sampled"
+            target_source = "student_on_policy_completion"
+        else:
+            gap_target_source = "none"
+            target_source = "none"
+        student_harness = "H_min"
+        teacher_harness = "H_full"
+        protocol_name = PROTOCOL_COMPLETE_RL_OPD
+        protocol_requested = mode in {
+            "four_cell",
+            TRAINING_MODE_RL_OPD,
+            TRAINING_MODE_SCAPE_RL,
+            TRAINING_MODE_SCAPE_SEED,
+        } and lam > 0
     protocol_verified = bool(extra_payload.get("protocol_contract_verified"))
     return {
         "training_mode": mode,
+        "train_method": getattr(args, "train_method", None) or mode,
+        "control_variant": control_variant,
         "component": args.component,
         "harness": getattr(args, "harness", None) or infer_harness_from_ids(args.component),
         "component_ids": component_ids_of(
@@ -572,8 +628,10 @@ def build_manifest(args: argparse.Namespace, *, extra: dict[str, Any] | None = N
         "opd_loss": opd_loss,
         "lambda_opd": lam,
         "opd_gate_beta": float(getattr(args, "opd_gate_beta", SCAPE_RL_OPD_GATE_BETA) or SCAPE_RL_OPD_GATE_BETA),
-        "student_harness": "H_min",
-        "teacher_harness": "H_full",
+        "student_harness": student_harness,
+        "teacher_harness": teacher_harness,
+        "target_source": target_source,
+        "gap_target_source": gap_target_source,
         "student_mask": student_mask_for(args.component, harness=getattr(args, "harness", None)),
         "teacher_mask": teacher_mask_for(args.component, harness=getattr(args, "harness", None)),
         "opd_state_source": "current_on_policy_rl_rollout",
@@ -582,7 +640,7 @@ def build_manifest(args: argparse.Namespace, *, extra: dict[str, Any] | None = N
         "protocol_requested_rl_opd": protocol_requested,
         "protocol_contract_verified": protocol_verified,
         "protocol_complete_rl_opd": bool(protocol_requested and protocol_verified),
-        "protocol_name": PROTOCOL_COMPLETE_RL_OPD,
+        "protocol_name": protocol_name,
         "projection_schema_version": "scape_projection_v1",
         "component_implementation_table": component_implementation_table(
             requested_ids,
@@ -1403,6 +1461,7 @@ async def train_cell(
     global_optimizer_step: int = 0,
     base_seed: int = 0,
     model_enc: Any | None = None,
+    control_variant: str | None = None,
 ) -> dict[str, Any]:
     if name in {"teacher", "before"} or train_steps <= 0:
         return {
@@ -1467,9 +1526,10 @@ async def train_cell(
             opd_states_per_trajectory=opd_states_per_trajectory,
             seed=step,
             remove_constant_reward_groups=True,
-            include_format_errors=uses_sampled_opd(opd_loss),
+            include_format_errors=uses_sampled_opd(opd_loss) and control_variant is None,
             opd_loss=opd_loss,
             opd_gate_beta=opd_gate_beta,
+            control_variant=control_variant,
         )
         last_batch_stats = dict(batch.projection_stats)
         last_batch_stats["step_sample"] = sample_meta
@@ -1923,6 +1983,43 @@ def validate_wiring(args: argparse.Namespace) -> dict[str, Any]:
     from trim.training.opd_dataset import project_and_materialize
     from trim.training.opd_projection import StudentActionSpaceProjector
 
+    control_variant = control_variant_for_method(
+        getattr(args, "training_mode", None) or getattr(args, "train_method", None)
+    )
+    if control_variant:
+        train_rows, eval_rows, pool_meta, frozen_points = resolve_queries(args)
+        harness = getattr(args, "harness", None) or infer_harness_from_ids(args.component)
+        return {
+            "ok": True,
+            "component": args.component,
+            "harness": harness,
+            "component_ids": component_ids_of(args.component, harness=harness),
+            "teacher_registered": False,
+            "control_variant": control_variant,
+            "gap_target_source": "sampled",
+            "target_source": "student_on_policy_completion",
+            "n_train_queries": len(train_rows),
+            "n_eval_queries": len(eval_rows),
+            "eval_is_official_384": False,
+            "using_full_train_split": bool(
+                (pool_meta.get("train") or {}).get("using_full_train_split", len(train_rows) == BCPLUS_TRAIN)
+            ),
+            "official_test_count": int(pool_meta["eval"].get("official_test_count") or 0),
+            "official_test_is_166": int(pool_meta["eval"].get("official_test_count") or 0) == BCPLUS_TEST
+            and not uses_bcplus_830_eval(args),
+            "eval_is_bcplus_830": uses_bcplus_830_eval(args) and len(eval_rows) == BCPLUS_TOTAL,
+            "train_pool": (pool_meta.get("train") or {}).get("pool_contract")
+            or (SEC_TRAIN_POOL_NAME if uses_sec_train_data(args) else "bcplus_train_664"),
+            "score_split": SCORE_SPLIT_830 if uses_bcplus_830_eval(args) else SCORE_SPLIT_166,
+            "official_test_is_76": False,
+            "train_states": pool_meta.get("frozen_states") or {},
+            "n_frozen_states": len(frozen_points),
+            "projection_kind": "sampled_completion_gap",
+            "n_projected_steps": 0,
+            "teacher_leak_in_student_prefix": False,
+            "pool": pool_meta,
+        }
+
     teacher_fn = teacher_for(
         args.component,
         harness=getattr(args, "harness", None),
@@ -2262,13 +2359,19 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
     )
     if is_coordinator():
         (out / "RUN_MANIFEST.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-    teacher_fn = teacher_for(
-        args.component,
-        harness=getattr(args, "harness", None),
-        teacher_kind=str(getattr(args, "teacher_kind", "upstream") or "upstream"),
+    control_variant = control_variant_for_method(
+        getattr(args, "training_mode", None) or getattr(args, "train_method", None)
     )
-    if teacher_fn is None:
-        raise SystemExit(f"no teacher registered for {args.component}")
+    if control_variant:
+        teacher_fn = None
+    else:
+        teacher_fn = teacher_for(
+            args.component,
+            harness=getattr(args, "harness", None),
+            teacher_kind=str(getattr(args, "teacher_kind", "upstream") or "upstream"),
+        )
+        if teacher_fn is None:
+            raise SystemExit(f"no teacher registered for {args.component}")
 
     t0 = time.time()
     runtime = SchemeARuntime()
@@ -2762,6 +2865,7 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
                             global_optimizer_step=query_sampler.state.global_optimizer_step,
                             base_seed=int(args.seed),
                             model_enc=enc,
+                            control_variant=control_variant,
                         )
                     )
                     rewards_after = [r for g in groups for r in g.terminal_rewards]
@@ -2927,6 +3031,7 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
                             micro_batch_size=int(getattr(args, "train_micro_batch_size", HF_DEFAULT_MICRO_BATCH) or HF_DEFAULT_MICRO_BATCH),
                             heartbeat_every=int(getattr(args, "train_heartbeat_every", HF_DEFAULT_HEARTBEAT_EVERY) or HF_DEFAULT_HEARTBEAT_EVERY),
                             model_enc=enc,
+                            control_variant=control_variant,
                         )
                     )
                 )
@@ -3098,7 +3203,10 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
         scape_rl = cells.get("scape_rl", {}).get("train") or {}
         scape_seed = cells.get("scape_seed", {}).get("train") or {}
         joint = scape_seed or scape_rl or rl_opd
-        joint_cell_present = "scape_seed" in cells or "scape_rl" in cells or "rl_opd" in cells
+        joint_cell_present = any(
+            name in cells
+            for name in ("scape_seed", "scape_rl", "rl_opd", "zero_placebo", "full_sampled_gap")
+        )
         summary = {
             "elapsed_sec": time.time() - t0,
             "manifest": manifest,
@@ -3200,12 +3308,11 @@ def coerce_runtime_args(args: argparse.Namespace) -> argparse.Namespace:
             -1 if is_seed_scale_mode(args) else 3
         )
     if not getattr(args, "opd_loss", None):
-        if getattr(args, "training_mode", "") == TRAINING_MODE_SCAPE_RL:
-            args.opd_loss = OPD_LOSS_SAMPLED_GAP
-        elif getattr(args, "training_mode", "") == TRAINING_MODE_SCAPE_SEED:
-            args.opd_loss = OPD_LOSS_PROJECTED_GAP
-        else:
-            args.opd_loss = "sr_opd_ce"
+        from trim.training.opd_train_contract import default_opd_loss_for_method
+
+        args.opd_loss = default_opd_loss_for_method(
+            getattr(args, "train_method", None) or getattr(args, "training_mode", None)
+        )
     if getattr(args, "lambda_opd", None) is None:
         args.lambda_opd = (
             SCAPE_RL_LAMBDA_OPD

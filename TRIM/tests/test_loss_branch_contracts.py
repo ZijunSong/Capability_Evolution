@@ -19,6 +19,14 @@ def test_loss_mode_contracts():
     assert uses_seed_gap(OPD_LOSS_SAMPLED_GAP)
     assert not uses_sampled_opd(OPD_LOSS_CE)
     assert not uses_projected_seed(OPD_LOSS_CE)
+    from trim.training.opd_train_contract import default_opd_loss_for_method
+
+    assert default_opd_loss_for_method("zero-placebo") == OPD_LOSS_SAMPLED_GAP
+    assert default_opd_loss_for_method("full-sampled-gap") == OPD_LOSS_SAMPLED_GAP
+    assert default_opd_loss_for_method("trim") == OPD_LOSS_PROJECTED_GAP
+    assert default_opd_loss_for_method("rl") == OPD_LOSS_CE
+    assert uses_sampled_opd(default_opd_loss_for_method("zero-placebo"))
+    assert not uses_projected_seed(default_opd_loss_for_method("full-sampled-gap"))
 
 
 def test_lambda_zero_means_no_opd_requirement():

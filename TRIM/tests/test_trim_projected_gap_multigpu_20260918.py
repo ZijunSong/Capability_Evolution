@@ -181,6 +181,30 @@ def test_unpack_refuses_sampled_action_on_projected_path():
     }
     with pytest.raises(ValueError, match="projector_used"):
         unpack_gap_row(raw, require_projected=True)
+    from trim.integrations.verl.fsdp2_actor import validate_gap_row_for_variant
+
+    sampled = unpack_gap_row(
+        {
+            "prompt_ids": [1, 2],
+            "target_ids": [3],
+            "teacher_prompt_token_ids": [1, 2],
+            "weights": [1.0],
+            "opd_loss": "sr_opd_sampled_gap",
+            "metadata": {
+                "projector_used": False,
+                "sampled_action": True,
+                "control_variant": "zero_placebo",
+            },
+        },
+        require_projected=False,
+    )
+    validate_gap_row_for_variant(sampled, gap_variant="sampled_zero_placebo")
+    with pytest.raises(ValueError, match="sr_opd_projected_gap"):
+        validate_gap_row_for_variant(sampled, gap_variant="projected")
+    projected_but_sampled = dict(sampled)
+    projected_but_sampled["opd_loss"] = "sr_opd_projected_gap"
+    with pytest.raises(ValueError, match="projector_used"):
+        validate_gap_row_for_variant(projected_but_sampled, gap_variant="projected")
 
 
 def test_teacher_encode_uses_wm_when_acts_empty():

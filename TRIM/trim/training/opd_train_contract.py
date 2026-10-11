@@ -16,11 +16,13 @@ from trim.training.rl_opd_types import (
     OPD_LOSS_REVERSE_KL,
     OPD_LOSS_SAMPLED_GAP,
     PROJECTED_GAP_OBJECTIVE_VERSION,
+    TRAINING_MODE_FULL_SAMPLED_GAP,
     TRAINING_MODE_PURE_OPD,
     TRAINING_MODE_RL,
     TRAINING_MODE_RL_OPD,
     TRAINING_MODE_SCAPE_RL,
     TRAINING_MODE_SCAPE_SEED,
+    TRAINING_MODE_ZERO_PLACEBO,
     uses_seed_gap,
 )
 
@@ -39,6 +41,10 @@ METHOD_ALIASES = {
     "scape+seed": TRAINING_MODE_SCAPE_SEED,
     "scape_rl": TRAINING_MODE_SCAPE_RL,
     "scape+rl": TRAINING_MODE_SCAPE_RL,
+    "zero-placebo": TRAINING_MODE_ZERO_PLACEBO,
+    "zero_placebo": TRAINING_MODE_ZERO_PLACEBO,
+    "full-sampled-gap": TRAINING_MODE_FULL_SAMPLED_GAP,
+    "full_sampled_gap": TRAINING_MODE_FULL_SAMPLED_GAP,
 }
 
 BACKEND_ALIASES = {
@@ -74,6 +80,8 @@ SUPPORTED_TRAIN_CONTRACTS: frozenset[tuple[str, str, str]] = frozenset(
         (TRAINING_MODE_SCAPE_RL, OPD_LOSS_CE, BACKEND_HF_DEBUG),
         ("rl+opd", OPD_LOSS_PROJECTED_GAP, BACKEND_HF_DEBUG),
         ("rl+opd", OPD_LOSS_SAMPLED_GAP, BACKEND_HF_DEBUG),
+        (TRAINING_MODE_ZERO_PLACEBO, OPD_LOSS_SAMPLED_GAP, BACKEND_VERL),
+        (TRAINING_MODE_FULL_SAMPLED_GAP, OPD_LOSS_SAMPLED_GAP, BACKEND_VERL),
     }
 )
 
@@ -82,6 +90,10 @@ FORBIDDEN_METHOD_LOSSES: frozenset[tuple[str, str]] = frozenset(
     {
         (TRAINING_MODE_SCAPE_SEED, OPD_LOSS_CE),
         (TRAINING_MODE_SCAPE_SEED, OPD_LOSS_SAMPLED_GAP),
+        (TRAINING_MODE_ZERO_PLACEBO, OPD_LOSS_CE),
+        (TRAINING_MODE_ZERO_PLACEBO, OPD_LOSS_PROJECTED_GAP),
+        (TRAINING_MODE_FULL_SAMPLED_GAP, OPD_LOSS_CE),
+        (TRAINING_MODE_FULL_SAMPLED_GAP, OPD_LOSS_PROJECTED_GAP),
     }
 )
 
@@ -92,6 +104,8 @@ CELL_FOR_METHOD = {
     TRAINING_MODE_SCAPE_SEED: "scape_seed",
     TRAINING_MODE_SCAPE_RL: "scape_rl",
     TRAINING_MODE_PURE_OPD: "pure_opd",
+    TRAINING_MODE_ZERO_PLACEBO: "zero_placebo",
+    TRAINING_MODE_FULL_SAMPLED_GAP: "full_sampled_gap",
 }
 
 
@@ -121,7 +135,11 @@ def default_opd_loss_for_method(method: str | None) -> str:
     norm_method = normalize_train_method(method)
     if norm_method == TRAINING_MODE_SCAPE_SEED:
         return OPD_LOSS_PROJECTED_GAP
-    if norm_method == TRAINING_MODE_SCAPE_RL:
+    if norm_method in {
+        TRAINING_MODE_SCAPE_RL,
+        TRAINING_MODE_ZERO_PLACEBO,
+        TRAINING_MODE_FULL_SAMPLED_GAP,
+    }:
         return OPD_LOSS_SAMPLED_GAP
     return OPD_LOSS_CE
 
@@ -159,6 +177,43 @@ def training_cell_for_method(method: str | None) -> str:
     return CELL_FOR_METHOD[norm]
 
 
+def control_variant_for_method(method: str | None) -> str | None:
+    """Explicit sampled-control id. None keeps rl / trim / scape+rl on their old paths."""
+    norm = normalize_train_method(method)
+    if norm == TRAINING_MODE_ZERO_PLACEBO:
+        return TRAINING_MODE_ZERO_PLACEBO
+    if norm == TRAINING_MODE_FULL_SAMPLED_GAP:
+        return TRAINING_MODE_FULL_SAMPLED_GAP
+    return None
+
+
+def gap_variant_for_method(method: str | None) -> str | None:
+    """Actor gap dispatch. trim stays projected; the new methods are sampled variants."""
+    from trim.training.rl_opd_types import (
+        GAP_VARIANT_PROJECTED,
+        GAP_VARIANT_SAMPLED_FULL,
+        GAP_VARIANT_SAMPLED_ZERO_PLACEBO,
+    )
+
+    norm = normalize_train_method(method)
+    if norm == TRAINING_MODE_SCAPE_SEED:
+        return GAP_VARIANT_PROJECTED
+    if norm == TRAINING_MODE_ZERO_PLACEBO:
+        return GAP_VARIANT_SAMPLED_ZERO_PLACEBO
+    if norm == TRAINING_MODE_FULL_SAMPLED_GAP:
+        return GAP_VARIANT_SAMPLED_FULL
+    return None
+
+
+def gap_target_source_for(method: str | None, opd_loss: str | None) -> str:
+    loss = str(opd_loss or "")
+    if loss == OPD_LOSS_PROJECTED_GAP:
+        return "projected"
+    if loss == OPD_LOSS_SAMPLED_GAP or control_variant_for_method(method):
+        return "sampled"
+    return "none"
+
+
 def teacher_context_required(opd_loss: str | None) -> bool:
     return uses_seed_gap(str(opd_loss or ""))
 
@@ -180,11 +235,24 @@ def describe_train_contract(
     requested = requested_backend or backend
     wrap = actor_wrap or actor_wrap_for_backend(requested)
     family = normalize_backend(requested)
+    control = control_variant_for_method(method)
+    sampled_dist = (
+        control is not None
+        and opd_loss == OPD_LOSS_SAMPLED_GAP
+        and family == BACKEND_VERL
+    )
     gap_on_dist = (
         method == TRAINING_MODE_SCAPE_SEED
         and opd_loss == OPD_LOSS_PROJECTED_GAP
         and family == BACKEND_VERL
-    )
+    ) or sampled_dist
+    gap_target = gap_target_source_for(method, opd_loss)
+    if gap_target == "projected":
+        target_source = "projected_student_legal"
+    elif gap_target == "sampled":
+        target_source = "student_on_policy_completion"
+    else:
+        target_source = "none"
     return {
         "method": method,
         "opd_loss": opd_loss,
@@ -197,6 +265,10 @@ def describe_train_contract(
         "objective_version": PROJECTED_GAP_OBJECTIVE_VERSION if actor == "gap" else "ce_lambda_baked_v1",
         "verl_ce_only": family == BACKEND_VERL and actor == "ce",
         "distributed_gap_supported": gap_on_dist,
+        "gap_target_source": gap_target,
+        "target_source": target_source,
+        "control_variant": control,
+        "gap_variant": gap_variant_for_method(method),
     }
 
 
@@ -212,10 +284,17 @@ def assert_train_contract(
     if norm_method == TRAINING_MODE_RL:
         norm_loss = OPD_LOSS_CE
     if (norm_method, norm_loss) in FORBIDDEN_METHOD_LOSSES:
+        if norm_method in {TRAINING_MODE_ZERO_PLACEBO, TRAINING_MODE_FULL_SAMPLED_GAP}:
+            detail = (
+                f"{norm_method} requires sr_opd_sampled_gap; "
+                "CE and projected-gap are not this control."
+            )
+        else:
+            detail = "trim/scape_seed requires sr_opd_projected_gap; CE and sampled-gap are not trim."
         raise SystemExit(
             "unsupported train contract "
             f"method={norm_method!r} opd_loss={norm_loss!r} backend={requested_backend!r}. "
-            "trim/scape_seed requires sr_opd_projected_gap; CE and sampled-gap are not trim."
+            + detail
         )
     payload = describe_train_contract(
         norm_method,
@@ -231,6 +310,8 @@ def assert_train_contract(
         f"method={norm_method!r} opd_loss={norm_loss!r} backend={requested_backend!r}. "
         "rl/rl+opd on verl/fsdp2/ddp stay CE; trim uses sr_opd_projected_gap on those "
         "backends; scape+rl gap stays on hf_debug. "
+        "zero-placebo and full-sampled-gap use sr_opd_sampled_gap on verl/fsdp2/ddp "
+        "and are not trim aliases. "
         "Do not treat a method+loss change as the same algorithm accelerated."
     )
 

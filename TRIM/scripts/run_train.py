@@ -2,8 +2,8 @@
 """One-click Harness-1 / Harness-G training.
 
 Runs only the training cell for ``--train_method`` (rl / opd / rl+opd /
-scape+rl / trim). Does not run the four-cell protocol (no Before baseline, no
-closed-loop eval). Score with ``scripts/run_eval.py``.
+scape+rl / trim / zero-placebo / full-sampled-gap). Does not run the four-cell
+protocol (no Before baseline, no closed-loop eval). Score with ``scripts/run_eval.py``.
 
 Single-node Scheme A (one process, all visible GPUs): this file, default
 ``--training-backend hf_debug``.
@@ -242,7 +242,9 @@ def run_parsed_train(args, spec) -> int:
         print(json.dumps({"rank_skip_launch_write": True, **launch.get("dist", {})}, indent=2), flush=True)
 
     from trim.training.four_cell_runtime import run_from_rl_opd_args
+    from trim.training.opd_train_contract import assert_train_contract
 
+    assert_train_contract(args.train_method, args.opd_loss, backend)
     result = run_from_rl_opd_args(args)
     keep = (
         "ok",

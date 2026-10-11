@@ -131,6 +131,67 @@ def find_latest_checkpoint(cell_ckpt_dir: Path) -> Path | None:
     return None
 
 
+def assert_resume_identity(
+    manifest: dict[str, Any] | None,
+    *,
+    train_method: str,
+    cell: str,
+    opd_loss: str,
+    component: str,
+    gap_variant: str | None,
+) -> None:
+    """Refuse a checkpoint written by a different method, cell, loss, or component.
+
+    Missing labels are tolerated only for legacy rl/trim checkpoints. The sampled
+    controls never adopt an unlabeled or cross-method resume.
+    """
+    from trim.training.opd_train_contract import control_variant_for_method, normalize_train_method
+
+    payload = dict(manifest or {})
+    expected_method = normalize_train_method(train_method)
+    sampled = control_variant_for_method(expected_method) is not None
+    problems: list[str] = []
+
+    got_cell = payload.get("cell")
+    if got_cell is None and sampled:
+        problems.append("cell missing")
+    elif got_cell is not None and str(got_cell) != str(cell):
+        problems.append(f"cell checkpoint={got_cell!r} live={cell!r}")
+
+    got_method = payload.get("train_method")
+    if got_method is None:
+        if sampled:
+            problems.append("train_method missing; refusing an unlabeled checkpoint")
+    elif normalize_train_method(str(got_method)) != expected_method:
+        problems.append(f"train_method checkpoint={got_method!r} live={train_method!r}")
+
+    got_loss = payload.get("opd_loss")
+    if got_loss is None and sampled:
+        problems.append("opd_loss missing")
+    elif got_loss is not None and str(got_loss) != str(opd_loss):
+        problems.append(f"opd_loss checkpoint={got_loss!r} live={opd_loss!r}")
+
+    got_component = payload.get("component")
+    if got_component is None and sampled:
+        problems.append("component missing")
+    elif got_component is not None and str(got_component) != str(component):
+        problems.append(f"component checkpoint={got_component!r} live={component!r}")
+
+    got_gap = payload.get("gap_variant")
+    if sampled:
+        if got_gap is None or str(got_gap) != str(gap_variant):
+            problems.append(f"gap_variant checkpoint={got_gap!r} live={gap_variant!r}")
+    elif gap_variant and got_gap is not None and str(got_gap) != str(gap_variant):
+        problems.append(f"gap_variant checkpoint={got_gap!r} live={gap_variant!r}")
+
+    if problems:
+        raise SystemExit(
+            "refusing cross-method resume: " + "; ".join(problems) + ". "
+            "zero-placebo and full-sampled-gap must start from the same initial adapter, "
+            "not a renamed rl/trim checkpoint."
+        )
+
+
 def load_training_resume(cell_ckpt_dir: Path) -> dict[str, Any] | None:
     ckpt = find_latest_checkpoint(cell_ckpt_dir)
     if ckpt is None:

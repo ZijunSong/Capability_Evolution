@@ -535,6 +535,14 @@ def _student_prefix_ids(
     return encode(text), text
 
 
+def stable_token_hash(ids: Sequence[int]) -> str:
+    """Stable id-list hash. Order-sensitive; not a snapshot content hash."""
+    import hashlib
+
+    payload = ",".join(str(int(x)) for x in ids)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def build_sampled_opd_datums(
     points: Sequence[StudentDecisionPoint],
     *,
@@ -545,6 +553,7 @@ def build_sampled_opd_datums(
     gate_beta: float = SCAPE_RL_OPD_GATE_BETA,
     opd_loss: str = OPD_LOSS_SAMPLED_GAP,
     model_enc: Any | None = None,
+    control_variant: str | None = None,
 ) -> list[TinkerOPDDatum]:
     """SEED OPD rows: CISPO sampled action tokens, DualView teacher prefix.
 
@@ -556,30 +565,72 @@ def build_sampled_opd_datums(
         return []
     lam = float(lambda_opd)
     beta = float(gate_beta)
+    variant = str(control_variant) if control_variant else None
     datums: list[TinkerOPDDatum] = []
     for point in points:
         action_ids = [int(x) for x in (point.student_action_tokens or [])]
         if not action_ids:
             continue
-        prompt_ids, student_text = _student_prefix_ids(
-            point, encode, component_id=component_id
-        )
-        if point.teacher_prompt_token_ids:
-            teacher_ids = list(point.teacher_prompt_token_ids)
+        if variant:
+            # Control rows must use the rollout token ids. Do not re-encode text.
+            prompt_ids = [int(x) for x in (point.student_prompt_token_ids or [])]
+            student_text = point.student_model_input if isinstance(point.student_model_input, str) else ""
+            teacher_ids = [int(x) for x in (point.teacher_prompt_token_ids or [])]
+            if not prompt_ids or not teacher_ids:
+                continue
+            if variant == "zero_placebo" and teacher_ids != prompt_ids:
+                raise ValueError(
+                    "zero-placebo teacher_prompt_token_ids diverged from student prompt ids "
+                    f"at {point.decision_point_id}"
+                )
         else:
-            teacher_ids = recover_teacher_prompt_ids(
-                teacher_ids=None,
-                metadata={},
-                snapshot=point.pre_action_snapshot,
-                encode=encode,
-                model_enc=model_enc,
-                allow_offline=False,
+            prompt_ids, student_text = _student_prefix_ids(
+                point, encode, component_id=component_id
             )
+            if point.teacher_prompt_token_ids:
+                teacher_ids = list(point.teacher_prompt_token_ids)
+            else:
+                teacher_ids = recover_teacher_prompt_ids(
+                    teacher_ids=None,
+                    metadata={},
+                    snapshot=point.pre_action_snapshot,
+                    encode=encode,
+                    model_enc=model_enc,
+                    allow_offline=False,
+                )
         if not teacher_ids:
             continue
         n_tok = len(action_ids)
         full_targets = [0] * len(prompt_ids) + list(action_ids)
         full_weights = [0.0] * len(prompt_ids) + [1.0] * n_tok
+        meta = {
+            "projection_kind": "sampled_on_policy",
+            "source_event_ids": [],
+            "sampled_action": True,
+            "projector_used": False,
+            "lambda_opd": lam,
+            "gate_beta": beta,
+            "opd_weight_normalization": "seed_token_mean",
+            "effective_weight": 1.0,
+        }
+        if variant:
+            meta.update(
+                {
+                    "control_variant": variant,
+                    "target_source": "student_on_policy_completion",
+                    "decision_point_id": point.decision_point_id,
+                    "episode_id": point.episode_id,
+                    "turn_id": int(point.turn_id),
+                    "teacher_context_kind": (
+                        "zero_identical" if variant == "zero_placebo" else "full_same_state"
+                    ),
+                    "student_context_hash": stable_token_hash(prompt_ids),
+                    "teacher_context_hash": stable_token_hash(teacher_ids),
+                    "context_identical": bool(list(prompt_ids) == list(teacher_ids)),
+                    "supervised_span": "sampled_completion",
+                    "n_supervised_tokens": n_tok,
+                }
+            )
         datums.append(
             TinkerOPDDatum(
                 model_input=student_text or "",
@@ -592,16 +643,7 @@ def build_sampled_opd_datums(
                 target_action={},
                 teacher_prompt_token_ids=list(teacher_ids),
                 opd_loss=str(opd_loss),
-                metadata={
-                    "projection_kind": "sampled_on_policy",
-                    "source_event_ids": [],
-                    "sampled_action": True,
-                    "projector_used": False,
-                    "lambda_opd": lam,
-                    "gate_beta": beta,
-                    "opd_weight_normalization": "seed_token_mean",
-                    "effective_weight": 1.0,
-                },
+                metadata=meta,
             )
         )
     return datums

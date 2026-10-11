@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Awaitable, Callable, Sequence
 
 from trim.training.action_codec import canonicalize_action, parse_action
@@ -45,6 +45,10 @@ from trim.training.rl_opd_types import (
     HybridRolloutGroup,
     HybridStepMetrics,
     HybridTrainingBatch,
+    CONTROL_VARIANT_FULL_SAMPLED_GAP,
+    CONTROL_VARIANT_ZERO_PLACEBO,
+    OPD_LOSS_SAMPLED_GAP,
+    SAMPLED_CONTROL_VARIANTS,
     SCAPE_RL_OPD_GATE_BETA,
     StudentDecisionPoint,
     uses_sampled_opd,
@@ -391,6 +395,188 @@ def project_on_policy_decisions(
     return steps, audit, extras
 
 
+def _index_rl_rows(
+    groups: Sequence[HybridRolloutGroup],
+    rl_datums_by_query: dict[str, list[Any]],
+) -> dict[tuple[str, int], dict[str, Any]]:
+    indexed: dict[tuple[str, int], dict[str, Any]] = {}
+    rows: list[Any] = []
+    for group in groups:
+        tg = group.trajectory_group
+        if isinstance(tg, dict):
+            rows.extend(list(tg.get("rl_rows") or []))
+    for batch_rows in rl_datums_by_query.values():
+        rows.extend(list(batch_rows or []))
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        episode_id = row.get("episode_id")
+        turn_id = row.get("turn_id")
+        if episode_id is None or turn_id is None:
+            continue
+        indexed[(str(episode_id), int(turn_id))] = row
+    return indexed
+
+
+def _row_is_truncated(row: dict[str, Any]) -> bool:
+    if bool(row.get("truncated_generation")):
+        return True
+    return str(row.get("finish_reason") or "") == "length"
+
+
+def _prepare_sampled_control_datums(
+    *,
+    groups: Sequence[HybridRolloutGroup],
+    all_points: Sequence[StudentDecisionPoint],
+    rl_datums_by_query: dict[str, list[Any]],
+    policy_version: str,
+    lambda_opd: float,
+    component_id: str,
+    encode_fn: EncodeFn | None,
+    model_enc: Any | None,
+    opd_states_per_trajectory: int,
+    seed: int,
+    opd_loss: str,
+    opd_gate_beta: float,
+    control_variant: str,
+    strict_privilege_diagnostic: bool,
+) -> tuple[list[TinkerOPDDatum], dict[str, Any]]:
+    """Sampled-completion gap for zero-placebo and full-sampled-gap.
+
+    Does not call the action projector or ``teacher_for``.
+    """
+    if not uses_sampled_opd(opd_loss):
+        raise ValueError(
+            f"control_variant={control_variant!r} requires {OPD_LOSS_SAMPLED_GAP}, got {opd_loss!r}"
+        )
+    sampled = sample_decision_points(
+        all_points,
+        per_trajectory=opd_states_per_trajectory,
+        seed=seed,
+        include_valid_failures=True,
+        include_format_errors=False,
+    )
+    rl_index = _index_rl_rows(groups, rl_datums_by_query)
+    skip_reasons: dict[str, int] = {}
+    aligned: list[StudentDecisionPoint] = []
+    n_positive = 0
+    n_skipped_invalid = 0
+
+    def _skip(reason: str) -> None:
+        nonlocal n_skipped_invalid
+        skip_reasons[reason] = int(skip_reasons.get(reason) or 0) + 1
+        n_skipped_invalid += 1
+
+    for point in sampled:
+        row = rl_index.get((str(point.episode_id), int(point.turn_id)))
+        if row is None:
+            _skip("missing_rl_row")
+            continue
+        truncated = _row_is_truncated(row)
+        invalid = row.get("valid") is False
+        if truncated:
+            _skip("truncated_generation")
+            continue
+        if invalid:
+            _skip("rl_row_invalid")
+            continue
+        n_positive += 1
+        student_ids = [int(x) for x in (point.student_prompt_token_ids or [])]
+        action_ids = [int(x) for x in (point.student_action_tokens or [])]
+        effective = [int(x) for x in (row.get("effective_prompt_ids") or [])]
+        row_actions = [int(x) for x in (row.get("action_ids") or [])]
+        if not student_ids or not action_ids or not effective or not row_actions:
+            _skip("missing_token_ids")
+            continue
+        if student_ids != effective or action_ids != row_actions:
+            _skip("token_id_mismatch")
+            continue
+        aligned.append(point)
+
+    recovery_stats: dict[str, Any] = {}
+    n_missing_teacher = 0
+    if control_variant == CONTROL_VARIANT_ZERO_PLACEBO:
+        prepared = [
+            replace(point, teacher_prompt_token_ids=list(point.student_prompt_token_ids))
+            for point in aligned
+        ]
+    elif control_variant == CONTROL_VARIANT_FULL_SAMPLED_GAP:
+        prepared = materialize_teacher_prompt_ids(
+            aligned,
+            encode_fn=encode_fn or default_encode,
+            model_enc=model_enc,
+            recovery_stats=recovery_stats,
+        )
+        missing = [point for point in prepared if not point.teacher_prompt_token_ids]
+        n_missing_teacher = len(missing)
+        prepared = [point for point in prepared if point.teacher_prompt_token_ids]
+        if aligned and not prepared:
+            raise ValueError(
+                "full-sampled-gap lost every aligned decision to teacher-prefix recovery. "
+                "Refusing to fall back to the student prompt. "
+                f"n_aligned={len(aligned)} reasons={recovery_stats.get('reasons')} "
+                f"examples={recovery_stats.get('examples')}"
+            )
+    else:
+        raise ValueError(f"unknown control_variant {control_variant!r}")
+
+    opd_datums = build_sampled_opd_datums(
+        prepared,
+        lambda_opd=lambda_opd,
+        encode_fn=encode_fn or default_encode,
+        policy_version=policy_version,
+        component_id=component_id,
+        gate_beta=opd_gate_beta,
+        opd_loss=OPD_LOSS_SAMPLED_GAP,
+        model_enc=model_enc,
+        control_variant=control_variant,
+    )
+    n_identical = sum(1 for datum in opd_datums if (datum.metadata or {}).get("context_identical") is True)
+    n_different = sum(1 for datum in opd_datums if (datum.metadata or {}).get("context_identical") is False)
+    if control_variant == CONTROL_VARIANT_ZERO_PLACEBO and n_different:
+        raise ValueError(
+            "zero-placebo produced datums whose teacher prefix is not the student prefix "
+            f"(n_context_different={n_different})"
+        )
+    no_privilege = bool(opd_datums) and n_different == 0 and n_identical > 0 and (
+        control_variant == CONTROL_VARIANT_FULL_SAMPLED_GAP
+    )
+    if no_privilege and strict_privilege_diagnostic:
+        raise ValueError(
+            "full-sampled-gap no_privilege_exposure: every teacher/student prefix in this "
+            "batch is identical, so the Full-Harness view was not exposed"
+        )
+    stats = {
+        "skipped_teacher": False,
+        "projector_used": False,
+        "sampled_action_opd": True,
+        "control_variant": control_variant,
+        "target_source": "student_on_policy_completion",
+        "gap_target_source": "sampled",
+        "projection_coverage": 0.0,
+        "reject_rate": 0.0,
+        "n_direct": 0,
+        "n_macro": 0,
+        "n_reject": 0,
+        "n_projected_training_steps": 0,
+        "n_unregistered": 0,
+        "n_sampled_decision_points": len(sampled),
+        "n_sampled_opd_datums": len(opd_datums),
+        "n_supervised_sampled_tokens": int(sum(datum.n_supervised_tokens for datum in opd_datums)),
+        "n_context_identical": n_identical,
+        "n_context_different": n_different,
+        "n_missing_teacher_prefix": n_missing_teacher,
+        "n_skipped_invalid": n_skipped_invalid,
+        "n_positive_action_candidates": n_positive,
+        "skip_reasons": skip_reasons,
+        "teacher_recovery": dict(recovery_stats),
+        "no_privilege_exposure": no_privilege,
+        "rl_opd_exact_target_overlap_rate": 1.0 if opd_datums else 0.0,
+        "supervised_span": "sampled_completion",
+    }
+    return opd_datums, stats
+
+
 def prepare_hybrid_batch(
     *,
     groups: Sequence[HybridRolloutGroup],
@@ -409,6 +595,8 @@ def prepare_hybrid_batch(
     projector: StudentActionSpaceProjector | None = None,
     opd_loss: str = "sr_opd_ce",
     opd_gate_beta: float = SCAPE_RL_OPD_GATE_BETA,
+    control_variant: str | None = None,
+    strict_privilege_diagnostic: bool = False,
 ) -> HybridTrainingBatch:
     """Extract OPD states before constant-reward RL filtering.
 
@@ -429,8 +617,31 @@ def prepare_hybrid_batch(
     projection_stats: dict[str, Any] = {"skipped_teacher": True}
     opd_datums: list[TinkerOPDDatum] = []
     skipped_teacher = True
+    if control_variant is not None and str(control_variant) not in SAMPLED_CONTROL_VARIANTS:
+        raise ValueError(
+            f"unknown control_variant {control_variant!r}; "
+            f"allowed={sorted(SAMPLED_CONTROL_VARIANTS)}"
+        )
 
-    if float(lambda_opd) > 0.0:
+    if float(lambda_opd) > 0.0 and control_variant in SAMPLED_CONTROL_VARIANTS:
+        opd_datums, projection_stats = _prepare_sampled_control_datums(
+            groups=groups,
+            all_points=all_points,
+            rl_datums_by_query=rl_datums_by_query,
+            policy_version=policy_version,
+            lambda_opd=lambda_opd,
+            component_id=component_id,
+            encode_fn=encode_fn,
+            model_enc=model_enc,
+            opd_states_per_trajectory=opd_states_per_trajectory,
+            seed=seed,
+            opd_loss=opd_loss,
+            opd_gate_beta=opd_gate_beta,
+            control_variant=str(control_variant),
+            strict_privilege_diagnostic=bool(strict_privilege_diagnostic),
+        )
+        skipped_teacher = False
+    elif float(lambda_opd) > 0.0:
         sampled = sample_decision_points(
             all_points,
             per_trajectory=opd_states_per_trajectory,
@@ -745,6 +956,8 @@ async def run_hybrid_training_step(
     loop_state: HybridLoopState | None = None,
     opd_loss: str = "sr_opd_ce",
     opd_gate_beta: float = SCAPE_RL_OPD_GATE_BETA,
+    control_variant: str | None = None,
+    strict_privilege_diagnostic: bool = False,
 ) -> list[HybridStepMetrics]:
     """One rollout batch → matched hybrid substeps → policy version bump."""
     batch = prepare_hybrid_batch(
@@ -759,6 +972,8 @@ async def run_hybrid_training_step(
         seed=seed,
         opd_loss=opd_loss,
         opd_gate_beta=opd_gate_beta,
+        control_variant=control_variant,
+        strict_privilege_diagnostic=strict_privilege_diagnostic,
     )
     metrics_out: list[HybridStepMetrics] = []
     pairs = split_hybrid_substeps(batch.rl_datums, batch.opd_datums, num_substeps=num_substeps)
