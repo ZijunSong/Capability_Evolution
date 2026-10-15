@@ -1,0 +1,68 @@
+{
+  "schema_version": "trim_base_contract_v1",
+  "harness": "Harness-1",
+  "protocol_version": "trim_base_contract_v1",
+  "code_commit": "UNBOUND",
+  "tokenizer_sha256": "",
+  "chat_template_sha256": "",
+  "action_parser": "trim.training.action_codec",
+  "tool_names": [
+    "search_corpus",
+    "grep_corpus",
+    "read_document",
+    "curate",
+    "end_search"
+  ],
+  "tool_schema": {
+    "search_corpus": [
+      "n",
+      "query",
+      "top_k"
+    ],
+    "grep_corpus": [
+      "pattern",
+      "query",
+      "top_k"
+    ],
+    "read_document": [
+      "doc_id"
+    ],
+    "curate": [
+      "add_ids",
+      "remove_ids"
+    ],
+    "end_search": [
+      "reason"
+    ]
+  },
+  "visible_fields": [
+    "query",
+    "tool_history",
+    "pool",
+    "curated",
+    "observations"
+  ],
+  "serializable_state_fields": [
+    "pool",
+    "curated",
+    "tool_history",
+    "step",
+    "ended"
+  ],
+  "context_builder": "upstream_or_local_legacy_selected_at_launch",
+  "retrieval_backend": "local_bm25",
+  "corpus_version": "",
+  "index_sha256": "",
+  "top_k": 10,
+  "max_model_len": 8192,
+  "max_new_tokens": 2048,
+  "max_turns": 40,
+  "tool_timeout_s": 30.0,
+  "zero_tool_schema_sha256": "bb027f565260033e4cb9d88e200f76c74d5eaa5e525c78c801cf9d7252f34d50",
+  "startup_prompt_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "reward_protocol": "final-answer-recall",
+  "metric_protocol": "final_answer_recall",
+  "advanced_components": "all_off",
+  "contract_sha256": "cf0b1d73d008cd8bb2c5c1cc4c8363c424beac841eb7f015177dbff856bcdec6",
+  "bindings": "template_unbound"
+}

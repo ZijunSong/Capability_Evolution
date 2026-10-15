@@ -374,7 +374,22 @@ def _teacher_fn_for_one(component_id: str, *, teacher_kind: str = "upstream") ->
     return _skip
 
 
-def teacher_for(component_id: str, *, harness: str | None = None, teacher_kind: str = "upstream") -> TeacherFn | None:
+def teacher_for(
+    component_id: str,
+    *,
+    harness: str | None = None,
+    teacher_kind: str = "upstream",
+    bank: str | None = None,
+) -> TeacherFn | None:
+    if bank:
+        from trim.harness_bank.loader import BankLoadError, load_bank
+        from trim.harness_bank.shadow import bank_teacher_fn
+
+        loaded = load_bank(bank)
+        missing = [spec.id for spec in loaded.components if not spec.recipe]
+        if missing:
+            raise BankLoadError(f"UNREGISTERED_BANK_COMPONENT: {missing}")
+        return bank_teacher_fn(loaded, component_id=str(component_id))
     ids = component_ids_of(component_id, harness=harness)
     if not ids:
         return _teacher_fn_for_one("zero", teacher_kind=teacher_kind)
@@ -396,7 +411,13 @@ def teacher_for(component_id: str, *, harness: str | None = None, teacher_kind: 
     return _combined
 
 
-def teacher_events_from_wm_for(component_id: str, wm: dict[str, Any]) -> list[Any]:
+def teacher_events_from_wm_for(component_id: str, wm: dict[str, Any], *, bank: str | None = None) -> list[Any]:
+    if bank:
+        from trim.harness_bank.loader import BankLoadError
+
+        raise BankLoadError(
+            "UNREGISTERED_BANK_COMPONENT: a bank teacher must use the isolated fork, not the static wm side path"
+        )
     from trim.training.adaptive_rerank_teacher import teacher_events_from_wm as adaptive_rerank_events_from_wm
     from trim.training.auto_populate_teacher import teacher_events_from_wm as auto_populate_events_from_wm
     from trim.training.sentence_compress_teacher import teacher_events_from_wm
@@ -1290,6 +1311,8 @@ def one_episode(
     graph_index: Any | None = None,
     rl_reward: str | None = None,
     enable_rl: bool = True,
+    bank: str | None = None,
+    bank_role: str = "student",
 ) -> tuple[list[StudentDecisionPoint], list[dict[str, Any]], float, dict[str, Any]]:
     from trim.eval.harmony_runtime import (
         build_continuation_prompt_ids,
@@ -1332,6 +1355,8 @@ def one_episode(
             train_env=train_env,
             harness_mask=harness_mask,
             session=train_session,
+            bank=bank,
+            bank_role=bank_role,
         )(query, store, qid)
     acts: list[tuple[Any, Any]] = []
     points: list[StudentDecisionPoint] = []
@@ -1574,7 +1599,7 @@ def one_episode(
     return points, rows, reward, stats
 
 
-def rollout_group(backend, *, row, component_id, group_size, max_turns, max_new, policy_version, seed, sample, enc, searcher=None, teacher_mode=False, harness_mask=None, rl_reward=None, enable_rl: bool = True) -> HybridRolloutGroup:
+def rollout_group(backend, *, row, component_id, group_size, max_turns, max_new, policy_version, seed, sample, enc, searcher=None, teacher_mode=False, harness_mask=None, rl_reward=None, enable_rl: bool = True, bank=None, bank_role: str = "student") -> HybridRolloutGroup:
     points: list[StudentDecisionPoint] = []
     rewards: list[float] = []
     rl_rows: list[dict[str, Any]] = []
@@ -1599,6 +1624,8 @@ def rollout_group(backend, *, row, component_id, group_size, max_turns, max_new,
             harness_mask=harness_mask,
             rl_reward=rl_reward,
             enable_rl=enable_rl,
+            bank=bank,
+            bank_role=bank_role,
         )
         points.extend(ep_points)
         rl_rows.extend(ep_rows)
@@ -2122,7 +2149,8 @@ def resolve_queries(
                     row["frozen_doc_store"] = store
             frozen_meta["n_train_rows_with_docs"] = sum(1 for r in train_rows if r.get("frozen_doc_store"))
             frozen_meta["n_frozen_query_overlap_train"] = sum(1 for r in train_rows if r["query_id"] in by_q)
-        return (
+        return _restrict_resolved_queries(
+            args,
             train_rows,
             eval_rows,
             {"train": train_meta, "eval": eval_meta, "overlap": overlap, "frozen_states": frozen_meta},
@@ -2191,12 +2219,36 @@ def resolve_queries(
                 row["frozen_doc_store"] = store
         frozen_meta["n_train_rows_with_docs"] = sum(1 for r in train_rows if r.get("frozen_doc_store"))
         frozen_meta["n_frozen_query_overlap_train"] = sum(1 for r in train_rows if r["query_id"] in by_q)
-    return (
+    return _restrict_resolved_queries(
+        args,
         train_rows,
         eval_rows,
         {"train": train_meta, "eval": eval_meta, "overlap": overlap, "frozen_states": frozen_meta},
         frozen_points,
     )
+
+
+def _restrict_resolved_queries(args, train_rows, eval_rows, meta, frozen_points):
+    """Apply explicit id files. ``--n-queries`` is not a split boundary."""
+    from trim.rsi.splits import SplitError, assert_disjoint_from_forbidden, filter_rows_by_ids, load_id_file
+
+    train_ids = list(getattr(args, "train_query_id_list", None) or [])
+    if not train_ids and getattr(args, "train_query_ids", None):
+        train_ids = load_id_file(args.train_query_ids)
+    eval_ids = list(getattr(args, "eval_query_id_list", None) or [])
+    if not eval_ids and getattr(args, "eval_query_ids", None):
+        eval_ids = load_id_file(args.eval_query_ids)
+    forbidden = [str(x) for x in (getattr(args, "final_test_query_ids", None) or [])]
+    try:
+        if train_ids:
+            assert_disjoint_from_forbidden(train_ids, forbidden, role="train")
+            train_rows = filter_rows_by_ids(train_rows, train_ids, role="train")
+        if eval_ids:
+            assert_disjoint_from_forbidden(eval_ids, forbidden, role="eval")
+            eval_rows = filter_rows_by_ids(eval_rows, eval_ids, role="eval")
+    except SplitError as exc:
+        raise ValueError(str(exc)) from exc
+    return train_rows, eval_rows, meta, frozen_points
 
 
 def validate_wiring(args: argparse.Namespace) -> dict[str, Any]:
@@ -2245,6 +2297,7 @@ def validate_wiring(args: argparse.Namespace) -> dict[str, Any]:
         args.component,
         harness=getattr(args, "harness", None),
         teacher_kind=str(getattr(args, "teacher_kind", "upstream") or "upstream"),
+        bank=getattr(args, "harness_bank", None),
     )
     if teacher_fn is None:
         raise SystemExit(f"no teacher registered for component={args.component}")
@@ -2592,6 +2645,7 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
             args.component,
             harness=getattr(args, "harness", None),
             teacher_kind=str(getattr(args, "teacher_kind", "upstream") or "upstream"),
+            bank=getattr(args, "harness_bank", None),
         )
         if teacher_fn is None:
             raise SystemExit(f"no teacher registered for {args.component}")
@@ -2801,6 +2855,14 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
             opd_loss=opd_loss_from_args(args),
             rl_reward=getattr(args, "rl_reward", None),
             enable_rl=bool(getattr(args, "rl_enabled", True)),
+            bank=getattr(args, "harness_bank", None),
+            bank_role=(
+                "teacher"
+                if teacher_mode
+                else "all"
+                if getattr(args, "official_eval", False) and str(getattr(args, "component", "")) == "all"
+                else "student"
+            ),
         )
         all_rows = list(rows)
         work_rows = shard_for_rank(all_rows, rank=dist.rank, world_size=dist.world_size)

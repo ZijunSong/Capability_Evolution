@@ -295,7 +295,13 @@ def project_on_policy_decisions(
             teacher_event_fn(point), point=point, component_id=component_id
         )
         events = list(branch.events or [])
-        grouped = _group_events_by_component(events)
+        condition = dict(branch.teacher_condition or {})
+        continuous = bool(condition.get("continuous"))
+        grouped = (
+            {str(branch.component_id or component_id): events}
+            if continuous
+            else _group_events_by_component(events)
+        )
         if not grouped:
             grouped = {component_id: []}
         point_steps: list[ProjectedTrainingStep] = []
@@ -330,7 +336,11 @@ def project_on_policy_decisions(
             step.metadata["student_pre_snapshot_hash"] = point.pre_action_snapshot_hash
             step.metadata["n_same_state_candidates"] = n_keep
             step.metadata["selection_rule"] = (
-                "independent_branch_equal_weight" if n_keep > 1 else "single_triggered_branch"
+                "continuous_bank_joint_trace"
+                if continuous
+                else "independent_branch_equal_weight"
+                if n_keep > 1
+                else "single_triggered_branch"
             )
             step.metadata["branch_id"] = str(getattr(step, "component_id", None) or component_id)
             step.metadata["teacher_branch_source_type"] = branch.source_type
@@ -348,8 +358,15 @@ def project_on_policy_decisions(
                 step.metadata["visible_doc_ids"] = list(point.prompt_visible_doc_ids)
             elif getattr(point, "visible_doc_ids", None):
                 step.metadata["visible_doc_ids"] = list(point.visible_doc_ids)
-            if point.teacher_prompt_token_ids:
+            branch_prompt = condition.get("teacher_prompt_token_ids")
+            if branch_prompt:
+                step.metadata["teacher_prompt_token_ids"] = list(branch_prompt)
+                step.metadata["teacher_prefix_source"] = "branch"
+            elif point.teacher_prompt_token_ids and not continuous:
                 step.metadata["teacher_prompt_token_ids"] = list(point.teacher_prompt_token_ids)
+            if condition.get("bank_sha256"):
+                step.metadata["bank_sha256"] = condition.get("bank_sha256")
+                step.metadata["projector_version"] = "trim_bank_projector_v1"
             if point.student_action_tokens:
                 step.metadata["sampled_action_token_ids"] = list(point.student_action_tokens)
             projected_canon = canonicalize_action(step.target_action or {}) if step.target_action else {}

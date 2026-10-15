@@ -1,0 +1,7 @@
+{
+  "bindings": "template_unbound",
+  "n_questions": 0,
+  "n_clusters": 0,
+  "roles": {},
+  "note": "Build this with trim.rsi.splits.assign_roles on the SEC pool before opening confirmation panels."
+}

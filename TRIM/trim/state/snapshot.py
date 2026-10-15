@@ -52,6 +52,11 @@ class EnvironmentSnapshot:
     query_text: str = ""
     # Monotonic creation counter used to prove "no future information"
     created_at_step: int | None = None
+    bank_sha256: str = ""
+    branch_id: str = ""
+    private_state_hash: str = ""
+    env_restore_version: str = ""
+    information_provenance: list[dict[str, Any]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if self.created_at_step is None:
@@ -81,6 +86,19 @@ class EnvironmentSnapshot:
             "tool_history": self.tool_history,
             "observations": self.observations,
             "metadata": meta,
+            **(
+                {"bank_sha256": self.bank_sha256}
+                if self.bank_sha256
+                else {}
+            ),
+            **({"branch_id": self.branch_id} if self.branch_id else {}),
+            **({"private_state_hash": self.private_state_hash} if self.private_state_hash else {}),
+            **({"env_restore_version": self.env_restore_version} if self.env_restore_version else {}),
+            **(
+                {"information_provenance": self.information_provenance}
+                if self.information_provenance
+                else {}
+            ),
         }
 
     def content_hash(self) -> str:
@@ -105,6 +123,11 @@ class EnvironmentSnapshot:
             observations=list(payload.get("observations") or []),
             metadata=dict(payload.get("metadata") or {}),
             created_at_step=payload.get("created_at_step"),
+            bank_sha256=str(payload.get("bank_sha256") or ""),
+            branch_id=str(payload.get("branch_id") or ""),
+            private_state_hash=str(payload.get("private_state_hash") or ""),
+            env_restore_version=str(payload.get("env_restore_version") or ""),
+            information_provenance=list(payload.get("information_provenance") or []),
         )
 
     def assert_no_future(self, *, max_known_step: int) -> None:

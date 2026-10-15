@@ -1,0 +1,116 @@
+schema_version: trim_rsi_v1
+campaign_id: harness1_sec_rsi_pilot
+seed: 20261015
+max_rounds: 3
+
+base:
+  harness: Harness-1
+  component: zero
+  contract: configs/rsi/base_contract.json
+  train_env: upstream
+  retrieval_backend: local_bm25
+  corpus_config: configs/rsi/sec_corpus.json
+
+policy:
+  initial_manifest: configs/rsi/policy_initial.json
+  deployment: lora
+  init_mode: cumulative_adapter
+  cross_round_optimizer: reset
+
+data:
+  split_manifest: configs/rsi/sec_splits.json
+  work: work
+  selection: harness_select
+  weight_dev: weight_dev
+  teacher_confirm_prefix: confirm_h_r
+  weight_confirm_prefix: confirm_w_r
+  final_test: bcplus_full
+  final_test_access: after_campaign_freeze
+
+evolution:
+  seed_mode: empty
+  proposer_policy: current
+  proposer_mode: self
+  proposals_per_generation: 2
+  min_generations: 3
+  max_generations: 8
+  max_candidate_evaluations: 16
+  max_invalid_proposals: 12
+  max_infra_retries_per_job: 1
+  max_edits_per_candidate: 1
+  plateau_patience: 3
+  epsilon_plateau: 0.005
+  epsilon_select: 0.005
+  material_cost_reduction: 0.05
+  prune_every_generations: 2
+  prune_attempts_when_complexity_blocked: 1
+
+teacher_gate:
+  metric: final_answer_recall
+  min_observed_gain: 0.02
+  sufficient_gain: 0.05
+  confirm_lower_bound_gt: 0.0
+  confirm_attempts_per_round: 1
+  probe_min_questions: 64
+  probe_min_decisions: 256
+  probe_max_decisions: 4096
+  min_supported_questions: 32
+  min_supported_decisions: 128
+  min_coverage_all: 0.10
+  allow_undistillable_active_components: false
+
+complexity:
+  max_active_components: 6
+  max_added_prompt_tokens: 1536
+  max_extra_llm_calls_per_episode: 0
+  max_total_tool_calls_per_episode: 40
+  max_shadow_events_per_decision: 8
+  max_p95_latency_ratio: 2.0
+  max_policy_token_ratio: 1.5
+
+training:
+  entry: TRIM/scripts/run_train_multinode.py
+  method: trim
+  component: all
+  backend: hf_debug
+  rl_reward: final-answer-recall
+  on_policy_refresh: true
+  lambda_opd: 0.01
+  opd_gate_beta: 5.0
+  max_steps_per_round: 16
+  min_steps_before_early_stop: 4
+  dev_eval_every_steps: 4
+  dev_patience_evaluations: 2
+  groups_per_step: 32
+  group_size: 8
+  replay_fraction: 0.30
+
+statistics:
+  unit: question_cluster
+  paired_decode_seeds: [11, 29]
+  ci_method: cluster_bootstrap
+  inferential_status: approximate_pilot
+  campaign_alpha: 0.05
+  max_confirmation_decisions: 6
+  insufficient_support: stop
+
+promotion:
+  min_observed_zero_gain: 0.01
+  zero_gain_lower_bound_gt: 0.0
+  retention_noninferiority_margin: 0.02
+  full_retirement_noninferiority_margin: 0.01
+  require_cost_reduction_for_retirement: true
+  allow_partial_internalization: true
+
+launch:
+  mode: manual_plan
+  nnodes: 1
+  nproc_per_node: 1
+  rollout_replicas: 1
+  tensor_parallel_size: 1
+
+budget:
+  max_total_rollout_episodes: 30000
+  max_total_generated_tokens: 100000000
+  max_total_gpu_hours: 24
+  max_wall_clock_hours: 48

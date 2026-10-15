@@ -351,6 +351,7 @@ def run_verl_fsdp2_train(args: Any) -> dict[str, Any]:
             args.component,
             harness=getattr(args, "harness", None),
             teacher_kind=str(getattr(args, "teacher_kind", "upstream") or "upstream"),
+            bank=getattr(args, "harness_bank", None),
         )
     collection_mode = collection_mode_for_cell(cell, lambda_opd, opd_loss)
     loop = HybridLoopState(policy_version="v0")

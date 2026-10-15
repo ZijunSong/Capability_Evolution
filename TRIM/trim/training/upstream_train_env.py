@@ -177,21 +177,33 @@ def apply_upstream_action(
     return st, obs, True
 
 
+def _append_bank_guidance(st: Mapping[str, Any], text: str) -> str:
+    from trim.harness_bank.runtime import render_guidance
+
+    extra = render_guidance(dict(st))
+    if extra:
+        return text + "\n" + extra
+    return text
+
+
 def wm_text_for_train_state(st: Mapping[str, Any]) -> str:
     if is_upstream_state(st):
         env = st.get(_UPSTREAM_HANDLE)
         selected = getattr(env, "selected_context_window", None)
         if callable(selected):
             window = selected()
-            return str((window or {}).get("wm_text") or "")
-        wm = getattr(env, "wm", None)
-        render = getattr(wm, "render", None) or getattr(wm, "text", None)
-        if callable(render):
-            return str(render())
-        return str(getattr(wm, "text", "") or "")
+            text = str((window or {}).get("wm_text") or "")
+        else:
+            wm = getattr(env, "wm", None)
+            render = getattr(wm, "render", None) or getattr(wm, "text", None)
+            if callable(render):
+                text = str(render())
+            else:
+                text = str(getattr(wm, "text", "") or "")
+        return _append_bank_guidance(st, text)
     from trim.eval.local_search_env import wm_text
 
-    return wm_text(st)
+    return _append_bank_guidance(st, wm_text(st))
 
 
 def apply_train_action(
@@ -215,6 +227,14 @@ def apply_train_action(
         searcher=searcher,
         search_k=search_k,
     )
+    runtime = st.get("_bank_runtime") if isinstance(st, dict) else None
+    if runtime is not None:
+        runtime.visible = {
+            "query": st.get("query") or "",
+            "step": int(st.get("step") or 0),
+            "visible_search_history": list(st.get("tool_history") or []),
+        }
+        runtime.step(dict(action), role=runtime.role)
     return st, obs, bool(ok)
 
 
@@ -282,6 +302,17 @@ def open_upstream_train_session(
     return UpstreamTrainSession(mods, factory)
 
 
+def _bind_bank(st: dict[str, Any], bank: Any, role: str) -> dict[str, Any]:
+    if bank is None:
+        return st
+    from trim.harness_bank.loader import load_bank
+    from trim.harness_bank.runtime import attach_bank
+
+    loaded = bank if getattr(bank, "bank_sha256", None) else load_bank(bank)
+    attach_bank(st, loaded, role=role)
+    return st
+
+
 def new_state_fn(
     *,
     train_env: str,
@@ -289,6 +320,8 @@ def new_state_fn(
     session: UpstreamTrainSession | None = None,
     is_harness_g: bool = False,
     graph_index: Any | None = None,
+    bank: Any = None,
+    bank_role: str = "student",
 ):
     train_env = canonical_train_env(train_env)
     if is_harness_g:
@@ -297,12 +330,16 @@ def new_state_fn(
         def new_state(query: str, store: dict[str, Any], query_id: str = "") -> dict[str, Any]:
             del query_id
             path = getattr(graph_index, "source_path", None) if graph_index is not None else None
-            return g_new_state(
-                query,
-                store,
-                harness_mask=harness_mask,
-                graph_index=graph_index,
-                graph_index_path=path,
+            return _bind_bank(
+                g_new_state(
+                    query,
+                    store,
+                    harness_mask=harness_mask,
+                    graph_index=graph_index,
+                    graph_index_path=path,
+                ),
+                bank,
+                bank_role,
             )
 
         return new_state
@@ -313,7 +350,7 @@ def new_state_fn(
             st = h1_new_state(query, store, harness_mask=harness_mask)
             st[_TRAIN_ENV_KEY] = TRAIN_ENV_LOCAL_LEGACY
             st["query_id"] = query_id
-            return st
+            return _bind_bank(st, bank, bank_role)
 
         return new_state
     if session is None:
@@ -325,6 +362,10 @@ def new_state_fn(
         )
 
     def new_state(query: str, store: dict[str, Any], query_id: str = "") -> dict[str, Any]:
-        return session.new_state(query, store, query_id=query_id, harness_mask=harness_mask)
+        return _bind_bank(
+            session.new_state(query, store, query_id=query_id, harness_mask=harness_mask),
+            bank,
+            bank_role,
+        )
 
     return new_state

@@ -1,0 +1,8 @@
+Harness-Zero is an upstream design reference for this TRIM bank loader.
+Source: https://github.com/metaevo-ai/harness-zero
+Commit: a4a6223241479c750fdab827c3a449bb1d41b99a
+License: Apache-2.0
+
+No Harness-Zero source files are copied into this tree. The TRIM packages
+trim/harness_bank, trim/evolution, and trim/rsi are original implementations
+written against the TRIM runtime.
