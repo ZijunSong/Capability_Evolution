@@ -139,6 +139,7 @@ def assert_resume_identity(
     opd_loss: str,
     component: str,
     gap_variant: str | None,
+    live_contract: dict[str, Any] | None = None,
 ) -> None:
     """Refuse a checkpoint written by a different method, cell, loss, or component.
 
@@ -183,6 +184,51 @@ def assert_resume_identity(
             problems.append(f"gap_variant checkpoint={got_gap!r} live={gap_variant!r}")
     elif gap_variant and got_gap is not None and str(got_gap) != str(gap_variant):
         problems.append(f"gap_variant checkpoint={got_gap!r} live={gap_variant!r}")
+
+    saved_contract = payload.get("experiment_contract")
+    if not isinstance(saved_contract, dict):
+        saved_contract = None
+    saved_reward = None
+    if saved_contract and saved_contract.get("rl_reward_effective"):
+        saved_reward = str(saved_contract.get("rl_reward_effective"))
+    if payload.get("rl_reward_effective"):
+        saved_reward = str(payload.get("rl_reward_effective"))
+    live = dict(live_contract or {})
+    live_reward = str(live.get("rl_reward_effective")) if live.get("rl_reward_effective") else None
+    live_variant = str(live.get("ablation_variant") or "none")
+    live_is_ablation = live.get("contract_version") == "trim_ablation_v1" and live_variant != "none"
+    if live_is_ablation:
+        if saved_contract is None or saved_contract.get("contract_version") != "trim_ablation_v1":
+            problems.append("experiment_contract missing; refusing an unlabeled ablation checkpoint")
+        else:
+            for key in (
+                "train_method",
+                "training_mode",
+                "cell",
+                "opd_loss",
+                "projection_mode",
+                "gate_mode",
+                "rl_reward_effective",
+                "ablation_variant",
+            ):
+                if saved_contract.get(key) != live.get(key):
+                    problems.append(
+                        f"{key} checkpoint={saved_contract.get(key)!r} live={live.get(key)!r}"
+                    )
+            if saved_contract.get("student_mask") != live.get("student_mask"):
+                problems.append("student_mask does not match the Full/Zero ablation contract")
+            if saved_contract.get("teacher_mask") != live.get("teacher_mask"):
+                problems.append("teacher_mask does not match the Full/Zero ablation contract")
+    if saved_reward and live_reward and saved_reward != live_reward:
+        problems.append(f"rl_reward_effective checkpoint={saved_reward!r} live={live_reward!r}")
+    if saved_reward and saved_reward != "trim-legacy-v1" and live_reward in {None, "trim-legacy-v1"}:
+        problems.append(
+            f"refusing to resume reward {saved_reward!r} into legacy reward {live_reward!r}"
+        )
+    if live_reward and live_reward != "trim-legacy-v1" and saved_reward in {None, "trim-legacy-v1"}:
+        problems.append(
+            f"refusing to continue a legacy checkpoint under rl_reward {live_reward!r}"
+        )
 
     if problems:
         raise SystemExit(

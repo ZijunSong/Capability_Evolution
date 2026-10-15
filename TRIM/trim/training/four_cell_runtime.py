@@ -99,6 +99,9 @@ from trim.training.opd_dataset import render_student_prompt
 from trim.training.rl_opd_types import (
     PROTOCOL_COMPLETE_RL_OPD,
     TRAINING_MODE_FULL_SAMPLED_GAP,
+    TRAINING_MODE_NO_GATE,
+    TRAINING_MODE_NO_PROJECT,
+    TRAINING_MODE_ONLY_OPD,
     TRAINING_MODE_PURE_OPD,
     TRAINING_MODE_RL,
     TRAINING_MODE_RL_OPD,
@@ -114,7 +117,11 @@ from trim.training.rl_opd_types import (
     uses_sampled_opd,
 )
 from trim.training.parse_rollout_action import parse_generated_action
-from trim.training.opd_train_contract import control_variant_for_method, opd_loss_from_args
+from trim.training.opd_train_contract import (
+    control_variant_for_method,
+    gap_variant_for_method,
+    opd_loss_from_args,
+)
 from trim.training.teacher_isolation import COMPONENT_KIND, run_teacher_branch_isolated
 from trim.training.teacher_branch import component_implementation_table
 from trim.training.auto_populate_teacher import teacher_events_from_point as auto_populate_events_from_point
@@ -123,7 +130,12 @@ from trim.training.token_budget_marker_teacher import teacher_events_from_point 
 from trim.training.adaptive_rerank_teacher import teacher_events_from_point as adaptive_rerank_events_from_point
 from trim.training.verify_tool_teacher import teacher_events_from_point as verify_tool_events_from_point
 from trim.training.harness_g_teacher import teacher_events_from_point_for as harness_g_events_from_point
-from trim.training.tinker_rl_opd_trainer import hybrid_train_substep, prepare_hybrid_batch
+from trim.training.tinker_rl_opd_trainer import (
+    _n_opd_tokens,
+    _n_rl_tokens,
+    hybrid_train_substep,
+    prepare_hybrid_batch,
+)
 
 def stable_rollout_seed(base: int, tag: str) -> int:
     digest = hashlib.sha256(f"{int(base)}:{tag}".encode("utf-8")).hexdigest()
@@ -456,6 +468,9 @@ def cells_for_mode(training_mode: str | None, *, train_only: bool = False) -> tu
         TRAINING_MODE_SCAPE_SEED: ("scape_seed",),
         TRAINING_MODE_ZERO_PLACEBO: ("zero_placebo",),
         TRAINING_MODE_FULL_SAMPLED_GAP: ("full_sampled_gap",),
+        TRAINING_MODE_ONLY_OPD: ("only_opd",),
+        TRAINING_MODE_NO_PROJECT: ("no_project",),
+        TRAINING_MODE_NO_GATE: ("no_gate",),
         "rl_only": ("rl",),
         "pure_opd_only": ("pure_opd",),
         "rl_opd_only": ("rl_opd",),
@@ -463,6 +478,9 @@ def cells_for_mode(training_mode: str | None, *, train_only: bool = False) -> tu
         "scape_seed_only": ("scape_seed",),
         "zero_placebo_only": ("zero_placebo",),
         "full_sampled_gap_only": ("full_sampled_gap",),
+        "only_opd_only": ("only_opd",),
+        "no_project_only": ("no_project",),
+        "no_gate_only": ("no_gate",),
     }
     if train_only and training_mode in only:
         return only[training_mode]
@@ -482,6 +500,12 @@ def cells_for_mode(training_mode: str | None, *, train_only: bool = False) -> tu
         return ("before", "zero_placebo")
     if training_mode == TRAINING_MODE_FULL_SAMPLED_GAP:
         return ("before", "full_sampled_gap")
+    if training_mode == TRAINING_MODE_ONLY_OPD:
+        return ("before", "only_opd")
+    if training_mode == TRAINING_MODE_NO_PROJECT:
+        return ("before", "no_project")
+    if training_mode == TRAINING_MODE_NO_GATE:
+        return ("before", "no_gate")
     if training_mode in only:
         return only[training_mode]
     return CELLS
@@ -516,6 +540,9 @@ def is_seed_scale_mode(args: argparse.Namespace | None = None, *, training_mode:
         TRAINING_MODE_SCAPE_SEED,
         TRAINING_MODE_ZERO_PLACEBO,
         TRAINING_MODE_FULL_SAMPLED_GAP,
+        TRAINING_MODE_ONLY_OPD,
+        TRAINING_MODE_NO_PROJECT,
+        TRAINING_MODE_NO_GATE,
     }
 
 
@@ -604,8 +631,15 @@ def build_manifest(args: argparse.Namespace, *, extra: dict[str, Any] | None = N
         else:
             gap_target_source = "none"
             target_source = "none"
-        student_harness = "H_min"
-        teacher_harness = "H_full"
+        from trim.training.trim_ablation import resolve_trim_ablation
+
+        ablation = resolve_trim_ablation(getattr(args, "train_method", None) or mode)
+        if ablation is not None and ablation.variant != "none":
+            student_harness = "H_zero"
+            teacher_harness = "H_full"
+        else:
+            student_harness = "H_min"
+            teacher_harness = "H_full"
         protocol_name = PROTOCOL_COMPLETE_RL_OPD
         protocol_requested = mode in {
             "four_cell",
@@ -617,6 +651,12 @@ def build_manifest(args: argparse.Namespace, *, extra: dict[str, Any] | None = N
     return {
         "training_mode": mode,
         "train_method": getattr(args, "train_method", None) or mode,
+        "experiment_contract": getattr(args, "experiment_contract", None),
+        "rl_reward_effective": getattr(args, "rl_reward_effective", "trim-legacy-v1"),
+        "projection_mode": getattr(args, "projection_mode", "full"),
+        "gate_mode": getattr(args, "opd_gate_mode", "sigmoid"),
+        "ablation_variant": getattr(args, "ablation_variant", "none"),
+        "rl_enabled": bool(getattr(args, "rl_enabled", True)),
         "control_variant": control_variant,
         "component": args.component,
         "harness": getattr(args, "harness", None) or infer_harness_from_ids(args.component),
@@ -988,7 +1028,7 @@ def encode_aligned_teacher_prompt(
     return list(ids), str(wm)
 
 
-def terminal_reward_breakdown(
+def _legacy_terminal_reward_breakdown(
     st: dict[str, Any],
     *,
     query: str,
@@ -1086,10 +1126,95 @@ def terminal_reward_breakdown(
     }
 
 
-def terminal_reward(st: dict[str, Any], *, query: str, gold_ids: list[str], valids: list[bool], actions: list[dict[str, Any]]) -> float:
+def terminal_reward_breakdown(
+    st: dict[str, Any],
+    *,
+    query: str,
+    gold_ids: list[str],
+    valids: list[bool],
+    actions: list[dict[str, Any]],
+    exec_oks: list[bool] | None = None,
+    row: dict[str, Any] | None = None,
+    rl_reward: str | None = None,
+    max_turns: int | None = None,
+    termination_kind: str | None = None,
+) -> dict[str, Any]:
+    """Legacy TRIM reward unless ``rl_reward`` names an explicit formula."""
+    if rl_reward is None:
+        return _legacy_terminal_reward_breakdown(
+            st,
+            query=query,
+            gold_ids=gold_ids,
+            valids=valids,
+            actions=actions,
+            exec_oks=exec_oks,
+        )
+    if row is None or max_turns is None or not termination_kind:
+        raise ValueError("explicit rl_reward requires row, max_turns, and termination_kind")
+    from trim.eval.harness1_metrics import episode_quality_metrics
+    from trim.training.reward_policy import score_explicit_reward
+
+    row_gold = list(row.get("gold_docids") or [])
+    row_evidence = list(row.get("evidence_docids") or [])
+    if not list(gold_ids or []) and not row_gold and not row_evidence:
+        raise ValueError("explicit rl_reward cannot score a row with no gold or evidence ids")
+    quality = episode_quality_metrics(
+        st,
+        row,
+        tool_names=[str(a.get("name") or "") for a in actions],
+        valids=valids,
+        reward=0.0,
+        max_turns=int(max_turns),
+        actions=actions,
+    )
+    scored = score_explicit_reward(
+        quality,
+        mode=str(rl_reward),
+        max_turns=int(max_turns),
+        terminal_format_error=str(termination_kind) == "format_error",
+    )
+    quality = dict(quality)
+    quality["reward"] = float(scored["total"])
+    return {
+        **scored,
+        "ended": 0.0,
+        "query_overlap": 0.0,
+        "n_unique_tools": 0.0,
+        "n_curated": float(quality.get("n_curated") or 0.0),
+        "n_pool": float(len(st.get("pool") or {})),
+        "n_exec_ok": int(sum(1 for ok in (exec_oks or []) if ok)),
+        "invalid_episode": False,
+        "termination_kind": str(termination_kind),
+        "gold_id_fallback": (not row_gold) and bool(row_evidence),
+        "quality": quality,
+    }
+
+
+def terminal_reward(
+    st: dict[str, Any],
+    *,
+    query: str,
+    gold_ids: list[str],
+    valids: list[bool],
+    actions: list[dict[str, Any]],
+    exec_oks: list[bool] | None = None,
+    row: dict[str, Any] | None = None,
+    rl_reward: str | None = None,
+    max_turns: int | None = None,
+    termination_kind: str | None = None,
+) -> float:
     return float(
         terminal_reward_breakdown(
-            st, query=query, gold_ids=gold_ids, valids=valids, actions=actions
+            st,
+            query=query,
+            gold_ids=gold_ids,
+            valids=valids,
+            actions=actions,
+            exec_oks=exec_oks,
+            row=row,
+            rl_reward=rl_reward,
+            max_turns=max_turns,
+            termination_kind=termination_kind,
         )["total"]
     )
 
@@ -1163,6 +1288,8 @@ def one_episode(
     train_env: str = "local_legacy",
     train_session: Any | None = None,
     graph_index: Any | None = None,
+    rl_reward: str | None = None,
+    enable_rl: bool = True,
 ) -> tuple[list[StudentDecisionPoint], list[dict[str, Any]], float, dict[str, Any]]:
     from trim.eval.harmony_runtime import (
         build_continuation_prompt_ids,
@@ -1400,8 +1527,19 @@ def one_episode(
                 "turn_id": turn,
             }
         )
+    from trim.training.reward_policy import classify_termination
+
+    termination_kind = classify_termination(st, names=names, max_turns=max_turns)
     reward_parts = terminal_reward_breakdown(
-        st, query=query, gold_ids=gold_ids, valids=valids, actions=actions
+        st,
+        query=query,
+        gold_ids=gold_ids,
+        valids=valids,
+        actions=actions,
+        row=row,
+        rl_reward=rl_reward,
+        max_turns=max_turns,
+        termination_kind=termination_kind,
     )
     reward = float(reward_parts["total"])
     for point in points:
@@ -1410,16 +1548,20 @@ def one_episode(
     for row_i in rows:
         row_i["reward"] = reward
         row_i["reward_parts"] = dict(reward_parts)
-    stats = episode_quality_metrics(
-        st,
-        row,
-        tool_names=names,
-        valids=valids,
-        reward=reward,
-        max_turns=max_turns,
-        timing=timing.snapshot(),
-        actions=actions,
-    )
+    if reward_parts.get("quality"):
+        stats = dict(reward_parts["quality"])
+        stats["reward"] = reward
+    else:
+        stats = episode_quality_metrics(
+            st,
+            row,
+            tool_names=names,
+            valids=valids,
+            reward=reward,
+            max_turns=max_turns,
+            timing=timing.snapshot(),
+            actions=actions,
+        )
     stats.update(
         {
             "names": names,
@@ -1432,7 +1574,7 @@ def one_episode(
     return points, rows, reward, stats
 
 
-def rollout_group(backend, *, row, component_id, group_size, max_turns, max_new, policy_version, seed, sample, enc, searcher=None, teacher_mode=False, harness_mask=None) -> HybridRolloutGroup:
+def rollout_group(backend, *, row, component_id, group_size, max_turns, max_new, policy_version, seed, sample, enc, searcher=None, teacher_mode=False, harness_mask=None, rl_reward=None, enable_rl: bool = True) -> HybridRolloutGroup:
     points: list[StudentDecisionPoint] = []
     rewards: list[float] = []
     rl_rows: list[dict[str, Any]] = []
@@ -1455,6 +1597,8 @@ def rollout_group(backend, *, row, component_id, group_size, max_turns, max_new,
             searcher=searcher,
             teacher_mode=teacher_mode,
             harness_mask=harness_mask,
+            rl_reward=rl_reward,
+            enable_rl=enable_rl,
         )
         points.extend(ep_points)
         rl_rows.extend(ep_rows)
@@ -1463,9 +1607,14 @@ def rollout_group(backend, *, row, component_id, group_size, max_turns, max_new,
     for rec in rl_rows:
         rec.setdefault("episode_id", f"{row['query_id']}_r{rollout_idx}")
         rec.setdefault("rollout_idx", rollout_idx)
-    adv = episode_relative_advantages(rl_rows)
-    for rec, a in zip(rl_rows, adv):
-        rec["advantage"] = a
+    if enable_rl:
+        adv = episode_relative_advantages(rl_rows)
+        for rec, a in zip(rl_rows, adv):
+            rec["advantage"] = a
+    else:
+        for rec in rl_rows:
+            rec["advantage"] = 0.0
+            rec["advantage_diagnostic_only"] = True
     return HybridRolloutGroup(
         query_id=str(row["query_id"]),
         policy_version=policy_version,
@@ -1509,6 +1658,10 @@ async def train_cell(
     base_seed: int = 0,
     model_enc: Any | None = None,
     control_variant: str | None = None,
+    enable_rl: bool | None = None,
+    projection_mode: str = "full",
+    opd_gate_mode: str = "sigmoid",
+    ablation_variant: str = "none",
 ) -> dict[str, Any]:
     if name in {"teacher", "before"} or train_steps <= 0:
         return {
@@ -1525,6 +1678,8 @@ async def train_cell(
         heartbeat_every=heartbeat_every,
         max_full_tokens=max_full,
     )
+    if enable_rl is None:
+        enable_rl = name != "only_opd"
     teacher = None if lambda_opd <= 0 else teacher_fn
     metrics_acc: list[dict[str, Any]] = []
     last_batch_stats: dict[str, Any] = {}
@@ -1572,27 +1727,34 @@ async def train_cell(
             model_enc=model_enc,
             opd_states_per_trajectory=opd_states_per_trajectory,
             seed=step,
-            remove_constant_reward_groups=True,
+            remove_constant_reward_groups=bool(enable_rl),
+            include_valid_failures=True,
             include_format_errors=uses_sampled_opd(opd_loss) and control_variant is None,
             opd_loss=opd_loss,
             opd_gate_beta=opd_gate_beta,
             control_variant=control_variant,
+            enable_rl=bool(enable_rl),
+            projection_mode=projection_mode,
+            opd_gate_mode=opd_gate_mode,
+            ablation_variant=ablation_variant,
         )
         last_batch_stats = dict(batch.projection_stats)
         last_batch_stats["step_sample"] = sample_meta
-        if name == "pure_opd":
+        if name in {"pure_opd", "only_opd"}:
             rl_use, opd_use = [], batch.opd_datums
         elif name == "rl":
             rl_use, opd_use = batch.rl_datums, []
         else:
             rl_use, opd_use = batch.rl_datums, batch.opd_datums
+        n_rl_tok = _n_rl_tokens(rl_use)
+        n_opd_tok = _n_opd_tokens(opd_use)
         log_train(
             "optim_step_datums",
             step=step + 1,
             n_rl_datums=len(rl_use),
             n_opd_datums=len(opd_use),
-            n_rl_tokens=int(batch.n_rl_tokens),
-            n_opd_tokens=int(batch.n_opd_tokens),
+            n_rl_tokens=n_rl_tok,
+            n_opd_tokens=n_opd_tok,
         )
         if not rl_use and not opd_use:
             md = {
@@ -1601,10 +1763,13 @@ async def train_cell(
                 "n_rl_forward_backward": 0,
                 "n_opd_forward_backward": 0,
                 "skipped_no_signal": True,
-                "n_rl_datums": 0,
-                "n_opd_datums": 0,
-                "n_rl_tokens": 0,
-                "n_opd_tokens": 0,
+                "n_rl_datums": len(rl_use),
+                "n_opd_datums": len(opd_use),
+                "n_rl_tokens": n_rl_tok,
+                "n_opd_tokens": n_opd_tok,
+                "configured_method": name,
+                "configured_rl_enabled": bool(enable_rl),
+                "rl_disabled_reason": "method_only_opd" if name == "only_opd" else None,
             }
         else:
             m = await hybrid_train_substep(
@@ -1621,6 +1786,13 @@ async def train_cell(
                 opd_loss=opd_loss,
             )
             md = m.to_dict()
+            md["n_rl_datums"] = len(rl_use)
+            md["n_opd_datums"] = len(opd_use)
+            md["n_rl_tokens"] = n_rl_tok
+            md["n_opd_tokens"] = n_opd_tok
+            md["configured_method"] = name
+            md["configured_rl_enabled"] = bool(enable_rl)
+            md["rl_disabled_reason"] = "method_only_opd" if name == "only_opd" else None
         elapsed = round(time.perf_counter() - t0, 3)
         md["elapsed_s"] = elapsed
         md["step_sample"] = sample_meta
@@ -1633,9 +1805,11 @@ async def train_cell(
             elapsed_s=elapsed,
             n_rl_datums=len(rl_use),
             n_opd_datums=len(opd_use),
-            n_rl_tokens=int(batch.n_rl_tokens),
-            n_opd_tokens=int(batch.n_opd_tokens),
+            n_rl_tokens=n_rl_tok,
+            n_opd_tokens=n_opd_tok,
             update_type=md.get("update_type"),
+            configured_rl_enabled=bool(enable_rl),
+            rl_disabled_reason=md.get("rl_disabled_reason"),
         )
     from trim.training.tinker_rl_opd_trainer import HybridLoopState
 
@@ -2117,7 +2291,9 @@ def validate_wiring(args: argparse.Namespace) -> dict[str, Any]:
         teacher_events=events,
         student_mask=snap.harness_mask,
         component_id=args.component,
-        projector=StudentActionSpaceProjector(),
+        projector=StudentActionSpaceProjector(
+            allow_explicit_mapping=str(getattr(args, "projection_mode", "full") or "full") == "full"
+        ),
     )
     leaked = any("compressed_teacher_view" in (s.prompt_reduced or "") for s in steps)
     return {
@@ -2623,6 +2799,8 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
                 opd_loss_from_args(args),
             ),
             opd_loss=opd_loss_from_args(args),
+            rl_reward=getattr(args, "rl_reward", None),
+            enable_rl=bool(getattr(args, "rl_enabled", True)),
         )
         all_rows = list(rows)
         work_rows = shard_for_rank(all_rows, rank=dist.rank, world_size=dist.world_size)
@@ -2830,6 +3008,17 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
                 resume_state = load_training_resume(out / "checkpoints" / cell)
                 if resume_state is None:
                     raise SystemExit(f"--resume set but no checkpoint under {out / 'checkpoints' / cell}")
+                from trim.training.train_checkpoint import assert_resume_identity
+
+                assert_resume_identity(
+                    resume_state.get("manifest") or {},
+                    train_method=str(getattr(args, "train_method", None) or cell),
+                    cell=cell,
+                    opd_loss=opd_loss_from_args(args),
+                    component=str(args.component),
+                    gap_variant=gap_variant_for_method(getattr(args, "train_method", None) or cell),
+                    live_contract=getattr(args, "experiment_contract", None),
+                )
                 query_sampler = QuerySampler(
                     train_rows,
                     base_seed=int(args.seed),
@@ -2853,6 +3042,7 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
             target_updates = int(n_train)
             metrics_path = out / cell / "metrics.jsonl"
             empty_streak = 0
+            opd_empty_streak = 0
             max_empty = int(getattr(args, "max_empty_rollouts", 8) or 8)
             while already < target_updates:
                 if empty_streak >= max_empty:
@@ -2913,6 +3103,10 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
                             base_seed=int(args.seed),
                             model_enc=enc,
                             control_variant=control_variant,
+                            enable_rl=bool(getattr(args, "rl_enabled", True)),
+                            projection_mode=str(getattr(args, "projection_mode", "full") or "full"),
+                            opd_gate_mode=str(getattr(args, "opd_gate_mode", "sigmoid") or "sigmoid"),
+                            ablation_variant=str(getattr(args, "ablation_variant", "none") or "none"),
                         )
                     )
                     rewards_after = [r for g in groups for r in g.terminal_rewards]
@@ -2928,6 +3122,28 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
                         empty_streak = 0
                     else:
                         empty_streak += 1
+                    if str(getattr(args, "ablation_variant", "none") or "none") != "none":
+                        from trim.training.opd_batch_health import assess_opd_health
+
+                        health = assess_opd_health(
+                            lambda_opd=float(cell_lambda(cell, args.lambda_opd)),
+                            opd_loss=opd_loss_from_args(args),
+                            n_rl=int(part.get("n_rl_datums") or 0),
+                            n_opd=int(part.get("n_opd_datums") or 0),
+                            projection_stats=part.get("projection_stats") or {},
+                            opd_empty_streak=opd_empty_streak,
+                            max_empty_opd=max_empty,
+                        )
+                        opd_empty_streak = int(health["opd_empty_streak"])
+                        part["opd_health"] = {
+                            "fatal": health["fatal"],
+                            "effective_update_type": health["effective_update_type"],
+                            "opd_empty_streak": opd_empty_streak,
+                            "configured_rl_enabled": bool(getattr(args, "rl_enabled", True)),
+                            "rl_disabled_reason": "method_only_opd" if cell == "only_opd" else None,
+                        }
+                        if health["fatal"]:
+                            raise RuntimeError(health["message"])
                     already = int(query_sampler.state.global_optimizer_step)
                     step_num = already
                     ckpt_tmp = out / "checkpoints" / cell / f".tmp_step_{step_num:06d}"
@@ -2969,6 +3185,14 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
                         "attempt_id": attempt_id,
                         "successful_optimizer_step": already,
                         "reward_unchanged_by_teacher": reward_unchanged,
+                        "train_method": getattr(args, "train_method", None),
+                        "opd_loss": opd_loss_from_args(args),
+                        "component": str(args.component),
+                        "gap_variant": gap_variant_for_method(getattr(args, "train_method", None) or cell),
+                        "experiment_contract": getattr(args, "experiment_contract", None),
+                        "rl_reward_effective": getattr(args, "rl_reward_effective", None),
+                        "projection_mode": getattr(args, "projection_mode", None),
+                        "gate_mode": getattr(args, "opd_gate_mode", None),
                     }
                     append_metrics_jsonl(
                         metrics_path,
@@ -3079,6 +3303,10 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
                             heartbeat_every=int(getattr(args, "train_heartbeat_every", HF_DEFAULT_HEARTBEAT_EVERY) or HF_DEFAULT_HEARTBEAT_EVERY),
                             model_enc=enc,
                             control_variant=control_variant,
+                            enable_rl=bool(getattr(args, "rl_enabled", True)),
+                            projection_mode=str(getattr(args, "projection_mode", "full") or "full"),
+                            opd_gate_mode=str(getattr(args, "opd_gate_mode", "sigmoid") or "sigmoid"),
+                            ablation_variant=str(getattr(args, "ablation_variant", "none") or "none"),
                         )
                     )
                 )
@@ -3249,11 +3477,37 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
         rl_opd = cells.get("rl_opd", {}).get("train") or {}
         scape_rl = cells.get("scape_rl", {}).get("train") or {}
         scape_seed = cells.get("scape_seed", {}).get("train") or {}
-        joint = scape_seed or scape_rl or rl_opd
+        only_opd = cells.get("only_opd", {}).get("train") or {}
+        no_project = cells.get("no_project", {}).get("train") or {}
+        no_gate = cells.get("no_gate", {}).get("train") or {}
+        joint = scape_seed or scape_rl or rl_opd or no_project or no_gate or only_opd
         joint_cell_present = any(
             name in cells
-            for name in ("scape_seed", "scape_rl", "rl_opd", "zero_placebo", "full_sampled_gap")
+            for name in (
+                "scape_seed",
+                "scape_rl",
+                "rl_opd",
+                "zero_placebo",
+                "full_sampled_gap",
+                "only_opd",
+                "no_project",
+                "no_gate",
+            )
         )
+        method_contract_verified = None
+        if only_opd:
+            method_contract_verified = (
+                int(only_opd.get("n_rl_forward_backward") or 0) == 0
+                and int(only_opd.get("n_opd_forward_backward") or 0) >= 1
+                and int(only_opd.get("n_optimizer_steps") or 0) == int(args.train_steps)
+            )
+        elif no_project or no_gate:
+            watched = no_project or no_gate
+            method_contract_verified = (
+                int(watched.get("n_rl_forward_backward") or 0) >= 1
+                and int(watched.get("n_opd_forward_backward") or 0) >= 1
+                and int(watched.get("n_optimizer_steps") or 0) == int(args.train_steps)
+            )
         summary = {
             "elapsed_sec": time.time() - t0,
             "manifest": manifest,
@@ -3270,6 +3524,7 @@ def _run_four_cell_body(args: argparse.Namespace, keepalive) -> dict[str, Any]:
             ),
             "q2_on_policy_projection": any(c.get("n_decision_points") for c in cells.values()),
             "q3_teacher_does_not_change_reward": all(c.get("reward_unchanged_by_teacher") for c in cells.values()),
+            "method_contract_verified": method_contract_verified,
             "on_policy_refresh": bool(getattr(args, "on_policy_refresh", True)),
             "rollout_backend": "vllm" if vllm_on else "hf",
             "train_only": train_only,
@@ -3368,6 +3623,19 @@ def coerce_runtime_args(args: argparse.Namespace) -> argparse.Namespace:
         )
     if getattr(args, "opd_gate_beta", None) is None:
         args.opd_gate_beta = SCAPE_RL_OPD_GATE_BETA
+    from trim.training.trim_ablation import apply_ablation_fields
+
+    if apply_ablation_fields(args, str(getattr(args, "train_method", None) or getattr(args, "training_mode", "") or "")) is None:
+        if not hasattr(args, "rl_enabled"):
+            args.rl_enabled = True
+        if not hasattr(args, "projection_mode"):
+            args.projection_mode = "full"
+        if not hasattr(args, "opd_gate_mode"):
+            args.opd_gate_mode = "sigmoid"
+        if not hasattr(args, "ablation_variant"):
+            args.ablation_variant = "none"
+    if not getattr(args, "rl_reward_effective", None):
+        args.rl_reward_effective = getattr(args, "rl_reward", None) or "trim-legacy-v1"
     if not hasattr(args, "eval_max_turns"):
         from trim.eval.eval_defaults import HARNESS1_EVAL_MAX_TURNS
 

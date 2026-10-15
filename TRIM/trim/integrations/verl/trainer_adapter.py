@@ -48,7 +48,20 @@ from trim.training.opd_train_contract import (
 from trim.training.rl_opd_types import TRAINING_MODE_RL, TRAINING_MODE_RL_OPD
 
 
-VERL_METHODS = {"rl", "rl+opd", "trim", "scape_seed", "scape+seed"}
+# Documentation only. The executable matrix is SUPPORTED_TRAIN_CONTRACTS.
+VERL_METHODS = {
+    "rl",
+    "rl+opd",
+    "trim",
+    "scape_seed",
+    "scape+seed",
+    "only-opd",
+    "only_opd",
+    "no-project",
+    "no_project",
+    "no-gate",
+    "no_gate",
+}
 
 
 def require_verl_trainer() -> dict[str, Any]:
@@ -361,8 +374,6 @@ def run_verl_fsdp2_train(args: Any) -> dict[str, Any]:
         loop.policy_version = str(resume_state["updated_policy_version"] or "v0")
         adapter_live = str(resume_state["adapter_dir"])
         last_ckpt = str(resume_state["checkpoint_dir"])
-        if resume_state.get("rng_path"):
-            load_rng_state(Path(resume_state["rng_path"]))
         assert_resume_identity(
             resume_state.get("manifest") or {},
             train_method=method,
@@ -370,7 +381,10 @@ def run_verl_fsdp2_train(args: Any) -> dict[str, Any]:
             opd_loss=opd_loss,
             component=str(args.component),
             gap_variant=gap_variant,
+            live_contract=getattr(args, "experiment_contract", None),
         )
+        if resume_state.get("rng_path"):
+            load_rng_state(Path(resume_state["rng_path"]))
     sampler_state = broadcast_object(sampler.state.to_dict() if is_coordinator() else None)
     if not is_coordinator():
         sampler = QuerySampler(
@@ -418,6 +432,12 @@ def run_verl_fsdp2_train(args: Any) -> dict[str, Any]:
         "opd_gate_beta": float(getattr(args, "opd_gate_beta", 5.0) or 5.0),
         "control_variant": control_variant,
         "gap_variant": gap_variant,
+        "rl_enabled": bool(getattr(args, "rl_enabled", True)),
+        "projection_mode": str(getattr(args, "projection_mode", "full") or "full"),
+        "gate_mode": str(getattr(args, "opd_gate_mode", "sigmoid") or "sigmoid"),
+        "ablation_variant": str(getattr(args, "ablation_variant", "none") or "none"),
+        "rl_reward_effective": str(getattr(args, "rl_reward_effective", "trim-legacy-v1") or "trim-legacy-v1"),
+        "experiment_contract": getattr(args, "experiment_contract", None),
         "gap_target_source": (
             "sampled" if control_variant else "projected" if gap_variant == "projected" else "none"
         ),
@@ -623,6 +643,8 @@ def run_verl_fsdp2_train(args: Any) -> dict[str, Any]:
                 reasoning_effort=getattr(args, "reasoning_effort", None),
                 collection_mode=collection_mode,
                 opd_loss=opd_loss,
+                rl_reward=getattr(args, "rl_reward", None),
+                enable_rl=bool(getattr(args, "rl_enabled", True)),
             )
             marks["rollout_generate_s"] = time.perf_counter() - t_gen
             rollout_s = float(marks["rollout_engine_start_s"]) + float(marks["rollout_generate_s"])
@@ -650,7 +672,11 @@ def run_verl_fsdp2_train(args: Any) -> dict[str, Any]:
             policy_version=str(loop.policy_version),
         )
         marks["gather_s"] = time.perf_counter() - t_gather
-        rl_groups, n_const = drop_constant_reward_groups(all_groups)
+        rl_enabled = bool(getattr(args, "rl_enabled", True))
+        if rl_enabled:
+            rl_groups, n_const = drop_constant_reward_groups(all_groups)
+        else:
+            rl_groups, n_const = [], 0
         opd_datums: list[Any] = []
         projection_stats: dict[str, Any] = {}
         turn_audit = turn_audit_from_groups(all_groups)
@@ -674,7 +700,11 @@ def run_verl_fsdp2_train(args: Any) -> dict[str, Any]:
                     opd_states_per_trajectory=(
                         int(args.opd_states_per_trajectory)
                         if getattr(args, "opd_states_per_trajectory", None) is not None
-                        else (-1 if cell in {"scape_seed", "zero_placebo", "full_sampled_gap"} else 3)
+                        else (
+                            -1
+                            if cell in {"scape_seed", "zero_placebo", "full_sampled_gap", "only_opd", "no_project", "no_gate"}
+                            else 3
+                        )
                     ),
                     remove_constant_reward_groups=False,
                     include_format_errors=False,
@@ -685,6 +715,10 @@ def run_verl_fsdp2_train(args: Any) -> dict[str, Any]:
                     strict_privilege_diagnostic=bool(
                         getattr(args, "strict_privilege_diagnostic", False)
                     ),
+                    enable_rl=rl_enabled,
+                    projection_mode=str(getattr(args, "projection_mode", "full") or "full"),
+                    opd_gate_mode=str(getattr(args, "opd_gate_mode", "sigmoid") or "sigmoid"),
+                    ablation_variant=str(getattr(args, "ablation_variant", "none") or "none"),
                     )
                     payload = {
                         "opd_datums": list(batch.opd_datums),
@@ -708,7 +742,7 @@ def run_verl_fsdp2_train(args: Any) -> dict[str, Any]:
             got = (blob or {}).get("payload") or {}
             opd_datums = list(got.get("opd_datums") or [])
             projection_stats = dict(got.get("projection_stats") or {})
-        rl_rows = training_rows_from_groups(rl_groups)
+        rl_rows = training_rows_from_groups(rl_groups) if rl_enabled else []
         health = assess_opd_health(
             lambda_opd=float(lambda_opd),
             opd_loss=str(opd_loss),
@@ -809,6 +843,7 @@ def run_verl_fsdp2_train(args: Any) -> dict[str, Any]:
             lambda_opd=lambda_opd,
             plan=plan,
             gap_variant=gap_variant,
+            expected_gate_mode=str(getattr(args, "opd_gate_mode", "sigmoid") or "sigmoid"),
         )
         train_s = time.perf_counter() - t_train
         for key in ("teacher_score_s", "student_forward_s", "loss_s", "backward_s", "grad_sync_s", "optimizer_s"):
@@ -869,6 +904,10 @@ def run_verl_fsdp2_train(args: Any) -> dict[str, Any]:
                     "opd_gate_beta": float(getattr(args, "opd_gate_beta", 5.0) or 5.0),
                     "control_variant": control_variant,
                     "gap_variant": gap_variant,
+                    "experiment_contract": resolved.get("experiment_contract"),
+                    "projection_mode": resolved.get("projection_mode"),
+                    "gate_mode": resolved.get("gate_mode"),
+                    "rl_reward_effective": resolved.get("rl_reward_effective"),
                     "target_source": resolved.get("target_source"),
                     "gap_target_source": resolved.get("gap_target_source"),
                     "student_mask": resolved.get("student_mask"),

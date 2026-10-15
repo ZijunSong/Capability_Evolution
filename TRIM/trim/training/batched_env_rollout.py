@@ -988,6 +988,8 @@ def _groups_from_episodes(
     max_turns: int,
     terminal_reward,
     curated_recall,
+    rl_reward: str | None = None,
+    enable_rl: bool = True,
 ) -> list[HybridRolloutGroup]:
     by_q: dict[str, list[LiveEpisode]] = {}
     for ep in episodes:
@@ -1008,6 +1010,9 @@ def _groups_from_episodes(
         for ep in members:
             from trim.training.four_cell_runtime import terminal_reward_breakdown
 
+            from trim.training.reward_policy import classify_termination
+
+            termination_kind = classify_termination(ep.st, names=ep.names, max_turns=max_turns)
             parts = terminal_reward_breakdown(
                 ep.st,
                 query=query,
@@ -1015,6 +1020,10 @@ def _groups_from_episodes(
                 valids=ep.valids,
                 actions=ep.actions,
                 exec_oks=ep.exec_oks,
+                row=row,
+                rl_reward=rl_reward,
+                max_turns=max_turns,
+                termination_kind=termination_kind,
             )
             reward = float(parts["total"])
             for point in ep.points:
@@ -1022,21 +1031,26 @@ def _groups_from_episodes(
                 point.reward_parts = dict(parts)
             for rec in ep.rl_rows:
                 rec["reward"] = reward
+                rec["reward_parts"] = dict(parts)
             points.extend(ep.points)
             rl_rows.extend(ep.rl_rows)
             rewards.append(reward)
             tool_seqs.append(list(ep.names))
             ep.st["gold_recall"] = float(curated_recall(ep.st, gold_ids) or 0.0)
-            quality = episode_quality_metrics(
-                ep.st,
-                row,
-                tool_names=ep.names,
-                valids=ep.valids,
-                reward=reward,
-                max_turns=max_turns,
-                timing=ep.timing.snapshot(),
-                actions=ep.actions,
-            )
+            if parts.get("quality"):
+                quality = dict(parts["quality"])
+                quality["reward"] = reward
+            else:
+                quality = episode_quality_metrics(
+                    ep.st,
+                    row,
+                    tool_names=ep.names,
+                    valids=ep.valids,
+                    reward=reward,
+                    max_turns=max_turns,
+                    timing=ep.timing.snapshot(),
+                    actions=ep.actions,
+                )
             quality.update(
                 {
                     "names": list(ep.names),
@@ -1057,9 +1071,14 @@ def _groups_from_episodes(
             turn_diags.extend(_finalize_episode_diags(ep, max_turns=max_turns))
         from trim.training.hf_rl_opd_client import episode_relative_advantages
 
-        adv = episode_relative_advantages(rl_rows)
-        for rec, a in zip(rl_rows, adv):
-            rec["advantage"] = a
+        if enable_rl:
+            adv = episode_relative_advantages(rl_rows)
+            for rec, a in zip(rl_rows, adv):
+                rec["advantage"] = a
+        else:
+            for rec in rl_rows:
+                rec["advantage"] = 0.0
+                rec["advantage_diagnostic_only"] = True
         groups.append(
             HybridRolloutGroup(
                 query_id=qid,
@@ -1112,6 +1131,8 @@ def rollout_queries_batched(
     graph_index: Any | None = None,
     collection_mode: str = COLLECTION_MODE_RL_OPD,
     opd_loss: str = "",
+    rl_reward: str | None = None,
+    enable_rl: bool = True,
 ) -> list[HybridRolloutGroup]:
     """Batch across queries and group members; step the env between turns.
 
@@ -1210,6 +1231,8 @@ def rollout_queries_batched(
                     max_turns=max_turns,
                     terminal_reward=terminal_reward,
                     curated_recall=curated_recall,
+                    rl_reward=rl_reward,
+                    enable_rl=enable_rl,
                 )
             )
     return groups

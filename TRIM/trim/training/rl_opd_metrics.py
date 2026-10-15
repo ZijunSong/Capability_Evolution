@@ -96,6 +96,9 @@ def reward_parts_group_stats(groups: Sequence[Any]) -> dict[str, Any]:
     group_reward_std_n = 0
     n_curated_eps = 0
     n_gold_eps = 0
+    penalty_all: list[float] = []
+    floor_all: list[float] = []
+    protocols: list[str] = []
     for group in groups:
         stats = list(((getattr(group, "trajectory_group", None) or {}).get("episode_stats") or []))
         parts = [dict(s.get("reward_parts") or {}) for s in stats if s.get("reward_parts")]
@@ -111,6 +114,9 @@ def reward_parts_group_stats(groups: Sequence[Any]) -> dict[str, Any]:
         task_all.extend(task)
         legal_all.extend(legal)
         shaping_all.extend(shaping)
+        penalty_all.extend(float(p.get("penalty") or 0.0) for p in parts)
+        floor_all.extend(float(p.get("floor_adjustment") or 0.0) for p in parts)
+        protocols.extend(str(p.get("protocol") or "local_legacy_capped_shaping") for p in parts)
         task_var = sum((x - (sum(task) / len(task))) ** 2 for x in task) / len(task)
         total_var = sum((x - (sum(total) / len(total))) ** 2 for x in total) / len(total)
         if task_var < 1e-12 and total_var > 1e-12:
@@ -155,6 +161,9 @@ def reward_parts_group_stats(groups: Sequence[Any]) -> dict[str, Any]:
         "turn_penalty": _mv(turn_pen),
         "n_turns": _mv(n_turns_ep),
         "reward_mode": (parts[0].get("reward_mode") if parts else None),
+        "penalty": _mv(penalty_all),
+        "floor_adjustment": _mv(floor_all),
+        "reward_protocols": sorted(set(protocols)),
         "corr_task_legal": _corr(task_all, legal_all),
         "corr_task_shaping": _corr(task_all, shaping_all),
         "frac_task_var_zero_total_var_nonzero": (
@@ -164,7 +173,9 @@ def reward_parts_group_stats(groups: Sequence[Any]) -> dict[str, Any]:
         "exec_ok_rate": (exec_ok / max(1, n_exec)) if n_exec else None,
         "end_search_rate": (n_end_search / max(1, n_episodes)) if n_episodes else None,
         "timeout_rate": (n_timeout / max(1, n_episodes)) if n_episodes else None,
-        "reward_formula_unchanged": True,
+        "reward_formula_unchanged": not any(
+            protocol not in {"", "local_legacy_capped_shaping"} for protocol in protocols
+        ),
         # New fields for the recall-only RL tensorboard.
         "n_const_reward_groups": n_const_groups,
         "zero_variance_group_ratio": (n_const_groups / n_groups) if n_groups else 0.0,
