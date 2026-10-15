@@ -500,8 +500,15 @@ run_eval() {
   if [[ "${SMOKE}" == "1" ]]; then
     extra+=(--smoke)
   fi
+  # Optional eval sampling seed. run_eval.py's --seed (default 42) drives vLLM
+  # engine sampling seed AND eval_closed_loop sampling, so distinct seeds give
+  # genuinely independent rollout trajectories for multi-seed averaging. Default
+  # 42 preserves the existing single-seed behavior (backward compatible — tasks
+  # that don't set EVAL_SEED are byte-identical to before this hook).
+  : "${EVAL_SEED:=42}"
+  extra+=(--seed "${EVAL_SEED}")
 
-  log "START component=${COMPONENT} layout=${LAYOUT} eval_tp=${eval_tp} urls=${ACTOR_URLS} adapter=${ADAPTER} out=${out}"
+  log "START component=${COMPONENT} layout=${LAYOUT} eval_tp=${eval_tp} seed=${EVAL_SEED} urls=${ACTOR_URLS} adapter=${ADAPTER} out=${out}"
   local rc=0
   "${PY}" scripts/run_eval.py \
     --harness Harness-1 \
