@@ -387,7 +387,9 @@ class HFDebugTrainingClient:
             n_p = len(prompt_ids)
             resp_ids = list(raw.target_tokens[n_p:])
             teacher_ids = list(raw.teacher_prompt_token_ids or [])
-            meta = dict(raw.metadata or {})
+            from trim.training.tinker_opd_datum import resolve_row_ablation
+
+            meta = resolve_row_ablation(dict(raw.metadata or {}))
             meta.setdefault("lambda_opd", 0.01)
             meta.setdefault("gate_beta", 5.0)
             weights = list(raw.weights[n_p:]) if len(raw.weights) > n_p else [1.0] * len(resp_ids)
@@ -403,14 +405,17 @@ class HFDebugTrainingClient:
             meta["lambda_opd"] = float(raw["lambda_opd"])
         if raw.get("gate_beta") is not None:
             meta["gate_beta"] = float(raw["gate_beta"])
+        from trim.training.tinker_opd_datum import resolve_row_ablation
+
+        meta = resolve_row_ablation(meta, raw if isinstance(raw, dict) else None)
         meta["_supervision_weights"] = list(raw.get("weights") or [1.0] * len(resp_ids))
         return prompt_ids, resp_ids, teacher_ids, meta
 
     def _opd_sampled_gap(self, datums: Sequence[Any]) -> dict[str, float]:
         """SEED: λ × token-mean[g · (sg[ℓ^T] − ℓ^S)] on CISPO sampled tokens."""
-        from trim.training.sr_opd_loss import gated_action_gap_per_token
+        from trim.training.sr_opd_loss import action_gap_gate, gated_action_gap_per_token
 
-        prepared: list[tuple[list[int], list[int], list[int], list[float], float, float]] = []
+        prepared: list[tuple[list[int], list[int], list[int], list[float], float, float, str]] = []
         n_total = 0
         for raw in datums:
             prompt_ids, resp_ids, teacher_ids, meta = self._unpack_opd_row(raw)
@@ -430,7 +435,8 @@ class HFDebugTrainingClient:
                 raise ValueError("OPD gap post-alignment length mismatch")
             lam = float(meta.get("lambda_opd") if meta.get("lambda_opd") is not None else 0.01)
             beta = float(meta.get("gate_beta") if meta.get("gate_beta") is not None else 5.0)
-            prepared.append((prompt_ids, resp_ids, teacher_ids, weights, lam, beta))
+            gate_mode = str(meta.get("gate_mode") or "sigmoid")
+            prepared.append((prompt_ids, resp_ids, teacher_ids, weights, lam, beta, gate_mode))
         if not prepared:
             return {"loss": 0.0, "n_datums": 0, "n_microbatches": 0, "micro_batch_size": self.micro_batch_size}
         n_in = len(prepared)
@@ -442,11 +448,12 @@ class HFDebugTrainingClient:
                 tuple(row[2]),
                 round(float(row[4]), 8),
                 round(float(row[5]), 8),
+                str(row[6]),
             ),
             weight_index=3,
         )
         n_total = 0.0
-        for _p, _r, _t, weights, _lam, _b in prepared:
+        for _p, _r, _t, weights, _lam, _b, _mode in prepared:
             n_total += sum(float(w) for w in weights if w)
         if n_total <= 0:
             return {"loss": 0.0, "n_datums": 0, "n_microbatches": 0, "micro_batch_size": self.micro_batch_size}
@@ -460,6 +467,8 @@ class HFDebugTrainingClient:
         t_teacher = 0.0
         cache_hits = 0
         cache_misses = 0
+        gate_sum = 0.0
+        gate_tok = 0
         for chunk in iter_length_microbatches(
             prepared,
             size=self.micro_batch_size,
@@ -468,16 +477,18 @@ class HFDebugTrainingClient:
             n_mb += 1
             t_t0 = time.perf_counter()
             teacher_lps, hits, misses = self._teacher_logprobs_cached(
-                [(t, r) for _p, r, t, _w, _lam, _b in chunk]
+                [(t, r) for _p, r, t, _w, _lam, _b, _mode in chunk]
             )
             t_teacher += time.perf_counter() - t_t0
             cache_hits += hits
             cache_misses += misses
             t_s0 = time.perf_counter()
-            student_lps = self._logprobs_many([(p, r) for p, r, _t, _w, _lam, _b in chunk], require_grad=True)
+            student_lps = self._logprobs_many(
+                [(p, r) for p, r, _t, _w, _lam, _b, _mode in chunk], require_grad=True
+            )
             t_student += time.perf_counter() - t_s0
             losses = []
-            for (_p, _r, _tid, weights, lam, beta), student_lp, teacher_lp in zip(
+            for (_p, _r, _tid, weights, lam, beta, gate_mode), student_lp, teacher_lp in zip(
                 chunk, student_lps, teacher_lps
             ):
                 if student_lp.numel() == 0:
@@ -485,7 +496,18 @@ class HFDebugTrainingClient:
                 if student_lp.numel() != teacher_lp.numel():
                     raise ValueError("teacher/student target length mismatch in OPD gap")
                 w = torch.tensor(weights[: len(student_lp)], device=student_lp.device, dtype=torch.float32)
-                gap = gated_action_gap_per_token(student_lp.float(), teacher_lp.detach().float(), gate_beta=beta)
+                gap = gated_action_gap_per_token(
+                    student_lp.float(),
+                    teacher_lp.detach().float(),
+                    gate_beta=beta,
+                    gate_mode=gate_mode,
+                )
+                with torch.no_grad():
+                    delta = (teacher_lp.detach().float() - student_lp.detach().float()).reshape(-1)
+                    gate = action_gap_gate(delta, gate_beta=beta, gate_mode=gate_mode)
+                    keep = w.reshape(-1) != 0
+                    gate_sum += float((gate.reshape(-1) * keep.float()).sum().item())
+                    gate_tok += int(keep.sum().item())
                 losses.append((gap * w).sum() * (float(lam) / denom))
                 n += 1
             if losses:
@@ -520,6 +542,7 @@ class HFDebugTrainingClient:
             "teacher_cache_hits": cache_hits,
             "teacher_cache_misses": cache_misses,
             "teacher_first": True,
+            "gate_mean": (gate_sum / gate_tok) if gate_tok else 0.0,
         }
 
     async def forward_backward_async(

@@ -13,6 +13,7 @@ Train: the same flag names mean Teacher privilege vs Student removal. See
 from __future__ import annotations
 
 import argparse
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Sequence
@@ -45,13 +46,22 @@ from trim.training.rl_opd_types import (
     OPD_LOSS_SAMPLED_GAP,
     SCAPE_RL_LAMBDA_OPD,
     SCAPE_RL_OPD_GATE_BETA,
+    TRAINING_MODE_FULL_SAMPLED_GAP,
+    TRAINING_MODE_NO_GATE,
+    TRAINING_MODE_NO_PROJECT,
+    TRAINING_MODE_ONLY_OPD,
     TRAINING_MODE_PURE_OPD,
     TRAINING_MODE_RL,
     TRAINING_MODE_RL_OPD,
-    TRAINING_MODE_FULL_SAMPLED_GAP,
     TRAINING_MODE_SCAPE_RL,
     TRAINING_MODE_SCAPE_SEED,
     TRAINING_MODE_ZERO_PLACEBO,
+)
+from trim.training.reward_policy import reward_protocol_for
+from trim.training.trim_ablation import (
+    NEW_TRIM_ABLATION_METHODS,
+    apply_ablation_fields,
+    build_experiment_contract,
 )
 from trim.eval.official_query_pool import (
     SCORE_SPLIT_166,
@@ -111,6 +121,9 @@ ALLOWED_TRAIN_METHODS = (
     "seed+opd",
     "zero-placebo",
     "full-sampled-gap",
+    "only-opd",
+    "no-project",
+    "no-gate",
 )
 TRAIN_DATA_SEC = "sec"
 TRAIN_DATA_BCPLUS_664 = "bcplus_train_664"
@@ -184,6 +197,12 @@ _TRAIN_METHOD_ALIASES = {
     "zero_placebo": "zero-placebo",
     "full-sampled-gap": "full-sampled-gap",
     "full_sampled_gap": "full-sampled-gap",
+    "only-opd": "only-opd",
+    "only_opd": "only-opd",
+    "no-project": "no-project",
+    "no_project": "no-project",
+    "no-gate": "no-gate",
+    "no_gate": "no-gate",
 }
 
 _COMPONENT_ALIASES = dict(aliases_for("Harness-1"))
@@ -203,6 +222,9 @@ _TRAIN_METHOD_TO_MODE = {
     "trim": TRAINING_MODE_SCAPE_SEED,
     "zero-placebo": TRAINING_MODE_ZERO_PLACEBO,
     "full-sampled-gap": TRAINING_MODE_FULL_SAMPLED_GAP,
+    "only-opd": TRAINING_MODE_ONLY_OPD,
+    "no-project": TRAINING_MODE_NO_PROJECT,
+    "no-gate": TRAINING_MODE_NO_GATE,
 }
 
 _TRAIN_DATA_ALIASES = {
@@ -439,6 +461,9 @@ def discover_adapter_map(run_dir: Path | None) -> dict[str, str]:
             candidates.append(adapters)
     mapping: dict[str, str] = {}
     preferred = (
+        "only_opd",
+        "no_project",
+        "no_gate",
         "scape_seed",
         "scape_rl",
         "zero_placebo",
@@ -474,7 +499,7 @@ def discover_adapter_map(run_dir: Path | None) -> dict[str, str]:
     return mapping
 
 
-def add_common_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+def add_common_args(parser: argparse.ArgumentParser, *, component_required: bool = True) -> argparse.ArgumentParser:
     parser.add_argument(
         "--harness",
         default="Harness-1",
@@ -503,7 +528,8 @@ def add_common_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     parser.add_argument(
         "--component",
         nargs="+",
-        required=True,
+        required=component_required,
+        default=None,
         metavar="ID",
         help=(
             "Advanced harness components to enable (not the basic runtime tools). "
@@ -513,7 +539,9 @@ def add_common_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
             "Pass `all` to enable every advanced component, `default` for the "
             "upstream Harness-1 operating point (chunk_neighbors and "
             "adaptive_rerank_instruction off; Harness-G default is all eight), "
-            "or `zero` for none."
+            "or `zero` for none. "
+            "Eval and older train methods still require this flag. "
+            "only-opd, no-project, and no-gate default to all (Teacher Full, Student Zero) when it is omitted."
         ),
     )
     parser.add_argument("--out", type=Path, default=None, help="Output directory.")
@@ -601,7 +629,7 @@ def add_common_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
 
 
 def add_train_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
-    add_common_args(parser)
+    add_common_args(parser, component_required=False)
     parser.add_argument(
         "--train_method",
         "--train-method",
@@ -616,7 +644,22 @@ def add_train_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
             "zero-placebo = CISPO + sampled gap with identical Zero prefixes "
             "(requires --component zero); "
             "full-sampled-gap = CISPO + sampled gap vs same-state Full prefix "
-            "(requires --component all)."
+            "(requires --component all). "
+            "only-opd = projected-gap OPD only (no CISPO); "
+            "no-project = CISPO + projected-gap on native anchors only; "
+            "no-gate = CISPO + projected-gap with g=1. "
+            "Those three default to Harness-1 Full teacher / Zero student."
+        ),
+    )
+    parser.add_argument(
+        "--rl-reward",
+        choices=("harness1-composite", "final-answer-recall"),
+        default=None,
+        help=(
+            "Explicit terminal reward. harness1-composite uses the frozen Harness-1 "
+            "v3 default formula adapted to TRIM metrics; final-answer-recall uses "
+            "only final_answer_recall. Omit to preserve the existing TRIM reward. "
+            "For only-opd this affects diagnostics only."
         ),
     )
     parser.add_argument(
@@ -698,8 +741,8 @@ def add_train_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
         type=float,
         default=None,
         help=(
-            "OPD coefficient. Default 0.1; scape+rl, trim, zero-placebo, and "
-            "full-sampled-gap use 0.01."
+            "OPD coefficient. Default 0.1; scape+rl, trim, zero-placebo, "
+            "full-sampled-gap, only-opd, no-project, and no-gate use 0.01."
         ),
     )
     parser.add_argument(
@@ -1090,6 +1133,9 @@ def _spec_from_ns(args: argparse.Namespace, *, train: bool) -> LaunchSpec:
 
 
 _SAMPLED_CONTROL_METHODS = frozenset({"zero-placebo", "full-sampled-gap"})
+_SEED_SCALE_METHODS = frozenset(
+    {"scape+rl", "trim", "zero-placebo", "full-sampled-gap", *NEW_TRIM_ABLATION_METHODS}
+)
 
 
 def _assert_sampled_control_launch(spec: LaunchSpec, args: argparse.Namespace) -> None:
@@ -1113,15 +1159,52 @@ def _assert_sampled_control_launch(spec: LaunchSpec, args: argparse.Namespace) -
         raise LaunchError(f"--train_method {method} requires lambda_opd > 0")
 
 
+def _assert_trim_ablation_launch(spec: LaunchSpec, args: argparse.Namespace) -> None:
+    method = spec.train_method
+    if method not in NEW_TRIM_ABLATION_METHODS:
+        return
+    if spec.harness != "Harness-1":
+        raise LaunchError(
+            f"--train_method {method} is fixed to Harness-1 Full teacher / Zero student"
+        )
+    if spec.component_preset != "all":
+        raise LaunchError(
+            f"--train_method {method} requires --component all "
+            f"(got preset={spec.component_preset!r} component={spec.coalition!r})"
+        )
+    lam = float(args.lambda_opd)
+    if not math.isfinite(lam) or lam <= 0.0:
+        raise LaunchError(f"--train_method {method} requires a finite lambda_opd > 0")
+    if int(args.opd_states_per_trajectory) == 0:
+        raise LaunchError(f"--train_method {method} rejects --opd-states-per-trajectory 0")
+
+
 def parse_train_args(argv: Sequence[str] | None = None) -> tuple[argparse.Namespace, LaunchSpec]:
     parser = argparse.ArgumentParser(
         description=(
             "One-click Harness-1 / Harness-G training "
-            "(opd | rl+opd | rl | scape+rl | trim | zero-placebo | full-sampled-gap)."
+            "(opd | rl+opd | rl | scape+rl | trim | zero-placebo | full-sampled-gap | "
+            "only-opd | no-project | no-gate)."
         ),
     )
     add_train_args(parser)
     args = parser.parse_args(argv)
+    method = _TRAIN_METHOD_ALIASES.get(_norm(args.train_method))
+    if args.component is None:
+        if method in NEW_TRIM_ABLATION_METHODS:
+            args.component = ["all"]
+        else:
+            parser.error("the following arguments are required: --component")
+    if method in NEW_TRIM_ABLATION_METHODS:
+        tokens = parse_component_tokens(args.component)
+        if not (len(tokens) == 1 and _norm(tokens[0]) == "all"):
+            try:
+                ids = canonical_component_ids(args.component, harness="Harness-1")
+            except LaunchError:
+                ids = None
+            known = list(all_component_ids("Harness-1"))
+            if ids is not None and set(ids) == set(known) and len(ids) == len(known):
+                args.component = ["all"]
     spec = _spec_from_ns(args, train=True)
     args.harness = spec.harness
     args.benchmark = spec.benchmark
@@ -1136,10 +1219,10 @@ def parse_train_args(argv: Sequence[str] | None = None) -> tuple[argparse.Namesp
         args.train_data = TRAIN_DATA_BCPLUS_664 if g_train else TRAIN_DATA_SEC
     else:
         args.train_data = canonical_train_data(raw_train)
-    seed_scale = spec.train_method in {"scape+rl", "trim"} or spec.train_method in _SAMPLED_CONTROL_METHODS
+    seed_scale = spec.train_method in _SEED_SCALE_METHODS
     if args.opd_states_per_trajectory is None:
         args.opd_states_per_trajectory = -1 if seed_scale else 3
-    if spec.train_method == "trim":
+    if spec.train_method == "trim" or spec.train_method in NEW_TRIM_ABLATION_METHODS:
         args.opd_loss = OPD_LOSS_PROJECTED_GAP
     elif spec.train_method == "scape+rl" or spec.train_method in _SAMPLED_CONTROL_METHODS:
         args.opd_loss = OPD_LOSS_SAMPLED_GAP
@@ -1148,6 +1231,21 @@ def parse_train_args(argv: Sequence[str] | None = None) -> tuple[argparse.Namesp
     if args.lambda_opd is None:
         args.lambda_opd = SCAPE_RL_LAMBDA_OPD if seed_scale else 0.1
     _assert_sampled_control_launch(spec, args)
+    _assert_trim_ablation_launch(spec, args)
+    apply_ablation_fields(args, spec.train_method or "")
+    if not hasattr(args, "rl_enabled"):
+        args.rl_enabled = True
+    if not hasattr(args, "projection_mode"):
+        args.projection_mode = "full"
+    if not hasattr(args, "opd_gate_mode"):
+        args.opd_gate_mode = "sigmoid"
+    if not hasattr(args, "ablation_variant"):
+        args.ablation_variant = "none"
+    requested_reward = getattr(args, "rl_reward", None)
+    args.rl_reward_effective = requested_reward or "trim-legacy-v1"
+    if requested_reward == "harness1-composite" and spec.harness != "Harness-1":
+        raise LaunchError("--rl-reward harness1-composite requires --harness Harness-1")
+    args.reward_protocol = reward_protocol_for(args.rl_reward_effective)
     if getattr(args, "opd_gate_beta", None) is None:
         args.opd_gate_beta = SCAPE_RL_OPD_GATE_BETA
     if args.n_queries is None and args.train_data != TRAIN_DATA_SEC:
@@ -1171,6 +1269,27 @@ def parse_train_args(argv: Sequence[str] | None = None) -> tuple[argparse.Namesp
         found = default_graph_path()
         if found:
             args.graph_index_path = found
+    from trim.training.opd_train_contract import training_cell_for_method
+
+    args.experiment_contract = build_experiment_contract(
+        train_method=str(spec.train_method or ""),
+        training_mode=str(spec.training_mode or ""),
+        cell=training_cell_for_method(spec.train_method),
+        harness=spec.harness,
+        opd_loss=str(args.opd_loss),
+        lambda_opd=float(args.lambda_opd),
+        opd_gate_beta=float(args.opd_gate_beta),
+        opd_states_per_trajectory=int(args.opd_states_per_trajectory),
+        rl_reward_requested=requested_reward,
+        rl_reward_effective=str(args.rl_reward_effective),
+        reward_protocol=str(args.reward_protocol),
+        student_mask=student_mask_for_ids(spec.components, harness=spec.harness),
+        teacher_mask=teacher_mask_for_ids(
+            spec.components, harness=spec.harness, preset=spec.component_preset
+        ),
+        max_turns=int(getattr(args, "max_turns", 0) or 0),
+        component=spec.coalition,
+    )
     return args, spec
 
 

@@ -17,6 +17,12 @@ This launcher starts **one Scheme A process per node** (default
 ``--out`` must be a shared filesystem (NFS/GPFS/lustre). Model weights, the
 SEC BM25 index, and ``--rl-data`` must also be visible on every node.
 
+``--train_method`` also accepts ``only-opd``, ``no-project``, and ``no-gate``.
+Omitting ``--component`` on those three methods selects Harness-1 ``all``
+(Teacher Full, Student Zero). ``--rl-reward`` is ``harness1-composite`` or
+``final-answer-recall``; omit it to keep the existing TRIM reward. The same
+train argv, including those flags, is forwarded to every rank.
+
 Qwen-4B (fits one GPU) — 4 nodes × 8 cards, one actor per card::
 
     # identical command on every node, only --node-rank changes

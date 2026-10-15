@@ -85,11 +85,31 @@ def compute_sr_opd_reverse_kl(
     return (kl * weight).sum() / denom
 
 
+def action_gap_gate(
+    delta: torch.Tensor,
+    *,
+    gate_beta: float = DEFAULT_OPD_GATE_BETA,
+    gate_mode: str = "sigmoid",
+) -> torch.Tensor:
+    """Reliability weight on a detached action-gap.
+
+    ``sigmoid`` is ``σ(β · sg[ℓ^T − ℓ^S])``. ``none`` is the constant 1 tensor
+    used by ``no-gate``. ``beta=0`` is not that switch: it yields ``g=0.5``.
+    """
+    mode = str(gate_mode or "sigmoid")
+    if mode == "sigmoid":
+        return torch.sigmoid(delta.detach() * float(gate_beta))
+    if mode == "none":
+        return torch.ones_like(delta)
+    raise ValueError(f"unknown gate_mode={gate_mode!r}")
+
+
 def gated_action_gap_per_token(
     student_logprobs: torch.Tensor,
     teacher_logprobs: torch.Tensor,
     *,
     gate_beta: float = DEFAULT_OPD_GATE_BETA,
+    gate_mode: str = "sigmoid",
 ) -> torch.Tensor:
     """SEED per-token term ``g · (sg[ℓ^T] − ℓ^S)`` with ``ℓ = log π(a)``.
 
@@ -107,7 +127,7 @@ def gated_action_gap_per_token(
             f"student={student.numel()}"
         )
     delta = (teacher - student).detach()
-    gate = torch.sigmoid(delta * float(gate_beta))
+    gate = action_gap_gate(delta, gate_beta=gate_beta, gate_mode=gate_mode)
     return gate * (teacher - student)
 
 
@@ -117,10 +137,14 @@ def gated_action_gap_weighted_sum(
     weights: torch.Tensor,
     *,
     gate_beta: float = DEFAULT_OPD_GATE_BETA,
+    gate_mode: str = "sigmoid",
 ) -> torch.Tensor:
     """``sum_k w_k g_k (sg[ℓ^T_k] − ℓ^S_k)``. Lambda and Z_gap are applied by the caller."""
     gap = gated_action_gap_per_token(
-        student_logprobs, teacher_logprobs, gate_beta=gate_beta
+        student_logprobs,
+        teacher_logprobs,
+        gate_beta=gate_beta,
+        gate_mode=gate_mode,
     )
     weight = weights.to(device=gap.device, dtype=gap.dtype).reshape(-1)
     if weight.numel() != gap.numel():
@@ -169,10 +193,14 @@ def gated_sampled_gap_per_token(
     teacher_logprobs: torch.Tensor,
     *,
     gate_beta: float = DEFAULT_OPD_GATE_BETA,
+    gate_mode: str = "sigmoid",
 ) -> torch.Tensor:
     """Back-compat alias of ``gated_action_gap_per_token`` (strict lengths)."""
     return gated_action_gap_per_token(
-        student_logprobs, teacher_logprobs, gate_beta=gate_beta
+        student_logprobs,
+        teacher_logprobs,
+        gate_beta=gate_beta,
+        gate_mode=gate_mode,
     )
 
 
@@ -182,12 +210,13 @@ def compute_sr_opd_sampled_gap(
     token_mask: torch.Tensor | None = None,
     *,
     gate_beta: float = DEFAULT_OPD_GATE_BETA,
+    gate_mode: str = "sigmoid",
 ) -> torch.Tensor:
     """Masked token-mean of the SEED gated sampled-token gap."""
     if student_logprobs.numel() == 0:
         return student_logprobs.sum() * 0.0
     gap = gated_sampled_gap_per_token(
-        student_logprobs, teacher_logprobs, gate_beta=gate_beta
+        student_logprobs, teacher_logprobs, gate_beta=gate_beta, gate_mode=gate_mode
     )
     if token_mask is None:
         weight = torch.ones_like(gap)

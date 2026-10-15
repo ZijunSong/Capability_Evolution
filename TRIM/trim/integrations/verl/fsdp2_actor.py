@@ -97,8 +97,12 @@ def unpack_gap_row(raw: Any, *, require_projected: bool = True) -> dict[str, Any
         weights = list(raw.weights[n_p:]) if len(raw.weights) >= n_p else list(raw.weights)
         meta = dict(raw.metadata or {})
         loss = str(raw.opd_loss or meta.get("loss_id") or "")
+        from trim.training.tinker_opd_datum import resolve_row_ablation
+
+        meta = resolve_row_ablation(meta)
         lam = float(meta.get("lambda_opd") if meta.get("lambda_opd") is not None else 0.01)
         beta = float(meta.get("gate_beta") if meta.get("gate_beta") is not None else 5.0)
+        gate_mode = str(meta.get("gate_mode") or "sigmoid")
         projector_used = bool(meta.get("projector_used", True))
         sampled_action = bool(meta.get("sampled_action", False))
     elif isinstance(raw, dict):
@@ -113,8 +117,15 @@ def unpack_gap_row(raw: Any, *, require_projected: bool = True) -> dict[str, Any
             weights = weights[-len(resp) :] if resp else weights
         meta = dict(raw.get("metadata") or {})
         loss = _row_opd_loss(raw)
+        from trim.training.tinker_opd_datum import resolve_row_ablation
+
+        if not dummy:
+            meta = resolve_row_ablation(meta, raw)
+        else:
+            meta.setdefault("gate_mode", "sigmoid")
         lam = float(meta.get("lambda_opd") if meta.get("lambda_opd") is not None else raw.get("lambda_opd") or 0.01)
         beta = float(meta.get("gate_beta") if meta.get("gate_beta") is not None else raw.get("gate_beta") or 5.0)
+        gate_mode = str(meta.get("gate_mode") or "sigmoid")
         projector_used = bool(meta.get("projector_used", True))
         sampled_action = bool(meta.get("sampled_action", False))
     else:
@@ -156,6 +167,7 @@ def unpack_gap_row(raw: Any, *, require_projected: bool = True) -> dict[str, Any
         "dummy": dummy,
         "lambda_opd": lam,
         "gate_beta": beta,
+        "gate_mode": gate_mode,
         "opd_loss": loss,
         "projector_used": projector_used,
         "sampled_action": sampled_action,
@@ -612,7 +624,7 @@ class FSDP2CispoActor:
         *,
         gap_variant: str = "projected",
     ) -> tuple[torch.Tensor, int, dict[str, float]]:
-        from trim.training.sr_opd_loss import gated_action_gap_weighted_sum
+        from trim.training.sr_opd_loss import action_gap_gate, gated_action_gap_weighted_sum
 
         prepared = []
         for raw in chunk:
@@ -649,11 +661,17 @@ class FSDP2CispoActor:
                     f"projected-gap student/teacher/weight length mismatch: "
                     f"student={s.numel()} teacher={t.numel()} weights={w.numel()}"
                 )
-            numer = gated_action_gap_weighted_sum(s, t, w, gate_beta=row["gate_beta"])
+            numer = gated_action_gap_weighted_sum(
+                s, t, w, gate_beta=row["gate_beta"], gate_mode=row.get("gate_mode") or "sigmoid"
+            )
             terms.append(numer)
             with torch.no_grad():
                 delta = (t - s).detach()
-                gate = torch.sigmoid(delta * float(row["gate_beta"]))
+                gate = action_gap_gate(
+                    delta,
+                    gate_beta=row["gate_beta"],
+                    gate_mode=row.get("gate_mode") or "sigmoid",
+                )
                 n_keep = int((w != 0).sum().item())
                 gate_sum += float((gate * (w != 0).float()).sum().item())
                 delta_sum += float((delta * (w != 0).float()).sum().item())
@@ -735,6 +753,7 @@ class FSDP2CispoActor:
         lambda_opd: float = 0.0,
         plan: RankBatchPlan | None = None,
         gap_variant: str | None = None,
+        expected_gate_mode: str | None = None,
     ) -> dict[str, Any]:
         """Accumulate CISPO (+ CE or projected-gap) then one optimizer.step. All ranks must enter."""
         from trim.training.rl_opd_types import (
@@ -763,9 +782,21 @@ class FSDP2CispoActor:
             resolved_gap = str(gap_variant or GAP_VARIANT_PROJECTED)
             if resolved_gap not in {GAP_VARIANT_PROJECTED, *SAMPLED_GAP_VARIANTS}:
                 raise ValueError(f"unknown gap_variant {resolved_gap!r}")
+            seen_gate_modes: set[str] = set()
             for raw in inspect_rows:
                 if isinstance(raw, dict) and raw.get("is_dummy"):
                     continue
+                unpacked_gate = unpack_gap_row(
+                    raw, require_projected=(resolved_gap == GAP_VARIANT_PROJECTED)
+                )
+                if unpacked_gate.get("dummy"):
+                    continue
+                mode = str(unpacked_gate.get("gate_mode") or "sigmoid")
+                seen_gate_modes.add(mode)
+                if expected_gate_mode and mode != str(expected_gate_mode):
+                    raise ValueError(
+                        f"gap row gate_mode={mode!r} does not match run gate_mode={expected_gate_mode!r}"
+                    )
                 if resolved_gap == GAP_VARIANT_PROJECTED:
                     loss = _row_opd_loss(raw)
                     if loss and uses_seed_gap(loss) and not uses_projected_seed(loss):
@@ -773,8 +804,9 @@ class FSDP2CispoActor:
                             f"distributed actor implements projected-gap only; refused {loss!r}"
                         )
                 else:
-                    unpacked = unpack_gap_row(raw, require_projected=False)
-                    validate_gap_row_for_variant(unpacked, gap_variant=resolved_gap)
+                    validate_gap_row_for_variant(unpacked_gate, gap_variant=resolved_gap)
+            if len(seen_gate_modes) > 1:
+                raise ValueError(f"gap rows disagree on gate_mode: {sorted(seen_gate_modes)}")
         sampled_gap = resolved_gap in SAMPLED_GAP_VARIANTS
         if gap_mode and sampled_gap:
             objective_name = "sampled_gap"

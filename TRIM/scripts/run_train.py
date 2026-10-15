@@ -151,6 +151,13 @@ def build_train_launch_record(args, spec) -> dict:
         "opd_loss": args.opd_loss,
         "opd_states_per_trajectory": args.opd_states_per_trajectory,
         "lambda_opd": args.lambda_opd,
+        "rl_enabled": bool(getattr(args, "rl_enabled", True)),
+        "projection_mode": getattr(args, "projection_mode", "full"),
+        "opd_gate_mode": getattr(args, "opd_gate_mode", "sigmoid"),
+        "ablation_variant": getattr(args, "ablation_variant", "none"),
+        "rl_reward": getattr(args, "rl_reward", None),
+        "rl_reward_effective": getattr(args, "rl_reward_effective", "trim-legacy-v1"),
+        "experiment_contract": getattr(args, "experiment_contract", None),
         "opd_gate_beta": float(getattr(args, "opd_gate_beta", 5.0) or 5.0),
         "component": spec.coalition,
         "component_ids": list(spec.components),
@@ -176,12 +183,16 @@ def build_train_launch_record(args, spec) -> dict:
         if args.train_data == "sec"
         else None,
         "student_mask_label": (
-            "H_zero (all advanced components OFF)"
+            "H_zero"
+            if str(getattr(args, "ablation_variant", "none") or "none") != "none"
+            else "H_zero (all advanced components OFF)"
             if spec.zero_components
             else "H_min (listed advanced components OFF)"
         ),
         "teacher_mask_label": (
-            "H_zero (all advanced components OFF)"
+            "H_full"
+            if str(getattr(args, "ablation_variant", "none") or "none") != "none"
+            else "H_zero (all advanced components OFF)"
             if spec.zero_components
             else "H_full (listed advanced components ON)"
         ),

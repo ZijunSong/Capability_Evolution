@@ -53,6 +53,7 @@ class ProjectedStudentAction:
     arguments: dict[str, Any]
     source_event_id: str
     confidence: float = 1.0
+    alignment_source: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -60,6 +61,7 @@ class ProjectedStudentAction:
             "arguments": dict(self.arguments),
             "source_event_id": self.source_event_id,
             "confidence": float(self.confidence),
+            "alignment_source": self.alignment_source,
         }
 
 
@@ -74,6 +76,7 @@ class SkipToAnchorResult:
     anchor_distance: int | None = None
     reason: str | None = None
     component_id: str | None = None
+    alignment_source: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
@@ -112,7 +115,41 @@ def curated_delta(event: Mapping[str, Any]) -> tuple[list[str], list[str]]:
     return [], []
 
 
-def student_action_of(event: Mapping[str, Any]) -> ProjectedStudentAction | None:
+def native_action_of(event: Mapping[str, Any]) -> ProjectedStudentAction | None:
+    """Student-native action stored on the event itself.
+
+    Does not read ``curated_delta`` or ``projectable_target``. Empty ``kind``
+    only accepts legacy dict-shaped action records; TRIM ``HarnessEvent``
+    rows use ``model_action``.
+    """
+    kind = str(event.get("kind") or "")
+    if kind not in {"", "model_action"}:
+        return None
+    if bool(event.get("harness_only")):
+        return None
+    if str(event.get("event_type") or "") in HARNESS_ONLY_EVENT_TYPES:
+        return None
+    name = str(event.get("action_name") or event.get("tool_name") or "")
+    if name not in STUDENT_NATIVE_TOOLS or name in TEACHER_ONLY_TOOLS:
+        return None
+    args = dict(event.get("arguments") or event.get("parameters") or {})
+    args.pop("result_ids", None)
+    args.pop("importance", None)
+    return ProjectedStudentAction(
+        name=name,
+        arguments=args,
+        source_event_id=str(event.get("event_id") or ""),
+        alignment_source="native_action",
+    )
+
+
+def student_action_of(
+    event: Mapping[str, Any],
+    *,
+    allow_explicit_mapping: bool = True,
+) -> ProjectedStudentAction | None:
+    if not allow_explicit_mapping:
+        return native_action_of(event)
     event_id = str(event.get("event_id") or "")
     added, removed = curated_delta(event)
     if added or removed:
@@ -120,6 +157,7 @@ def student_action_of(event: Mapping[str, Any]) -> ProjectedStudentAction | None
             name="curate",
             arguments={"add_ids": sorted(added), "remove_ids": sorted(removed)},
             source_event_id=event_id,
+            alignment_source="explicit_mapping",
         )
     target = event.get("projectable_target")
     if isinstance(target, Mapping) and target.get("name"):
@@ -129,17 +167,29 @@ def student_action_of(event: Mapping[str, Any]) -> ProjectedStudentAction | None
                 name=name,
                 arguments=dict(target.get("arguments") or {}),
                 source_event_id=event_id,
+                alignment_source="explicit_mapping",
             )
     name = str(event.get("action_name") or event.get("tool_name") or "")
     if name in STUDENT_NATIVE_TOOLS:
         args = dict(event.get("arguments") or event.get("parameters") or {})
         args.pop("result_ids", None)
         args.pop("importance", None)
-        return ProjectedStudentAction(name=name, arguments=args, source_event_id=event_id)
+        return ProjectedStudentAction(
+            name=name,
+            arguments=args,
+            source_event_id=event_id,
+            alignment_source="native_action",
+        )
     return None
 
 
-def is_harness_only(event: Mapping[str, Any]) -> bool:
+def is_harness_only(
+    event: Mapping[str, Any],
+    *,
+    allow_explicit_mapping: bool = True,
+) -> bool:
+    if not allow_explicit_mapping:
+        return native_action_of(event) is None
     added, removed = curated_delta(event)
     if added or removed:
         return False
@@ -155,7 +205,7 @@ def is_harness_only(event: Mapping[str, Any]) -> bool:
     if kind == "tool_observation" and not bool(event.get("visible_to_student")):
         return True
     if kind in HARNESS_ONLY_KINDS:
-        return student_action_of(event) is None
+        return student_action_of(event, allow_explicit_mapping=allow_explicit_mapping) is None
     return False
 
 
@@ -189,10 +239,14 @@ def action_realizable(
     return True, None
 
 
-def classify_event(event: Mapping[str, Any]) -> str:
-    if is_harness_only(event):
+def classify_event(
+    event: Mapping[str, Any],
+    *,
+    allow_explicit_mapping: bool = True,
+) -> str:
+    if is_harness_only(event, allow_explicit_mapping=allow_explicit_mapping):
         return SKIP
-    if student_action_of(event) is None:
+    if student_action_of(event, allow_explicit_mapping=allow_explicit_mapping) is None:
         return SKIP
     return ALIGN
 
@@ -207,6 +261,7 @@ def project_events(
     max_anchor_scan_events: int = MAX_ANCHOR_SCAN_EVENTS,
     component_id: str | None = None,
     first_only: bool = False,
+    allow_explicit_mapping: bool = True,
 ) -> list[SkipToAnchorResult]:
     """Walk Teacher events. SKIP harness-only, ALIGN the next realizable Student tool call."""
     aligned: list[SkipToAnchorResult] = []
@@ -218,11 +273,13 @@ def project_events(
         if idx >= scan_from + max_anchor_scan_events:
             skipped.append(event_id)
             continue
-        if classify_event(event) == SKIP:
+        if classify_event(event, allow_explicit_mapping=allow_explicit_mapping) == SKIP:
             skipped.append(event_id)
             continue
-        action = student_action_of(event)
+        action = student_action_of(event, allow_explicit_mapping=allow_explicit_mapping)
         assert action is not None
+        if skipped and action.alignment_source == "native_action":
+            action.alignment_source = "native_anchor_after_skip"
         accessible = event.get("accessible_doc_ids")
         ok, reason = action_realizable(
             action,
@@ -243,6 +300,7 @@ def project_events(
             anchor_event_id=event_id,
             anchor_distance=len(skipped),
             component_id=component_id or event.get("component_id"),
+            alignment_source=action.alignment_source,
         )
         if result.kind not in {ALIGN, SKIP}:
             raise ValueError(f"projector must emit align or skip, got {result.kind}")
@@ -342,6 +400,7 @@ def project_bridge_steps(
     component_id: str,
     legal_tools: Iterable[str] | None = None,
     max_anchor_scan_events: int = MAX_ANCHOR_SCAN_EVENTS,
+    allow_explicit_mapping: bool = True,
 ) -> list[SkipToAnchorResult]:
     events = teacher_events_from_bridge_steps(steps)
     accessible: list[str] = []
@@ -355,4 +414,5 @@ def project_bridge_steps(
         legal_tools=legal_tools,
         max_anchor_scan_events=max_anchor_scan_events,
         component_id=component_id,
+        allow_explicit_mapping=allow_explicit_mapping,
     )

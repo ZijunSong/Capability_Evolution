@@ -21,8 +21,13 @@ from trim.training.rl_opd_types import (
     TRAINING_MODE_RL,
     TRAINING_MODE_RL_OPD,
     TRAINING_MODE_SCAPE_RL,
+    TRAINING_MODE_NO_GATE,
+    TRAINING_MODE_NO_PROJECT,
+    TRAINING_MODE_ONLY_OPD,
     TRAINING_MODE_SCAPE_SEED,
     TRAINING_MODE_ZERO_PLACEBO,
+    TRIM_ABLATION_MODES,
+    TRIM_PROJECTED_MODES,
     uses_seed_gap,
 )
 
@@ -45,6 +50,12 @@ METHOD_ALIASES = {
     "zero_placebo": TRAINING_MODE_ZERO_PLACEBO,
     "full-sampled-gap": TRAINING_MODE_FULL_SAMPLED_GAP,
     "full_sampled_gap": TRAINING_MODE_FULL_SAMPLED_GAP,
+    "only-opd": TRAINING_MODE_ONLY_OPD,
+    "only_opd": TRAINING_MODE_ONLY_OPD,
+    "no-project": TRAINING_MODE_NO_PROJECT,
+    "no_project": TRAINING_MODE_NO_PROJECT,
+    "no-gate": TRAINING_MODE_NO_GATE,
+    "no_gate": TRAINING_MODE_NO_GATE,
 }
 
 BACKEND_ALIASES = {
@@ -82,6 +93,12 @@ SUPPORTED_TRAIN_CONTRACTS: frozenset[tuple[str, str, str]] = frozenset(
         ("rl+opd", OPD_LOSS_SAMPLED_GAP, BACKEND_HF_DEBUG),
         (TRAINING_MODE_ZERO_PLACEBO, OPD_LOSS_SAMPLED_GAP, BACKEND_VERL),
         (TRAINING_MODE_FULL_SAMPLED_GAP, OPD_LOSS_SAMPLED_GAP, BACKEND_VERL),
+        (TRAINING_MODE_ONLY_OPD, OPD_LOSS_PROJECTED_GAP, BACKEND_HF_DEBUG),
+        (TRAINING_MODE_ONLY_OPD, OPD_LOSS_PROJECTED_GAP, BACKEND_VERL),
+        (TRAINING_MODE_NO_PROJECT, OPD_LOSS_PROJECTED_GAP, BACKEND_HF_DEBUG),
+        (TRAINING_MODE_NO_PROJECT, OPD_LOSS_PROJECTED_GAP, BACKEND_VERL),
+        (TRAINING_MODE_NO_GATE, OPD_LOSS_PROJECTED_GAP, BACKEND_HF_DEBUG),
+        (TRAINING_MODE_NO_GATE, OPD_LOSS_PROJECTED_GAP, BACKEND_VERL),
     }
 )
 
@@ -94,6 +111,12 @@ FORBIDDEN_METHOD_LOSSES: frozenset[tuple[str, str]] = frozenset(
         (TRAINING_MODE_ZERO_PLACEBO, OPD_LOSS_PROJECTED_GAP),
         (TRAINING_MODE_FULL_SAMPLED_GAP, OPD_LOSS_CE),
         (TRAINING_MODE_FULL_SAMPLED_GAP, OPD_LOSS_PROJECTED_GAP),
+        (TRAINING_MODE_ONLY_OPD, OPD_LOSS_CE),
+        (TRAINING_MODE_ONLY_OPD, OPD_LOSS_SAMPLED_GAP),
+        (TRAINING_MODE_NO_PROJECT, OPD_LOSS_CE),
+        (TRAINING_MODE_NO_PROJECT, OPD_LOSS_SAMPLED_GAP),
+        (TRAINING_MODE_NO_GATE, OPD_LOSS_CE),
+        (TRAINING_MODE_NO_GATE, OPD_LOSS_SAMPLED_GAP),
     }
 )
 
@@ -106,6 +129,9 @@ CELL_FOR_METHOD = {
     TRAINING_MODE_PURE_OPD: "pure_opd",
     TRAINING_MODE_ZERO_PLACEBO: "zero_placebo",
     TRAINING_MODE_FULL_SAMPLED_GAP: "full_sampled_gap",
+    TRAINING_MODE_ONLY_OPD: "only_opd",
+    TRAINING_MODE_NO_PROJECT: "no_project",
+    TRAINING_MODE_NO_GATE: "no_gate",
 }
 
 
@@ -133,7 +159,7 @@ def actor_wrap_for_backend(backend: str | None) -> str:
 
 def default_opd_loss_for_method(method: str | None) -> str:
     norm_method = normalize_train_method(method)
-    if norm_method == TRAINING_MODE_SCAPE_SEED:
+    if norm_method in TRIM_PROJECTED_MODES:
         return OPD_LOSS_PROJECTED_GAP
     if norm_method in {
         TRAINING_MODE_SCAPE_RL,
@@ -196,7 +222,7 @@ def gap_variant_for_method(method: str | None) -> str | None:
     )
 
     norm = normalize_train_method(method)
-    if norm == TRAINING_MODE_SCAPE_SEED:
+    if norm in TRIM_PROJECTED_MODES:
         return GAP_VARIANT_PROJECTED
     if norm == TRAINING_MODE_ZERO_PLACEBO:
         return GAP_VARIANT_SAMPLED_ZERO_PLACEBO
@@ -241,8 +267,11 @@ def describe_train_contract(
         and opd_loss == OPD_LOSS_SAMPLED_GAP
         and family == BACKEND_VERL
     )
+    from trim.training.trim_ablation import resolve_trim_ablation
+
+    ablation = resolve_trim_ablation(method)
     gap_on_dist = (
-        method == TRAINING_MODE_SCAPE_SEED
+        method in TRIM_PROJECTED_MODES
         and opd_loss == OPD_LOSS_PROJECTED_GAP
         and family == BACKEND_VERL
     ) or sampled_dist
@@ -269,6 +298,11 @@ def describe_train_contract(
         "target_source": target_source,
         "control_variant": control,
         "gap_variant": gap_variant_for_method(method),
+        "ablation_variant": None if ablation is None else ablation.variant,
+        "rl_enabled": None if ablation is None else ablation.rl_enabled,
+        "projection_mode": None if ablation is None else ablation.projection_mode,
+        "gate_mode": None if ablation is None else ablation.gate_mode,
+        "skip_to_anchor_enabled": method in TRIM_PROJECTED_MODES and opd_loss == OPD_LOSS_PROJECTED_GAP,
     }
 
 
@@ -288,6 +322,11 @@ def assert_train_contract(
             detail = (
                 f"{norm_method} requires sr_opd_sampled_gap; "
                 "CE and projected-gap are not this control."
+            )
+        elif norm_method in TRIM_ABLATION_MODES or norm_method == TRAINING_MODE_SCAPE_SEED:
+            detail = (
+                f"{norm_method} requires sr_opd_projected_gap; "
+                "CE and sampled-gap are not this method."
             )
         else:
             detail = "trim/scape_seed requires sr_opd_projected_gap; CE and sampled-gap are not trim."
@@ -312,6 +351,8 @@ def assert_train_contract(
         "backends; scape+rl gap stays on hf_debug. "
         "zero-placebo and full-sampled-gap use sr_opd_sampled_gap on verl/fsdp2/ddp "
         "and are not trim aliases. "
+        "only-opd, no-project, and no-gate use sr_opd_projected_gap on hf_debug and verl; "
+        "they are not aliases of opd or trim. "
         "Do not treat a method+loss change as the same algorithm accelerated."
     )
 

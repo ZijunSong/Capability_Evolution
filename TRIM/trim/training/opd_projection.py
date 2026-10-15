@@ -92,6 +92,7 @@ class ProjectionResult:
     realizability: RealizabilityReport | None = None
     reject_reason: str | None = None
     component_id: str | None = None
+    alignment_source: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -106,6 +107,7 @@ class ProjectionResult:
             "realizability": None if self.realizability is None else self.realizability.to_dict(),
             "reject_reason": self.reject_reason,
             "component_id": self.component_id,
+            "alignment_source": self.alignment_source,
         }
 
 
@@ -147,6 +149,7 @@ def _from_skip_to_anchor(raw: Any, component_id: str) -> ProjectionResult:
         anchor_distance=raw.anchor_distance,
         reject_reason=raw.reason,
         component_id=component_id or raw.component_id,
+        alignment_source=str(getattr(raw, "alignment_source", "") or ""),
     )
 
 
@@ -158,9 +161,11 @@ class StudentActionSpaceProjector:
         *,
         max_anchor_scan_events: int = MAX_ANCHOR_SCAN_EVENTS,
         max_macro_actions: int = MAX_MACRO_ACTIONS,
+        allow_explicit_mapping: bool = True,
     ) -> None:
         self.max_anchor_scan_events = int(max_anchor_scan_events)
         self.max_macro_actions = int(max_macro_actions)
+        self.allow_explicit_mapping = bool(allow_explicit_mapping)
         self.handlers = {cid: self.project_segment for cid in all_component_ids()}
         self.handlers.update(
             {cid: self.project_segment for cid in all_component_ids("Harness-G")}
@@ -229,5 +234,6 @@ class StudentActionSpaceProjector:
             max_anchor_scan_events=self.max_anchor_scan_events,
             component_id=component_id,
             first_only=True,
+            allow_explicit_mapping=self.allow_explicit_mapping,
         )
         return _from_skip_to_anchor(results[0], component_id)

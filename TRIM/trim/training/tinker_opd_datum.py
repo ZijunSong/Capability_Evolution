@@ -76,6 +76,10 @@ class TinkerOPDDatum:
             "loss_id": self.opd_loss,
             "lambda_opd": meta.get("lambda_opd"),
             "gate_beta": meta.get("gate_beta"),
+            "gate_mode": meta.get("gate_mode"),
+            "projection_mode": meta.get("projection_mode"),
+            "ablation_variant": meta.get("ablation_variant"),
+            "ablation_contract_version": meta.get("ablation_contract_version"),
             "opd_weight_normalization": meta.get("opd_weight_normalization", OPD_WEIGHT_NORMALIZATION),
         }
 
@@ -95,6 +99,13 @@ class TinkerOPDDatum:
             meta.setdefault("lambda_opd", float(raw["lambda_opd"]))
         if raw.get("gate_beta") is not None:
             meta.setdefault("gate_beta", float(raw["gate_beta"]))
+        for key in ("gate_mode", "projection_mode", "ablation_variant", "ablation_contract_version"):
+            top = raw.get(key)
+            nested = meta.get(key)
+            if top is not None and nested is not None and str(top) != str(nested):
+                raise ValueError(f"conflicting {key}: metadata={nested!r} top={top!r}")
+            if top is not None and nested is None:
+                meta[key] = top
         teacher = [int(x) for x in list(raw.get("teacher_prompt_token_ids") or raw.get("teacher_prompt_ids") or [])]
         return cls(
             model_input=str(raw.get("model_input") or ""),
@@ -378,6 +389,45 @@ def build_tinker_opd_datums(
     return datums
 
 
+_ABLATION_META_DEFAULTS = {
+    "gate_mode": "sigmoid",
+    "projection_mode": "full",
+    "ablation_variant": "none",
+}
+
+
+def resolve_row_ablation(meta: dict[str, Any] | None, top: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Merge datum ablation labels. Old rows default to sigmoid/full.
+
+    A row that declares ``trim_ablation_v1`` must carry gate, projection, and
+    variant. Top-level fields that disagree with metadata are an error.
+    """
+    merged = dict(meta or {})
+    overlay = dict(top or {})
+    contract = merged.get("ablation_contract_version") or overlay.get("ablation_contract_version")
+    keys = ("gate_mode", "projection_mode", "ablation_variant")
+    for key in keys:
+        nested = merged.get(key)
+        exposed = overlay.get(key)
+        if nested is not None and exposed is not None and str(nested) != str(exposed):
+            raise ValueError(f"conflicting {key}: metadata={nested!r} top={exposed!r}")
+        if nested is None and exposed is not None:
+            merged[key] = exposed
+    if contract == "trim_ablation_v1":
+        merged["ablation_contract_version"] = "trim_ablation_v1"
+        missing = [key for key in keys if not merged.get(key)]
+        if missing:
+            raise ValueError(f"trim_ablation_v1 datum missing {missing}")
+    else:
+        for key, default in _ABLATION_META_DEFAULTS.items():
+            merged.setdefault(key, default)
+    if str(merged.get("gate_mode")) not in {"sigmoid", "none"}:
+        raise ValueError(f"unknown gate_mode={merged.get('gate_mode')!r}")
+    if str(merged.get("projection_mode")) not in {"full", "native_only"}:
+        raise ValueError(f"unknown projection_mode={merged.get('projection_mode')!r}")
+    return merged
+
+
 def build_projected_seed_datums(
     steps: Sequence[ProjectedTrainingStep],
     *,
@@ -388,6 +438,9 @@ def build_projected_seed_datums(
     opd_loss: str = OPD_LOSS_PROJECTED_GAP,
     model_enc: Any | None = None,
     allow_offline: bool = False,
+    gate_mode: str = "sigmoid",
+    projection_mode: str = "full",
+    ablation_variant: str = "none",
 ) -> tuple[list[TinkerOPDDatum], dict[str, Any]]:
     """SEED-scale OPD on projected student-legal actions.
 
@@ -407,7 +460,15 @@ def build_projected_seed_datums(
         "objective_version": PROJECTED_GAP_OBJECTIVE_VERSION,
         "lambda_opd": float(lambda_opd),
         "gate_beta": float(gate_beta),
+        "gate_mode": str(gate_mode),
+        "projection_mode": str(projection_mode),
+        "ablation_variant": str(ablation_variant),
+        "ablation_contract_version": "trim_ablation_v1",
     }
+    if str(gate_mode) not in {"sigmoid", "none"}:
+        raise ValueError(f"unknown gate_mode={gate_mode!r}")
+    if str(projection_mode) not in {"full", "native_only"}:
+        raise ValueError(f"unknown projection_mode={projection_mode!r}")
     if float(lambda_opd) <= 0.0 or not steps:
         return [], stats
     lam = float(lambda_opd)
@@ -492,6 +553,11 @@ def build_projected_seed_datums(
                 "opd_weight_normalization": "seed_token_mean",
                 "objective_version": PROJECTED_GAP_OBJECTIVE_VERSION,
                 "schema_version": "tinker_opd_datum_v2",
+                "gate_mode": str(gate_mode),
+                "projection_mode": str(projection_mode),
+                "ablation_variant": str(ablation_variant),
+                "ablation_contract_version": "trim_ablation_v1",
+                "alignment_source": str(meta.get("alignment_source") or ""),
                 "effective_weight": weight,
                 "projected_action_token_ids": list(target_ids),
                 "supervised_mask": [1 if bit else 0 for bit in mask],

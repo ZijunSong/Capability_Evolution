@@ -597,6 +597,10 @@ def prepare_hybrid_batch(
     opd_gate_beta: float = SCAPE_RL_OPD_GATE_BETA,
     control_variant: str | None = None,
     strict_privilege_diagnostic: bool = False,
+    enable_rl: bool = True,
+    projection_mode: str = "full",
+    opd_gate_mode: str = "sigmoid",
+    ablation_variant: str = "none",
 ) -> HybridTrainingBatch:
     """Extract OPD states before constant-reward RL filtering.
 
@@ -609,7 +613,13 @@ def prepare_hybrid_batch(
     for group in groups:
         all_points.extend(group.decision_points)
 
-    if remove_constant_reward_groups:
+    if projection_mode not in {"full", "native_only"}:
+        raise ValueError(f"unknown projection_mode={projection_mode!r}")
+    if str(opd_gate_mode) not in {"sigmoid", "none"}:
+        raise ValueError(f"unknown gate_mode={opd_gate_mode!r}")
+    if not enable_rl:
+        rl_datums = []
+    elif remove_constant_reward_groups:
         rl_datums = filter_constant_reward_rl_datums(groups, rl_datums_by_query)
     else:
         rl_datums = [row for group in groups for row in rl_datums_by_query.get(group.query_id, [])]
@@ -681,6 +691,13 @@ def prepare_hybrid_batch(
         else:
             if teacher_event_fn is None:
                 raise ValueError("teacher_event_fn is required when lambda_opd > 0")
+            want_mapping = projection_mode == "full"
+            if projector is None:
+                projector = StudentActionSpaceProjector(allow_explicit_mapping=want_mapping)
+            elif bool(getattr(projector, "allow_explicit_mapping", True)) != want_mapping:
+                raise ValueError(
+                    f"projector allow_explicit_mapping does not match projection_mode={projection_mode!r}"
+                )
             recovery_stats: dict[str, Any] | None = None
             if uses_projected_seed(opd_loss):
                 recovery_stats = {}
@@ -707,6 +724,9 @@ def prepare_hybrid_batch(
                     gate_beta=opd_gate_beta,
                     opd_loss=opd_loss,
                     model_enc=model_enc,
+                    gate_mode=opd_gate_mode,
+                    projection_mode=projection_mode,
+                    ablation_variant=ablation_variant,
                 )
                 extras["build_stats"] = build_stats
             else:
@@ -737,6 +757,19 @@ def prepare_hybrid_batch(
                 "skipped_teacher": False,
                 "projector_used": True,
                 "sampled_action_opd": False,
+                "projection_mode": projection_mode,
+                "gate_mode": opd_gate_mode,
+                "ablation_variant": ablation_variant,
+                "n_native_action": sum(
+                    str((d.metadata or {}).get("alignment_source") or "") == "native_action" for d in opd_datums
+                ),
+                "n_explicit_mapping": sum(
+                    str((d.metadata or {}).get("alignment_source") or "") == "explicit_mapping" for d in opd_datums
+                ),
+                "n_native_anchor_after_skip": sum(
+                    str((d.metadata or {}).get("alignment_source") or "") == "native_anchor_after_skip"
+                    for d in opd_datums
+                ),
                 "projection_coverage": audit.projection_coverage,
                 "reject_rate": audit.n_reject / max(1, audit.n_teacher_segments),
                 "skip_rate": audit.n_skip / max(1, audit.n_teacher_segments),

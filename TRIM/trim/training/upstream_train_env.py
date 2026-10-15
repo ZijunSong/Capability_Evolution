@@ -144,6 +144,8 @@ def apply_upstream_action(
         result = env._handle_format_error("invalid parsed action")
         sync_upstream_state(st)
         st["ended"] = True
+        st["termination_kind"] = "format_error"
+        st["terminal_format_error"] = True
         st["invalid_tools"] = int(st.get("invalid_tools") or 0) + 1
         return st, f"ERROR: format ({getattr(result, 'metrics', {})})", False
     if hasattr(env, "step_parsed_dict"):

@@ -253,6 +253,7 @@ def materialize(
                     "legal_tools": legal_tool_names(harness_mask=mask),
                     "no_teacher_observation_in_student_prefix": True,
                     "prompt_full": teacher_prompt,
+                    "alignment_source": str(getattr(projection, "alignment_source", "") or ""),
                 },
                 student_snapshot=shadow.to_dict(),
                 source_event_ids=list(action.source_event_ids),
