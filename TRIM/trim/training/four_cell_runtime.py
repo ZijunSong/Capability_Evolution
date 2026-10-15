@@ -1904,6 +1904,8 @@ def eval_closed_loop(
     train_session: Any | None = None,
     reasoning_effort: str | None = None,
     graph_index: Any | None = None,
+    bank: str | None = None,
+    bank_role: str = "student",
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     from trim.eval.eval_defaults import (
         HARNESS1_EVAL_DOC_STORE_K,
@@ -1961,6 +1963,8 @@ def eval_closed_loop(
             train_session=train_session,
             reasoning_effort=reasoning_effort,
             graph_index=graph_index,
+            bank=bank,
+            bank_role=bank_role,
         )
         traces, leak = traces_from_groups(groups, rows, searcher=searcher)
         if runtime_audit is not None and not g_eval:
@@ -2026,6 +2030,8 @@ def eval_closed_loop(
             search_k=search_k,
             doc_store_k=doc_store_k,
             graph_index=graph_index,
+            bank=bank,
+            bank_role=bank_role,
         )
         prefix = render_student_prompt(
             snap_from_state(

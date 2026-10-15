@@ -178,7 +178,10 @@ def main(argv: list[str] | None = None) -> int:
     args.score_split = score_split
     evaluation_path = resolve_evaluation_path(args, spec)
     args.evaluation_path = evaluation_path
-    harness_mask = resolve_eval_mask(args, spec, evaluation_path=evaluation_path)
+    if getattr(args, "harness_bank", None) and getattr(args, "resolved_eval_mask", None) is not None:
+        harness_mask = dict(args.resolved_eval_mask)
+    else:
+        harness_mask = resolve_eval_mask(args, spec, evaluation_path=evaluation_path)
     graph_index, graph_meta = load_eval_graph(args, spec, harness_mask)
 
     from trim.training.gpu_keepalive import acquire_keepalive, release_keepalive
@@ -446,6 +449,8 @@ def main(argv: list[str] | None = None) -> int:
                 "model_path": str(spec.base_model),
                 "component": spec.coalition,
                 "harness_mask": harness_mask,
+                "harness_bank": getattr(args, "harness_bank", None),
+                "bank_role": "all" if getattr(args, "harness_bank", None) and spec.coalition == "all" else "student",
                 "rollout_backend": args.rollout_backend,
                 "max_turns": eval_max_turns,
                 "max_new_tokens": eval_max_new,
