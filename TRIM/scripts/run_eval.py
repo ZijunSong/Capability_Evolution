@@ -245,6 +245,22 @@ def main(argv: list[str] | None = None) -> int:
         if missing:
             raise SystemExit(f"--query-ids not in benchmark: {missing}")
         rows = [by_id[q] for q in want]
+    id_file = getattr(args, "eval_query_ids", None)
+    id_list = list(getattr(args, "eval_query_id_list", None) or [])
+    if id_file and not id_list:
+        from trim.rsi.splits import SplitError, load_id_file
+
+        try:
+            id_list = load_id_file(id_file)
+        except SplitError as exc:
+            raise SystemExit(str(exc)) from exc
+    if id_list:
+        from trim.rsi.splits import SplitError, filter_rows_by_ids
+
+        try:
+            rows = filter_rows_by_ids(rows, id_list, role="eval")
+        except SplitError as exc:
+            raise SystemExit(str(exc)) from exc
     audits = []
     for cell, path in adapter_map.items():
         if path:
