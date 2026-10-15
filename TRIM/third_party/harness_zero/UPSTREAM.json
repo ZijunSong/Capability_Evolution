@@ -1,0 +1,8 @@
+{
+  "name": "harness-zero",
+  "url": "https://github.com/metaevo-ai/harness-zero",
+  "commit": "a4a6223241479c750fdab827c3a449bb1d41b99a",
+  "license": "Apache-2.0",
+  "imported_files": [],
+  "note": "Design reference for the bank manifest, guidance binding, and adaptation recipe. TRIM reimplements the loader. No Harness-Zero source is vendored."
+}

@@ -65,6 +65,13 @@ def teacher_mask_for_component(
     return teacher_mask_for_ids([str(component_id)], harness=resolved)
 
 
+def resolve_harness_pair(spec: object, bank: object | None = None) -> dict:
+    """Legacy masks, or an explicit bank zero/all resolution."""
+    from trim.harness_bank.resolution import resolve_harness_pair as _resolve
+
+    return _resolve(spec, bank=bank)
+
+
 def eval_mask_for_ids(
     component_ids: Sequence[str],
     *,

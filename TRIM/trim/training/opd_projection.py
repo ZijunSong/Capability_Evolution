@@ -237,3 +237,23 @@ class StudentActionSpaceProjector:
             allow_explicit_mapping=self.allow_explicit_mapping,
         )
         return _from_skip_to_anchor(results[0], component_id)
+
+
+def project_bank_trace(
+    events: list[HarnessEvent],
+    student_snapshot: EnvironmentSnapshot,
+    student_mask: Mapping[str, bool],
+    *,
+    component_id: str = "bank",
+    recipes: Mapping[str, Any] | None = None,
+) -> ProjectionResult:
+    """Bank joint trace. Unknown dynamic component ids are not silently accepted."""
+    from trim.harness_bank.adaptation import project_ordered_events
+
+    return project_ordered_events(
+        events,
+        student_snapshot,
+        student_mask,
+        component_id=component_id,
+        recipes=recipes,
+    )

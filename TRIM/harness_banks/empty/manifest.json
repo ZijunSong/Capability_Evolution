@@ -1,0 +1,9 @@
+{
+  "schema_version": "trim_bank_v1",
+  "bank_id": "empty",
+  "legacy_flags": {},
+  "active_components": [],
+  "components": [],
+  "hook_order": [],
+  "caps": {"active_components": 6, "added_prompt_tokens": 1536}
+}

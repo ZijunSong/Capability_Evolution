@@ -1,0 +1,16 @@
+{
+  "schema_version": "trim_policy_artifact_v1",
+  "policy_id": "theta0",
+  "base_model_ref": "UNBOUND",
+  "base_model_sha256": "UNBOUND",
+  "export_dir": "",
+  "deployment": "lora",
+  "tokenizer_ref": "UNBOUND",
+  "chat_template_sha256": "UNBOUND",
+  "digest": "UNBOUND",
+  "round_id": "r000",
+  "parent_digest": "",
+  "init_mode": "cumulative_adapter",
+  "cross_round_optimizer": "reset",
+  "bindings": "template_unbound"
+}

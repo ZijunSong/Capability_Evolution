@@ -258,13 +258,22 @@ class LaunchSpec:
     out: Path = field(default_factory=lambda: TRIM_ROOT / "outputs")
     extra: dict = field(default_factory=dict)
     component_preset: str | None = None
+    harness_bank: str | None = None
+    base_contract: str | None = None
+    rsi_round: str | None = None
+    init_policy_manifest: str | None = None
+    bank_sha256: str | None = None
 
     @property
     def coalition(self) -> str:
+        if self.harness_bank and self.component_preset in {"zero", "all", "default"}:
+            return self.component_preset
         return ",".join(self.components) if self.components else "zero"
 
     @property
     def zero_components(self) -> bool:
+        if self.harness_bank and self.component_preset == "all":
+            return False
         return not self.components
 
     @property
@@ -682,6 +691,18 @@ def add_train_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
             "664 for bcplus_train_664."
         ),
     )
+    parser.add_argument(
+        "--init-policy-manifest",
+        dest="init_policy_manifest",
+        default=None,
+        help="PolicyArtifact JSON used to initialize this round. Not a resume of optimizer state.",
+    )
+    parser.add_argument(
+        "--train-query-ids",
+        dest="train_query_ids",
+        default=None,
+        help="Text file with one raw query id per line. Unknown or duplicate ids are rejected.",
+    )
     parser.add_argument("--train-steps", type=int, default=8)
     parser.add_argument(
         "--training-backend",
@@ -884,6 +905,24 @@ def add_train_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
             "harness_g_corpus_graph.pkl when that file exists."
         ),
     )
+    parser.add_argument(
+        "--harness-bank",
+        dest="harness_bank",
+        default=None,
+        help="Frozen dynamic bank directory. Absent preserves the static component path.",
+    )
+    parser.add_argument(
+        "--base-contract",
+        dest="base_contract",
+        default=None,
+        help="Pinned H0 BASE_CONTRACT.json.",
+    )
+    parser.add_argument(
+        "--rsi-round",
+        dest="rsi_round",
+        default=None,
+        help="Outer RSI round id, such as r000.",
+    )
     return parser
 
 
@@ -913,6 +952,12 @@ def add_eval_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
         type=int,
         default=HARNESS1_EVAL_SEARCH_K,
         help="Live BM25 hits per search call. Harness-1 SEARCH_DISPLAY_LIMIT is 10.",
+    )
+    parser.add_argument(
+        "--eval-query-ids",
+        dest="eval_query_ids",
+        default=None,
+        help="Text file with one raw query id per line for closed-loop eval.",
     )
     parser.add_argument(
         "--run-dir",
@@ -1090,6 +1135,36 @@ def _apply_score_split(args: argparse.Namespace, spec: LaunchSpec, *, default: s
     args.score_split = default
 
 
+def _finalize_launch(args: argparse.Namespace, spec: LaunchSpec, *, train: bool) -> tuple[LaunchSpec, dict]:
+    from trim.harness_bank.resolution import apply_bank_launch, resolve_harness_pair
+    from trim.rsi.splits import SplitError, load_id_file
+
+    if train and bool(getattr(args, "resume", False)) and getattr(args, "init_policy_manifest", None):
+        raise LaunchError("--resume cannot be combined with --init-policy-manifest")
+    spec = apply_bank_launch(args, spec)
+    pair = resolve_harness_pair(spec)
+    args.harness_bank = spec.harness_bank
+    args.bank_sha256 = spec.bank_sha256
+    args.base_contract = spec.base_contract
+    args.rsi_round = spec.rsi_round
+    args.init_policy_manifest = spec.init_policy_manifest
+    args.resolved_student_mask = pair["student_mask"]
+    args.resolved_teacher_mask = pair["teacher_mask"]
+    args.resolved_eval_mask = pair["eval_mask"]
+    args.bank_active_components = list(pair["active_components"])
+    raw_ids = getattr(args, "train_query_ids", None) if train else getattr(args, "eval_query_ids", None)
+    if raw_ids:
+        try:
+            parsed_ids = load_id_file(raw_ids)
+        except SplitError as exc:
+            raise LaunchError(str(exc)) from exc
+        if train:
+            args.train_query_id_list = parsed_ids
+        else:
+            args.eval_query_id_list = parsed_ids
+    return spec, pair
+
+
 def _spec_from_ns(args: argparse.Namespace, *, train: bool) -> LaunchSpec:
     harness = _pick(args.harness, _HARNESS_ALIASES, ALLOWED_HARNESSES, "--harness")
     benchmark = _pick(args.benchmark, _BENCHMARK_ALIASES, ALLOWED_BENCHMARKS, "--benchmark")
@@ -1206,6 +1281,7 @@ def parse_train_args(argv: Sequence[str] | None = None) -> tuple[argparse.Namesp
             if ids is not None and set(ids) == set(known) and len(ids) == len(known):
                 args.component = ["all"]
     spec = _spec_from_ns(args, train=True)
+    spec, harness_pair = _finalize_launch(args, spec, train=True)
     args.harness = spec.harness
     args.benchmark = spec.benchmark
     args.model_name = spec.model_name
@@ -1283,10 +1359,8 @@ def parse_train_args(argv: Sequence[str] | None = None) -> tuple[argparse.Namesp
         rl_reward_requested=requested_reward,
         rl_reward_effective=str(args.rl_reward_effective),
         reward_protocol=str(args.reward_protocol),
-        student_mask=student_mask_for_ids(spec.components, harness=spec.harness),
-        teacher_mask=teacher_mask_for_ids(
-            spec.components, harness=spec.harness, preset=spec.component_preset
-        ),
+        student_mask=harness_pair["student_mask"],
+        teacher_mask=harness_pair["teacher_mask"],
         max_turns=int(getattr(args, "max_turns", 0) or 0),
         component=spec.coalition,
     )
@@ -1300,6 +1374,7 @@ def parse_eval_args(argv: Sequence[str] | None = None) -> tuple[argparse.Namespa
     add_eval_args(parser)
     args = parser.parse_args(argv)
     spec = _spec_from_ns(args, train=False)
+    spec, _harness_pair = _finalize_launch(args, spec, train=False)
     args.harness = spec.harness
     args.benchmark = spec.benchmark
     args.model_name = spec.model_name

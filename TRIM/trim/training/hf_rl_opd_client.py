@@ -121,7 +121,8 @@ class HFDebugTrainingClient:
         self.policy_version = ver
 
     def _teacher_cache_key(self, teacher_ids: list[int], resp_ids: list[int]) -> tuple[Any, ...]:
-        return (self._teacher_cache_policy_version, tuple(teacher_ids), tuple(resp_ids))
+        provenance = str(getattr(self, "teacher_cache_namespace", "") or "")
+        return (self._teacher_cache_policy_version, provenance, tuple(teacher_ids), tuple(resp_ids))
 
     def _teacher_logprobs_cached(
         self, pairs: list[tuple[list[int], list[int]]]

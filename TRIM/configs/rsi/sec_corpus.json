@@ -1,0 +1,5 @@
+{
+  "status": "UNBOUND",
+  "retrieval_backend": "local_bm25",
+  "note": "Replace with the local SEC corpus root and index hash before a real campaign."
+}

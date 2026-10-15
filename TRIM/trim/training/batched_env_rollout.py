@@ -1133,6 +1133,8 @@ def rollout_queries_batched(
     opd_loss: str = "",
     rl_reward: str | None = None,
     enable_rl: bool = True,
+    bank: str | None = None,
+    bank_role: str = "student",
 ) -> list[HybridRolloutGroup]:
     """Batch across queries and group members; step the env between turns.
 
@@ -1170,6 +1172,8 @@ def rollout_queries_batched(
         session=train_session,
         is_harness_g=g,
         graph_index=graph_index,
+        bank=bank,
+        bank_role=bank_role,
     )
 
     def prepare(chunk: Sequence[dict[str, Any]]) -> tuple[list[LiveEpisode], float]:

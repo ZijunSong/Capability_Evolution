@@ -196,10 +196,18 @@ def build_train_launch_record(args, spec) -> dict:
             if spec.zero_components
             else "H_full (listed advanced components ON)"
         ),
-        "student_mask": student_mask_for_ids(spec.components, harness=spec.harness),
-        "teacher_mask": teacher_mask_for_ids(
+        "student_mask": getattr(args, "resolved_student_mask", None)
+        or student_mask_for_ids(spec.components, harness=spec.harness),
+        "teacher_mask": getattr(args, "resolved_teacher_mask", None)
+        or teacher_mask_for_ids(
             spec.components, harness=spec.harness, preset=spec.component_preset
         ),
+        "harness_bank": getattr(spec, "harness_bank", None),
+        "bank_sha256": getattr(spec, "bank_sha256", None),
+        "base_contract": getattr(spec, "base_contract", None),
+        "rsi_round": getattr(spec, "rsi_round", None),
+        "init_policy_manifest": getattr(spec, "init_policy_manifest", None),
+        "train_query_ids": getattr(args, "train_query_ids", None),
         "on_policy_refresh": bool(args.on_policy_refresh),
         "train_env": getattr(args, "train_env", "upstream"),
         "teacher_kind": getattr(args, "teacher_kind", "upstream"),
