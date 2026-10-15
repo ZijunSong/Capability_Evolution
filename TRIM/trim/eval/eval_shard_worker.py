@@ -299,6 +299,8 @@ def _eval_chunks(cfg, rows, *, harness_mask, enc, searcher, generate_batch, back
             graph_index=graph,
             doc_store_workers=None if doc_workers is None else int(doc_workers),
             env_workers=None if env_workers is None else int(env_workers),
+            bank=cfg.get("harness_bank"),
+            bank_role=str(cfg.get("bank_role") or "student"),
         )
         leak_count += int(ev.get("teacher_leak_count") or 0)
         last_ev = ev
