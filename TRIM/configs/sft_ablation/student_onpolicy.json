@@ -1,0 +1,21 @@
+{
+  "experiment": "student_onpolicy_sft",
+  "launch": {
+    "nnodes": 4,
+    "nproc_per_node": 1,
+    "rollout_replicas": 8,
+    "tensor_parallel_size": 1,
+    "world_cards": 32,
+    "gradient_ranks": 1,
+    "master_port": 29613
+  },
+  "teacher_component": "all",
+  "student_component": "zero",
+  "supervision_provider": "trim_component_branches_v1",
+  "states_per_trajectory": -1,
+  "loss": "action_ce_global_token_mean_v1",
+  "weight_policy": "projection_effective_weight_v1",
+  "rl_enabled": false,
+  "gap_enabled": false,
+  "gate_enabled": false
+}
