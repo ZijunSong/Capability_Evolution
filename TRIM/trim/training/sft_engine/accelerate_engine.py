@@ -82,9 +82,14 @@ def update_global_batch(
         dummy = row_index is None
         row = reference if dummy else global_rows[row_index]
         if trace is not None:
+            # NOTE: do NOT pass global_step here. fixed_runtime's trace lambda
+            # injects global_step=step+1 into every event; passing it here too
+            # raises "RankProgress.event() got multiple values for keyword
+            # argument 'global_step'" on the first microbatch (g5yjb failed
+            # this way at 12:32:15). The lambda owns global_step; events only
+            # carry their own fields.
             trace(
                 "microbatch_start",
-                global_step=None,
                 slot=slot_id,
                 total_slots=len(slots),
                 dummy=dummy,
