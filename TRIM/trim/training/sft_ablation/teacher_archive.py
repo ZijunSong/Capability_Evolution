@@ -243,6 +243,36 @@ def archive_from_groups(groups: Sequence[Any], *, policy_version: str, mask_name
 
 def _action_of(point: Any) -> dict[str, Any]:
     text = str(getattr(point, "student_action_text", "") or "")
+    tokens = list(getattr(point, "student_action_tokens", []) or [])
+    # 1) First choice: the strict Harmony parser (the same parser the env layer uses
+    #    via parse_generated_action in batched_env_rollout.py). It correctly handles
+    #    GPT-OSS `to=functions.<name> <|constrain|>json <|message|>{json}<|call|>`:
+    #    it strips the `functions.` recipient prefix and reads the JSON body. The
+    #    action_codec.parse_action used below has `_CALL_RE = to=(?P<name>[A-Za-z_]\w*)`
+    #    which stops at `.` (not in the char class), returning {"name":"functions"}
+    #    WITHOUT raising — so its fallback branch never fires for Harmony output,
+    #    and every archive decision.action.name was written as "functions" (0% legal
+    #    supervision for Teacher/Projected SFT). parse_harmony_tool_call returns
+    #    tool_name=None on the bad "functions" name, so we fall through to the
+    #    action_tool_names fallback (env-parsed correct name) and finally codec.
+    if text.strip():
+        try:
+            from trim.eval.harmony_runtime import parse_harmony_tool_call
+
+            parsed = parse_harmony_tool_call(text, completion_ids=tokens or None)
+            if parsed.tool_name:
+                return {"name": parsed.tool_name, "arguments": dict(parsed.arguments or {})}
+        except Exception:
+            pass
+    # 2) Fallback: the tool name the env already parsed (parse_generated_action in
+    #    batched_env_rollout.py correctly strips `functions.`). action_tool_names is
+    #    populated at StudentDecisionPoint construction (batched_env_rollout.py:734).
+    names = list(getattr(point, "action_tool_names", []) or [])
+    if names and names[0]:
+        return {"name": str(names[0]), "arguments": {}}
+    # 3) Last resort: codec parse_action. Kept for parity with the old behavior on
+    #    non-Harmony action text; for Harmony it still returns "functions" but at
+    #    least does not crash. Only reached when both harmony parse and env name fail.
     if text.strip():
         try:
             from trim.training.action_codec import parse_action
@@ -250,9 +280,6 @@ def _action_of(point: Any) -> dict[str, Any]:
             return parse_action(text)
         except Exception:
             pass
-    names = list(getattr(point, "action_tool_names", []) or [])
-    if names:
-        return {"name": str(names[0]), "arguments": {}}
     return {"name": "", "arguments": {}}
 
 

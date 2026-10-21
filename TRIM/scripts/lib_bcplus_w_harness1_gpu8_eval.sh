@@ -309,7 +309,14 @@ run_eval_cell() {
     --verify-base-url "http://127.0.0.1:${ALL_VERIFY_PORT}/v1"
     --verify-model "${VERIFY_MODEL_NAME}"
   )
-  log "START model=${MODEL_SLUG} component=${COMPONENT} benchmark=${BENCHMARK} tp=${tp} urls=${actor_urls} out=${out}"
+  # Optional eval sampling seed. run_eval.py --seed (default 42) drives
+  # harness1_api_worker base_seed → per-query rollout sampling; distinct seeds
+  # give genuinely independent trajectories for multi-seed averaging. Default 42
+  # preserves the existing single-seed behavior (backward compatible — tasks that
+  # don't set EVAL_SEED are byte-identical to before this hook). Ported from the
+  # verified adapter wrapper (run_bcplus_w_harness1_adapter_gpu8_eval.sh).
+  : "${EVAL_SEED:=42}"
+  log "START model=${MODEL_SLUG} component=${COMPONENT} benchmark=${BENCHMARK} tp=${tp} seed=${EVAL_SEED} urls=${actor_urls} out=${out}"
   local rc=0
   "${PY}" scripts/run_eval.py \
     --harness Harness-1 \
@@ -329,6 +336,7 @@ run_eval_cell() {
     --tp "${tp}" \
     --eval-stagger-s "${WORKER_STAGGER}" \
     --component "${COMPONENT}" \
+    --seed "${EVAL_SEED}" \
     --out "${out}" \
     "${extra[@]}" \
     2>&1 | tee -a "${log_path}" >&2 || rc=$?

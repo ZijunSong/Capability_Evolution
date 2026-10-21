@@ -23,6 +23,12 @@ from trim.training.teacher_sft.runtime import _train
 
 
 def run(args: Any, dist: Any) -> int:
+    if getattr(args, "ce_backend", "legacy") == "accelerate_ddp" and getattr(args, "stage", "") == "train":
+        from trim.training.sft_engine.fixed_runtime import run_fixed_sft
+
+        if str(args.experiment) != "projected_teacher_sft":
+            raise SystemExit(f"projected entry got experiment {args.experiment}")
+        return run_fixed_sft(args)
     queries, info = prepare_directory(args, dist)
     archive = _load_archive(args, dist, queries)
     contract = seal_contract(args, dist, query_info=info, archive_digest=str(archive["digest"]))

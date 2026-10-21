@@ -30,17 +30,24 @@ def run_replica_jobs(args: Any, dist: Any, *, task: str, mask_name: str, payload
         return [{"ok": True, "archive": {"trajectories": []}, "points": [], "rows": []}]
     else:
         shards = [queries[index::len(plan)] for index in range(len(plan))] if queries else [[] for _ in plan]
-    from trim.training.sft_ablation.env_worker import launch_env_worker
+    from trim.training.sft_ablation.env_worker import start_env_worker, stop_env_worker
 
-    results = []
-    root = Path(args.out) / "replica_jobs" / task / f"rank{int(dist.rank)}"
+    results: list[dict[str, Any] | None] = []
+    root = Path(args.out) / "replica_jobs" / task
+    round_id = payload.get("round_id")
+    if round_id is not None:
+        root = root / f"round-{int(round_id)}"
+    root = root / f"rank{int(dist.rank)}"
+    pending: list[tuple[int, Any, Path]] = []
     for index, (gpus, shard) in enumerate(zip(plan, shards)):
         if (records or queries) and not shard:
             results.append({"ok": True, "archive": {"trajectories": []}, "points": [], "rows": []})
             continue
-        job_dir = root / str(index)
+        job_dir = root / f"replica-{index}"
         job_dir.mkdir(parents=True, exist_ok=True)
         result_path = job_dir / "result.json"
+        if result_path.exists():
+            result_path.unlink()
         job = {
             **payload,
             "task": task,
@@ -60,19 +67,34 @@ def run_replica_jobs(args: Any, dist: Any, *, task: str, mask_name: str, payload
             "session_dir": str(job_dir / "session"),
             "adapter": str(payload.get("adapter") or args.init_adapter or ""),
             "max_anchor_scan_events": int(getattr(args, "max_anchor_scan_events", 8) or 8),
+            "round_id": round_id,
         }
         job_path = job_dir / "job.json"
         atomic_write_json(job_path, job)
-        launch_env_worker(
+        proc = start_env_worker(
             job_path,
             mask=mask,
             extra_env={"CUDA_VISIBLE_DEVICES": ",".join(gpus)},
         )
+        pending.append((index, proc, result_path))
+        results.append(None)
+    failed: tuple[int, int] | None = None
+    for index, proc, _result_path in pending:
+        code = int(proc.wait())
+        if code != 0 and failed is None:
+            failed = (index, code)
+            for other_index, other, _path in pending:
+                if other_index != index:
+                    stop_env_worker(other)
+    if failed is not None:
+        index, code = failed
+        raise RuntimeError(f"{task} replica {index} exited {code}")
+    for index, _proc, result_path in pending:
         result = read_json(result_path)
         if not result.get("ok", False):
             raise RuntimeError(f"{task} replica {index} failed: {result.get('error')}")
-        results.append(result)
-    return results
+        results[index] = result
+    return [item for item in results if item is not None]
 
 
 def dump_job(path: Path, job: dict[str, Any]) -> None:
