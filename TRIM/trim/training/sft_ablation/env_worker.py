@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -13,7 +14,7 @@ from typing import Any, Mapping
 PROTECTED_PREFIXES = ("V8D_", "ABLATE_")
 
 
-def launch_env_worker(job_path: Path, *, mask: Mapping[str, bool], extra_env: Mapping[str, str] | None = None) -> None:
+def _worker_command(job_path: Path, mask: Mapping[str, bool], extra_env: Mapping[str, str] | None) -> tuple[list[str], dict[str, str]]:
     from trim.training.dist_runtime import isolate_inference_child_env
     from trim.upstream_harness1.v8d_flags import subprocess_env_for_mask
 
@@ -23,11 +24,37 @@ def launch_env_worker(job_path: Path, *, mask: Mapping[str, bool], extra_env: Ma
         raise ValueError(f"extra_env cannot override role flags: {blocked}")
     env = subprocess_env_for_mask(mask, harness="Harness-1", extra=extra)
     env = isolate_inference_child_env(env)
-    subprocess.run(
-        [sys.executable, "-m", "trim.training.sft_ablation.env_worker", "--job", str(job_path)],
-        env=env,
-        check=True,
-    )
+    return [sys.executable, "-m", "trim.training.sft_ablation.env_worker", "--job", str(job_path)], env
+
+
+def start_env_worker(job_path: Path, *, mask: Mapping[str, bool], extra_env: Mapping[str, str] | None = None) -> subprocess.Popen:
+    """Start one replica. The caller waits so several replicas can run together."""
+    command, env = _worker_command(job_path, mask, extra_env)
+    return subprocess.Popen(command, env=env, start_new_session=True)
+
+
+def stop_env_worker(proc: subprocess.Popen) -> None:
+    if proc.poll() is not None:
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            return
+        proc.wait(timeout=5)
+
+
+def launch_env_worker(job_path: Path, *, mask: Mapping[str, bool], extra_env: Mapping[str, str] | None = None) -> None:
+    proc = start_env_worker(job_path, mask=mask, extra_env=extra_env)
+    code = proc.wait()
+    if code != 0:
+        raise subprocess.CalledProcessError(code, [sys.executable, "-m", "trim.training.sft_ablation.env_worker"])
 
 
 def _tool_names(mask: Mapping[str, bool]) -> list[str]:

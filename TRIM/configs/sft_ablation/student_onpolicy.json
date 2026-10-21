@@ -17,5 +17,27 @@
   "weight_policy": "projection_effective_weight_v1",
   "rl_enabled": false,
   "gap_enabled": false,
-  "gate_enabled": false
+  "gate_enabled": false,
+  "prepare": {
+    "nnodes": 4,
+    "nproc_per_node": 1,
+    "rollout_replicas": 8,
+    "gradient_ranks": 1
+  },
+  "train": {
+    "ce_backend": "accelerate_ddp",
+    "online_layout": "split_pools",
+    "nnodes": 4,
+    "nproc_per_node": 4,
+    "gradient_ranks": 16,
+    "global_batch_size": 128,
+    "queries_per_round": 128,
+    "micro_batch_size": 1,
+    "logits_mode": "action_positions",
+    "master_port": 29623
+  },
+  "online": {
+    "split_pools": "persistent rollout service on the GPUs not used by CE",
+    "phase_jobs": "one sealed round per CE launch; rollout is a separate process"
+  }
 }

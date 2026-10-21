@@ -9,13 +9,19 @@ from typing import Any
 from trim.training.dist_runtime import barrier, shard_for_rank
 from trim.training.sft_ablation.contracts import SFTBatchRow, package_digest
 from trim.training.sft_ablation.fixed_train import take_batch
-from trim.training.sft_ablation.io_util import atomic_write_json, read_json
+from trim.training.sft_ablation.io_util import atomic_write_json, read_json, sha256_tree
 from trim.training.sft_ablation.session import append_metrics, prepare_directory, seal_contract
 from trim.training.sft_ablation.teacher_archive import seal_archive
 from trim.training.teacher_sft.dataset import build_teacher_sft_rows
 
 
 def run(args: Any, dist: Any) -> int:
+    if getattr(args, "ce_backend", "legacy") == "accelerate_ddp" and getattr(args, "stage", "") == "train":
+        from trim.training.sft_engine.fixed_runtime import run_fixed_sft
+
+        if str(args.experiment) != "teacher_sft":
+            raise SystemExit(f"teacher entry got experiment {args.experiment}")
+        return run_fixed_sft(args)
     queries, info = prepare_directory(args, dist)
     archive = _archive(args, dist, queries)
     digest = str(archive.get("digest") or sha256_tree(Path(args.teacher_traces)))
@@ -130,6 +136,7 @@ def _train(args: Any, dist: Any, rows: list[SFTBatchRow], contract: dict[str, An
         step = int(manifest["optimizer_step"])
         cursor = int(manifest["sampler"]["cursor"])
         uses = dict(manifest["sampler"].get("uses") or {})
+    source_digest = package_digest(rows)
     while step < int(args.num_updates):
         batch, cursor, batch_uses = take_batch(rows, cursor=cursor, batch_size=int(args.batch_size), seed=int(args.seed))
         for key, count in batch_uses.items():
@@ -149,7 +156,7 @@ def _train(args: Any, dist: Any, rows: list[SFTBatchRow], contract: dict[str, An
             next_round_id=step,
             policy_version=f"teacher_sft:step{step}",
             adapter_digest=digest,
-            source_digest=package_digest(rows),
+            source_digest=source_digest,
             sampler={"cursor": cursor, "uses": uses},
         )
         write_latest(Path(args.out), published)

@@ -7,6 +7,7 @@ import sys
 from typing import Sequence
 
 from trim.training.sft_ablation.contracts import PROFILES
+from trim.training.sft_ablation.geometry import flag_present
 
 FORBIDDEN = (
     "--train_method",
@@ -78,6 +79,21 @@ def _add_shared(parser: argparse.ArgumentParser, *, experiment: str) -> None:
     parser.add_argument("--verifier", default="")
     parser.add_argument("--resume", default="")
     parser.add_argument("--experiment", default=experiment)
+    parser.add_argument("--ce-backend", choices=("legacy", "accelerate_ddp"), default="legacy")
+    parser.add_argument("--global-batch-size", type=int, default=None)
+    parser.add_argument("--source-contract", default="")
+    parser.add_argument("--dataset-manifest", default="")
+    parser.add_argument("--gradient-checkpointing", choices=("off", "non_reentrant"), default="off")
+    parser.add_argument("--logits-mode", choices=("action_positions", "full"), default="action_positions")
+    parser.add_argument("--attn-implementation", default="")
+    parser.add_argument("--model-precision", choices=("bf16",), default="bf16")
+    parser.add_argument("--save-every", type=int, default=10)
+    parser.add_argument("--log-every-microbatches", type=int, default=1)
+    parser.add_argument("--profile-steps", type=int, default=5)
+    parser.add_argument("--resume-round", default="")
+    parser.add_argument("--online-layout", choices=("split_pools", "phase_jobs"), default="phase_jobs")
+    parser.add_argument("--rollout-endpoints", default="")
+    parser.add_argument("--queries-per-round", type=int, default=0)
     parser.set_defaults(experiment=experiment)
 
 
@@ -133,4 +149,33 @@ def parse_sft_args(experiment: str, argv: Sequence[str] | None = None) -> argpar
         args.train_env_report = "local_legacy_separate_report"
     else:
         args.train_env_report = "upstream"
+    explicit_batch = flag_present(raw, "--batch-size", "--batch_size")
+    explicit_global = flag_present(raw, "--global-batch-size", "--global_batch_size")
+    if explicit_batch and explicit_global and int(args.batch_size) != int(args.global_batch_size):
+        raise SystemExit("--batch-size and --global-batch-size disagree")
+    if explicit_global and not explicit_batch:
+        args.batch_size = int(args.global_batch_size)
+    elif args.global_batch_size is None:
+        args.global_batch_size = int(args.batch_size)
+    if flag_present(raw, "--queries-per-round"):
+        if int(args.queries_per_round) < 1:
+            raise SystemExit("queries-per-round must be positive")
+    else:
+        args.queries_per_round = int(args.batch_size)
+    if args.ce_backend == "accelerate_ddp":
+        if int(args.micro_batch_size) != 1:
+            raise SystemExit("accelerate_ddp requires --micro-batch-size 1")
+        if args.logits_mode != "action_positions":
+            raise SystemExit("accelerate_ddp refuses to fall back from action-position logits")
+        if args.gradient_checkpointing != "off":
+            raise SystemExit("gradient checkpointing stays off until the locked stack is validated")
+        if args.model_precision != "bf16" or args.dtype != "bfloat16":
+            raise SystemExit("accelerate_ddp SFT requires BF16")
+        if int(args.global_batch_size) < 1 or int(args.save_every) < 1:
+            raise SystemExit("global-batch-size and save-every must be positive")
+        if experiment != "student_onpolicy_sft" and args.stage == "all":
+            raise SystemExit(
+                "accelerate_ddp does not collect and train in one GPU job. "
+                "Seal the dataset, then relaunch with --stage train."
+            )
     return args

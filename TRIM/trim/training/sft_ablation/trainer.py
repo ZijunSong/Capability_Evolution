@@ -43,13 +43,19 @@ class SFTTrainer:
         return CEUpdateResult(payload)
 
     def adapter_digest(self) -> str:
-        from trim.training.sft_ablation.io_util import sha256_text
+        import hashlib
 
-        rows = []
+        digest = hashlib.sha256()
+        first = True
         for name, param in self.model.named_parameters():
-            if param.requires_grad:
-                rows.append(f"{name}:{param.detach().float().cpu().numpy().tobytes().hex()}")
-        return sha256_text("\n".join(rows))
+            if not param.requires_grad:
+                continue
+            blob = f"{name}:{param.detach().float().cpu().numpy().tobytes().hex()}".encode("utf-8")
+            if not first:
+                digest.update(b"\n")
+            first = False
+            digest.update(blob)
+        return digest.hexdigest()
 
 
 def build_hf_trainer(args: Any, *, device: str | None = None) -> SFTTrainer:

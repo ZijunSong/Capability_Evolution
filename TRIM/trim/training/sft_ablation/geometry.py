@@ -22,6 +22,14 @@ EXPERIMENT_MASTER_PORT = {
     "student_onpolicy_sft": 29613,
 }
 
+# v2 train is a normal torchrun world: 8 ranks per node unless the command says otherwise.
+V2_NPROC_PER_NODE = 8
+V2_MASTER_PORT = {
+    "teacher_sft": 29621,
+    "projected_teacher_sft": 29622,
+    "student_onpolicy_sft": 29623,
+}
+
 
 def world_cards(nnodes: int, replicas: int, tensor_parallel: int) -> int:
     return int(nnodes) * int(replicas) * int(tensor_parallel)

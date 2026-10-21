@@ -126,7 +126,9 @@ class StudentPorts:
             if len(set(seen)) != 1:
                 raise RuntimeError(f"rollout adapter digest mismatch: {seen}")
         barrier()
-        return Policy(version=f"student_onpolicy_sft:step{state.optimizer_step}:{digest[:16]}", digest=digest)
+        policy = Policy(version=f"student_onpolicy_sft:step{state.optimizer_step}:{digest[:16]}", digest=digest)
+        self._source_policy = policy
+        return policy
 
     def collect_fresh_student_points(self, policy: Policy, round_id: int) -> list[Any]:
         chosen = self._queries_for_round(round_id)
@@ -219,6 +221,7 @@ class StudentPorts:
         if int(self.dist.rank) == 0:
             batch, _cursor, uses = take_batch(rows, cursor=0, batch_size=min(len(rows), int(self.args.batch_size)), seed=int(self.args.seed))
             self._uses += sum(uses.values())
+            self._last_batch = batch
             result = self.trainer.update(batch)
             atomic_write_json(path, result.payload)
         barrier()
@@ -231,6 +234,9 @@ class StudentPorts:
             from trim.training.sft_ablation.contracts import package_digest
 
             digest = self.trainer.adapter_digest()
+            source = getattr(self, "_source_policy", None)
+            rollout_digest = source.digest if source is not None else ""
+            source_rows = list(getattr(self, "_last_batch", []) or [])
             published = publish_checkpoint(
                 self.out / "checkpoints" / f"step-{state.optimizer_step:06d}",
                 model=self.trainer.model,
@@ -241,7 +247,7 @@ class StudentPorts:
                 next_round_id=state.round_id + 1,
                 policy_version=f"student_onpolicy_sft:step{state.optimizer_step}",
                 adapter_digest=digest,
-                source_digest=package_digest([]),
+                source_digest=package_digest(source_rows),
                 sampler={"round_id": state.round_id + 1, "uses": self._uses},
             )
             write_latest(self.out, published)
@@ -257,7 +263,7 @@ class StudentPorts:
                     "round_id": state.round_id,
                     "policy_version": f"student_onpolicy_sft:step{state.optimizer_step}",
                     "adapter_digest": digest,
-                    "rollout_adapter_digest": digest,
+                    "rollout_adapter_digest": rollout_digest,
                     "latest_committed_adapter_digest": digest,
                     "n_rows": result.n_rows,
                     "weighted_tokens": result.weighted_tokens,
@@ -295,7 +301,10 @@ class StudentPorts:
             rng = random.Random(f"{int(self.args.seed)}:{round_id}")
             order = list(self.queries)
             rng.shuffle(order)
-            width = min(len(order), max(1, int(self.args.batch_size)))
+            width = int(getattr(self.args, "queries_per_round", 0) or 0)
+            if width < 1:
+                width = int(self.args.batch_size)
+            width = min(len(order), width)
             path.parent.mkdir(parents=True, exist_ok=True)
             atomic_write_json(path, order[:width])
         barrier()
@@ -303,6 +312,10 @@ class StudentPorts:
 
 
 def run(args: Any, dist: Any) -> int:
+    if getattr(args, "ce_backend", "legacy") == "accelerate_ddp":
+        from trim.training.sft_engine.online_runtime import run_student_v2
+
+        return run_student_v2(args)
     if args.stage != "all":
         raise SystemExit("student_onpolicy_sft only accepts --stage all")
     run_online_ce(
@@ -313,11 +326,40 @@ def run(args: Any, dist: Any) -> int:
     return 0
 
 
-def run_rollout_job(job: dict[str, Any]) -> dict[str, Any]:
-    from trim.eval.model_tokenizer import load_model_encoding
+def collect_student_points(client: Any, job: dict[str, Any], digest: str) -> list[dict[str, Any]]:
+    """Sample with a client the caller already started. Does not close it."""
     from trim.adapters.components import zero_mask
+    from trim.eval.model_tokenizer import load_model_encoding
     from trim.training.batched_env_rollout import rollout_queries_batched
     from trim.training.student_onpolicy_sft.collector import encode_decision_point, student_collection_kwargs
+
+    enc = load_model_encoding(
+        str(job["model_name"]),
+        max_model_len=int(job["max_model_len"]),
+        max_new_tokens=int(job["max_new_tokens"]),
+    )
+    groups = rollout_queries_batched(
+        client.generate_batch,
+        list(job.get("queries") or []),
+        **student_collection_kwargs(
+            student_zero_mask=zero_mask("Harness-1"),
+            policy_version=str(job["policy_version"]),
+            group_size=int(job["group_size"]),
+            max_turns=int(job["max_turns"]),
+            max_new_tokens=int(job["max_new_tokens"]),
+            seed=int(job["seed"]),
+            enc=enc,
+            train_env=str(job["train_env"]),
+        ),
+    )
+    points = []
+    for group in groups:
+        for point in group.decision_points:
+            points.append(encode_decision_point(point, adapter_digest=digest))
+    return points
+
+
+def run_rollout_job(job: dict[str, Any]) -> dict[str, Any]:
     from trim.training.vllm_hybrid import VLLMGenerateClient
 
     adapter = str(job.get("adapter") or "")
@@ -328,7 +370,6 @@ def run_rollout_job(job: dict[str, Any]) -> dict[str, Any]:
     expected = str(job.get("adapter_digest") or "")
     if expected and expected != digest:
         raise RuntimeError("worker adapter digest does not match the published policy")
-    enc = load_model_encoding(str(job["model_name"]), max_model_len=int(job["max_model_len"]), max_new_tokens=int(job["max_new_tokens"]))
     client = VLLMGenerateClient(
         model_path=str(job["model_name"]),
         session_dir=Path(job["session_dir"]),
@@ -336,27 +377,9 @@ def run_rollout_job(job: dict[str, Any]) -> dict[str, Any]:
         max_model_len=int(job["max_model_len"]),
         lora_path=adapter or None,
     )
-    mask = zero_mask("Harness-1")
     try:
         client.start()
-        groups = rollout_queries_batched(
-            client.generate_batch,
-            list(job.get("queries") or []),
-            **student_collection_kwargs(
-                student_zero_mask=mask,
-                policy_version=str(job["policy_version"]),
-                group_size=int(job["group_size"]),
-                max_turns=int(job["max_turns"]),
-                max_new_tokens=int(job["max_new_tokens"]),
-                seed=int(job["seed"]),
-                enc=enc,
-                train_env=str(job["train_env"]),
-            ),
-        )
+        points = collect_student_points(client, job, digest)
     finally:
         client.close()
-    points = []
-    for group in groups:
-        for point in group.decision_points:
-            points.append(encode_decision_point(point, adapter_digest=digest))
     return {"ok": True, "points": points, "loaded_digest": digest, "collection_semantics": "student_states_for_ce"}
