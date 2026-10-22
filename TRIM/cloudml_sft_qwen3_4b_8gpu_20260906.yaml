@@ -1,0 +1,54 @@
+# CloudML custom_train configuration for TRIM Harness-1 SFT.
+# JuiceFS is intentionally omitted here. Supply it directly at submission time
+# with --juicefs_mount_configs so the endpoint is explicit in the CLI request.
+jobName: "trim-sft-qwen3-4b-8gpu-20260906"
+description: "TRIM Harness-1 SFT on Qwen3-4B-Instruct-2507 with one 8x gm402-80g node"
+accessType: "PRIVATE"
+tags:
+  - "trim"
+  - "sft"
+  - "qwen3-4b"
+  - "8gpu"
+
+imageConfig:
+  imageUrl: "micr.cloud.mioffice.cn/songzijun/songzijun-cto:3050749-songzijun-cto"
+  imageCommand: >-
+    cd /mnt/songzijun/Capability_Evolution &&
+    export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 &&
+    export MAX_TURNS=40 &&
+    export PYTHONPATH=TRIM &&
+    python TRIM/scripts/run_sft.py
+    --model-name /mnt/songzijun/models/Qwen3-4B-Instruct-2507
+
+envConfigs:
+  - key: "CUDA_VISIBLE_DEVICES"
+    value: "0,1,2,3,4,5,6,7"
+  - key: "MAX_TURNS"
+    value: "40"
+  - key: "PYTHONPATH"
+    value: "TRIM"
+
+queueId: "2334"
+priority: 5
+preemptible: false
+framework: "pytorch"
+resourceConfigs:
+  - nodeRole: "worker"
+    nodeNumber: 1
+    perNodeResourceSpec:
+      resourcePriority: "GUARANTEED_PUBLIC"
+      resourceName: "cloudml.ng1gm402-8-8.20-224"
+      resourceNumber: 8
+    elastic: false
+    preemptible: false
+
+enableTensorboard: false
+enableMetrics: true
+diagOptions:
+  - name: "HangDetection"
+    enable: false
+retryConfig:
+  enableRetry: false
+  maxRetryTimes: 5
+  policySets:
+    - "JobFailed"

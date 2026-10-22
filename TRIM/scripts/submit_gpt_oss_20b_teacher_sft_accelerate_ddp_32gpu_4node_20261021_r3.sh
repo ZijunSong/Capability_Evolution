@@ -26,8 +26,8 @@ ENTRY="${SCRIPT_DIR}/entry_gpt_oss_20b_teacher_sft_accelerate_ddp_32gpu_4node_20
 test -f "${ENTRY}"
 
 cml custom_train submit \
-  --job_name trim-harness1-bcplus-full-gpt-oss-20b-teacher-sft-bf16-32gpu-4node-20261021-accelerate-ddp-r3 \
-  --description "TRIM GPT-OSS-20B bf16 4node32gpu Teacher SFT accelerate_ddp train-only r3. Reuses sealed dataset (192261 rows). Fix r3: max_model_len 8192->6144 (data max 5757<6144, 0 loss; reduce forward activations to avoid single-card OOM at 73.93GB/80GB). r2 OOM at first step forward. global_step bug fixed (r2 reached microbatch_start step=1). DDP 32 ranks. init-adapter fresh LoRA Student step0. mb1 bf16. priority8 MemQA-V5." \
+  --job_name trim-harness1-bcplus-full-gpt-oss-20b-teacher-sft-bf16-32gpu-4node-20261021-accelerate-ddp-r7 \
+  --description "TRIM GPT-OSS-20B bf16 4node32gpu Teacher SFT accelerate_ddp r5. r4 still OOM at first forward with global batch 128; r5 uses global batch 32 (one row per DDP rank), max_len 5120, eager attention. Reuses 192261 sealed rows, fresh LoRA, DDP 32 ranks, mb1 bf16. priority8 MemQA-V5." \
   --access_type PRIVATE \
   --tag MemQA-General-V5 \
   --image_url micr.cloud.mioffice.cn/songzijun/songzijun-cto:3050749-songzijun-cto \
@@ -48,7 +48,7 @@ cml custom_train submit \
   --env TIKTOKEN_ENCODINGS_BASE=/tmp/tiktoken-bundle/share/tiktoken \
   --env TIKTOKEN_CACHE_DIR=/tmp/tiktoken-bundle/tiktoken_cache \
   --env TIKTOKEN_RS_CACHE_DIR=/tmp/tiktoken-bundle/tiktoken_rs_cache \
-  --env OUT=/mnt/songzijun/outputs/gpt-oss-20b-teacher-sft-accelerate-ddp_20261021_r3 \
+  --env OUT=/mnt/songzijun/outputs/gpt-oss-20b-teacher-sft-accelerate-ddp_20261021_r7 \
   --retry_config '{"enableRetry":false,"maxRetryTimes":1,"policySets":["JobFailed"]}' \
   --diag_options '[{"name":"HangDetection","enable":false}]' \
   --alert_config '{"enableAlert":true,"alertItems":[{"alertConditions":["FAILED"],"alertLevel":"P2","alertReceivers":{"persons":["songzijun"]}}]}' \

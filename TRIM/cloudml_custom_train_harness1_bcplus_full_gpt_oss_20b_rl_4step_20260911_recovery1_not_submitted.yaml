@@ -1,0 +1,137 @@
+# CloudML custom_train configuration for TRIM Harness-1 BC+ full GPT-OSS-20B RL training, 4 steps.
+# NOT SUBMITTED. JuiceFS is intentionally omitted from this YAML: pass it directly with
+# --juicefs_mount_configs so endpoint/cluster=bj9-cloudml is explicit in the API request.
+#
+# Target: 8x gm402-80g on queue 2334 (记忆对话, cluster kscn-hd-cloudml-prod).
+# Image: micr.cloud.mioffice.cn/songzijun/songzijun-cto:3050749-songzijun-cto
+# Tag: MemQA-General-V5, priority 8, GUARANTEED_PUBLIC, not preemptible.
+# train_method=rl, train-data=sec, train-env=local_legacy (per CLAUDE.md SCAPE experience).
+# Runtime lock (CLAUDE.md): torch 2.10.0+cu128 / vLLM 0.19.1 / Transformers 4.57.6 / Pyserini 2.0.0.
+#
+# Hard-won fixes baked in (see memory trim-gptoss20b-train-20260910 + cloudml-trim-train-job-config
+# + trim-rlopd-types-dataclass-field-order-bug + trim-vllm-rollout-worker-disable-custom-all-reduce):
+#  - --train-env local_legacy: default upstream path needs `chz` module absent in image (fails ~11min).
+#  - NO SCAPE_FORCE_LOCAL_HARMONY: that flag forces _LocalConversation (missing to_json), which breaks
+#    the first rollout (render_conversation_for_completion). Successful runs do NOT set it.
+#  - accelerate + peft in pip list: ScapeHFToolOPD uses device_map + LoRA at optim stage; without them
+#    the full rollout (~hours) completes then fails at optim. (Recovery7 → recovery8 lesson.)
+#  - --rl-data / --sec-corpus-root explicitly to JuiceFS paths: defaults /data/ppnm/... do not exist.
+#  - ANSERINI_CLASSPATH -> <pyserini>/resources/jars (not the package root). sitecustomize auto-registers it.
+#  - VLLM_DISABLE_CUSTOM_ALL_REDUCE=1 for TP8 on gm402 (use NCCL); worker patch reads DISABLE_CUSTOM_ALL_REDUCE.
+#  - rl_opd_types.py dataclass fix already on the mounted code tree (lambda_opd before opd_weighted_gap);
+#    run_train.py imports it at module load, so without the fix the job dies before training.
+#  - tiktoken bundle has o200k_base + cl100k_base (NO o200k_harmony); extracted via python zipfile (no unzip).
+#  - Data already extracted under /mnt/songzijun/Capability_Evolution/TRIM/data; no re-extract needed.
+jobName: "trim-harness1-bcplus-full-gpt-oss-20b-8gpu-rl-4step-20260911-recovery1"
+description: "Recovery1 for t-20260911191937-y8uax OOM at step0 optim cispo backward (GPT-OSS-20B MoE gate_up_proj bmm, GPU1 79.15/79.18GiB). Fixes: train-micro-batch-size 4->2 (lower activation peak), gpu-memory-utilization 0.90->0.55 (leave ~35GB/card for HF optim). expandable_segments NOT set (CLAUDE.md: avoid vLLM-incompatible config). Same rl 4-step, local_legacy, 8x gm402-80g, priority 8, tag MemQA-General-V5. Original failed attempt retained."
+accessType: "PRIVATE"
+
+imageConfig:
+  imageUrl: "micr.cloud.mioffice.cn/songzijun/songzijun-cto:3050749-songzijun-cto"
+  imageCommand: >-
+    set -euxo pipefail;
+    export PYTHONUNBUFFERED=1;
+    export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7;
+    export MAX_TURNS=40;
+    export PYTHONPATH=/mnt/songzijun/Capability_Evolution:/mnt/songzijun/Capability_Evolution/TRIM:/mnt/songzijun/Capability_Evolution/SCAPE-EasyOPD;
+    export VLLM_DISABLE_CUSTOM_ALL_REDUCE=1;
+    export OPENAI_API_KEY="${OPENAI_API_KEY:-dummy}";
+    export SCAPE_LOCAL_OPENAI_EMBEDDINGS=1;
+    export SCAPE_CHROMA_PATH=/tmp/empty_chroma;
+    mkdir -p "$SCAPE_CHROMA_PATH";
+    nvidia-smi -L;
+    test -f /mnt/songzijun/Capability_Evolution/TRIM/scripts/run_train.py;
+    test -f /mnt/songzijun/models/openai/gpt-oss-20b/config.json;
+    test -f /mnt/songzijun/Capability_Evolution/TRIM/data/harness-1-rl-data/manifest.json;
+    test -f /mnt/songzijun/Capability_Evolution/TRIM/data/harness-1-sec-corpus/manifest.json;
+    mkdir -p /tmp/tiktoken-bundle && cd /tmp && python3 -c "import zipfile; zipfile.ZipFile('/mnt/songzijun/tiktoken-bundle.zip').extractall('/tmp')" && ls /tmp/tiktoken-bundle;
+    test -f /tmp/tiktoken-bundle/share/tiktoken/o200k_base.tiktoken;
+    test -f /tmp/tiktoken-bundle/share/tiktoken/cl100k_base.tiktoken;
+    export TIKTOKEN_ENCODINGS_BASE=/tmp/tiktoken-bundle/share/tiktoken;
+    export TIKTOKEN_CACHE_DIR=/tmp/tiktoken-bundle/tiktoken_cache;
+    export TIKTOKEN_RS_CACHE_DIR=/tmp/tiktoken-bundle/tiktoken_rs_cache;
+    apt-get update;
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends openjdk-21-jre-headless;
+    JVM_PATH=$(find /usr /opt -type f -name libjvm.so 2>/dev/null | head -1 || true);
+    if [ -z "${JVM_PATH}" ]; then JVM_PATH=/usr/lib/jvm/java-21-openjdk-amd64/lib/server/libjvm.so; fi;
+    test -n "${JVM_PATH}";
+    test -f "${JVM_PATH}";
+    ldd "${JVM_PATH}";
+    export JAVA_HOME=$(dirname "$(dirname "$(dirname "${JVM_PATH}")")");
+    export JVM_PATH;
+    export LD_LIBRARY_PATH=$(dirname "${JVM_PATH}"):${LD_LIBRARY_PATH:-};
+    python3 -m pip install --no-cache-dir --ignore-installed --upgrade-strategy only-if-needed "torch==2.10.0" "transformers==4.57.6" "accelerate==1.13.0" "datasets==4.8.4" "hydra-core==1.3.2" "omegaconf==2.3.0" "vllm==0.19.1" peft structlog chromadb tqdm regex sympy latex2sympy2 word2number sentencepiece pyserini openai tenacity anthropic;
+    PYSERINI_ROOT=$(python3 -c 'import pathlib, pyserini; print(pathlib.Path(pyserini.__file__).resolve().parent)');
+    export ANSERINI_CLASSPATH=$(find "$PYSERINI_ROOT/resources/jars" -type f -name '*.jar' -print | paste -sd: -);
+    test -n "$ANSERINI_CLASSPATH";
+    export CLASSPATH="$ANSERINI_CLASSPATH";
+    python3 -m py_compile /mnt/songzijun/Capability_Evolution/TRIM/scripts/run_train.py /mnt/songzijun/Capability_Evolution/TRIM/trim/training/vllm_rollout_worker.py /mnt/songzijun/Capability_Evolution/TRIM/trim/training/rl_opd_types.py;
+    python3 -c 'import importlib.metadata,os,torch,transformers,vllm,peft,structlog,chromadb; from jnius import autoclass; autoclass("java.lang.String"); v={"torch":torch.__version__,"vllm":vllm.__version__,"transformers":transformers.__version__,"pyserini":importlib.metadata.version("pyserini"),"peft":peft.__version__,"chromadb":importlib.metadata.version("chromadb"),"structlog":importlib.metadata.version("structlog"),"gpu_count":torch.cuda.device_count(),"JVM_PATH":os.environ["JVM_PATH"],"JAVA_HOME":os.environ["JAVA_HOME"],"TIKTOKEN_ENCODINGS_BASE":os.environ.get("TIKTOKEN_ENCODINGS_BASE"),"o200k_base_present":os.path.isfile(os.path.join(os.environ["TIKTOKEN_ENCODINGS_BASE"],"o200k_base.tiktoken")),"java_ok":True}; print("PREFLIGHT",v,flush=True); assert v["torch"].startswith("2.10.0") and v["vllm"]=="0.19.1" and v["transformers"]=="4.57.6" and v["pyserini"]=="2.0.0" and v["gpu_count"]==8 and v["o200k_base_present"];
+    from pyserini.search.lucene import LuceneSearcher; s=LuceneSearcher("/mnt/songzijun/Capability_Evolution/TRIM/data/harness-1-sec-corpus/indexes/bm25"); n=s.num_docs if not callable(s.num_docs) else s.num_docs(); print("LUCENE_OK",{"num_docs":n},flush=True); assert n>0';
+    cd /mnt/songzijun/Capability_Evolution;
+    exec python3 /mnt/songzijun/Capability_Evolution/TRIM/scripts/run_train.py --harness Harness-1 --benchmark bcplus_full --model_name /mnt/songzijun/models/openai/gpt-oss-20b --train_method rl --component all --train-env local_legacy --train-data sec --train-steps 4 --train-groups-per-step 32 --group-size 8 --train-micro-batch-size 2 --train-heartbeat-every 8 --max-turns 40 --max-model-len 8192 --gpu-memory-utilization 0.55 --rl-data /mnt/songzijun/Capability_Evolution/TRIM/data/harness-1-rl-data --sec-corpus-root /mnt/songzijun/Capability_Evolution/TRIM/data/harness-1-sec-corpus --out /mnt/songzijun/Capability_Evolution/TRIM/outputs/trim_train_harness1_bcplus_full_gpt_oss_20b_8gpu_rl_4step_20260911_recovery1
+
+envConfigs:
+  - key: "PYTHONUNBUFFERED"
+    value: "1"
+  - key: "CUDA_VISIBLE_DEVICES"
+    value: "0,1,2,3,4,5,6,7"
+  - key: "MAX_TURNS"
+    value: "40"
+  - key: "PYTHONPATH"
+    value: "/mnt/songzijun/Capability_Evolution:/mnt/songzijun/Capability_Evolution/TRIM:/mnt/songzijun/Capability_Evolution/SCAPE-EasyOPD"
+  - key: "VLLM_DISABLE_CUSTOM_ALL_REDUCE"
+    value: "1"
+  - key: "OPENAI_API_KEY"
+    value: "dummy"
+  - key: "SCAPE_LOCAL_OPENAI_EMBEDDINGS"
+    value: "1"
+  - key: "SCAPE_CHROMA_PATH"
+    value: "/tmp/empty_chroma"
+  - key: "TIKTOKEN_ENCODINGS_BASE"
+    value: "/tmp/tiktoken-bundle/share/tiktoken"
+  - key: "TIKTOKEN_CACHE_DIR"
+    value: "/tmp/tiktoken-bundle/tiktoken_cache"
+  - key: "TIKTOKEN_RS_CACHE_DIR"
+    value: "/tmp/tiktoken-bundle/tiktoken_rs_cache"
+
+modelUri: ""
+# JuiceFS mount is injected via CLI --juicefs_mount_configs (NOT here) to satisfy
+# the explicit-endpoint/cluster=bj9-cloudml requirement.
+queueId: "2334"
+priority: 8
+preemptible: false
+framework: "pytorch"
+resourceConfigs:
+  - nodeRole: "worker"
+    nodeNumber: 1
+    perNodeResourceSpec:
+      resourcePriority: "GUARANTEED_PUBLIC"
+      resourceName: "cloudml.ng1gm402-8-8.20-224"
+      resourceNumber: 8
+    elastic: false
+    preemptible: false
+
+tags:
+  - "MemQA-General-V5"
+
+enableTensorboard: false
+enableMetrics: false
+diagOptions:
+  - name: "HangDetection"
+    enable: false
+retryConfig:
+  enableRetry: false
+  maxRetryTimes: 1
+  policySets:
+    - "JobFailed"
+alertConfig:
+  enableAlert: true
+  alertItems:
+    - alertConditions:
+        - "START_RUNNING"
+        - "FAILED"
+      alertLevel: P2
+      alertReceivers:
+        persons:
+          - "songzijun"

@@ -1,0 +1,128 @@
+# CloudML custom_train configuration for TRIM Harness-1 BC+ full Qwen3-4B-Instruct training.
+# NOT SUBMITTED. JuiceFS is intentionally omitted from this YAML: pass it directly with
+# --juicefs_mount_configs so endpoint=bj9-cloudml is explicit in the API request.
+#
+# Target: 8x gm402-80g on queue 2334 (记忆对话, cluster kscn-hd-cloudml-prod).
+# Image: micr.cloud.mioffice.cn/songzijun/songzijun-cto:3050749-songzijun-cto
+# Tag: MemQA-General-V5, priority 8.
+jobName: "trim-harness1-bcplus-full-qwen3-4b-trim-8gpu-20260910-memqa-general-v5-recovery3"
+description: "Recovery3: add --rl-data and --sec-corpus-root pointing to JuiceFS-extracted SEC data (recovery2 fixed anserini fatjar classpath via jnius_config)"
+accessType: "PRIVATE"
+
+imageConfig:
+  imageUrl: "micr.cloud.mioffice.cn/songzijun/songzijun-cto:3050749-songzijun-cto"
+  imageCommand: >-
+    set -euxo pipefail;
+    export PYTHONUNBUFFERED=1;
+    export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7;
+    export MAX_TURNS=40;
+    export PYTHONPATH=/mnt/songzijun/Capability_Evolution/TRIM:/mnt/songzijun/Capability_Evolution/SCAPE-EasyOPD;
+    export VLLM_DISABLE_CUSTOM_ALL_REDUCE=1;
+    export OPENAI_API_KEY=dummy;
+    export SCAPE_LOCAL_OPENAI_EMBEDDINGS=1;
+    export TIKTOKEN_ENCODINGS_BASE=/mnt/songzijun/tiktoken-bundle/share/tiktoken;
+    export TIKTOKEN_RS_CACHE_DIR=/mnt/songzijun/tiktoken-bundle/tiktoken_rs_cache;
+    export TIKTOKEN_CACHE_DIR=/mnt/songzijun/tiktoken-bundle/tiktoken_cache;
+    nvidia-smi -L;
+    test -f /mnt/songzijun/Capability_Evolution/TRIM/scripts/run_train.py;
+    test -f /mnt/songzijun/models/Qwen3-4B-Instruct-2507/config.json;
+    test -f /mnt/songzijun/Capability_Evolution/TRIM/data/harness-1-rl-data/manifest.json;
+    test -f /mnt/songzijun/Capability_Evolution/TRIM/data/harness-1-sec-corpus/manifest.json;
+    test -f /mnt/songzijun/tiktoken-bundle/share/tiktoken/o200k_base.tiktoken;
+    apt-get update;
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends openjdk-21-jre-headless;
+    JVM_PATH=$(find /usr /opt -type f -name libjvm.so 2>/dev/null | head -1 || true);
+    if [ -z "${JVM_PATH}" ]; then JVM_PATH=/usr/lib/jvm/java-21-openjdk-amd64/lib/server/libjvm.so; fi;
+    test -n "${JVM_PATH}";
+    test -f "${JVM_PATH}";
+    ldd "${JVM_PATH}";
+    export JAVA_HOME=$(dirname "$(dirname "$(dirname "${JVM_PATH}")")");
+    export JVM_PATH;
+    export LD_LIBRARY_PATH=$(dirname "${JVM_PATH}"):${LD_LIBRARY_PATH:-};
+    python3 -m pip install --no-cache-dir --ignore-installed --upgrade-strategy only-if-needed "torch==2.10.0" "transformers==4.57.6" "accelerate==1.13.0" "datasets==4.8.4" "hydra-core==1.3.2" "omegaconf==2.3.0" "vllm==0.19.1" peft structlog chromadb tqdm regex sympy latex2sympy2 word2number sentencepiece pyserini openai tenacity anthropic;
+    ANSERINI_CLASSPATH=$(python3 -c "import pyserini,glob,os; d=os.path.join(os.path.dirname(pyserini.__file__),'resources','jars'); j=glob.glob(os.path.join(d,'anserini-*-fatjar.jar')); assert j, d; print(j[0])");
+    export ANSERINI_CLASSPATH;
+    python3 - <<'PY'
+import importlib.metadata, os, glob, torch, transformers, vllm, peft, structlog, chromadb
+import pyserini
+_jar_dir = os.path.join(os.path.dirname(pyserini.__file__), "resources", "jars")
+_fatjar = glob.glob(os.path.join(_jar_dir, "anserini-*-fatjar.jar"))
+assert _fatjar, f"no anserini-*-fatjar.jar under {_jar_dir}"
+os.environ["ANSERINI_CLASSPATH"] = _fatjar[0]
+import jnius_config
+jnius_config.add_classpath(_fatjar[0])
+try:
+    jnius_config.add_options("--add-modules=jdk.incubator.vector")
+except Exception as _opt:
+    print("WARN add_options failed:", repr(_opt), flush=True)
+_cp = jnius_config.get_classpath()
+print("JNIUS_CLASSPATH_BEFORE_JVM:", _cp, flush=True)
+assert _fatjar[0] in (_cp or ""), f"classpath missing fatjar: {_cp}"
+from jnius import autoclass
+from pyserini.search.lucene import LuceneSearcher
+autoclass("java.lang.String")
+s = LuceneSearcher("/mnt/songzijun/Capability_Evolution/TRIM/data/harness-1-sec-corpus/indexes/bm25")
+versions = {"torch": torch.__version__, "transformers": transformers.__version__, "vllm": vllm.__version__, "gpu_count": torch.cuda.device_count(), "pyserini": importlib.metadata.version("pyserini"), "peft": peft.__version__, "chromadb": importlib.metadata.version("chromadb"), "structlog": importlib.metadata.version("structlog"), "JVM_PATH": os.environ["JVM_PATH"], "JAVA_HOME": os.environ["JAVA_HOME"], "ANSERINI_CLASSPATH": os.environ["ANSERINI_CLASSPATH"], "jnius_classpath": _cp, "java_ok": True, "num_docs": s.num_docs}
+print("PREFLIGHT", versions, flush=True)
+assert versions["torch"].startswith("2.10.0") and versions["vllm"] == "0.19.1" and versions["transformers"] == "4.57.6" and versions["gpu_count"] == 8 and versions["num_docs"] > 0
+PY
+    python3 -m py_compile /mnt/songzijun/Capability_Evolution/TRIM/scripts/run_train.py;
+    cd /mnt/songzijun/Capability_Evolution;
+    exec python3 /mnt/songzijun/Capability_Evolution/TRIM/scripts/run_train.py --harness Harness-1 --benchmark bcplus_full --model_name /mnt/songzijun/models/Qwen3-4B-Instruct-2507 --train_method trim --component all --rl-data /mnt/songzijun/Capability_Evolution/TRIM/data/harness-1-rl-data --sec-corpus-root /mnt/songzijun/Capability_Evolution/TRIM/data/harness-1-sec-corpus --train-groups-per-step 32 --train-micro-batch-size 4 --train-heartbeat-every 8 --out /mnt/songzijun/Capability_Evolution/TRIM/outputs/cloudml_custom_train_harness1_bcplus_full_qwen3_4b_trim_8gpu_20260910_memqa_general_v5_recovery3
+
+envConfigs:
+  - key: "PYTHONUNBUFFERED"
+    value: "1"
+  - key: "CUDA_VISIBLE_DEVICES"
+    value: "0,1,2,3,4,5,6,7"
+  - key: "MAX_TURNS"
+    value: "40"
+  - key: "PYTHONPATH"
+    value: "/mnt/songzijun/Capability_Evolution/TRIM:/mnt/songzijun/Capability_Evolution/SCAPE-EasyOPD"
+  - key: "VLLM_DISABLE_CUSTOM_ALL_REDUCE"
+    value: "1"
+  - key: "OPENAI_API_KEY"
+    value: "dummy"
+  - key: "SCAPE_LOCAL_OPENAI_EMBEDDINGS"
+    value: "1"
+  - key: "TIKTOKEN_ENCODINGS_BASE"
+    value: "/mnt/songzijun/tiktoken-bundle/share/tiktoken"
+  - key: "TIKTOKEN_RS_CACHE_DIR"
+    value: "/mnt/songzijun/tiktoken-bundle/tiktoken_rs_cache"
+  - key: "TIKTOKEN_CACHE_DIR"
+    value: "/mnt/songzijun/tiktoken-bundle/tiktoken_cache"
+
+queueId: "2334"
+priority: 8
+preemptible: false
+framework: "pytorch"
+resourceConfigs:
+  - nodeRole: "worker"
+    nodeNumber: 1
+    perNodeResourceSpec:
+      resourcePriority: "GUARANTEED_PUBLIC"
+      resourceName: "cloudml.ng1gm402-8-8.20-224"
+      resourceNumber: 8
+    elastic: false
+    preemptible: false
+
+tags:
+  - "MemQA-General-V5"
+
+enableTensorboard: false
+enableMetrics: false
+diagOptions:
+  - name: "HangDetection"
+    enable: false
+retryConfig:
+  enableRetry: false
+  maxRetryTimes: 1
+  policySets:
+    - "JobFailed"
+alertConfig:
+  enableAlert: true
+  alertItems:
+    - alertConditions: ["FAILED"]
+      alertLevel: P2
+      alertReceivers:
+        persons: ["songzijun"]

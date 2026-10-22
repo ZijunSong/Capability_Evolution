@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+import re
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Iterator, Mapping, Sequence
 
 from trim.training.opd_events import EventKind
-from trim.training.sft_ablation.contracts import fingerprint
+from trim.training.sft_ablation.io_util import iter_json_array_items
 
 ARCHIVE_SCHEMA = "full_teacher_archive_v1"
 
@@ -235,26 +238,13 @@ def archive_from_groups(groups: Sequence[Any], *, policy_version: str, mask_name
         "teacher_mode": False,
         "trajectories": trajectories,
     }
-    archive["digest"] = fingerprint(
-        {"policy_version": policy_version, "trajectories": trajectories}
-    )
+    archive["digest"] = archive_digest(policy_version, trajectories)
     return archive
 
 
 def _action_of(point: Any) -> dict[str, Any]:
     text = str(getattr(point, "student_action_text", "") or "")
     tokens = list(getattr(point, "student_action_tokens", []) or [])
-    # 1) First choice: the strict Harmony parser (the same parser the env layer uses
-    #    via parse_generated_action in batched_env_rollout.py). It correctly handles
-    #    GPT-OSS `to=functions.<name> <|constrain|>json <|message|>{json}<|call|>`:
-    #    it strips the `functions.` recipient prefix and reads the JSON body. The
-    #    action_codec.parse_action used below has `_CALL_RE = to=(?P<name>[A-Za-z_]\w*)`
-    #    which stops at `.` (not in the char class), returning {"name":"functions"}
-    #    WITHOUT raising — so its fallback branch never fires for Harmony output,
-    #    and every archive decision.action.name was written as "functions" (0% legal
-    #    supervision for Teacher/Projected SFT). parse_harmony_tool_call returns
-    #    tool_name=None on the bad "functions" name, so we fall through to the
-    #    action_tool_names fallback (env-parsed correct name) and finally codec.
     if text.strip():
         try:
             from trim.eval.harmony_runtime import parse_harmony_tool_call
@@ -264,15 +254,9 @@ def _action_of(point: Any) -> dict[str, Any]:
                 return {"name": parsed.tool_name, "arguments": dict(parsed.arguments or {})}
         except Exception:
             pass
-    # 2) Fallback: the tool name the env already parsed (parse_generated_action in
-    #    batched_env_rollout.py correctly strips `functions.`). action_tool_names is
-    #    populated at StudentDecisionPoint construction (batched_env_rollout.py:734).
     names = list(getattr(point, "action_tool_names", []) or [])
     if names and names[0]:
         return {"name": str(names[0]), "arguments": {}}
-    # 3) Last resort: codec parse_action. Kept for parity with the old behavior on
-    #    non-Harmony action text; for Harmony it still returns "functions" but at
-    #    least does not crash. Only reached when both harmony parse and env name fail.
     if text.strip():
         try:
             from trim.training.action_codec import parse_action
@@ -283,6 +267,121 @@ def _action_of(point: Any) -> dict[str, Any]:
     return {"name": "", "arguments": {}}
 
 
+def archive_digest(policy_version: Any, trajectories: Sequence[Mapping[str, Any]]) -> str:
+    """Incrementally compute the legacy fingerprint without materializing the archive."""
+    hasher = hashlib.sha256()
+    prefix = json.dumps(
+        {"policy_version": policy_version, "trajectories": []},
+        sort_keys=True,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    marker = b"[]}"
+    if not prefix.endswith(marker.decode("ascii")):
+        raise RuntimeError("unexpected archive fingerprint envelope")
+    hasher.update(prefix[:-len(marker)].encode("utf-8"))
+    hasher.update(b"[")
+    first = True
+    for trajectory in trajectories:
+        if not first:
+            hasher.update(b",")
+        raw = json.dumps(
+            trajectory,
+            sort_keys=True,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+        hasher.update(raw)
+        first = False
+    hasher.update(b"]}")
+    return hasher.hexdigest()
+
+
+class LazyArchive:
+    """A validated archive index that reads only this rank's trajectories on demand."""
+
+    def __init__(self, path: Path, *, expected_schema: str = ARCHIVE_SCHEMA, verify_digest: bool = True):
+        self.path = Path(path)
+        self.offsets: list[tuple[int, int]] = []
+        self.metadata: dict[str, Any] = {}
+        self._index(verify_digest=verify_digest, expected_schema=expected_schema)
+
+    def _index(self, *, verify_digest: bool, expected_schema: str) -> None:
+        size = self.path.stat().st_size
+        with self.path.open("rb") as handle:
+            head = handle.read(min(size, 1024 * 1024)).decode("utf-8")
+            if size > 1024 * 1024:
+                handle.seek(max(0, size - 1024 * 1024))
+                tail = handle.read().decode("utf-8")
+            else:
+                tail = head
+        metadata_text = head + "\n" + tail
+        for key in ("schema_version", "policy_version", "mask", "teacher_mode", "contract_digest", "digest"):
+            match = re.search(r'"' + re.escape(key) + r'"\s*:\s*("(?:\\.|[^"\\])*"|false|true|null|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)', metadata_text)
+            if match:
+                self.metadata[key] = json.loads(match.group(1))
+        if self.metadata.get("schema_version") != expected_schema:
+            raise ValueError("teacher archive schema mismatch")
+        if self.metadata.get("teacher_mode") is not False:
+            raise ValueError("teacher archive must record teacher_mode=False")
+        if "policy_version" not in self.metadata or not self.metadata.get("digest"):
+            raise ValueError("teacher archive missing policy_version/digest")
+        hasher = hashlib.sha256()
+        prefix = json.dumps(
+            {"policy_version": self.metadata["policy_version"], "trajectories": []},
+            sort_keys=True,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        hasher.update(prefix[:-3].encode("utf-8"))
+        hasher.update(b"[")
+        for index, start, end, trajectory in iter_json_array_items(self.path, "trajectories"):
+            self.offsets.append((start, end))
+            if verify_digest:
+                if index:
+                    hasher.update(b",")
+                hasher.update(json.dumps(trajectory, sort_keys=True, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8"))
+        if verify_digest:
+            hasher.update(b"]}")
+            actual = hasher.hexdigest()
+            if actual != self.metadata["digest"]:
+                raise ValueError(f"teacher archive digest mismatch: {actual} != {self.metadata['digest']}")
+
+    def __len__(self) -> int:
+        return len(self.offsets)
+
+    def __getitem__(self, key: str) -> Any:
+        if key == "trajectories":
+            return [self.get_item(index) for index in range(len(self))]
+        return self.metadata[key]
+
+    def get(self, key: str, default: Any = None) -> Any:
+        if key == "trajectories":
+            return [self.get_item(index) for index in range(len(self))]
+        return self.metadata.get(key, default)
+
+    def get_item(self, index: int) -> dict[str, Any]:
+        if index < 0 or index >= len(self.offsets):
+            raise IndexError(index)
+        start, end = self.offsets[int(index)]
+        with self.path.open("rb") as handle:
+            handle.seek(start)
+            raw = handle.read(end - start)
+        return json.loads(raw.decode("utf-8"))
+
+    def iter_rank(self, rank: int, world_size: int) -> Iterator[dict[str, Any]]:
+        for index in range(int(rank), len(self.offsets), max(1, int(world_size))):
+            yield self.get_item(index)
+
+    def materialize(self) -> dict[str, Any]:
+        archive = dict(self.metadata)
+        archive["trajectories"] = [self.get_item(index) for index in range(len(self))]
+        return archive
+
+
 def seal_archive(archive: Mapping[str, Any], *, contract_digest: str) -> dict[str, Any]:
     if archive.get("schema_version") != ARCHIVE_SCHEMA:
         raise ValueError("teacher archive schema mismatch")
@@ -290,13 +389,13 @@ def seal_archive(archive: Mapping[str, Any], *, contract_digest: str) -> dict[st
         raise ValueError("teacher archive must record teacher_mode=False")
     sealed = dict(archive)
     sealed["contract_digest"] = contract_digest
-    sealed["digest"] = fingerprint(
-        {
-            "policy_version": archive.get("policy_version"),
-            "trajectories": archive.get("trajectories"),
-        }
-    )
+    sealed["digest"] = archive_digest(archive.get("policy_version"), archive.get("trajectories") or [])
     return sealed
+
+
+def iter_archive_trajectories(path: Path) -> Iterator[tuple[int, dict[str, Any]]]:
+    for index, _start, _end, trajectory in iter_json_array_items(Path(path), "trajectories"):
+        yield index, trajectory
 
 
 def run_teacher_collection_job(job: Mapping[str, Any]) -> dict[str, Any]:

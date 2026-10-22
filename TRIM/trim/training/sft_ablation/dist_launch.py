@@ -237,10 +237,12 @@ def _argv_option(argv: list[str], names: tuple[str, ...]) -> str | None:
 
 
 def v2_train_requested(argv: list[str], experiment: str) -> bool:
+    from trim.training.sft_engine.backend import ACCELERATED_BACKENDS
+
     backend = _argv_option(argv, ("--ce-backend",)) or "legacy"
     if backend == "legacy":
         return False
-    if backend != "accelerate_ddp":
+    if backend not in ACCELERATED_BACKENDS:
         raise SystemExit(f"unknown --ce-backend {backend}")
     stage = _argv_option(argv, ("--stage",)) or "all"
     if experiment == "student_onpolicy_sft":
@@ -249,7 +251,7 @@ def v2_train_requested(argv: list[str], experiment: str) -> bool:
         return True
     if stage == "all":
         raise SystemExit(
-            "accelerate_ddp does not collect and train in one GPU job. "
+            f"{backend} does not collect and train in one GPU job. "
             "Seal the dataset, then relaunch with --stage train."
         )
     return False
@@ -284,14 +286,25 @@ def align_torchrun_cfg(cfg: Any) -> Any:
 
 
 def validate_v2_dist(cfg: Any, args: Any) -> dict[str, Any]:
+    from trim.training.sft_engine.backend import ACCELERATED_BACKENDS
+
     if int(cfg.nproc_per_node) < 1 or int(cfg.nnodes) < 1:
         raise SystemExit("v2 train requires positive nnodes and nproc-per-node")
+    backend = str(getattr(args, "ce_backend", "accelerate_ddp"))
+    if backend not in ACCELERATED_BACKENDS:
+        raise SystemExit(f"v2 train does not handle --ce-backend {backend}")
     if int(args.micro_batch_size) != 1:
-        raise SystemExit("accelerate_ddp requires --micro-batch-size 1")
+        raise SystemExit(f"{backend} requires --micro-batch-size 1")
     if str(args.logits_mode) != "action_positions":
-        raise SystemExit("accelerate_ddp refuses to fall back from action-position logits")
-    if str(args.gradient_checkpointing) != "off":
-        raise SystemExit("gradient checkpointing stays off until the locked stack is validated")
+        raise SystemExit(f"{backend} refuses to fall back from action-position logits")
+    # gradient checkpointing: previously hard-blocked ("stays off until the locked
+    # stack is validated"). r7 opened non_reentrant in cli.py + fixed_runtime +
+    # model.py but this pre-torchrun gate still rejected it, so grad-ckpt never
+    # engaged. Allow non_reentrant here so model.gradient_checkpointing_enable()
+    # actually runs (DDP: load path; FSDP2: load_fsdp2_model). The MoE-expert
+    # grad-ckpt risk (k6v0p, RL path) does not apply to SFT action-only CE.
+    if str(args.gradient_checkpointing) not in {"off", "non_reentrant"}:
+        raise SystemExit(f"{backend} accepts only off or non_reentrant gradient checkpointing")
     ranks = int(cfg.nnodes) * int(cfg.nproc_per_node)
     if int(cfg.expected_world_size) != ranks:
         raise SystemExit(f"expected-world-size {cfg.expected_world_size} != nnodes*nproc_per_node {ranks}")
@@ -299,7 +312,7 @@ def validate_v2_dist(cfg: Any, args: Any) -> dict[str, Any]:
     if args.experiment == "student_onpolicy_sft" and layout == "split_pools" and not str(args.rollout_endpoints or ""):
         raise SystemExit("split_pools requires --rollout-endpoints")
     return {
-        "ce_backend": "accelerate_ddp",
+        "ce_backend": backend,
         "nnodes": int(cfg.nnodes),
         "nproc_per_node": int(cfg.nproc_per_node),
         "gradient_ranks": ranks,
@@ -308,7 +321,7 @@ def validate_v2_dist(cfg: Any, args: Any) -> dict[str, Any]:
         "micro_batch_size": 1,
         "global_batch_size": int(args.global_batch_size),
         "logits_mode": "action_positions",
-        "gradient_checkpointing": "off",
+        "gradient_checkpointing": str(args.gradient_checkpointing),
         "model_precision": "bf16",
         "pin_local_cuda_device": False,
         "process_group": "accelerate",

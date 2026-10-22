@@ -1,0 +1,140 @@
+# CloudML custom_train YAML — TRIM Harness-1 BC+ smoke (4 steps) RL training on gpt-oss-20b
+# 8 × gm402-80g, queue 2334 (记忆对话 / kscn-hd-cloudml-prod), priority 8, tag MemQA-General-V5
+# JuiceFS volume "songzijun" 挂载到 /mnt/songzijun，endpoint=bj9-cloudml 通过 CLI --juicefs_mount_configs 传入
+# 镜像 songzijun-cto:3050749 不含四件套；imageCommand 内锁定 torch2.10/vllm0.19.1/transformers4.57.6/pyserini2.0.0
+# SEC 训练 (train-data sec) 走 Lucene BM25，需 JVM + Pyserini + ANSERINI_CLASSPATH
+jobName: "smoke-trim-qwen4step-gptoss20b-8gpu-recovery1"
+description: "Recovery1 of t-20260911171546-oi3ux: fix audit_mask_wiring 4-component false-fail by injecting _ProbeSearcher (commit 9125060 removed doc_store fallback). TRIM Harness-1 BC+ smoke 4-step RL training (gpt-oss-20b, 8x gm402-80g, train-env local_legacy, train-data sec, component all). Locked four-package runtime + Pyserini/JVM + offline tiktoken + SEC BM25 index."
+accessType: "PUBLIC"
+tags: ["MemQA-General-V5"]
+
+imageConfig:
+    imageUrl: "micr.cloud.mioffice.cn/songzijun/songzijun-cto:3050749-songzijun-cto"
+    imageCommand: |-
+        set -euxo pipefail
+        export PYTHONUNBUFFERED=1
+        export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+        export HF_HUB_OFFLINE=1
+        export TRANSFORMERS_OFFLINE=1
+        export TOKENIZERS_PARALLELISM=false
+        export OPENAI_API_KEY="${OPENAI_API_KEY:-dummy}"
+        export PYTHONPATH=/mnt/songzijun/Capability_Evolution/TRIM:/mnt/songzijun/Capability_Evolution/SCAPE-EasyOPD:${PYTHONPATH:-}
+
+        # --- SEC 训练数据重定向到 JuiceFS（默认 /data/ppnm/...） ---
+        export SCAPE_SEC_CORPUS_ROOT=/mnt/songzijun/Capability_Evolution/TRIM/data/harness-1-sec-corpus
+        export SCAPE_SEC_RL_DATA=/mnt/songzijun/Capability_Evolution/TRIM/data/harness-1-rl-data.tar.gz
+
+        # --- offline tiktoken: gpt-oss Harmony encoder uses o200k_base ---
+        python3 -c "import zipfile; zipfile.ZipFile('/mnt/songzijun/tiktoken-bundle.zip').extractall('/tmp')"
+        test -f /tmp/tiktoken-bundle/share/tiktoken/o200k_base.tiktoken
+        test -f /tmp/tiktoken-bundle/share/tiktoken/cl100k_base.tiktoken
+        export TIKTOKEN_ENCODINGS_BASE=/tmp/tiktoken-bundle/share/tiktoken
+        export TIKTOKEN_RS_CACHE_DIR=/tmp/tiktoken-bundle/tiktoken_rs_cache
+        export TIKTOKEN_CACHE_DIR=/tmp/tiktoken-bundle/tiktoken_cache
+
+        # --- 数据与模型存在性校验 ---
+        test -f /mnt/songzijun/Capability_Evolution/TRIM/scripts/run_train.py
+        test -d /mnt/songzijun/models/openai/gpt-oss-20b
+        test -d /mnt/songzijun/Capability_Evolution/TRIM/data/harness-1-sec-corpus/corpora/sec/train
+        test -d /mnt/songzijun/Capability_Evolution/TRIM/data/harness-1-sec-corpus/indexes/bm25
+        test -f /mnt/songzijun/Capability_Evolution/TRIM/data/harness-1-rl-data.tar.gz
+
+        # --- JVM for Pyserini Lucene (probe first; do not trust a non-empty JAVA_HOME) ---
+        JVM_PATH=$(find /usr /opt -type f -name libjvm.so 2>/dev/null | head -1 || true)
+        if [ -z "${JVM_PATH}" ]; then
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends openjdk-21-jre-headless
+          JVM_PATH=$(find /usr /opt -type f -name libjvm.so 2>/dev/null | head -1 || true)
+        fi
+        test -n "${JVM_PATH}"
+        test -f "${JVM_PATH}"
+        ldd "${JVM_PATH}"
+        export JVM_PATH
+        export JAVA_HOME=$(dirname "$(dirname "$(dirname "${JVM_PATH}")")")
+        export LD_LIBRARY_PATH=$(dirname "${JVM_PATH}"):${LD_LIBRARY_PATH:-}
+        export PATH="$JAVA_HOME/bin:$PATH"
+
+        # --- locked four-package runtime + harness import-chain deps ---
+        python3 -m pip install --no-cache-dir --ignore-installed --upgrade-strategy only-if-needed \
+          "torch==2.10.0" "vllm==0.19.1" "transformers==4.57.6" "pyserini==2.0.0" \
+          peft accelerate structlog chromadb chz tinker json_repair tqdm \
+          sentence-transformers regex sympy latex2sympy2 word2number sentencepiece openai tenacity
+
+        # --- ANSERINI_CLASSPATH -> pyserini resources/jars (NOT the package root) ---
+        PYSERINI_ROOT=$(python3 -c 'import pathlib, pyserini; print(pathlib.Path(pyserini.__file__).resolve().parent)')
+        export ANSERINI_CLASSPATH=$(find "$PYSERINI_ROOT/resources/jars" -type f -name '*.jar' -print | paste -sd: -)
+        test -n "$ANSERINI_CLASSPATH"
+        export CLASSPATH="$ANSERINI_CLASSPATH"
+
+        # --- preflight: four versions + 8 GPU + PyJNI + SEC Lucene index opens ---
+        python3 - <<'PY'
+        import importlib.metadata, os
+        import torch, transformers, vllm
+        from jnius import autoclass
+        autoclass("java.lang.String")
+        versions = {
+            "torch": torch.__version__,
+            "vllm": vllm.__version__,
+            "transformers": transformers.__version__,
+            "pyserini": importlib.metadata.version("pyserini"),
+            "structlog": importlib.metadata.version("structlog"),
+            "chromadb": importlib.metadata.version("chromadb"),
+            "gpu_count": torch.cuda.device_count(),
+            "JVM_PATH": os.environ["JVM_PATH"],
+            "JAVA_HOME": os.environ["JAVA_HOME"],
+            "o200k_base_present": os.path.isfile(os.path.join(os.environ["TIKTOKEN_ENCODINGS_BASE"], "o200k_base.tiktoken")),
+        }
+        print("PREFLIGHT", versions, flush=True)
+        assert versions["torch"].startswith("2.10.0"), versions
+        assert versions["vllm"] == "0.19.1", versions
+        assert versions["transformers"] == "4.57.6", versions
+        assert versions["pyserini"] == "2.0.0", versions
+        assert versions["gpu_count"] == 8, versions
+        assert versions["o200k_base_present"], versions
+        from pyserini.search.lucene import LuceneSearcher
+        sec_index = os.environ["SCAPE_SEC_CORPUS_ROOT"] + "/indexes/bm25"
+        s = LuceneSearcher(sec_index)
+        n_docs = s.num_docs if not callable(s.num_docs) else s.num_docs()
+        print("LUCENE_OK", {"sec_num_docs": n_docs}, flush=True)
+        assert n_docs > 0
+        PY
+
+        # --- training (smoke 4 steps) ---
+        OUT="/mnt/songzijun/Capability_Evolution/TRIM/outputs/smoke_trim_qwen4step_$(date +%Y%m%d_%H%M%S)"
+        mkdir -p "$OUT"
+        cd /mnt/songzijun/Capability_Evolution
+        exec python TRIM/scripts/run_train.py \
+          --harness Harness-1 \
+          --benchmark bcplus_full \
+          --model_name /mnt/songzijun/models/openai/gpt-oss-20b \
+          --train_method rl \
+          --component all \
+          --train-env local_legacy \
+          --train-data sec \
+          --train-steps 4 \
+          --train-groups-per-step 32 \
+          --group-size 8 \
+          --train-micro-batch-size 4 \
+          --train-heartbeat-every 8 \
+          --max-turns 40 \
+          --max-model-len 8192 \
+          --out "$OUT"
+
+queueId: "2334"
+priority: 8
+framework: "pytorch"
+resourceConfigs:
+    - nodeRole: "worker"
+      nodeNumber: 1
+      perNodeResourceSpec:
+          resourcePriority: "GUARANTEED_PUBLIC"
+          resourceName: "cloudml.ng1gm402-8-8.20-224"
+          resourceNumber: 8
+
+# JuiceFS 不在此 YAML 配置，改由 CLI --juicefs_mount_configs 显式传入 JSON（endpoint=bj9-cloudml）
+diagOptions:
+    - name: "HangDetection"
+      enable: true
+
+retryConfig:
+    enableRetry: false

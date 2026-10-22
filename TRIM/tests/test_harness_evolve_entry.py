@@ -88,3 +88,42 @@ def test_component_and_train_flags_are_rejected():
                 "trim",
             ]
         )
+
+
+def test_upstream_baseline_requires_complete_full_trace_set(tmp_path: Path):
+    mod = _load_script()
+    api = tmp_path / "upstream_api"
+    api.mkdir()
+    (api / "SUMMARY.json").write_text(
+        '{"n_planned": 2, "n_queries": 1, "execution_complete": false, "partial": true}\n',
+        encoding="utf-8",
+    )
+    (api / "DONE.json").write_text(
+        '{"n_planned": 2, "n_queries": 1, "execution_complete": false, "partial": true}\n',
+        encoding="utf-8",
+    )
+    (api / "PER_QUERY.jsonl").write_text('{"query_id":"q1","final_answer_recall":1}\n', encoding="utf-8")
+    with pytest.raises(SystemExit, match="incomplete upstream_api baseline"):
+        mod.load_zero_baseline(tmp_path)
+
+
+def test_upstream_baseline_loads_summary_and_per_query(tmp_path: Path):
+    mod = _load_script()
+    api = tmp_path / "upstream_api"
+    api.mkdir()
+    (api / "SUMMARY.json").write_text(
+        '{"n_planned": 2, "n_queries": 2, "execution_complete": true, "partial": false, "final_answer_recall": 0.5}\n',
+        encoding="utf-8",
+    )
+    (api / "DONE.json").write_text(
+        '{"n_planned": 2, "n_queries": 2, "execution_complete": true, "partial": false}\n',
+        encoding="utf-8",
+    )
+    (api / "PER_QUERY.jsonl").write_text(
+        '{"query_id":"q1","final_answer_recall":1}\n{"query_id":"q2","final_answer_recall":0}\n',
+        encoding="utf-8",
+    )
+    quality, by_id, traces = mod.load_zero_baseline(tmp_path)
+    assert quality == 0.5
+    assert by_id == {"q1": 1.0, "q2": 0.0}
+    assert len(traces) == 2

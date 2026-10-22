@@ -149,7 +149,10 @@ def apply_upstream_action(
         st["invalid_tools"] = int(st.get("invalid_tools") or 0) + 1
         return st, f"ERROR: format ({getattr(result, 'metrics', {})})", False
     if hasattr(env, "step_parsed_dict"):
-        result = _run_coro(env.step_parsed_dict(dict(action)))
+        parsed_action = dict(action)
+        parsed_action.setdefault("reasoning", None)
+        parsed_action.setdefault("parse_error", None)
+        result = _run_coro(env.step_parsed_dict(parsed_action))
     else:
         if mods is None:
             raise RuntimeError("upstream train step needs original modules to build Action")

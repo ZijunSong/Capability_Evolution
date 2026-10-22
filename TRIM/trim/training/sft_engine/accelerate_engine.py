@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import time
-from contextlib import nullcontext
 from typing import Any, Callable, Sequence
 
 from trim.training.sft_ablation.contracts import supervised_weight
@@ -16,6 +15,36 @@ def all_sum(value: Any) -> Any:
 
     if dist.is_available() and dist.is_initialized():
         dist.all_reduce(value, op=dist.ReduceOp.SUM)
+    return value
+
+
+def backward_sync_context(acc: Any, model: Any, slot_id: int, nslots: int):
+    """Per-microbatch gradient sync policy.
+
+    FSDP2 reduce-scatters on every backward (first sharded version: no
+    ``no_sync``, LoRA gradients are small enough that keeping an unsharded
+    full copy to save communication is not worth it). DDP keeps the historical
+    accumulate-then-sync-last-microbatch behaviour.
+    """
+    from contextlib import nullcontext
+
+    if getattr(acc, "is_fsdp2", False):
+        return nullcontext()
+    if slot_id + 1 < nslots:
+        return acc.no_sync(model)
+    return nullcontext()
+
+
+def replicated_scalar(value: Any) -> Any:
+    """Convert a DTensor scalar (e.g. a sharded grad norm) to a plain tensor.
+
+    ``full_tensor()`` is a collective: every rank must call it in the same
+    order. Never average per-rank local norms instead of this.
+    """
+    from torch.distributed.tensor import DTensor
+
+    if isinstance(value, DTensor):
+        value = value.full_tensor()
     return value
 
 
@@ -94,7 +123,7 @@ def update_global_batch(
                 total_slots=len(slots),
                 dummy=dummy,
             )
-        context = acc.no_sync(model) if slot_id + 1 < len(slots) else nullcontext()
+        context = backward_sync_context(acc, model, slot_id, len(slots))
         _sync(acc, sync_cuda)
         started = time.perf_counter()
         with context:
@@ -119,6 +148,7 @@ def update_global_batch(
             )
     clip_started = time.perf_counter()
     norm = acc.clip_grad_norm_([param for param in model.parameters() if param.requires_grad], float(grad_clip))
+    norm = replicated_scalar(norm)
     _sync(acc, sync_cuda)
     clip_s = time.perf_counter() - clip_started
     sync_started = time.perf_counter()

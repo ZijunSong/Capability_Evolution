@@ -338,13 +338,15 @@ exec python3 /mnt/songzijun/Capability_Evolution/TRIM/scripts/run_teacher_sft_mu
   --sft-data /mnt/songzijun/outputs/gpt-oss-20b-teacher-sft-bf16-32gpu_20261019_true_fix1/sft_sealed/dataset.jsonl \
   --dataset-manifest /mnt/songzijun/outputs/gpt-oss-20b-teacher-sft-bf16-32gpu_20261019_true_fix1/sft_sealed/DATASET.json \
   --num-updates 200 \
-  --batch-size 128 \
-  --global-batch-size 128 \
+  --batch-size 32 \
+  --global-batch-size 32 \
   --micro-batch-size 1 \
   --save-every 10 \
   --learning-rate 5e-6 \
   --lora-rank 32 \
-  --max-model-len 6144 \
+  --max-model-len 4096 \
+  --gradient-checkpointing non_reentrant \
+  --attn-implementation eager \
   --max-new-tokens 2048 \
   --seed 42 \
   --out "${OUT}"

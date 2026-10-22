@@ -1,0 +1,174 @@
+# CloudML custom_train: TRIM Harness-1 BC+, GPT-OSS-20B (bf16-dequant, NOT
+# original mxfp4 per the 2026-10-02 unified GPT-OSS口径), no-gate
+# (--train_method no-gate = CISPO + projected-gap with g=1, gate_mode="none",
+# projection_mode="full", rl_enabled=True; defaults to Harness-1 Full teacher /
+# Zero student, compatible with --component all) + final-answer-recall reward
+# (--rl-reward final-answer-recall via the NATIVE flag path: launch.py sets
+# args.rl_reward_effective, reward_policy.score_explicit_reward returns
+# total=fa; this does NOT hard-edit four_cell_runtime.py like the recall-only
+# entry) via torch_ddp_lora backend, FOUR 8-GPU gm402-80g nodes (4 nodes x 8
+# cards = 32 GPUs), 200 steps.
+#
+# This is the MULTI-NODE variant. Each node runs ONE Scheme A process that
+# itself torchruns --nnodes 4 --nproc_per_node 8 (world_size=32), shards
+# on-policy query groups across the 32 ranks, gathers rollout trajectories onto
+# rank 0 via shared disk (<out>/tmp/rollout_shards), rank 0 runs the DDP-LoRA
+# CISPO/OPD optimizer step, then every rank barriers and reloads the fresh
+# adapter for the next on-policy rollout.
+#
+# === PATH NOTE: no-gate + final-answer-recall (NATIVE flag path) ===
+# The two running bf16 baselines (vqqxp trim/all recall-only, b1ljo trim/all
+# recall-only) use --train_method trim + a CODE-TREE hard-edit of
+# four_cell_runtime.py (final_answer_recall_only protocol). THIS job uses
+# --train_method no-gate + --rl-reward final-answer-recall, which is the
+# NATIVE flag path: resolve_trim_ablation("no-gate") ->
+# TrimAblation("no_gate", rl_enabled=True, projection_mode="full",
+# gate_mode="none"), and reward_protocol_for("final-answer-recall") ->
+# PROTOCOL_FA_ONLY, score_explicit_reward(total=fa). No code-tree edit needed;
+# the entry's PATCH_CHECK verifies the contract resolves correctly instead of
+# asserting a hard-edit.
+#
+# === bf16-dequant (NOT mxfp4) ===
+# Model is /mnt/songzijun/models/openai/gpt-oss-20b-bf16-dequant
+# (GptOssForCausalLM, quant_method=NONE, ~39GB). Original mxfp4 has the Marlin
+# PTX crash (v0dhh FAILED@step1) + NaN bug (txgli/zxkvl FAILED@step0). bf16 is
+# the verified safe path (b1ljo/vqqxp). bf16 has NO Marlin/Triton backend, so
+# mb>=2 is safe on backward (the mxfp4 entry's mb1 OOM floor does NOT apply
+# here); user requested mb4. SCAPE_FORCE_LOCAL_HARMONY unset (gpt-oss to_json
+# crash via openai_harmony Rust encoder).
+#
+# === Multi-node framework (verified by 7nzzn + v0dhh + b1ljo) ===
+# custom_train framework=pytorch nodeNumber=4 creates a PyTorchJob CRD with
+# master-0/worker pods + init-pytorch that injects MASTER_ADDR (master pod
+# service DNS) + NODE_RANK on every pod but does NOT inject
+# RANK/WORLD_SIZE/PET_* (v0dhh PREFLIGHT rank_env=None world_size_env=None
+# pet_nproc_per_node=None). The entry unsets the rank env defensively so
+# run_train_multinode.py self-launches torchrun via _exec_torchrun
+# (deterministic 4-node rendezvous via --master-addr/--node-rank).
+#
+# === GPU availability (2026-10-15 submit-time snapshot) ===
+# queue 2334 "记忆对话组-训练队列" kscn-hd-cloudml-prod(青海) gm402-80g:
+#   RESOURCEFREE=174 / RESOURCETOTAL=368, AVAILABLESPEC=1,2,4,8.
+# 32-GPU (4x8) gang fits comfortably. Watch FailedQueueScheduling only if pool
+# drains between submit and schedule.
+#
+# IMPORTANT: JuiceFS endpoint is NOT submitted via this YAML (--filename) path.
+# The actual submit uses direct CLI flags and passes --juicefs_mount_configs
+# JSON explicitly, where juiceFsCluster must be "bj9-cloudml" (the schema field
+# is juiceFsCluster; there is no literal "endpoint" key; its value IS the
+# cluster/endpoint identifier, verified by 7nzzn describe juiceFSCluster field).
+# This file is a readable draft / audit snapshot only; submit via
+# submit_gpt_oss_20b_no_gate_final_answer_recall_32gpu_4node_20261015.sh.
+#
+# world_size=32 is REQUIRED. Post-submit provenance audit (CLAUDE.md): verify
+# world_size is truly 32 by the three-tuple — (1) stdout has torchrun
+# --nnodes 4 --nproc_per_node 8; (2) checkpoints/<cell>/step_000001/ has 32
+# optimizer.rank0000..0031.pt; (3) vllm_sessions/ has 32 _r0.._r31 sessions.
+# Any one missing => actually single-node or partial run, result is NOT a
+# valid "32-GPU 4-node DDP" artifact.
+#
+# imageCommand below is a PLACEHOLDER — the entry script has bash heredocs
+# and nested indentation, so inlining it as a YAML block scalar breaks
+# parsing (confirmed during run2 prep). The actual submission passes it via
+# the CLI flag --image_command "$(cat entry_..._no_gate_..._32gpu_4node_...sh)"
+# in the submit script. This YAML is an audit snapshot of resource/env/
+# JuiceFS config; do NOT submit with --filename.
+
+jobName: trim-harness1-bcplus-full-gpt-oss-20b-no-gate-fa-recall-32gpu-4node-20261015
+description: >-
+  TRIM Harness-1 BC+ GPT-OSS-20B no-gate (CISPO+projected-gap g=1) component=all
+  rl-reward=final-answer-recall (native flag, pure-fa reward, no code-tree edit)
+  on FOUR 8-GPU gm402-80g nodes (32 GPUs) via torch_ddp_lora backend. bf16-dequant
+  model (NOT mxfp4; avoids Marlin PTX+NaN). run_train_multinode.py --nnodes 4
+  --nproc-per-node 8 self-torchruns world_size=32: per-rank vLLM TP=1 rollout +
+  DDP LoRA CISPO/OPD optimizer step (full replica per rank, not FSDP2 sharding).
+  200 steps, 32 groups/step, group-size 8, max-turns 40, max-model-len 8192,
+  mb=1 (GPT-OSS-20B MoE no-grad-ckpt铁律; ALL bf16 baselines b1ljo/vqqxp/pncda
+  used mb1; bf16 weights 3x heavier make backward tighter not looser), gpu-mem 0.85 (NOT 0.90;
+  bf16 39-40GB权重/卡 KV余量小, 0.85 是 pncda/vvptp/b1ljo/uwkpr->vqqxp 系列实测值), local_legacy BM25, SEC RL
+  data + corpus under TRIM/data (rl-data + sec-corpus-root passed explicitly),
+  offline tiktoken, four-pack torch2.10.0/vllm0.19.1/tf4.57.6/pyserini2.0.0.
+  Entry unsets CloudML-injected RANK/WORLD_SIZE/PET_* so main() self-launches
+  torchrun (deterministic 4-node rendezvous via --master-addr/--node-rank). NO
+  CUDA_LAUNCH_BLOCKING (DDP multi-proc). NO DISABLE_CUSTOM_ALL_REDUCE (TP=1).
+  SCAPE_FORCE_LOCAL_HARMONY unset (gpt-oss to_json crash). Model cp to /tmp
+  per node (4-way JuiceFS read, not 32-way). curate-clipping tolerant-skip patch
+  (action_is_visible + tinker_opd_datum skip) asserted in PATCH_CHECK (no-gate
+  projected-gap path shares the same datum build). RDMA on (>=2 nodes x 8 GPU).
+  world_size=32 audit required post-submit.
+accessType: PRIVATE
+tags:
+- MemQA-General-V5
+imageConfig:
+  imageUrl: micr.cloud.mioffice.cn/songzijun/songzijun-cto:3050749-songzijun-cto
+  imageCommand: "FILLED_BY_SUBMIT_SCRIPT_VIA_cat_entry"
+  # NOTE: imageCommand is a bash entry script with heredocs and nested
+  # indentation, so inlining it as a YAML block scalar breaks parsing. The
+  # actual submission passes it via the CLI flag
+  # --image_command "$(cat entry_gpt_oss_20b_no_gate_final_answer_recall_32gpu_4node_20261015.sh)"
+  # in submit_gpt_oss_20b_no_gate_final_answer_recall_32gpu_4node_20261015.sh.
+  # This YAML is an audit snapshot of resource/env/JuiceFS config; do NOT
+  # submit with --filename (use the submit script). The entry file is kept in
+  # sync with imageConfig above.
+juiceFsMountConfigs:
+- volume: songzijun
+  juiceFsCluster: bj9-cloudml
+  subPath: /
+  mountPath: /mnt/songzijun
+  readOnly: false
+envConfigs:
+- key: PYTHONUNBUFFERED
+  value: '1'
+- key: CUDA_VISIBLE_DEVICES
+  value: 0,1,2,3,4,5,6,7
+- key: TRIM_GPU_KEEPALIVE
+  value: '0'
+- key: PYTORCH_CUDA_ALLOC_CONF
+  value: expandable_segments:True
+- key: PYTHONPATH
+  value: /mnt/songzijun/Capability_Evolution/TRIM:/mnt/songzijun/Capability_Evolution/SCAPE-EasyOPD
+- key: OPENAI_API_KEY
+  value: '**-****-***********-***-*-****-***'
+- key: SCAPE_LOCAL_OPENAI_EMBEDDINGS
+  value: '1'
+- key: TIKTOKEN_ENCODINGS_BASE
+  value: /tmp/tiktoken-bundle/share/tiktoken
+- key: TIKTOKEN_CACHE_DIR
+  value: /tmp/tiktoken-bundle/tiktoken_cache
+- key: TIKTOKEN_RS_CACHE_DIR
+  value: /tmp/tiktoken-bundle/tiktoken_rs_cache
+- key: OUT
+  value: /mnt/songzijun/Capability_Evolution/TRIM/outputs/cloudml_custom_train_harness1_bcplus_full_gpt_oss_20b_no_gate_final_answer_recall_32gpu_4node_20261015
+queueId: '2334'
+priority: 8
+preemptible: false
+framework: pytorch
+rdma: true
+resourceConfigs:
+- nodeRole: worker
+  nodeNumber: 4
+  perNodeResourceSpec:
+    resourcePriority: GUARANTEED_PUBLIC
+    resourceName: cloudml.ng1gm402-8-8.20-224
+    resourceNumber: 8
+  elastic: false
+  preemptible: false
+enableTensorboard: false
+enableMetrics: false
+retryConfig:
+  enableRetry: false
+  maxRetryTimes: 1
+  policySets:
+  - JobFailed
+diagOptions:
+- name: HangDetection
+  enable: false
+alertConfig:
+  enableAlert: true
+  alertItems:
+  - alertConditions:
+    - FAILED
+    alertLevel: P2
+    alertReceivers:
+      persons:
+      - songzijun

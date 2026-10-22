@@ -62,16 +62,20 @@ def _same_machine(worker: dict[str, Any], host: str) -> bool:
 
 
 class RolloutPool:
-    """Blocking client. COLLECT is allowed only after every worker ACKs the load."""
+    """Blocking client. COLLECT is allowed only after every worker ACKs the load.
+
+    Workers are invoked concurrently: wall time is the slowest worker, not the
+    sum. A single worker failure fails the whole call — a round is never trained
+    from a partial shard set.
+    """
 
     def __init__(self, path: Path | str, *, timeout_s: float = 3600) -> None:
         self.endpoints = load_endpoints(path)["workers"]
         self.timeout_s = float(timeout_s)
 
     def load_all(self, version: str, adapter_path: str, adapter_digest: str) -> list[dict[str, Any]]:
-        acks = []
-        for worker in self.endpoints:
-            ack = self._call(
+        jobs = [
+            (
                 worker,
                 {
                     "op": "LOAD_POLICY",
@@ -80,30 +84,65 @@ class RolloutPool:
                     "adapter_digest": adapter_digest,
                 },
             )
+            for worker in self.endpoints
+        ]
+
+        def invoke(job: tuple[dict[str, Any], dict[str, Any]]) -> dict[str, Any]:
+            worker, payload = job
+            ack = self._call(worker, payload)
             if ack.get("loaded_version") != version or ack.get("loaded_digest") != adapter_digest:
                 raise RuntimeError(f"worker {worker['worker_id']} ACK does not match the published policy: {ack}")
-            acks.append(ack)
-        return acks
+            return ack
+
+        return self._fanout(jobs, invoke, what="LOAD_POLICY")
 
     def collect_all(self, request: dict[str, Any]) -> list[dict[str, Any]]:
-        shards = []
         queries = list(request.get("queries") or [])
         width = max(1, len(self.endpoints))
+        # Deterministic worker/query ownership. Empty shards are still sent so
+        # every worker validates the policy it is serving; the call list is the
+        # same shape no matter how the queries distribute.
+        jobs = []
         for index, worker in enumerate(self.endpoints):
             owned = queries[index::width]
-            response = self._call(
-                worker,
-                {
-                    **request,
-                    "op": "COLLECT",
-                    "queries": owned,
-                    "worker_id": worker["worker_id"],
-                },
+            jobs.append(
+                (
+                    worker,
+                    {
+                        **request,
+                        "op": "COLLECT",
+                        "queries": owned,
+                        "worker_id": worker["worker_id"],
+                    },
+                )
             )
+
+        def invoke(job: tuple[dict[str, Any], dict[str, Any]]) -> dict[str, Any]:
+            worker, payload = job
+            response = self._call(worker, payload)
             if response.get("op") != "SHARD_READY":
                 raise RuntimeError(f"worker {worker['worker_id']} did not return SHARD_READY")
-            shards.append(response)
-        return shards
+            return response
+
+        return self._fanout(jobs, invoke, what="COLLECT")
+
+    def _fanout(self, jobs: list[Any], invoke: Any, *, what: str) -> list[dict[str, Any]]:
+        if not jobs:
+            return []
+        from concurrent.futures import ThreadPoolExecutor
+
+        results: list[dict[str, Any]] = [{} for _ in jobs]
+        errors: list[str] = []
+        with ThreadPoolExecutor(max_workers=len(jobs)) as pool:
+            futures = {pool.submit(invoke, job): index for index, job in enumerate(jobs)}
+            for future, index in futures.items():
+                try:
+                    results[index] = future.result()
+                except Exception as exc:
+                    errors.append(f"{jobs[index][0].get('worker_id')}: {type(exc).__name__}: {exc}")
+        if errors:
+            raise RuntimeError(f"{what} failed on {len(errors)} worker(s); round not accepted: " + " | ".join(errors))
+        return results
 
     def quiesce_all(self, round_id: int) -> None:
         for worker in self.endpoints:
@@ -140,6 +179,23 @@ class VLLMRolloutSession:
         actual = sha256_tree(path)
         if actual != adapter_digest:
             raise RuntimeError(f"adapter digest mismatch: {actual} != {adapter_digest}")
+        # One publish == one real LOAD_POLICY. The same version/digest with a
+        # healthy client is an idempotent ACK: never close/restart the engine
+        # just because the same policy was asked twice (11.4).
+        if (
+            self.loaded is not None
+            and self.loaded.get("version") == version
+            and self.loaded.get("digest") == actual
+            and self.client is not None
+            and self._client_alive()
+        ):
+            return {
+                "loaded_version": version,
+                "loaded_digest": actual,
+                "probe_result": "idempotent_active",
+                "active_adapter_path": self.loaded.get("path"),
+                "active_adapter_digest": actual,
+            }
         self.close()
         from trim.training.vllm_hybrid import VLLMGenerateClient
 
@@ -151,13 +207,30 @@ class VLLMRolloutSession:
             lora_path=str(path),
         )
         client.start()
+        if not self._client_alive():
+            self.close()
+            raise RuntimeError("rollout client did not survive startup; refusing the policy ACK")
         self.client = client
         self.loaded = {"version": version, "digest": actual, "path": str(path)}
         return {
             "loaded_version": version,
             "loaded_digest": actual,
             "probe_result": "client_started",
+            "active_adapter_path": str(path),
+            "active_adapter_digest": actual,
         }
+
+    def _client_alive(self) -> bool:
+        client = self.client
+        if client is None:
+            return False
+        probe = getattr(client, "alive", None)
+        if callable(probe):
+            try:
+                return bool(probe())
+            except Exception:
+                return False
+        return True
 
     def collect(self, request: dict[str, Any]) -> dict[str, Any]:
         if self.client is None or self.loaded is None:

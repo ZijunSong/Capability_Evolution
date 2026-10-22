@@ -1,0 +1,138 @@
+# CloudML custom_train: TRIM Harness-1 BC+ full, GPT-OSS-20B (bf16-dequant),
+# TRIM (CISPO + projected-gap, no-project method) training via torch_ddp_lora
+# backend, FOUR 8-GPU gm402-80g nodes (4 nodes x 8 cards = 32 GPUs),
+# --component all (Teacher Full / Student Zero), 200 steps,
+# --rl-reward final-answer-recall (TRIM_REWARD_MODE=recall).
+#
+# Fork of
+# cloudml_custom_train_harness1_bcplus_full_gpt_oss_20b_rl_ddp_200step_zero_32gpu_4node_20260925_run2.yaml
+# (same 4node 32gpu + rdma + queue 2334 + priority 8 + MemQA-General-V5 tag +
+# JuiceFS bj9-cloudml mount), changing the train axis from (rl, zero) to
+# (no-project, all), and the model from mxfp4 original to bf16-dequant.
+#
+# === Model choice: bf16-dequant (NOT the mxfp4 original) ===
+# CLAUDE.md铁律: GPT-OSS-20B 训练禁用原版 mxfp4. mxfp4+LoRA 在 torch_ddp_lora
+# RL/TRIM 路径必崩 (Marlin 硬编码 PTX, cudaErrorUnsupportedPtxVersion); 且
+# recall reward 路径 mxfp4 有 sampled-logprob NaN (vllm_hybrid.py:206 token_id=0)
+# bug, 已致 txgli/zxkvl FAILED@step0. bf16-dequant 同时规避 PTX 崩溃 + NaN, 是
+# 200step 训练唯一稳妥配置. 镜像 micr...songzijun-cto 是容器, 模型权重仍走
+# JuiceFS 上的 bf16-dequant 目录 (39G, model_type=gpt_oss, 无 quant_method).
+#
+# === Multi-node (verified by 7nzzn/iowty/9ixnl/0x6rm/v0dhh/kxsb3 4node 32gpu) ===
+# CloudML custom_train framework=pytorch nodeNumber=4 creates a PyTorchJob CRD with
+# master-0/worker pods + init-pytorch that injects MASTER_ADDR / NODE_RANK / (RANK /
+# WORLD_SIZE / PET_*) on every pod. The entry script unsets the injected rank env so
+# run_train_multinode.py's under_torchrun() returns False and main() self-launches
+# torchrun --nnodes 4 --nproc_per_node 8 (world_size=32) deterministically.
+#
+# IMPORTANT: JuiceFS endpoint is NOT submitted via this YAML (--filename) path.
+# The actual submit uses direct CLI flags and passes --juicefs_mount_configs JSON
+# explicitly, where juiceFsCluster must be "bj9-cloudml" (the schema field is
+# juiceFsCluster; there is no literal "endpoint" key; its value IS the cluster/
+# endpoint identifier). This file is a readable draft / audit snapshot only;
+# submit via
+# submit_gpt_oss_20b_trim_ddp_200step_no_project_all_recall_32gpu_4node_20261015.sh.
+#
+# world_size=32 is REQUIRED (4 nodes, 8 ranks/node via torchrun --nnodes 4
+# --nproc_per-node 8). Post-submit provenance audit (CLAUDE.md): verify world_size
+# is truly 32 by the three-tuple — (1) stdout has torchrun --nnodes 4
+# --nproc_per_node 8; (2) checkpoints/<cell>/step_000001/ has 32
+# optimizer.rank0000..0031.pt; (3) vllm_sessions/ has 32 _r0.._r31 sessions.
+# Any one missing => actually single-node or partial run, result is NOT a valid
+# "32-GPU 4-node DDP" artifact.
+#
+# imageCommand below is a placeholder; the real submit inlines the entry script
+# via the CLI flag --image_command "$(cat <entry>)" (the entry has heredocs +
+# nested indentation that break YAML block-scalar parsing). Kept in sync with
+# entry_gpt_oss_20b_trim_ddp_200step_no_project_all_recall_32gpu_4node_20261015.sh.
+
+jobName: trim-harness1-bcplus-full-gpt-oss-20b-trim-ddp-200step-no-project-all-32gpu-4node-20261015-recall
+description: >-
+  TRIM Harness-1 BC+ GPT-OSS-20B bf16-dequant 4node 32gpu torch_ddp_lora.
+  200step no-project+all (CISPO+projected-gap on native anchors, Teacher Full
+  / Student Zero). REWARD = final-answer recall ONLY (TRIM_REWARD_MODE=recall).
+  mb1 gpu-mem0.85 (bf16 40GB weights; mb>=2 gpt-oss MoE backward OOM, no
+  grad-ckpt). bf16 fixes mxfp4 Marlin PTX crash + recall-reward NaN logprob.
+  run_train_multinode.py --nnodes 4 --nproc-per-node 8 self-torchruns
+  world_size=32: per-rank vLLM TP=1 rollout + DDP-LoRA CISPO optimizer step
+  (full replica per rank). Entry unsets CloudML-injected RANK/WORLD_SIZE/PET_*
+  so main() self-launches torchrun (deterministic 4-node rendezvous). priority8,
+  MemQA-General-V5, queue 2334, RDMA on, GUARANTEED_PUBLIC 4x8 gang. SEC RL
+  data + corpus under TRIM/data. world_size=32 audit required post-submit.
+accessType: PRIVATE
+tags:
+- MemQA-General-V5
+imageConfig:
+  imageUrl: micr.cloud.mioffice.cn/songzijun/songzijun-cto:3050749-songzijun-cto
+  imageCommand: "FILLED_BY_SUBMIT_SCRIPT_VIA_cat_entry"
+  # NOTE: imageCommand is a bash entry script with heredocs and nested
+  # indentation, so inlining it as a YAML block scalar breaks parsing. The
+  # actual submission passes it via the CLI flag
+  # --image_command "$(cat entry_gpt_oss_20b_trim_ddp_200step_no_project_all_recall_32gpu_4node_20261015.sh)"
+  # in submit_gpt_oss_20b_trim_ddp_200step_no_project_all_recall_32gpu_4node_20261015.sh.
+  # This YAML is an audit snapshot of resource/env/JuiceFS config; do NOT submit
+  # with --filename (use the submit script).
+juiceFsMountConfigs:
+- volume: songzijun
+  juiceFsCluster: bj9-cloudml
+  subPath: /
+  mountPath: /mnt/songzijun
+  readOnly: false
+envConfigs:
+- key: PYTHONUNBUFFERED
+  value: '1'
+- key: CUDA_VISIBLE_DEVICES
+  value: 0,1,2,3,4,5,6,7
+- key: TRIM_GPU_KEEPALIVE
+  value: '0'
+- key: PYTORCH_CUDA_ALLOC_CONF
+  value: expandable_segments:True
+- key: PYTHONPATH
+  value: /mnt/songzijun/Capability_Evolution/TRIM:/mnt/songzijun/Capability_Evolution/SCAPE-EasyOPD
+- key: OPENAI_API_KEY
+  value: '**-****-***********-***-*-****-***'
+- key: SCAPE_LOCAL_OPENAI_EMBEDDINGS
+  value: '1'
+- key: TIKTOKEN_ENCODINGS_BASE
+  value: /tmp/tiktoken-bundle/share/tiktoken
+- key: TIKTOKEN_CACHE_DIR
+  value: /tmp/tiktoken-bundle/tiktoken_cache
+- key: TIKTOKEN_RS_CACHE_DIR
+  value: /tmp/tiktoken-bundle/tiktoken_rs_cache
+- key: TRIM_REWARD_MODE
+  value: recall
+- key: OUT
+  value: /mnt/songzijun/outputs/gpt-oss-20b-trim-no-project-all-recall-32gpu_20261015
+queueId: '2334'
+priority: 8
+preemptible: false
+framework: pytorch
+rdma: true
+resourceConfigs:
+- nodeRole: worker
+  nodeNumber: 4
+  perNodeResourceSpec:
+    resourcePriority: GUARANTEED_PUBLIC
+    resourceName: cloudml.ng1gm402-8-8.20-224
+    resourceNumber: 8
+  elastic: false
+  preemptible: false
+enableTensorboard: false
+enableMetrics: false
+retryConfig:
+  enableRetry: false
+  maxRetryTimes: 1
+  policySets:
+  - JobFailed
+diagOptions:
+- name: HangDetection
+  enable: false
+alertConfig:
+  enableAlert: true
+  alertItems:
+  - alertConditions:
+    - FAILED
+    alertLevel: P2
+    alertReceivers:
+      persons:
+      - songzijun

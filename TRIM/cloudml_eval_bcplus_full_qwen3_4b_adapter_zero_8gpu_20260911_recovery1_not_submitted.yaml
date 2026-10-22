@@ -1,0 +1,230 @@
+# CloudML custom_train configuration for TRIM Harness-1 BC+ full Qwen3-4B
+# adapter "zero" upstream_api eval. Prepared 2026-09-11; NOT SUBMITTED. Recovery1.
+#
+# Recovery1 fix: the original eval (t-20260911132353-zlycg) FAILED at PREFLIGHT
+# with `ModuleNotFoundError: No module named 'peft'` because the pip install list
+# omitted peft. run_eval.py's adapter path imports peft (audit_saved_adapter /
+# LoRA reload), so PREFLIGHT's `import peft` exposed it immediately. pip itself
+# succeeded. Fix: add peft (+ accelerate, to mirror the training job's optim-
+# phase deps and guard any adapter reload path) to the install list. Everything
+# else unchanged: failed attempt preserved, new jobName/--out, no overwrite.
+#
+# Evaluates the adapter trained by job t-20260911093918-oc6zo (recovery4, the
+# step>=1 vLLM-deadlock-fix verification run that succeeded). Adapter:
+#   /mnt/songzijun/Capability_Evolution/TRIM/outputs/cloudml_custom_train_harness1_bcplus_full_qwen3_4b_trim_8gpu_20260911_memqa_general_v5_recovery4/adapters/scape_seed
+#   (base_model_name_or_path=/mnt/songzijun/models/Qwen3-4B-Instruct-2507, r=8,
+#    target_modules=o_proj/q_proj/k_proj/v_proj, peft 0.20.0 LORA)
+#
+# What this job runs: scripts/run_bcplus_full_adapter_upstream_eval.sh (the
+# adapter-only upstream_api eval wrapper) with COMPONENT=zero (0/10 components,
+# no harness-1 verifier needed). Topology per the wrapper's multi layout:
+#   8 single-card vLLM actors (GPU 0-7, ports 8040..8054), each serving
+#   BASE_MODEL + --enable-lora --lora-modules trained-policy=<ADAPTER>, then
+#   run_eval.py --tp 32 (32 eval workers, data-parallel across the 8 actor URLs).
+# tensor_parallel_size per actor = 1 (single-card); --tp is the eval-replica count.
+#
+# Zero-component path needs NO verifier, so all 8 GPUs go to actors (max throughput).
+# This differs from the GPT-OSS eval recovery2 (component=all, 7 actor + 1 verify).
+#
+# Locked four-package runtime (CLAUDE.md): Torch 2.10.0 / Transformers 4.57.6 /
+# vLLM 0.19.1 / Pyserini 2.0.0. Qwen3-4B uses the real openai_harmony encoder
+# (SCAPE_FORCE_LOCAL_HARMONY intentionally NOT set); offline tiktoken bundle
+# (o200k_base + cl100k_base) extracted and wired. Pyserini/JVM probed and
+# ANSERINI_CLASSPATH -> resources/jars. No Chroma: local_bm25 + --offline.
+# chz/tinker/json_repair are included (harness-1 import-chain deps from the
+# GPT-OSS eval experience; they are cheap and avoid a missing-pkg restart).
+#
+# JuiceFS is intentionally OMITTED from this YAML. Submit with the direct CLI
+# --juicefs_mount_configs argument so endpoint=bj9-cloudml is explicit in the
+# API request. Do NOT use the YAML --filename path for mounts.
+jobName: "eval-bcplus-full-qwen3-4b-adapter-zero-8gpu-20260911-recovery1"
+description: "Recovery1 of t-20260911132353-zlycg: add peft (+accelerate) to pip install list (original failed at PREFLIGHT `import peft` with ModuleNotFoundError). BC+ full (830) Qwen3-4B adapter zero-component upstream_api eval on 8x gm402-80g. Evaluates the recovery4 trained adapter (job t-20260911093918-oc6zo, step>=1 deadlock fix verified). 8 single-card vLLM actors + 32 eval workers, no verifier (component=zero). Same four-package lock + offline tiktoken + Pyserini/JVM."
+accessType: "PRIVATE"
+tags:
+  - "MemQA-General-V5"
+
+imageConfig:
+  imageUrl: "micr.cloud.mioffice.cn/songzijun/songzijun-cto:3050749-songzijun-cto"
+  imageCommand: |-
+    set -euxo pipefail
+    export PYTHONUNBUFFERED=1
+    export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+    export MAX_TURNS=40
+    export PY=python3
+    export VLLM=vllm
+    export VLLM_DISABLE_CUSTOM_ALL_REDUCE=1
+    export OPENAI_API_KEY="${OPENAI_API_KEY:-dummy}"
+    export SCAPE_LOCAL_OPENAI_EMBEDDINGS=1
+    export SCAPE_CHROMA_PATH=/tmp/empty_chroma
+    mkdir -p "$SCAPE_CHROMA_PATH"
+
+    # --- offline tiktoken: Qwen3-4B harmony encoder uses o200k_base ---
+    python3 -c "import zipfile; zipfile.ZipFile('/mnt/songzijun/tiktoken-bundle.zip').extractall('/tmp')"
+    test -f /tmp/tiktoken-bundle/share/tiktoken/o200k_base.tiktoken
+    test -f /tmp/tiktoken-bundle/share/tiktoken/cl100k_base.tiktoken
+    export TIKTOKEN_ENCODINGS_BASE=/tmp/tiktoken-bundle/share/tiktoken
+    export TIKTOKEN_RS_CACHE_DIR=/tmp/tiktoken-bundle/tiktoken_rs_cache
+    export TIKTOKEN_CACHE_DIR=/tmp/tiktoken-bundle/tiktoken_cache
+
+    nvidia-smi -L
+    test -f /mnt/songzijun/Capability_Evolution/TRIM/scripts/run_bcplus_full_adapter_upstream_eval.sh
+    test -f /mnt/songzijun/Capability_Evolution/TRIM/scripts/run_eval.py
+    test -f /mnt/songzijun/Capability_Evolution/TRIM/scripts/build_browsecomp_corpus_from_index.py
+    test -d /mnt/songzijun/models/Qwen3-4B-Instruct-2507
+    test -d /mnt/songzijun/Capability_Evolution/SCOPE/external/BrowseComp-Plus/indexes/bm25
+    test -f /mnt/songzijun/Capability_Evolution/SCOPE/external/BrowseComp-Plus/data/browsecomp_plus_corpus_full.jsonl
+    ADAPTER=/mnt/songzijun/Capability_Evolution/TRIM/outputs/cloudml_custom_train_harness1_bcplus_full_qwen3_4b_trim_8gpu_20260911_memqa_general_v5_recovery4/adapters/scape_seed
+    test -f "${ADAPTER}/adapter_config.json"
+    test -f "${ADAPTER}/adapter_model.safetensors"
+
+    # --- JVM for Pyserini Lucene (probe first; do not trust a non-empty JAVA_HOME) ---
+    JVM_PATH=$(find /usr /opt -type f -name libjvm.so 2>/dev/null | head -1 || true)
+    if [ -z "${JVM_PATH}" ]; then
+      apt-get update
+      DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends openjdk-21-jre-headless
+      JVM_PATH=$(find /usr /opt -type f -name libjvm.so 2>/dev/null | head -1 || true)
+    fi
+    test -n "${JVM_PATH}"
+    test -f "${JVM_PATH}"
+    ldd "${JVM_PATH}"
+    export JVM_PATH
+    export JAVA_HOME=$(dirname "$(dirname "$(dirname "${JVM_PATH}")")")
+    export LD_LIBRARY_PATH=$(dirname "${JVM_PATH}"):${LD_LIBRARY_PATH:-}
+
+    # --- locked four-package runtime + harness import-chain deps ---
+    # peft+accelerate: run_eval.py adapter path imports peft (audit_saved_adapter /
+    #   LoRA reload); original eval failed at PREFLIGHT `import peft`. Mirror the
+    #   training job's optim-phase deps to guard any adapter reload path.
+    # chz/tinker/json_repair: harness-1 import-chain deps (GPT-OSS eval experience).
+    python3 -m pip install --no-cache-dir --ignore-installed --upgrade-strategy only-if-needed \
+      "torch==2.10.0" "vllm==0.19.1" "transformers==4.57.6" "pyserini==2.0.0" \
+      peft accelerate structlog chromadb chz tinker json_repair tqdm sentence-transformers \
+      regex sympy latex2sympy2 word2number sentencepiece openai tenacity
+
+    # --- ANSERINI_CLASSPATH -> pyserini resources/jars (NOT the package root) ---
+    PYSERINI_ROOT=$(python3 -c 'import pathlib, pyserini; print(pathlib.Path(pyserini.__file__).resolve().parent)')
+    export ANSERINI_CLASSPATH=$(find "$PYSERINI_ROOT/resources/jars" -type f -name '*.jar' -print | paste -sd: -)
+    test -n "$ANSERINI_CLASSPATH"
+    export CLASSPATH="$ANSERINI_CLASSPATH"
+
+    # --- preflight: four versions + 8 GPU + PyJNI + Lucene bcplus index opens ---
+    python3 - <<'PY'
+    import importlib.metadata
+    import os
+    import torch
+    import transformers
+    import vllm
+    import peft
+    from jnius import autoclass
+    autoclass("java.lang.String")
+    versions = {
+        "torch": torch.__version__,
+        "vllm": vllm.__version__,
+        "transformers": transformers.__version__,
+        "pyserini": importlib.metadata.version("pyserini"),
+        "peft": importlib.metadata.version("peft"),
+        "structlog": importlib.metadata.version("structlog"),
+        "chromadb": importlib.metadata.version("chromadb"),
+        "gpu_count": torch.cuda.device_count(),
+        "JVM_PATH": os.environ["JVM_PATH"],
+        "JAVA_HOME": os.environ["JAVA_HOME"],
+        "TIKTOKEN_ENCODINGS_BASE": os.environ.get("TIKTOKEN_ENCODINGS_BASE"),
+        "o200k_base_present": os.path.isfile(
+            os.path.join(os.environ["TIKTOKEN_ENCODINGS_BASE"], "o200k_base.tiktoken")
+        ),
+        "cl100k_base_present": os.path.isfile(
+            os.path.join(os.environ["TIKTOKEN_ENCODINGS_BASE"], "cl100k_base.tiktoken")
+        ),
+        "java_ok": True,
+    }
+    print("PREFLIGHT", versions, flush=True)
+    assert versions["torch"].startswith("2.10.0")
+    assert versions["vllm"] == "0.19.1"
+    assert versions["transformers"] == "4.57.6"
+    assert versions["pyserini"] == "2.0.0"
+    assert versions["gpu_count"] == 8
+    assert versions["o200k_base_present"]
+    assert versions["cl100k_base_present"]
+    from pyserini.search.lucene import LuceneSearcher
+    s = LuceneSearcher("/mnt/songzijun/Capability_Evolution/SCOPE/external/BrowseComp-Plus/indexes/bm25")
+    n_docs = s.num_docs if not callable(s.num_docs) else s.num_docs()
+    print("LUCENE_OK", {"num_docs": n_docs}, flush=True)
+    assert n_docs > 0
+    import json
+    cfg = json.loads(open("/mnt/songzijun/Capability_Evolution/TRIM/outputs/cloudml_custom_train_harness1_bcplus_full_qwen3_4b_trim_8gpu_20260911_memqa_general_v5_recovery4/adapters/scape_seed/adapter_config.json").read())
+    print("ADAPTER_OK", {"base": cfg["base_model_name_or_path"], "r": cfg["r"], "peft": cfg["peft_version"]}, flush=True)
+    assert cfg["r"] == 8
+    PY
+
+    # --- run the adapter eval wrapper (multi layout, component=zero, 8 actors, 32 eval workers) ---
+    export ADAPTER=/mnt/songzijun/Capability_Evolution/TRIM/outputs/cloudml_custom_train_harness1_bcplus_full_qwen3_4b_trim_8gpu_20260911_memqa_general_v5_recovery4/adapters/scape_seed
+    export BASE_MODEL=/mnt/songzijun/models/Qwen3-4B-Instruct-2507
+    export COMPONENT=zero
+    export LAYOUT=multi
+    export ACTOR_GPUS=0,1,2,3,4,5,6,7
+    export ACTOR_PORTS=8040,8042,8044,8046,8048,8050,8052,8054
+    export EVAL_TP=32
+    export GPU_UTIL=0.90
+    export VLLM_MAX_NUM_SEQS=64
+    export WORKER_STAGGER=2
+    export RUN_ID="$(date +%Y%m%d_%H%M%S)_bcplus_adapter_qwen3_4b_zero_8gpu"
+    cd /mnt/songzijun/Capability_Evolution/TRIM
+    exec bash /mnt/songzijun/Capability_Evolution/TRIM/scripts/run_bcplus_full_adapter_upstream_eval.sh
+
+envConfigs:
+  - key: "PYTHONUNBUFFERED"
+    value: "1"
+  - key: "CUDA_VISIBLE_DEVICES"
+    value: "0,1,2,3,4,5,6,7"
+  - key: "MAX_TURNS"
+    value: "40"
+  - key: "PYTHONPATH"
+    value: "/mnt/songzijun/Capability_Evolution:/mnt/songzijun/Capability_Evolution/TRIM:/mnt/songzijun/Capability_Evolution/SCAPE-EasyOPD"
+  - key: "VLLM_DISABLE_CUSTOM_ALL_REDUCE"
+    value: "1"
+  - key: "OPENAI_API_KEY"
+    value: "dummy"
+  - key: "SCAPE_LOCAL_OPENAI_EMBEDDINGS"
+    value: "1"
+  - key: "SCAPE_CHROMA_PATH"
+    value: "/tmp/empty_chroma"
+  - key: "TIKTOKEN_ENCODINGS_BASE"
+    value: "/tmp/tiktoken-bundle/share/tiktoken"
+  - key: "TIKTOKEN_RS_CACHE_DIR"
+    value: "/tmp/tiktoken-bundle/tiktoken_rs_cache"
+  - key: "TIKTOKEN_CACHE_DIR"
+    value: "/tmp/tiktoken-bundle/tiktoken_cache"
+
+queueId: "2334"
+priority: 8
+preemptible: false
+framework: "pytorch"
+resourceConfigs:
+  - nodeRole: "worker"
+    nodeNumber: 1
+    perNodeResourceSpec:
+      resourcePriority: "GUARANTEED_PUBLIC"
+      resourceName: "cloudml.ng1gm402-8-8.20-224"
+      resourceNumber: 8
+    elastic: false
+    preemptible: false
+
+enableTensorboard: false
+enableMetrics: false
+diagOptions:
+  - name: "HangDetection"
+    enable: false
+retryConfig:
+  enableRetry: false
+  maxRetryTimes: 1
+  policySets:
+    - "JobFailed"
+alertConfig:
+  enableAlert: true
+  alertItems:
+    - alertConditions:
+        - "FAILED"
+      alertLevel: "P2"
+      alertReceivers:
+        persons:
+          - "songzijun"

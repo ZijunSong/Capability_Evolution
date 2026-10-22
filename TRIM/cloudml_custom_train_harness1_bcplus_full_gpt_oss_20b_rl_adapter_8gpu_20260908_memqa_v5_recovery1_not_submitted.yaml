@@ -1,0 +1,59 @@
+# Recovery configuration prepared after first attempt failed during Pyserini import.
+# NOT SUBMITTED. JuiceFS is passed directly via --juicefs_mount_configs.
+jobName: "trim-run-eval-harness1-bcplus-full-gpt-oss-20b-rl-adapter-8gpu-20260908-memqa-v5-recovery1"
+description: "Recovery1: Harness-1 BC+ zero-component evaluation of the GPT-OSS-20B RL adapter on eight gm402-80g GPUs"
+accessType: "PRIVATE"
+tags:
+  - "MemQA-General-V5"
+
+imageConfig:
+  imageUrl: "micr.cloud.mioffice.cn/songzijun/songzijun-cto:3050749-songzijun-cto"
+  imageCommand: "export OPENAI_API_KEY=dummy; exec bash /mnt/songzijun/Capability_Evolution/TRIM/launch_recovery1.sh"
+
+envConfigs:
+  - key: "PYTHONUNBUFFERED"
+    value: "1"
+  - key: "CUDA_VISIBLE_DEVICES"
+    value: "0,1,2,3,4,5,6,7"
+  - key: "MAX_TURNS"
+    value: "40"
+  - key: "PYTHONPATH"
+    value: "/mnt/songzijun/Capability_Evolution:/mnt/songzijun/Capability_Evolution/TRIM:/mnt/songzijun/Capability_Evolution/SCAPE-EasyOPD"
+  - key: "SCAPE_LOCAL_OPENAI_EMBEDDINGS"
+    value: "1"
+  - key: "OPENAI_API_KEY"
+    value: "dummy"
+
+queueId: "2334"
+priority: 8
+preemptible: false
+framework: "pytorch"
+resourceConfigs:
+  - nodeRole: "worker"
+    nodeNumber: 1
+    perNodeResourceSpec:
+      resourcePriority: "GUARANTEED_PUBLIC"
+      resourceName: "cloudml.ng1gm402-8-8.20-224"
+      resourceNumber: 8
+    elastic: false
+    preemptible: false
+
+enableTensorboard: false
+enableMetrics: false
+diagOptions:
+  - name: "HangDetection"
+    enable: false
+retryConfig:
+  enableRetry: false
+  maxRetryTimes: 1
+  policySets:
+    - "JobFailed"
+alertConfig:
+  enableAlert: true
+  alertItems:
+    - alertConditions:
+        - "FAILED"
+      alertLevel: "P2"
+      alertReceivers:
+        persons:
+          - "songzijun"

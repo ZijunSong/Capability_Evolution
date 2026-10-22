@@ -1,0 +1,64 @@
+JobName: "diag-glm-parser-list-20260914"
+Description: "List vLLM 0.19.1 registered tool parsers by grepping installed package (no GPU/vllm-serve)."
+AccessType: "PRIVATE"
+ImageConfig:
+  ImageUrl: "micr.cloud.mioffice.cn/songzijun/songzijun-cto:3050749-songzijun-cto"
+  ImageCommand: |
+    set -euxo pipefail
+    export PYTHONUNBUFFERED=1
+    python3 -m pip install --no-cache-dir --ignore-installed --upgrade-strategy only-if-needed \
+      "vllm==0.19.1" 2>&1 | tail -3 || true
+    VROOT=$(python3 -c "import vllm,pathlib; print(pathlib.Path(vllm.__file__).resolve().parent)")
+    echo "=== grep glm/hermes/tool parser refs in vllm package ==="
+    grep -rEn "glm45|glm46|glm4_5|hermes|tool_call_parser|ToolParserManager|register_tool_parser|@register_module" "$VROOT/entrypoints/openai/" 2>/dev/null | grep -iE "glm|hermes|register" | head -60
+    echo "=== tool parser dir listing ==="
+    find "$VROOT/entrypoints/openai" -maxdepth 2 -name "*.py" | grep -iE "tool|parser|glm|hermes" | head -40
+    echo "=== try import + force registry ==="
+    python3 - <<'PY'
+    import importlib, pkgutil, pathlib
+    import vllm
+    root = pathlib.Path(vllm.__file__).resolve().parent / "entrypoints" / "openai"
+    seen = set()
+    for m in pkgutil.walk_packages(path=[str(root)], prefix="vllm.entrypoints.openai."):
+        try:
+            mod = importlib.import_module(m.name)
+        except Exception as e:
+            continue
+        for attr in dir(mod):
+            obj = getattr(mod, attr, None)
+            cls = type(obj)
+            if attr.endswith("ToolParser") and hasattr(obj, "tool_parsers"):
+                regs = sorted(obj.tool_parsers.keys())
+                if regs and "tool_parsers" not in seen:
+                    print("REGISTRY", m.name, regs)
+                    seen.add("tool_parsers")
+    # Also explicitly import the parser package files to trigger registration
+    for name in ["vllm.entrypoints.openai.tool_parsers", "vllm.entrypoints.openai.parser.tool_parsers", "vllm.entrypoints.openai.parser.api_models"]:
+        try:
+            importlib.import_module(name)
+        except Exception:
+            pass
+    # The api_server registers parsers during serve init; emulate by importing serving_chat:
+    for name in ["vllm.entrypoints.openai.serving_chat", "vllm.entrypoints.openai.api_server"]:
+        try:
+            m = importlib.import_module(name)
+            mgr = getattr(m, "ToolParserManager", None)
+            if mgr is not None and mgr.tool_parsers:
+                print("POST_IMPORT_REGISTRY", name, sorted(mgr.tool_parsers.keys()))
+        except Exception as e:
+            print("import fail", name, e)
+    PY
+    echo "DIAG_DONE"
+QueueId: "2334"
+Priority: 8
+Framework: "pytorch"
+Preemptible: false
+ResourceConfigs:
+  - NodeRole: "worker"
+    NodeNumber: 1
+    PerNodeResourceSpec:
+      ResourcePriority: "GUARANTEED_PUBLIC"
+      ResourceName: "cloudml.cputype1-108.1-8"
+      ResourceNumber: 4
+Tags:
+  - "MemQA-General-V5"

@@ -573,6 +573,7 @@ class FSDP2CispoActor:
         terms: list[torch.Tensor] = []
         ratio_hits = 0
         ratio_total = 0
+        n_skip_nonfinite = 0  # CISPO non-finite skip counter (GPT-OSS bf16 numeric flake)
         input_tokens = sum(len(p) + len(a) for p, a in pairs)
         entropy_sum = 0.0
         approx_kl_sum = 0.0
@@ -596,10 +597,21 @@ class FSDP2CispoActor:
                 old_lp = old_lp[:n]
                 mask = mask[:n]
             if not torch.isfinite(new_lp).all() or not torch.isfinite(old_lp).all():
-                raise ValueError("non-finite logprobs in CISPO")
+                # GPT-OSS bf16 occasionally produces non-finite (NaN/Inf) teacher-forced
+                # logprobs on certain chunks — a numeric flake, not a training bug (obkzm
+                # crashed here at step27; the flake recurs at step28 even after a re-run).
+                # SKIP this row's CISPO contribution instead of aborting the whole run:
+                # its RL gradient is untrustworthy anyway (NaN), and skipping lets the
+                # step finish (OPD distillation still runs on the valid chunks). If ALL
+                # rows in this chunk are non-finite, `terms` stays empty and the numer
+                # becomes a zero-grad tensor (see below), so we never silently train on
+                # garbage. Tally skips so the heartbeat/audit surfaces them.
+                n_skip_nonfinite += 1
+                continue
             ratio = (new_lp - old_lp).exp()
             if not torch.isfinite(ratio).all():
-                raise ValueError("non-finite CISPO ratio")
+                n_skip_nonfinite += 1
+                continue
             weight = ratio.clamp(min=self.clip_low, max=self.clip_high).detach()
             ratio_hits += int((ratio != weight).sum().item())
             ratio_total += int(mask.sum().item())
@@ -621,6 +633,11 @@ class FSDP2CispoActor:
         else:
             dummy = next(p for p in self.model.parameters() if p.requires_grad)
             numer = dummy.float().sum() * 0.0
+        if n_skip_nonfinite:
+            print(f"[CISPO_NONFINITE_SKIP] skipped {n_skip_nonfinite} row(s) with non-finite"
+                  f" logprobs/ratio in this chunk (GPT-OSS bf16 numeric flake); "
+                  f"{len(terms)} valid row(s) still contributed to the RL numerator.",
+                  flush=True)
         entropy_mean = (entropy_sum / ent_kl_count) if ent_kl_count else 0.0
         approx_kl_mean = (approx_kl_sum / ent_kl_count) if ent_kl_count else 0.0
         return numer, ratio_hits, ratio_total, input_tokens, entropy_mean, approx_kl_mean

@@ -1,0 +1,46 @@
+jobName: trim-diag-verl-torchrun-1gpu
+description: 'Diag: why torchrun did not start for verl/FSDP2 path (t-20260917200028-cdmnt world_size=1). Prints dist env, parse_dist_argv/needs_torchrun values, and tries torchrun --nproc_per_node 8 with a trivial worker. 1 GPU, exits in ~5min.'
+accessType: PRIVATE
+tags:
+- MemQA-General-V5
+imageConfig:
+  imageUrl: micr.cloud.mioffice.cn/songzijun/songzijun-cto:3050749-songzijun-cto
+  imageCommand: bash /mnt/songzijun/Capability_Evolution/TRIM/scripts/diag_verl_torchrun.sh
+modelUri: ''
+juiceFsMountConfigs:
+- volume: songzijun
+  juiceFsCluster: bj9-cloudml
+  subPath: /
+  mountPath: /mnt/songzijun
+  readOnly: false
+envConfigs:
+- key: PYTHONUNBUFFERED
+  value: '1'
+- key: PYTHONPATH
+  value: /mnt/songzijun/Capability_Evolution/TRIM:/mnt/songzijun/Capability_Evolution/SCAPE-EasyOPD
+- key: PYTORCH_CUDA_ALLOC_CONF
+  value: expandable_segments:True
+- key: OPENAI_API_KEY
+  value: '**-****-***********-***-*-****-***'
+queueId: '2334'
+priority: 8
+preemptible: false
+framework: pytorch
+resourceConfigs:
+- nodeRole: worker
+  nodeNumber: 1
+  perNodeResourceSpec:
+    resourcePriority: GUARANTEED_PUBLIC
+    resourceName: cloudml.ng1gm402-8-8.20-224
+    resourceNumber: 1
+  elastic: false
+  preemptible: false
+enableTensorboard: false
+enableMetrics: false
+retryConfig:
+  enableRetry: false
+diagOptions:
+- name: HangDetection
+  enable: false
+alertConfig:
+  enableAlert: false

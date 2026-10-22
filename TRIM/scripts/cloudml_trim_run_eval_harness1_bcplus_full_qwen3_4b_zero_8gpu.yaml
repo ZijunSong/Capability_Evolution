@@ -1,0 +1,48 @@
+# CloudML custom_train: TRIM Harness-1 BC+ full / Qwen3-4B-Instruct-2507 / ZERO eval, 8x gm402-80g
+# 单节点 8 卡 PyTorch 任务（本任务为评测，仅借 pytorch 框架占位以获得 8 卡 gang 调度）。
+#
+# 重要：JuiceFS endpoint 不通过本 YAML（--filename）方式提交。
+# 实际提交使用直接 CLI 参数，并通过 --juicefs_mount_configs 显式传入 JSON，
+# 其中 endpoint（JuiceFSCluster）必须为 "bj9-cloudml"。
+# 本文件仅为可读底稿 / 审计快照；其 JuiceFSMountConfigs 段不作为提交依据。
+#
+# 启动逻辑见 TRIM/scripts/run_qwen3_4b_zero_eval_cloudml_8gpu.sh
+# （依赖锁定 + preflight + tiktoken + JVM + 8GPU 断言 + 调用 zero eval 脚本）。
+# eval 脚本：TRIM/scripts/run_bcplus_full_qwen3_4b_zero_gpu8_eval.sh
+#   8 个单卡 vLLM actor (TP=1) + --tp 16 workers，local_bm25 无 Chroma，无 verifier。
+JobName: "trim_harness1_bcplus_full_qwen3_4b_zero_eval_8gpu_20260912"
+Description: "TRIM Harness-1 BC+ full / Qwen3-4B-Instruct-2507 / ZERO eval (run_eval.py --evaluation-path upstream_api --component zero). Single node 8x gm402-80g. 8 single-GPU vLLM actors (TP=1) + 16 API-client workers; local_bm25 (Pyserini/Lucene), no Chroma server, no verifier. JuiceFS-mounted model/code/data/tiktoken. Launch script: TRIM/scripts/run_qwen3_4b_zero_eval_cloudml_8gpu.sh"
+AccessType: "PRIVATE"
+ImageConfig:
+  ImageUrl: "micr.cloud.mioffice.cn/songzijun/songzijun-cto:3050749-songzijun-cto"
+  ImageCommand: "bash -lc '/mnt/songzijun/Capability_Evolution/TRIM/scripts/run_qwen3_4b_zero_eval_cloudml_8gpu.sh'"
+QueueId: "2334"
+Priority: 8
+Framework: "pytorch"
+ResourceConfigs:
+  - NodeRole: "worker"
+    NodeNumber: 1
+    PerNodeResourceSpec:
+      ResourcePriority: "GUARANTEED_PUBLIC"
+      ResourceName: "cloudml.ng1gm402-8-8.20-224"
+      ResourceNumber: 8
+Tags:
+  - "MemQA-General-V5"
+EnvConfigs:
+  - Key: "PYTHONPATH"
+    Value: "/mnt/songzijun/Capability_Evolution/TRIM:/mnt/songzijun/Capability_Evolution/SCAPE-EasyOPD"
+  - Key: "RUN_ID"
+    Value: "qwen3_4b_zero_8gpu_20260912_memqa_v5"
+  - Key: "MAX_NUM_SEQS"
+    Value: "8"
+  - Key: "TP"
+    Value: "16"
+  - Key: "MAX_MODEL_LEN"
+    Value: "32768"
+  - Key: "GPU_UTIL"
+    Value: "0.85"
+  - Key: "WORKER_STAGGER"
+    Value: "10"
+# JuiceFS 挂载不在此 YAML 定义；endpoint（JuiceFSCluster=bj9-cloudml）
+# 经 CLI --juicefs_mount_configs 显式传入（见提交命令）。
+#   {"Volume":"songzijun","JuiceFSCluster":"bj9-cloudml","MountPath":"/mnt/songzijun","ReadOnly":false}

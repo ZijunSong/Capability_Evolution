@@ -1,0 +1,145 @@
+JobName: "eval-bcplus-full-glm4-32b-0414-all-8gpu-20260914-v029-rec1"
+Description: "GLM-4-32B-0414 'all' eval on 8x gm402-80g via vLLM 0.29.0 (isolated venv, not the four-package lock) to validate tool-call parsing. 7 actor + 1 verify, ALL_EVAL_TP=64, local_bm25 (no Chroma), tiktoken+Pyserini/JVM+chz/tinker. Fallback: TP2 if OOM."
+AccessType: "PRIVATE"
+ImageConfig:
+  ImageUrl: "micr.cloud.mioffice.cn/songzijun/songzijun-cto:3050749-songzijun-cto"
+  ImageCommand: |
+    set -euxo pipefail
+    export PYTHONUNBUFFERED=1
+    export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+    export PY=python3
+    export VLLM=vllm
+    export OPENAI_API_KEY="${OPENAI_API_KEY:-dummy-key}"
+    export SCAPE_LOCAL_OPENAI_EMBEDDINGS=1
+    export SCAPE_CHROMA_PATH=/tmp/empty_chroma
+    mkdir -p "$SCAPE_CHROMA_PATH"
+
+    python3 -c "import zipfile; zipfile.ZipFile('/mnt/songzijun/tiktoken-bundle.zip').extractall('/tmp')"
+    test -f /tmp/tiktoken-bundle/share/tiktoken/o200k_base.tiktoken
+    export TIKTOKEN_ENCODINGS_BASE=/tmp/tiktoken-bundle/share/tiktoken
+    export TIKTOKEN_RS_CACHE_DIR=/tmp/tiktoken-bundle/tiktoken_rs_cache
+    export TIKTOKEN_CACHE_DIR=/tmp/tiktoken-bundle/tiktoken_cache
+
+    # --- Isolated venv with vLLM 0.29.0 + torch 2.13 + transformers 5.x (NOT the four-package lock) ---
+    python3 -m venv /tmp/vllm029env
+    . /tmp/vllm029env/bin/activate
+    python -m pip install --no-cache-dir --upgrade pip
+    python3 -m pip install --no-cache-dir "vllm==0.29.0"
+    # harness import-chain deps (structlog/chromadb/chz/tinker/json_repair). chz/tinker --no-deps
+    # so tinker does not constrain transformers back to a pin that conflicts with vllm 0.29.0.
+    python3 -m pip install --no-cache-dir structlog chromadb sentence-transformers regex latex2sympy2 word2number sentencepiece openai tenacity json_repair
+    python3 -m pip install --no-cache-dir --no-deps chz tinker
+    python3 -m pip install --no-cache-dir "pyserini==2.0.0"
+
+    nvidia-smi -L
+    echo "=== versions ==="
+    python3 -c "import torch,vllm,transformers,structlog,chromadb; print('torch',torch.__version__,'vllm',vllm.__version__,'transformers',transformers.__version__,'structlog',structlog.__version__ if hasattr(structlog,'__version__') else 'n/a')"
+    echo "=== registered tool parsers ==="
+    python3 - <<'PY'
+    from vllm.tool_parsers.abstract_tool_parser import ToolParserManager
+    print(sorted(ToolParserManager.tool_parsers.keys()))
+    PY
+
+    # --- assert GLM config + chat_template applies ---
+    python3 - <<'PY'
+    import json
+    c = json.load(open("/mnt/songzijun/models/GLM-4-32B-0414/config.json"))
+    assert c.get("architectures") == ["Glm4ForCausalLM"], c.get("architectures")
+    assert "quantization_config" not in c
+    from transformers import AutoTokenizer
+    tok = AutoTokenizer.from_pretrained("/mnt/songzijun/models/GLM-4-32B-0414", trust_remote_code=True)
+    ids = tok.apply_chat_template(
+        [{"role":"user","content":"Search the corpus for smoke test query."}],
+        tools=[{"type":"function","function":{"name":"search_corpus","description":"x","parameters":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}}],
+        add_generation_prompt=True, tokenize=False)
+    print("GLM_CHAT_TEMPLATE_OK", {"chars": len(ids)})
+    PY
+
+    # --- JVM for Pyserini Lucene ---
+    JVM_PATH=$(find /usr /opt -type f -name libjvm.so 2>/dev/null | head -1 || true)
+    if [ -z "${JVM_PATH}" ]; then
+      apt-get update
+      DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends openjdk-21-jre-headless
+      JVM_PATH=$(find /usr /opt -type f -name libjvm.so 2>/dev/null | head -1 || true)
+    fi
+    test -n "${JVM_PATH}"; test -f "${JVM_PATH}"; ldd "${JVM_PATH}"
+    export JVM_PATH
+    export JAVA_HOME=$(dirname "$(dirname "$(dirname "${JVM_PATH}")")
+    export LD_LIBRARY_PATH=$(dirname "${JVM_PATH}"):${LD_LIBRARY_PATH:-}
+
+    PYSERINI_ROOT=$(python3 -c 'import pathlib, pyserini; print(pathlib.Path(pyserini.__file__).resolve().parent)')
+    export ANSERINI_CLASSPATH=$(find "$PYSERINI_ROOT/resources/jars" -type f -name '*.jar' -print | paste -sd: -)
+    test -n "$ANSERINI_CLASSPATH"; export CLASSPATH="$ANSERINI_CLASSPATH"
+
+    # --- preflight: 8 GPU + PyJNI + Lucene ---
+    python3 - <<'PY'
+    import importlib.metadata, os, torch
+    from jnius import autoclass
+    autoclass("java.lang.String")
+    print("PREFLIGHT", {"gpu_count": torch.cuda.device_count(), "torch": torch.__version__,
+                          "vllm": importlib.metadata.version("vllm"),
+                          "transformers": importlib.metadata.version("transformers")})
+    assert torch.cuda.device_count() == 8
+    from pyserini.search.lucene import LuceneSearcher
+    s = LuceneSearcher("/mnt/songzijun/Capability_Evolution/SCOPE/external/BrowseComp-Plus/indexes/bm25")
+    n = s.num_docs if not callable(s.num_docs) else s.num_docs()
+    print("LUCENE_OK", {"num_docs": n})
+    assert n > 0
+    PY
+
+    # --- self-heal import chain ---
+    export PYTHONPATH="/mnt/songzijun/Capability_Evolution:/mnt/songzijun/Capability_Evolution/TRIM:/mnt/songzijun/Capability_Evolution/SCAPE-EasyOPD:${PYTHONPATH:-}"
+    python3 - <<'PY'
+    import importlib, subprocess, sys
+    NODE_DEPS = {"chz", "tinker"}
+    for _ in range(6):
+        try:
+            from trim.upstream_harness1.env_bridge import load_upstream_modules
+            load_upstream_modules(); print("IMPORT_CHAIN_OK"); break
+        except ModuleNotFoundError as e:
+            top = (e.name or "").split(".")[0]
+            if not top: raise
+            flag = "--no-deps" if top in NODE_DEPS else ""
+            cmd = ["python3","-m","pip","install","--no-cache-dir"] + ([flag] if flag else []) + [top]
+            subprocess.check_call(cmd); importlib.invalidate_caches()
+        else:
+            print("IMPORT_CHAIN_OK (no retry)"); break
+    PY
+
+    # --- run GLM-4-32B-0414 "all" gpu8 eval (5 actors + 1 verify = 6 GPUs; queue 2334 has 6 free) ---
+    export GPU_UTIL=0.90
+    export WORKER_STAGGER=5
+    export ALL_ACTOR_GPUS="0,1,2,3,4"
+    export ALL_ACTOR_PORTS="8042,8044,8046,8048,8052"
+    export ALL_TP="5"
+    export ALL_VERIFY_GPU="5"
+    export ALL_VERIFY_PORT="8054"
+    export ALL_EVAL_TP="64"
+    export RUN_ID="$(date +%Y%m%d_%H%M%S)_glm4_32b_all_gpu6_v029_5actor"
+    bash /mnt/songzijun/Capability_Evolution/TRIM/scripts/run_bcplus_w_harness1_glm4_32b_all_gpu8_eval.sh
+QueueId: "2334"
+Priority: 8
+Framework: "pytorch"
+Preemptible: false
+ResourceConfigs:
+  - NodeRole: "worker"
+    NodeNumber: 1
+    PerNodeResourceSpec:
+      ResourcePriority: "GUARANTEED_PUBLIC"
+      ResourceName: "cloudml.ng1gm402-8-8.20-224"
+      ResourceNumber: 8
+EnvConfigs:
+  - Key: "PYTHONUNBUFFERED"
+    Value: "1"
+  - Key: "CUDA_VISIBLE_DEVICES"
+    Value: "0,1,2,3,4,5,6,7"
+  - Key: "PYTHONPATH"
+    Value: "/mnt/songzijun/Capability_Evolution:/mnt/songzijun/Capability_Evolution/TRIM:/mnt/songzijun/Capability_Evolution/SCAPE-EasyOPD"
+  - Key: "OPENAI_API_KEY"
+    Value: "dummy-key"
+  - Key: "SCAPE_LOCAL_OPENAI_EMBEDDINGS"
+    Value: "1"
+  - Key: "SCAPE_CHROMA_PATH"
+    Value: "/tmp/empty_chroma"
+Tags:
+  - "MemQA-General-V5"

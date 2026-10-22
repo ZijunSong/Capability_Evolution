@@ -1,0 +1,209 @@
+# CloudML custom_train: TRIM Harness-1 BC+, GPT-OSS-20B (bf16-dequant),
+# trim (SR-OPD / CISPO distill, --train_method trim --component all) via
+# torch_ddp_lora backend, EIGHT 8-GPU gm402-80g nodes (8 nodes x 8 cards =
+# 64 GPUs), 200 steps.
+#
+# === 64-GPU scale-up of kxsb3 (bf16-dequant 32-GPU trim/all, verified) ===
+# This is the 8-node / 64-GPU scale-up of the VERIFIED bf16-dequant 32-GPU
+# trim/all config (entry_gpt_oss_20b_trim_ddp_200step_all_32gpu_4node_20260925_recov1_bf16.sh,
+# kxsb3 t-20260925162650-kxsb3). kxsb3 verified step0 -> step1 -> step2
+# (terminated by user at step2-in-progress; step0+1 fully preserved). The
+# bf16-dequant checkpoint (quant_method=NONE, 9 safetensors ~39GB) runs the
+# standard bf16+LoRA path, vLLM uses "Using TRITON backend for Unquantized MoE"
+# (unquantized.py, NOT Marlin) — definitively bypassing the mxfp4 Marlin PTX
+# crash (坑1) and the triton_kernels CPU-OOM pit (坑4). 64 ranks is a 2x
+# scale-up of the 32-rank kxsb3 rendezvous; the per-rank memory budget is
+# UNCHANGED (each rank is still TP=1 single-GPU), so mb1 + gpu-mem 0.90 still
+# fits 80GB.
+#
+# === Why bf16-dequant (NOT original mxfp4) for 64-GPU trim/all ===
+# v0dhh (t-20260925132550-v0dhh, original mxfp4, 32-GPU trim/all) FAILED at
+# step1 vLLM+LoRA reload on cudaErrorUnsupportedPtxVersion @ marlin_utils_fp4
+# :574 repack_weight. The PTX crash is an INTERMITTENT race — 7nzzn (rl/zero)
+# and ethqp (single-node trim/all) also use Marlin but got lucky. Multi-node
+# LoRA reload (32 ranks, let alone 64) is far more likely to trigger it than
+# single-node. kxsb3 bf16-dequant eliminates the Marlin path entirely (no
+# mxfp4 repack). The user reference command's original-mxfp4 path = v0dhh's
+# failure path and would almost certainly crash at step1+ on 64 ranks. User
+# decision: bf16-dequant (per CLAUDE.md kxsb3 verification).
+#
+# === Multi-node framework (verified by 7nzzn + v0dhh + kxsb3) ===
+# custom_train framework=pytorch nodeNumber=8 creates a PyTorchJob CRD with
+# master-0 + worker-0..6 pods + init-pytorch that injects MASTER_ADDR (master
+# pod DNS) + NODE_RANK on every pod but does NOT inject RANK/WORLD_SIZE/PET_*
+# (kxsb3 PREFLIGHT rank_env=None world_size_env=None pet_nproc_per_node=None).
+# The entry unsets rank env defensively so run_train_multinode.py self-launches
+# torchrun via _exec_torchrun (deterministic 8-node rendezvous via
+# --master-addr/--node-rank). PyTorch auto-uses Gloo for rendezvous + object
+# collectives (broadcast_object_list / all_gather_object) across 8 nodes;
+# nccl only for DDP gradient all-reduce. 64 ranks rendezvous is a 2x scale of
+# the 32-rank kxsb3 Gloo group ([Gloo] Rank 0-31 connected to 31 peers in
+# kxsb3; expected Rank 0-63 connected to 63 peers here).
+#
+# === All known gpt-oss trim/all pitfalls (carried from kxsb3, all still apply) ===
+#   * trainer_adapter.py:478 startup_timeout_s=3600.0 (900s worker-start timeout
+#     fix; bf16-dequant is 39GB/3x mxfp4, per-node /tmp cp ~7min, 8 ranks load
+#     local /tmp concurrently — 3600s headroom essential).
+#   * trainer_adapter.py:264 resolve_queries 4-tuple unpack (724d9fa fix).
+#   * trainer_adapter.py:506 client.start() EADDRINUSE retry x3 (per-rank vLLM
+#     TP=1 TCPStore port race at step>=1; 64 ranks across 8 nodes make it MORE
+#     likely).
+#   * SCAPE_FORCE_LOCAL_HARMONY INTENTIONALLY NOT SET (gpt-oss to_json crash).
+#   * Model cp to /tmp BEFORE exec (8-rank JuiceFS concurrent-read hang fix;
+#     EACH NODE does its own cp of 39GB bf16 from JuiceFS to /tmp, ~7min).
+#   * curate-clipping tolerant-skip patch (trim/all-specific; action_is_visible
+#     + tinker_opd_datum skip; without it x2j3u crashes in step0 datum build).
+#
+# mb1 (NOT 4): mb>=2 backward OOMs on 20B (gpt-oss MoE backward cannot enable
+# gradient checkpointing, mb1 is the primary OOM defense; peak_mem 74.7GB/80GB
+# constant per rank on kxsb3 step0/step1). 64 replicas do NOT change the
+# per-rank budget (each rank is TP=1 single-GPU).
+#
+# bf16-dequant path: NO VLLM_MXFP4_USE_MARLIN, NO triton_kernels install
+# (quant_method=NONE, vLLM runs standard bf16+LoRA, no Marlin/Triton backend).
+# NO CUDA_LAUNCH_BLOCKING (DDP multi-proc). NO DISABLE_CUSTOM_ALL_REDUCE (TP=1).
+#
+# === Multi-node risks at 64-GPU scale (beyond kxsb3 32-GPU verification) ===
+# 1. 8-node Gloo rendezvous + object collectives: kxsb3 verified Gloo works
+#    cross-4-node; 8-node (64 ranks) is a 2x scale — expected to work but
+#    unverified. Watch stdout for "[Gloo] Rank 0-63 is connected to 63 peer
+#    ranks" (provenance). If cross-8-node object ops fail (nccl object
+#    collectives), a gloo sidegroup patch may be needed (CLAUDE.md 2026-09-25
+#    risk note). HIGHEST 64-GPU-specific risk.
+# 2. starfs-user-pv FailedMount: NOT hit by 7nzzn/v0dhh/kxsb3 (platform issue
+#    resolved since 2026-09-25). Low risk, still watch events.
+# 3. workspace quota: kscn gm402 GUARANTEED_PUBLIC LEFT=0; 7nzzn/iowty 32-GPU
+#    gangs scheduled despite it (public pool does NOT strictly block). 64-GPU
+#    gang is a bigger block but queue 2334 RESOURCEFREE=112 + idle FREE=155
+#    both >= 64 at submit-prep, so should schedule. Still watch events.
+# 4. all_gather_via_disk scale: rank 0 interleave-reads 64 rollout shards
+#    from <out>/tmp/rollout_shards via shared JuiceFS; 64 shards (vs 32) is
+#    2x CPU memory + IO on rank 0. shard_dir resolves under --out (shared
+#    JuiceFS). If rank0 CPU OOMs at gather (坑5 analog), the local /tmp
+#    shard_dir patch (trainer_adapter.py:342) may be needed — kxsb3 did NOT
+#    hit this at 32 ranks (bf16 path has no triton residue), but 64 shards is
+#    2x. Monitor n_skip_clipped_doc + gather phase.
+#
+# IMPORTANT: JuiceFS endpoint is NOT submitted via this YAML (--filename) path.
+# The actual submit uses direct CLI flags and passes --juicefs_mount_configs
+# JSON explicitly, where juiceFsCluster must be "bj9-cloudml" (the schema field
+# is juiceFsCluster; there is no literal "endpoint" key; its value IS the
+# cluster/endpoint identifier, verified by 7nzzn describe juiceFSCluster field).
+# This file is a readable draft / audit snapshot only; submit via
+# submit_gpt_oss_20b_trim_ddp_200step_all_64gpu_8node_20260925.sh.
+#
+# world_size=64 is REQUIRED (8 nodes, 8 ranks/node via torchrun --nnodes 8
+# --nproc_per_node 8). Post-submit provenance audit (CLAUDE.md): verify
+# world_size is truly 64 by the three-tuple — (1) stdout has torchrun
+# --nnodes 8 --nproc_per_node 8; (2) checkpoints/<cell>/step_000001/ has 64
+# optimizer shards (or DDP rank0 single optimizer.pt); (3) vllm_sessions/ has
+# 64 _r0.._r63 sessions. Any one missing => actually single-node or partial
+# run, result is NOT a valid "64-GPU 8-node DDP" artifact.
+#
+# imageCommand below is a PLACEHOLDER — the entry script has bash heredocs
+# and nested indentation, so inlining it as a YAML block scalar breaks
+# parsing (confirmed during run2 prep). The actual submission passes it via
+# the CLI flag --image_command "$(cat entry_gpt_oss_20b_trim_ddp_200step_all_64gpu_8node_20260925.sh)"
+# in the submit script. This YAML is an audit snapshot of resource/env/
+# JuiceFS config; do NOT submit with --filename.
+
+jobName: trim-harness1-bcplus-full-gpt-oss-20b-trim-ddp-200step-all-64gpu-8node-20260925-bf16
+description: >-
+  TRIM Harness-1 BC+ trim (SR-OPD/CISPO distill, --train_method trim
+  --component all) GPT-OSS-20B (bf16-dequant, quant_method=NONE) on EIGHT
+  8-GPU gm402-80g nodes (64 GPUs) via torch_ddp_lora backend. 64-GPU scale-up
+  of kxsb3 (bf16-dequant 32-GPU trim/all, verified step0->1->2). run_train_
+  multinode.py --nnodes 8 --nproc-per-node 8 self-torchruns world_size=64:
+  per-rank vLLM TP=1 rollout + DDP LoRA CISPO/OPD optimizer step (full
+  replica per rank, not FSDP2 sharding). bf16 standard LoRA path, vLLM uses
+  TRITON Unquantized MoE (NOT Marlin, no PTX). 200 steps, 32 groups/step,
+  group-size 8, max-turns 40 (NOT default 6; MAX_TURNS env is a no-op),
+  max-model-len 8192, mb=1 (gpt-oss MoE backward OOM safe floor; mb>=2 OOMs
+  per k6v0p), gpu-mem 0.90, local_legacy BM25, SEC RL data + corpus under
+  TRIM/data, offline tiktoken, four-pack torch2.10.0/vllm0.19.1/tf4.57.6/
+  pyserini2.0.0. Entry unsets CloudML-injected RANK/WORLD_SIZE/PET_* so
+  main() self-launches torchrun (deterministic 8-node rendezvous via
+  --master-addr/--node-rank). NO CUDA_LAUNCH_BLOCKING (DDP multi-proc). NO
+  DISABLE_CUSTOM_ALL_REDUCE (TP=1). SCAPE_FORCE_LOCAL_HARMONY unset (gpt-oss
+  to_json crash). Model cp to /tmp per node (8-way JuiceFS read, not 64-way).
+  trim/all-specific curate-clipping patch (action_is_visible +
+  tinker_opd_datum skip) asserted in PATCH_CHECK (x2j3u FAILED without it).
+  RDMA on (>=2 nodes x 8 GPU). 64-GPU risks: 8-node Gloo rendezvous (kxsb3
+  verified 4-node, 8-node unverified), all_gather_via_disk 64-shard rank0
+  memory (坑5 analog, monitor). world_size=64 audit required post-submit.
+accessType: PRIVATE
+tags:
+- MemQA-General-V5
+imageConfig:
+  imageUrl: micr.cloud.mioffice.cn/songzijun/songzijun-cto:3050749-songzijun-cto
+  imageCommand: "FILLED_BY_SUBMIT_SCRIPT_VIA_cat_entry"
+  # NOTE: imageCommand is a bash entry script with heredocs and nested
+  # indentation, so inlining it as a YAML block scalar breaks parsing. The
+  # actual submission passes it via the CLI flag
+  # --image_command "$(cat entry_gpt_oss_20b_trim_ddp_200step_all_64gpu_8node_20260925.sh)"
+  # in submit_gpt_oss_20b_trim_ddp_200step_all_64gpu_8node_20260925.sh. This
+  # YAML is an audit snapshot of resource/env/JuiceFS config; do NOT submit
+  # with --filename (use the submit script). The entry file is kept in sync
+  # with imageConfig above.
+juiceFsMountConfigs:
+- volume: songzijun
+  juiceFsCluster: bj9-cloudml
+  subPath: /
+  mountPath: /mnt/songzijun
+  readOnly: false
+envConfigs:
+- key: PYTHONUNBUFFERED
+  value: '1'
+- key: CUDA_VISIBLE_DEVICES
+  value: 0,1,2,3,4,5,6,7
+- key: TRIM_GPU_KEEPALIVE
+  value: '0'
+- key: PYTORCH_CUDA_ALLOC_CONF
+  value: expandable_segments:True
+- key: PYTHONPATH
+  value: /mnt/songzijun/Capability_Evolution/TRIM:/mnt/songzijun/Capability_Evolution/SCAPE-EasyOPD
+- key: OPENAI_API_KEY
+  value: '**-****-***********-***-*-****-***'
+- key: SCAPE_LOCAL_OPENAI_EMBEDDINGS
+  value: '1'
+- key: TIKTOKEN_ENCODINGS_BASE
+  value: /tmp/tiktoken-bundle/share/tiktoken
+- key: TIKTOKEN_CACHE_DIR
+  value: /tmp/tiktoken-bundle/tiktoken_cache
+- key: TIKTOKEN_RS_CACHE_DIR
+  value: /tmp/tiktoken-bundle/tiktoken_rs_cache
+- key: OUT
+  value: /mnt/songzijun/Capability_Evolution/TRIM/outputs/cloudml_custom_train_harness1_bcplus_full_gpt_oss_20b_trim_ddp_200step_all_64gpu_8node_20260925_bf16
+queueId: '2334'
+priority: 8
+preemptible: false
+framework: pytorch
+rdma: true
+resourceConfigs:
+- nodeRole: worker
+  nodeNumber: 8
+  perNodeResourceSpec:
+    resourcePriority: GUARANTEED_PUBLIC
+    resourceName: cloudml.ng1gm402-8-8.20-224
+    resourceNumber: 8
+  elastic: false
+  preemptible: false
+enableTensorboard: false
+enableMetrics: false
+retryConfig:
+  enableRetry: false
+  maxRetryTimes: 1
+  policySets:
+  - JobFailed
+diagOptions:
+- name: HangDetection
+  enable: false
+alertConfig:
+  enableAlert: true
+  alertItems:
+  - alertConditions:
+    - FAILED
+    alertLevel: P2
+    alertReceivers:
+      persons:
+      - songzijun

@@ -1,0 +1,30 @@
+{%- if tools -%}
+</think>You are a helpful AI assistant with access to tools. When you need to call a tool, output the function call in the GLM native tool-call format: start with the token <|tool_call|> followed by the function name, put each argument on its own line as <|arg_key|>key<|/arg_key|><|arg_val|>value<|/arg_val|>, and end with <|/tool_call|>. Do not wrap tool calls in markdown code blocks. Available tools:
+{% for tool in tools %}
+{%- set function = tool.function if tool.get("function") else tool %}
+## {{ function.name }}
+{{ function | tojson(indent=4, ensure_ascii=False) }}
+{%- endfor %}
+{%- endif -%}
+{%- for msg in messages %}
+{%- if msg.role == 'system' %}
+{{ msg.content }}
+{%- endif %}
+{%- endfor %}
+{%- for message in messages if message.role != 'system' %}
+{%- set role = message['role'] %}
+{%- set content = message['content'] %}
+{%- set meta = message.get("metadata", "") %}
+{%- if role == 'user' %}
+{{ content }}
+{%- elif role == 'assistant' and not meta %}
+{{ content }}
+{%- elif role == 'assistant' and meta %}
+{{ meta }}
+{{ content }}
+{%- elif role == 'observation' %}
+{{ content }}
+{%- endif %}
+{%- endfor %}
+{% if add_generation_prompt %}
+{% endif -%}

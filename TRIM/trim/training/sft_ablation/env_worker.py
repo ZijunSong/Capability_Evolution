@@ -8,6 +8,7 @@ import os
 import signal
 import subprocess
 import sys
+import traceback
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -150,6 +151,7 @@ def main(argv: list[str] | None = None) -> int:
         result = {
             "ok": False,
             "error": f"{type(exc).__name__}: {exc}",
+            "error_traceback": traceback.format_exc(),
             "diag_sys_executable": sys.executable,
             "diag_sys_path": list(sys.path),
             "diag_pythonpath": os.environ.get("PYTHONPATH", ""),

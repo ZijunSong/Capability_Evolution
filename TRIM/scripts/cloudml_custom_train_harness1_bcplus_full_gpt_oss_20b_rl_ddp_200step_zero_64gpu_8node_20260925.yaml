@@ -1,0 +1,165 @@
+# CloudML custom_train: TRIM Harness-1 BC+ full, GPT-OSS-20B (original mxfp4,
+# non-dequant per user instruction), RL (CISPO) training via torch_ddp_lora
+# backend, EIGHT 8-GPU gm402-80g nodes (8 nodes x 8 cards = 64 GPUs),
+# --component zero (H_zero baseline), 200 steps.
+#
+# This is the 8-NODE / 64-GPU scale-out of
+# cloudml_custom_train_harness1_bcplus_full_gpt_oss_20b_rl_ddp_200step_zero_32gpu_4node_20260925.yaml
+# (4-node 32-GPU, the 7nzzn baseline: RUNNING stable through step12, runTime
+# 10.8h, zero errors, world_size=32 provenance audit fully passed). 8-node
+# 64-GPU is a 2x scale of the verified 4-node path; the ONLY structural changes
+# are nodeNumber 4->8 and --rdzv-id gptoss20b-rl-32 -> gptoss20b-rl-64 (distinct
+# rendezvous id so this job does not collide with the still-running 7nzzn).
+#
+# This YAML execs run_train_multinode.py, the real multi-node launcher: each
+# node runs ONE Scheme A process that itself torchruns --nnodes 8 --nproc_per_node 8
+# (world_size=64), shards on-policy query groups across 64 ranks, gathers
+# rollout trajectories onto rank 0 via shared disk (<out>/tmp/rollout_shards),
+# rank 0 runs the DDP-LoRA CISPO optimizer step, then every rank barriers and
+# reloads the fresh adapter for the next rollout.
+#
+# === FIRST 8-node 64-GPU submission in this workspace — read the risks ===
+#
+# 1. CloudML custom_train framework=pytorch nodeNumber=8 creates a PyTorchJob
+#    CRD (7nzzn verified for nodeNumber=4: events show "SuccessfulCreatePyTorchJob"
+#    + master-0/worker pods + init-pytorch container). 7nzzn PREFLIGHT showed
+#    custom_train INJECTS MASTER_ADDR (master pod DNS like tj-...-master-0) +
+#    NODE_RANK but does NOT inject RANK/WORLD_SIZE/PET_* (rank_env=None,
+#    world_size_env=None, pet_nproc_per_node=None). The entry script unsets
+#    RANK/WORLD_SIZE/LOCAL_RANK/LOCAL_WORLD_SIZE/PET_* defensively and self-
+#    launches torchrun via _exec_torchrun (deterministic). nodeNumber=8 is
+#    expected to behave the same but is UNVERIFIED until first submit.
+#
+# 2. 64-rank Gloo rendezvous + object collectives: 7nzzn verified PyTorch auto-
+#    spawns a Gloo sidegroup for rendezvous + object collectives
+#    (broadcast_object_list / all_gather_object) across 32 ranks ([Gloo] Rank 0-31
+#    connected to 31 peers), nccl handles only the DDP gradient all-reduce. 64
+#    ranks is 2x the verified rendezvous size; within Gloo's practical range but
+#    UNPROVEN. Highest multi-node-specific code risk; flag for post-submit audit.
+#
+# 3. 64-rank gang scheduling: queue 2334 gm402-80g RESOURCEFREE=112 / cluster
+#    idle FREE=155 at submit time, so a 64-GPU gang (8 nodes x 8 cards) is
+#    schedulable. But 7nzzn + kxsb3 + iowty + 9ixnl (4 x 32-GPU jobs) are already
+#    running (128 cards occupied). 64-GPU gang is a larger ask than the 32-GPU
+#    gangs that succeeded; may queue. Audit state + events after submit.
+#
+# 4. workspace quota: kscn-hd-cloudml-prod gm402-80g GUARANTEED_PUBLIC quota is
+#    APPLIED=1024 LEFT=0 (exhausted). The public pool does NOT strictly block at
+#    LEFT=0 (7nzzn 32-GPU gang scheduled fine despite LEFT=0).
+#
+# IMPORTANT: JuiceFS endpoint is NOT submitted via this YAML (--filename) path.
+# The actual submit uses direct CLI flags and passes --juicefs_mount_configs
+# JSON explicitly, where juiceFsCluster must be "bj9-cloudml" (the schema field
+# is juiceFsCluster; there is no literal "endpoint" key; its value IS the
+# cluster/endpoint identifier). This file is a readable draft / audit snapshot
+# only; submit via
+# submit_gpt_oss_20b_rl_ddp_200step_zero_64gpu_8node_20260925.sh.
+#
+# world_size=64 is REQUIRED (8 nodes, 8 ranks/node via torchrun --nnodes 8
+# --nproc_per_node 8). Post-submit provenance audit (CLAUDE.md): verify
+# world_size is truly 64 by the three-tuple — (1) stdout has torchrun --nnodes 8
+# --nproc_per_node 8 + RESOLVED_CONFIG dist world_size=64; (2) checkpoints/rl/
+# step_000001/ has the DDP rank0-merged optimizer.pt + STEP_COMPLETE (DDP path
+# saves rank0-merged single optimizer.pt, NOT 64 rank-sharded files — this is the
+# correct DDP vs FSDP2 difference, not a defect); (3) vllm_sessions/ has 64
+# _r0.._r63 sessions. Any one missing => actually single-node or partial run,
+# result is NOT a valid "64-GPU 8-node DDP" artifact.
+#
+# imageCommand below is a PLACEHOLDER. The entry script contains bash heredoc
+# (`python3 - <<'PY'` ... `PY`) and nested indentation that break YAML block
+# scalar parsing (`while scanning a simple key` / `could not find expected ':'`).
+# The actual submit passes --image_command via CLI as "$(cat <entry>)" (string
+# passed verbatim, bypassing YAML parsing). This is the standard cml custom_train
+# pattern for multi-node entries with heredocs.
+
+jobName: trim-harness1-bcplus-full-gpt-oss-20b-rl-ddp-200step-zero-64gpu-8node-20260925
+description: >-
+  Harness-1 BC+ full RL (CISPO) GPT-OSS-20B (original mxfp4, non-dequant per
+  user) on EIGHT 8-GPU gm402-80g nodes (64 GPUs) via torch_ddp_lora backend.
+  --component zero (H_zero baseline). run_train_multinode.py --nnodes 8
+  --nproc-per-node 8 self-torchruns world_size=64: per-rank vLLM TP=1 rollout +
+  DDP LoRA CISPO optimizer step (full replica per rank, not FSDP2 sharding).
+  8-node 2x scale-out of 7nzzn (4-node 32-GPU, RUNNING stable@step12, world_size=32
+  provenance passed). 200 steps, 32 groups/step, group-size 8, max-turns 40 (NOT
+  default 6; MAX_TURNS env is a no-op), max-model-len 8192, mb=1 (gpt-oss MoE
+  backward OOM safe floor), gpu-mem 0.90, local_legacy BM25, SEC RL data + corpus
+  under TRIM/data, offline tiktoken, four-pack torch2.10.0/vllm0.19.1/tf4.57.6/
+  pyserini2.0.0. Entry unsets CloudML-injected RANK/WORLD_SIZE/PET_* so main()
+  self-launches torchrun (deterministic 8-node rendezvous via --master-addr/
+  --node-rank). --rdzv-id gptoss20b-rl-64 (distinct from 7nzzn gptoss20b-rl-32).
+  NO CUDA_LAUNCH_BLOCKING (DDP multi-proc). NO DISABLE_CUSTOM_ALL_REDUCE (TP=1).
+  SCAPE_FORCE_LOCAL_HARMONY unset (gpt-oss to_json crash). Model cp to /tmp per
+  node (8-way JuiceFS read, not 64-way). RDMA on (>=2 nodes x 8 GPU). FIRST
+  8-node 64-GPU submission; risks: 64-rank Gloo rendezvous, 64-GPU gang
+  scheduling, workspace quota LEFT=0. world_size=64 audit required.
+accessType: PRIVATE
+tags:
+- MemQA-General-V5
+imageConfig:
+  imageUrl: micr.cloud.mioffice.cn/songzijun/songzijun-cto:3050749-songzijun-cto
+  imageCommand: "FILLED_BY_SUBMIT_SCRIPT_VIA_cat_entry"
+# JuiceFS mount is intentionally declared here as an audit snapshot, but the
+# actual submission passes it via the CLI flag --juicefs_mount_configs JSON
+# (juiceFsCluster=bj9-cloudml), NOT via this YAML --filename.
+juiceFsMountConfigs:
+- volume: songzijun
+  juiceFsCluster: bj9-cloudml
+  subPath: /
+  mountPath: /mnt/songzijun
+  readOnly: false
+envConfigs:
+- key: PYTHONUNBUFFERED
+  value: '1'
+- key: CUDA_VISIBLE_DEVICES
+  value: 0,1,2,3,4,5,6,7
+- key: TRIM_GPU_KEEPALIVE
+  value: '0'
+- key: PYTORCH_CUDA_ALLOC_CONF
+  value: expandable_segments:True
+- key: PYTHONPATH
+  value: /mnt/songzijun/Capability_Evolution/TRIM:/mnt/songzijun/Capability_Evolution/SCAPE-EasyOPD
+- key: OPENAI_API_KEY
+  value: '**-****-***********-***-*-****-***'
+- key: SCAPE_LOCAL_OPENAI_EMBEDDINGS
+  value: '1'
+- key: TIKTOKEN_ENCODINGS_BASE
+  value: /tmp/tiktoken-bundle/share/tiktoken
+- key: TIKTOKEN_CACHE_DIR
+  value: /tmp/tiktoken-bundle/tiktoken_cache
+- key: TIKTOKEN_RS_CACHE_DIR
+  value: /tmp/tiktoken-bundle/tiktoken_rs_cache
+- key: OUT
+  value: /mnt/songzijun/Capability_Evolution/TRIM/outputs/cloudml_custom_train_harness1_bcplus_full_gpt_oss_20b_rl_ddp_200step_zero_64gpu_8node_20260925
+queueId: '2334'
+priority: 8
+preemptible: false
+framework: pytorch
+rdma: true
+resourceConfigs:
+- nodeRole: worker
+  nodeNumber: 8
+  perNodeResourceSpec:
+    resourcePriority: GUARANTEED_PUBLIC
+    resourceName: cloudml.ng1gm402-8-8.20-224
+    resourceNumber: 8
+  elastic: false
+  preemptible: false
+enableTensorboard: false
+enableMetrics: false
+retryConfig:
+  enableRetry: false
+  maxRetryTimes: 1
+  policySets:
+  - JobFailed
+diagOptions:
+- name: HangDetection
+  enable: false
+alertConfig:
+  enableAlert: true
+  alertItems:
+  - alertConditions:
+    - FAILED
+    alertLevel: P2
+    alertReceivers:
+      persons:
+      - songzijun

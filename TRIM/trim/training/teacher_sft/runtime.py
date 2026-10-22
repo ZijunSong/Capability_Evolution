@@ -16,7 +16,9 @@ from trim.training.teacher_sft.dataset import build_teacher_sft_rows
 
 
 def run(args: Any, dist: Any) -> int:
-    if getattr(args, "ce_backend", "legacy") == "accelerate_ddp" and getattr(args, "stage", "") == "train":
+    from trim.training.sft_engine.backend import is_accelerated
+
+    if is_accelerated(getattr(args, "ce_backend", "legacy")) and getattr(args, "stage", "") == "train":
         from trim.training.sft_engine.fixed_runtime import run_fixed_sft
 
         if str(args.experiment) != "teacher_sft":

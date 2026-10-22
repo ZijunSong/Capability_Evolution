@@ -1,0 +1,172 @@
+jobName: trim-harness-g-qwen3-4b-instruct-rl-zero-32gpu-4node-20261008-to-50
+description: Harness-G / Qwen3-4B-Instruct-2507 rl/zero 4node32gpu torch_ddp_lora.
+  fresh train to step 50 (first evalhook segment). mb4 gpu-mem0.90. Harness-G legacy_local
+  graph runtime, bcplus_train_664, corpus graph. Eval hooks at 0/50/100/150/200 (step0
+  eval runs before training). Subsequent segments via --env RESUME=1 + EVAL_TARGET_STEP=100/150/200
+  (orchestrator or submit script).
+accessType: PRIVATE
+tags:
+- MemQA-General-V5
+imageConfig:
+  imageUrl: micr.cloud.mioffice.cn/songzijun/songzijun-cto:3050749-songzijun-cto
+  imageCommand: "#!/usr/bin/env bash\n# CloudML imageCommand entry — Harness-G / Qwen3-4B-Instruct-2507\
+    \ / rl / zero\n# 4 nodes × 8 gm402-80g = 32 GPUs. torch_ddp_lora. dense bf16.\n\
+    # EVALHOOK VARIANT: train to EVAL_TARGET_STEP, orchestrator kills + evals + resumes.\n\
+    # Harness-G: legacy_local graph runtime, bcplus_train_664 default, local_bm25,\
+    \ corpus graph required.\n# Qwen3-4B-Instruct: mb4 (dense grad-ckpt), no SCAPE_FORCE_LOCAL_HARMONY\
+    \ (Qwen3 not Harmony).\nset -euxo pipefail\n\nexport PYTHONUNBUFFERED=1\nexport\
+    \ CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7\nexport TRIM_GPU_KEEPALIVE=0\nexport PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True\n\
+    export PYTHONPATH=/mnt/songzijun/Capability_Evolution/TRIM:/mnt/songzijun/Capability_Evolution/SCAPE-EasyOPD\n\
+    \nNODE_RANK=\"${NODE_RANK:-${PET_NODE_RANK:-${NODE_INDEX:-${NODE_NUMBER:-}}}}\"\
+    \nif [ -z \"${NODE_RANK:-}\" ]; then echo \"FATAL: NODE_RANK not set\" >&2; exit\
+    \ 1; fi\nif [ -z \"${MASTER_ADDR:-}\" ]; then echo \"FATAL: MASTER_ADDR not set\"\
+    \ >&2; exit 1; fi\n: \"${MASTER_PORT:=29500}\"\nexport MASTER_ADDR NODE_RANK MASTER_PORT\n\
+    \nunset RANK WORLD_SIZE LOCAL_RANK LOCAL_WORLD_SIZE GROUP_RANK ROLE_RANK \\\n\
+    \      GROUP_WORLD_SIZE TORCHELASTIC_RUN_ID TORCHELASTIC_RESTART_COUNT \\\n  \
+    \    TORCHELASTIC_MAX_RESTARTS TORCHELASTIC_USE_AGENT_STORE \\\n      PET_MASTER_ADDR\
+    \ PET_MASTER_PORT PET_NNODES PET_NPROC_PER_NODE PET_NODE_RANK\n\necho \"MULTINODE_ENV\
+    \ master_addr=${MASTER_ADDR} node_rank=${NODE_RANK} master_port=${MASTER_PORT}\
+    \ host=$(hostname)\"\n\nif [ -z \"${OUT:-}\" ]; then echo \"FATAL: OUT not set\"\
+    \ >&2; exit 1; fi\nexport OUT\necho \"MULTINODE_OUT out=${OUT} host=$(hostname)\
+    \ node_rank=${NODE_RANK}\"\n\nexport OPENAI_API_KEY=\"${OPENAI_API_KEY:-**-****-***********-***-*-****-***}\"\
+    \nexport SCAPE_LOCAL_OPENAI_EMBEDDINGS=1\nexport SCAPE_CHROMA_PATH=/tmp/empty_chroma\n\
+    mkdir -p \"$SCAPE_CHROMA_PATH\"\n\npython3 -c \"import zipfile; zipfile.ZipFile('/mnt/songzijun/tiktoken-bundle.zip').extractall('/tmp')\"\
+    \ntest -f /tmp/tiktoken-bundle/share/tiktoken/o200k_base.tiktoken\ntest -f /tmp/tiktoken-bundle/share/tiktoken/cl100k_base.tiktoken\n\
+    export TIKTOKEN_ENCODINGS_BASE=/tmp/tiktoken-bundle/share/tiktoken\nexport TIKTOKEN_RS_CACHE_DIR=/tmp/tiktoken-bundle/tiktoken_rs_cache\n\
+    export TIKTOKEN_CACHE_DIR=/tmp/tiktoken-bundle/tiktoken_cache\n\nnvidia-smi -L\n\
+    test -f /mnt/songzijun/Capability_Evolution/TRIM/scripts/run_train_multinode.py\n\
+    test -f /mnt/songzijun/Capability_Evolution/TRIM/scripts/run_train.py\ntest -f\
+    \ /mnt/songzijun/models/Qwen3-4B-Instruct-2507/config.json\ntest -f /mnt/songzijun/Capability_Evolution/SCOPE/external/BrowseComp-Plus/indexes/harness_g_corpus_graph.pkl\n\
+    test -f /mnt/songzijun/Capability_Evolution/SCAPE-EasyOPD/manifests/COMPONENT_SWEEP_TRAIN_POOL.json\n\
+    test -f /mnt/songzijun/Capability_Evolution/TRIM/manifests/browsecomp_plus_830/SPLIT.json\n\
+    \nJVM_PATH=$(find /usr /opt -type f -name libjvm.so 2>/dev/null | head -1 || true)\n\
+    if [ -z \"${JVM_PATH}\" ]; then\n  apt-get update\n  DEBIAN_FRONTEND=noninteractive\
+    \ apt-get install -y --no-install-recommends openjdk-21-jre-headless\n  JVM_PATH=$(find\
+    \ /usr /opt -type f -name libjvm.so 2>/dev/null | head -1 || true)\nfi\ntest -n\
+    \ \"${JVM_PATH}\"; test -f \"${JVM_PATH}\"; ldd \"${JVM_PATH}\"\nexport JVM_PATH\n\
+    export JAVA_HOME=$(dirname \"$(dirname \"$(dirname \"${JVM_PATH}\")\")\")\nexport\
+    \ LD_LIBRARY_PATH=$(dirname \"${JVM_PATH}\"):${LD_LIBRARY_PATH:-}\n\nPYPI_INDEX=\"\
+    https://pkgs.d.xiaomi.net/artifactory/api/pypi/pypi-virtual/simple\"\npython3\
+    \ -m pip install --no-cache-dir --ignore-installed --upgrade-strategy only-if-needed\
+    \ \\\n  --index-url \"${PYPI_INDEX}\" \\\n  \"torch==2.10.0\" \"transformers==4.57.6\"\
+    \ \"accelerate==1.13.0\" \"datasets==4.8.4\" \\\n  \"hydra-core==1.3.2\" \"omegaconf==2.3.0\"\
+    \ \"vllm==0.19.1\" peft structlog \\\n  tqdm regex sympy latex2sympy2 word2number\
+    \ sentencepiece pyserini==2.0.0 pyjnius \\\n  openai tenacity anthropic\npython3\
+    \ -m pip install --no-cache-dir --no-deps --index-url \"${PYPI_INDEX}\" \"openai_harmony\"\
+    \ || echo \"[deps] WARN openai_harmony install issue (Qwen3 不触发 Harmony，无害)\"\n\
+    \nPYSERINI_ROOT=$(python3 -c 'import pathlib, pyserini; print(pathlib.Path(pyserini.__file__).resolve().parent)')\n\
+    export ANSERINI_CLASSPATH=$(find \"$PYSERINI_ROOT/resources/jars\" -type f -name\
+    \ '*.jar' -print | paste -sd: -)\ntest -n \"$ANSERINI_CLASSPATH\"; export CLASSPATH=\"\
+    $ANSERINI_CLASSPATH\"\n\npython3 - <<'PY'\nimport importlib.metadata, json, os,\
+    \ socket, torch, transformers, vllm\nfrom jnius import autoclass; autoclass(\"\
+    java.lang.String\")\nv = {\"torch\": torch.__version__, \"vllm\": vllm.__version__,\
+    \ \"transformers\": transformers.__version__,\n     \"pyserini\": importlib.metadata.version(\"\
+    pyserini\"), \"peft\": importlib.metadata.version(\"peft\"),\n     \"structlog\"\
+    : importlib.metadata.version(\"structlog\"), \"gpu_count\": torch.cuda.device_count(),\n\
+    \     \"JVM_PATH\": os.environ[\"JVM_PATH\"], \"host\": socket.gethostname(),\n\
+    \     \"master_addr\": os.environ.get(\"MASTER_ADDR\"), \"node_rank\": os.environ.get(\"\
+    NODE_RANK\"),\n     \"rank_env\": os.environ.get(\"RANK\"), \"world_size_env\"\
+    : os.environ.get(\"WORLD_SIZE\")}\nprint(\"PREFLIGHT\", v, flush=True)\nassert\
+    \ v[\"torch\"].startswith(\"2.10.0\"); assert v[\"vllm\"]==\"0.19.1\"; assert\
+    \ v[\"transformers\"]==\"4.57.6\"; assert v[\"pyserini\"]==\"2.0.0\"\nassert v[\"\
+    gpu_count\"]==8\nm = json.load(open(\"/mnt/songzijun/models/Qwen3-4B-Instruct-2507/config.json\"\
+    ))\nq = m.get(\"quantization_config\") or {}\nprint(\"MODEL_PROBE\", {\"arch\"\
+    : m.get(\"architectures\"), \"quant\": q.get(\"quant_method\")}, flush=True)\n\
+    assert m.get(\"architectures\")==[\"Qwen3ForCausalLM\"]; assert not q.get(\"quant_method\"\
+    )\nfrom trim.training.harness_g_train import default_graph_path\ngp = default_graph_path();\
+    \ assert gp, \"harness_g_corpus_graph.pkl not found\"\nprint(\"GRAPH_PATH_OK\"\
+    , {\"graph_index_path\": gp}, flush=True)\nfrom trim.integrations.verl.trainer_adapter\
+    \ import _actor_wrap\nassert _actor_wrap(\"torch_ddp_lora\")==\"ddp\"; print(\"\
+    DDP_LORA_WRAP_OK\", flush=True)\nimport pathlib, re\nta = pathlib.Path(\"/mnt/songzijun/Capability_Evolution/TRIM/trim/integrations/verl/trainer_adapter.py\"\
+    ).read_text()\nassert \"startup_timeout_s=3600.0\" in ta\nassert re.search(r\"\
+    train_rows,\\s*eval_rows,\\s*pool_meta,\\s*_?frozen_points\\s*=\\s*resolve_queries\"\
+    , ta)\nassert \"EADDRINUSE\" in ta\nprint(\"PATCH_CHECK_OK\", flush=True)\nPY\n\
+    \nMODEL_SRC=/mnt/songzijun/models/Qwen3-4B-Instruct-2507\nMODEL_LOCAL=/tmp/qwen3-4b-instruct\n\
+    if [ ! -f \"$MODEL_LOCAL/config.json\" ]; then rm -rf \"$MODEL_LOCAL\"; mkdir\
+    \ -p \"$MODEL_LOCAL\"; cp -r \"$MODEL_SRC\"/. \"$MODEL_LOCAL\"/; fi\ntest -f \"\
+    $MODEL_LOCAL/config.json\"\necho \"MODEL_LOCAL_READY $MODEL_LOCAL host=$(hostname)\
+    \ node_rank=${NODE_RANK}\"\n\npython3 -m py_compile /mnt/songzijun/Capability_Evolution/TRIM/scripts/run_train_multinode.py\n\
+    python3 -m py_compile /mnt/songzijun/Capability_Evolution/TRIM/scripts/run_train.py\n\
+    cd /mnt/songzijun/Capability_Evolution\n\n: \"${EVAL_TARGET_STEP:?EVAL_TARGET_STEP\
+    \ is required (50/100/150/200)}\"\n: \"${RESUME:=0}\"\nTRAIN_STEPS_ARG=\"--train-steps\
+    \ ${EVAL_TARGET_STEP}\"\nRESUME_ARG=\"\"\nRDZV_ID=\"qwen34b-instruct-rl-harnessg-32\"\
+    \nif [ \"${RESUME}\" = \"1\" ]; then\n  RESUME_ARG=\"--resume\"; RDZV_ID=\"qwen34b-instruct-rl-harnessg-32-resume\"\
+    \n  test -d \"${OUT}/checkpoints/rl/latest\"; test -f \"${OUT}/checkpoints/rl/latest/STEP_COMPLETE\"\
+    \n  echo \"RESUME_TARGET latest=$(readlink -f \"${OUT}/checkpoints/rl/latest\"\
+    ) target_step=${EVAL_TARGET_STEP}\"\nfi\necho \"EVALHOOK_GATE eval_target_step=${EVAL_TARGET_STEP}\
+    \ resume=${RESUME} rdzv_id=${RDZV_ID} train_steps_arg=${TRAIN_STEPS_ARG}\"\n\n\
+    exec python3 /mnt/songzijun/Capability_Evolution/TRIM/scripts/run_train_multinode.py\
+    \ \\\n  --nnodes 4 --nproc-per-node 8 --node-rank \"${NODE_RANK}\" --master-addr\
+    \ \"${MASTER_ADDR}\" --master-port \"${MASTER_PORT}\" \\\n  --dist-backend nccl\
+    \ --rdzv-backend static --rdzv-id \"${RDZV_ID}\" \\\n  --training-backend torch_ddp_lora\
+    \ --harness Harness-G --benchmark bcplus_full \\\n  --model_name /tmp/qwen3-4b-instruct\
+    \ --train_method rl --component zero --train-env local_legacy \\\n  --max-turns\
+    \ 40 --max-model-len 8192 --gpu-memory-utilization 0.90 \\\n  ${TRAIN_STEPS_ARG}\
+    \ --train-groups-per-step 32 --group-size 8 --train-micro-batch-size 4 --train-heartbeat-every\
+    \ 8 \\\n  ${RESUME_ARG} --out \"${OUT}\""
+juiceFsMountConfigs:
+- volume: songzijun
+  juiceFsCluster: bj9-cloudml
+  subPath: /
+  mountPath: /mnt/songzijun
+  readOnly: false
+envConfigs:
+- key: PYTHONUNBUFFERED
+  value: '1'
+- key: CUDA_VISIBLE_DEVICES
+  value: 0,1,2,3,4,5,6,7
+- key: TRIM_GPU_KEEPALIVE
+  value: '0'
+- key: PYTORCH_CUDA_ALLOC_CONF
+  value: expandable_segments:True
+- key: PYTHONPATH
+  value: /mnt/songzijun/Capability_Evolution/TRIM:/mnt/songzijun/Capability_Evolution/SCAPE-EasyOPD
+- key: OPENAI_API_KEY
+  value: '**-****-***********-***-*-****-***'
+- key: SCAPE_LOCAL_OPENAI_EMBEDDINGS
+  value: '1'
+- key: TIKTOKEN_ENCODINGS_BASE
+  value: /tmp/tiktoken-bundle/share/tiktoken
+- key: TIKTOKEN_CACHE_DIR
+  value: /tmp/tiktoken-bundle/tiktoken_cache
+- key: TIKTOKEN_RS_CACHE_DIR
+  value: /tmp/tiktoken-bundle/tiktoken_rs_cache
+- key: OUT
+  value: /mnt/songzijun/Capability_Evolution/TRIM/outputs/cloudml_custom_train_harness_g_qwen3_4b_instruct_rl_zero_32gpu_4node_20261008
+- key: EVAL_TARGET_STEP
+  value: '50'
+- key: RESUME
+  value: '0'
+queueId: '2334'
+priority: 5
+preemptible: false
+framework: pytorch
+resourceConfigs:
+- nodeRole: worker
+  nodeNumber: 4
+  perNodeResourceSpec:
+    resourcePriority: GUARANTEED_PUBLIC
+    resourceName: cloudml.ng1gm402-8-8.20-224
+    resourceNumber: 8
+  elastic: false
+  preemptible: false
+enableTensorboard: false
+enableMetrics: false
+retryConfig:
+  enableRetry: false
+  maxRetryTimes: 1
+  policySets:
+  - JobFailed
+rdma: true
+diagOptions:
+- name: HangDetection
+  enable: false
+alertConfig:
+  enableAlert: true
+  alertItems:
+  - alertConditions:
+    - FAILED
+    alertLevel: P2
+    alertReceivers:
+      persons:
+      - songzijun

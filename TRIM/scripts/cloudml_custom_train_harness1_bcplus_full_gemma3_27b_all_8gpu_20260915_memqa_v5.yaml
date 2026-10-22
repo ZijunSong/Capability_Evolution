@@ -1,0 +1,58 @@
+# CloudML custom_train YAML
+# TRIM Harness-1 BC+ full / Gemma-3-27B-it / ALL eval / 单节点 8x gm402-80g
+# 提交日期 2026-09-15，标签 MemQA-General-V5，priority 8。
+#
+# 被测模型 = /mnt/songzijun/models/gemma-3-27b-it
+#   (Gemma3ForConditionalGeneration / gemma3 / 62 层 text_config hidden 5376 /
+#    dense / 12 shards ~50 GiB bf16 / 多模态 VLM siglip vision, BC+ 走纯文本路径 /
+#    SentencePiece tokenizer: tokenizer.model + tokenizer.json，非 harmony o200k)
+#
+# Thinking：Gemma3 IT 无 thinking 模式，chat_template 无 enable_thinking 守卫、不输出
+#   独立 reasoning 块，故无需改模板、无需 strip reasoning_parser（GEMMA_PROFILE 本就无
+#   reasoning_parser，只有 tool_call_parser=pythonic + needs_tool_smoke_test=True）。
+#   与 Qwen3.5-27B no-thinking 的差异：后者 profile 带 reasoning_parser=qwen3 且需在
+#   no-thinking 下显式 STRIP；gemma 无此问题。不改 scorer/runner（CLAUDE.md：官方
+#   runner 不 fork）。
+#
+# 重要：JuiceFS 挂载不在本 YAML 中配置——按要求通过直接 CLI 参数
+#   --juicefs_mount_configs '<JSON>' 提交，其中 endpoint/JuiceFSCluster 为 "bj9-cloudml"，
+#   volume=songzijun, mount=/mnt/songzijun, read-write。本文件 JuiceFSMountConfigs 不作为提交依据。
+# ImageCommand 调用
+#   TRIM/scripts/boot_gemma3_27b_all_eval_cloudml_8gpu_20260915.sh，该脚本把自身从
+#   JuiceFS cp 到 /tmp 再 exec（规避 JuiceFS heredoc 回读抖动），然后完成依赖锁定 /
+#   GPU·架构(vLLM ModelRegistry Gemma3ForConditionalGeneration 探测)·JVM·PyJNI·Lucene·
+#   import-chain·tiktoken preflight 后 exec run_bcplus_w_harness1_gemma3_27b_all_gpu8_eval.sh：
+#   7 个单卡 Gemma-3-27B-it actor (TP=1, GPU 0..6) + harness-1 verifier (GPU 7) +
+#   64 个 API-client worker, retrieval=local_bm25 (Pyserini/Lucene), --reranker none --offline,
+#   无 Chroma 服务。component=all（带 verify）。
+#
+# runtime 锁定口径（CLAUDE.md）：torch 2.10.0+cu128 / vllm 0.19.1 / transformers 4.57.6 / pyserini 2.0.0。
+# 关键风险：vLLM 0.19.1 是否注册 Gemma3ForConditionalGeneration（VLM 架构）无法本地验证；
+#   启动脚本已加 ModelRegistry 探测，不支持则 exit 5 干净退出（保留 attempt 供审计）。
+# RUN_ID 与前序 memqa_v5 attempt 显式隔离，不覆盖原 attempt 输出。
+JobName: "trim-run-eval-h1-bcplus-full-gemma3-27b-all-8gpu-20260915-memqa-general-v5"
+Description: >-
+  TRIM Harness-1 BC+ full, Gemma-3-27B-it (gemma3 dense 27B VLM, pure-text BC+),
+  all eval (with harness-1 verifier), no thinking mode (Gemma3 IT has none).
+  8x gm402-80g, local_bm25 (no Chroma), upstream_api. Boot: pinned runtime +
+  preflight then exec all eval: 7 actors (TP=1) GPU 0-6 + harness-1 verifier GPU
+  7 + 64 workers. JuiceFS endpoint=bj9-cloudml via CLI. tool_call_parser=pythonic.
+  GPU_UTIL 0.90.
+AccessType: "PUBLIC"
+ImageConfig:
+  ImageUrl: "micr.cloud.mioffice.cn/songzijun/songzijun-cto:3050749-songzijun-cto"
+  ImageCommand: "bash /mnt/songzijun/Capability_Evolution/TRIM/scripts/boot_gemma3_27b_all_eval_cloudml_8gpu_20260915.sh"
+QueueId: "2334"
+Priority: 8
+Framework: "pytorch"
+Tags:
+  - "MemQA-General-V5"
+ResourceConfigs:
+  - NodeRole: "worker"
+    NodeNumber: 1
+    PerNodeResourceSpec:
+      ResourcePriority: "GUARANTEED_PUBLIC"
+      ResourceName: "cloudml.ng1gm402-8-8.20-224"
+      ResourceNumber: 8
+# 非抢占（GUARANTEED_PUBLIC 保障资源）；不加 preemptible。
+# JuiceFS 通过 CLI --juicefs_mount_configs 显式 JSON 传入（endpoint=bj9-cloudml）。

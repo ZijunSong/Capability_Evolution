@@ -1,0 +1,75 @@
+# CloudML one-off job: dequantize GPT-OSS-20B mxfp4 -> bf16 checkpoint.
+# Purpose: produce a clean bf16 HF checkpoint that vLLM 0.19.1 can load WITHOUT the
+# mxfp4 Marlin LoRA path (which crashes on gm402 with cudaErrorUnsupportedPtxVersion
+# when enable_lora=True — see memory trim-gptoss20b-cispo-backward-oom 09:05 entry).
+# HF transformers 4.57.6 dequantizes mxfp4->bf16 on from_pretrained (confirmed in
+# recovery2 log 02:53:57 "we will default to dequantizing the model to bf16").
+# Output is persistent on JuiceFS at /mnt/songzijun/models/openai/gpt-oss-20b-bf16-dequant
+# and reusable by recovery3 (--model_name points here).
+#
+# NOT SUBMITTED. JuiceFS via CLI --juicefs_mount_configs at submit time (endpoint=bj9-cloudml).
+# 1 GPU gm402 (fast load; 80GB holds 40GB bf16). ~20-40min.
+jobName: "dequant-gpt-oss-20b-mxfp4-to-bf16-20260912"
+description: "One-off: dequantize GPT-OSS-20B mxfp4 to bf16 checkpoint (40GB) for vLLM to avoid mxfp4 Marlin LoRA PTX crash on gm402. HF transformers 4.57.6 dequant on load. Output /mnt/songzijun/models/openai/gpt-oss-20b-bf16-dequant. 1x gm402-80g, priority 8, tag MemQA-General-V5."
+accessType: "PRIVATE"
+
+imageConfig:
+  imageUrl: "micr.cloud.mioffice.cn/songzijun/songzijun-cto:3050749-songzijun-cto"
+  imageCommand: >-
+    set -euxo pipefail;
+    export PYTHONUNBUFFERED=1;
+    export CUDA_VISIBLE_DEVICES=0;
+    export PYTHONPATH=/mnt/songzijun/Capability_Evolution:/mnt/songzijun/Capability_Evolution/TRIM:/mnt/songzijun/Capability_Evolution/SCAPE-EasyOPD;
+    nvidia-smi -L;
+    test -f /mnt/songzijun/models/openai/gpt-oss-20b/config.json;
+    test -f /mnt/songzijun/Capability_Evolution/TRIM/scripts/dequant_gpt_oss_mxfp4_to_bf16.py;
+    python3 -m pip install --no-cache-dir --ignore-installed --upgrade-strategy only-if-needed "torch==2.10.0" "transformers==4.57.6" "accelerate==1.13.0" safetensors;
+    python3 -c 'import torch,transformers,accelerate; print("preflight torch",torch.__version__,"transformers",transformers.__version__,"cuda",torch.cuda.device_count()); assert torch.__version__.startswith("2.10.0") and transformers.__version__=="4.57.6" and torch.cuda.device_count()>=1';
+    exec python3 /mnt/songzijun/Capability_Evolution/TRIM/scripts/dequant_gpt_oss_mxfp4_to_bf16.py /mnt/songzijun/models/openai/gpt-oss-20b /mnt/songzijun/models/openai/gpt-oss-20b-bf16-dequant
+
+envConfigs:
+  - key: "PYTHONUNBUFFERED"
+    value: "1"
+  - key: "CUDA_VISIBLE_DEVICES"
+    value: "0"
+  - key: "PYTHONPATH"
+    value: "/mnt/songzijun/Capability_Evolution:/mnt/songzijun/Capability_Evolution/TRIM:/mnt/songzijun/Capability_Evolution/SCAPE-EasyOPD"
+
+queueId: "2334"
+priority: 8
+preemptible: false
+framework: "pytorch"
+resourceConfigs:
+  - nodeRole: "worker"
+    nodeNumber: 1
+    perNodeResourceSpec:
+      resourcePriority: "GUARANTEED_PUBLIC"
+      resourceName: "cloudml.ng1gm402-8-8.20-224"
+      resourceNumber: 1
+    elastic: false
+    preemptible: false
+
+tags:
+  - "MemQA-General-V5"
+
+enableTensorboard: false
+enableMetrics: false
+diagOptions:
+  - name: "HangDetection"
+    enable: false
+retryConfig:
+  enableRetry: false
+  maxRetryTimes: 1
+  policySets:
+    - "JobFailed"
+alertConfig:
+  enableAlert: true
+  alertItems:
+    - alertConditions:
+        - "START_RUNNING"
+        - "FAILED"
+        - "SUCCEED"
+      alertLevel: P2
+      alertReceivers:
+        persons:
+          - "songzijun"

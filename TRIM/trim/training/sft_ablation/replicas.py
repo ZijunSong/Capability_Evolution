@@ -23,8 +23,12 @@ def run_replica_jobs(args: Any, dist: Any, *, task: str, mask_name: str, payload
     )
     mask = all_enabled_mask("Harness-1") if mask_name == "full" else zero_mask("Harness-1")
     records = list(payload.get("records") or [])
+    archive_ranges = list(payload.get("archive_ranges") or [])
+    archive_path = str(payload.get("archive_path") or "")
     queries = list(payload.get("queries") or [])
-    if records:
+    if archive_ranges:
+        shards = [archive_ranges[index::len(plan)] for index in range(len(plan))]
+    elif records:
         shards = [records[index::len(plan)] for index in range(len(plan))]
     elif not queries and task in {"collect", "rollout", "replay"}:
         return [{"ok": True, "archive": {"trajectories": []}, "points": [], "rows": []}]
@@ -40,7 +44,7 @@ def run_replica_jobs(args: Any, dist: Any, *, task: str, mask_name: str, payload
     root = root / f"rank{int(dist.rank)}"
     pending: list[tuple[int, Any, Path]] = []
     for index, (gpus, shard) in enumerate(zip(plan, shards)):
-        if (records or queries) and not shard:
+        if (records or archive_ranges or queries) and not shard:
             results.append({"ok": True, "archive": {"trajectories": []}, "points": [], "rows": []})
             continue
         job_dir = root / f"replica-{index}"
@@ -55,6 +59,8 @@ def run_replica_jobs(args: Any, dist: Any, *, task: str, mask_name: str, payload
             "queries": [item.get("query_id") for item in shard] if records else shard,
             "records": shard if records else [],
             "trajectories": shard if records else payload.get("trajectories") or [],
+            "archive_path": archive_path,
+            "archive_ranges": shard if archive_ranges else [],
             "result": str(result_path),
             "model_name": args.model_name,
             "max_model_len": int(args.max_model_len),
@@ -78,17 +84,24 @@ def run_replica_jobs(args: Any, dist: Any, *, task: str, mask_name: str, payload
         )
         pending.append((index, proc, result_path))
         results.append(None)
-    failed: tuple[int, int] | None = None
-    for index, proc, _result_path in pending:
+    failed: tuple[int, int, str] | None = None
+    for index, proc, result_path in pending:
         code = int(proc.wait())
         if code != 0 and failed is None:
-            failed = (index, code)
+            detail = ""
+            if result_path.is_file():
+                try:
+                    detail = str(read_json(result_path).get("error") or "")
+                except Exception:
+                    detail = result_path.read_text(encoding="utf-8", errors="replace")[:1000]
+            failed = (index, code, detail)
             for other_index, other, _path in pending:
                 if other_index != index:
                     stop_env_worker(other)
     if failed is not None:
-        index, code = failed
-        raise RuntimeError(f"{task} replica {index} exited {code}")
+        index, code, detail = failed
+        suffix = f": {detail}" if detail else ""
+        raise RuntimeError(f"{task} replica {index} exited {code}{suffix}")
     for index, _proc, result_path in pending:
         result = read_json(result_path)
         if not result.get("ok", False):

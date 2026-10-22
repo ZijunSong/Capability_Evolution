@@ -614,6 +614,14 @@ def build_continuation_prompt_ids(
 
     enc = enc or load_harmony_enc()
     actions_obs = recent_actions_obs(actions_obs, keep=12)
+    # Replay (LiveZeroEnv) stores raw (dict action, str obs) in ep.acts; build_context/
+    # action_observation_to_messages expect harness-1 Action/Observation objects (else
+    # AttributeError 'dict' has no 'reasoning'). hydrate_rollout_actions_obs converts
+    # dict+str pairs to Action+Observation via make_action/make_observation and passes
+    # Action/Observation pairs through unchanged (no-op for normal rollout). 9jvcu/ajpv3
+    # failed here; this is the minimal fix at the prompt-entry layer (no ultra_core change).
+    from trim.training.opd_prompt_encoding import hydrate_rollout_actions_obs
+    actions_obs = hydrate_rollout_actions_obs(actions_obs)
     actions = [a for a, _ in actions_obs]
     obs = [o for _, o in actions_obs]
     conv = build_context(get_system_prompt(query), wm_text, actions, obs)

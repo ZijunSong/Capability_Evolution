@@ -1,0 +1,91 @@
+JobName: "diag-glm4-32b-toolcall-probe2-20260914"
+Description: "Diagnose GLM-4-32B-0414 tool-call parsing: enumerate vllm tool parsers via the correct registry and test glm45 parser output."
+AccessType: "PRIVATE"
+ImageConfig:
+  ImageUrl: "micr.cloud.mioffice.cn/songzijun/songzijun-cto:3050749-songzijun-cto"
+  ImageCommand: |
+    set -euxo pipefail
+    export PYTHONUNBUFFERED=1
+    export CUDA_VISIBLE_DEVICES=0
+    python3 -c "import zipfile; zipfile.ZipFile('/mnt/songzijun/tiktoken-bundle.zip').extractall('/tmp')"
+    export TIKTOKEN_ENCODINGS_BASE=/tmp/tiktoken-bundle/share/tiktoken
+    python3 -m pip install --no-cache-dir --ignore-installed --upgrade-strategy only-if-needed \
+      "torch==2.10.0" "vllm==0.19.1" "transformers==4.57.6" 2>&1 | tail -2 || true
+    VROOT=$(python3 -c "import vllm,pathlib; print(pathlib.Path(vllm.__file__).resolve().parent)") || { echo "VLLM_INSTALL_FAILED"; tail -40 /tmp/piperr.log 2>/dev/null; exit 1; }
+    python3 -m pip install --no-cache-dir --ignore-installed --upgrade-strategy only-if-needed torch==2.10.0 vllm==0.19.1 transformers==4.57.6 2>/tmp/piperr.log || true
+
+    echo "=== GREP glm/hermes parser refs ==="
+    grep -rEn "glm45|glm46|hermes|tool_parsers|ToolParserManager" "$VROOT/entrypoints/openai/" 2>/dev/null | grep -iE "glm|hermes|tool_parsers|ToolParserManager" | head -50
+    echo "=== parser files ==="
+    find "$VROOT/entrypoints/openai" -maxdepth 2 -name "*.py" | grep -iE "tool|parser|glm|hermes" | head -30
+    python3 - <<'PY'
+    import vllm, pathlib, pkgutil, importlib
+    root = pathlib.Path(vllm.__file__).resolve().parent
+    print("vllm root:", root)
+    # vllm 0.19.1 puts parsers under entrypoints/openai/parser (no tool_parsers dir)
+    for sub in ["entrypoints/openai", "entrypoints/openai/parser"]:
+        d = root / sub
+        if d.is_dir():
+            for f in sorted(d.glob("*.py")):
+                if "tool" in f.stem.lower() or "parser" in f.stem.lower() or "glm" in f.stem.lower() or "hermes" in f.stem.lower():
+                    modname = "vllm." + sub.replace("/", ".") + "." + f.stem
+                    try:
+                        m = importlib.import_module(modname)
+                        classes = [a for a in dir(m) if a.endswith("ToolParser")]
+                        if classes:
+                            print("PARSER_FILE:", modname, classes)
+                    except Exception as e:
+                        print("mod import fail", modname, e)
+    # Resolve the registry the way the server does, then list registered parsers.
+    try:
+        import vllm.entrypoints.openai.api_server as api
+        mgr = getattr(api, "ToolParserManager", None)
+        if mgr is not None:
+            print("ToolParserManager.parsers (post-import):", sorted(mgr.tool_parsers.keys()))
+    except Exception as e:
+        print("api_server import failed:", e)
+    # Force-load the parser registry module(s) that register at import time.
+    for modname in [
+        "vllm.entrypoints.openai.tool_parsers",
+        "vllm.entrypoints.openai.parser.tool_parsers",
+        "vllm.entrypoints.openai.parser",
+    ]:
+        try:
+            m = importlib.import_module(modname)
+            mgr = getattr(m, "ToolParserManager", None)
+            if mgr is not None and mgr.tool_parsers:
+                print("REGISTRY", modname, sorted(mgr.tool_parsers.keys()))
+        except Exception as e:
+            pass
+    PY
+
+    echo "=== START vLLM with glm45 parser ==="
+    CUDA_VISIBLE_DEVICES=0 nohup vllm serve /mnt/songzijun/models/GLM-4-32B-0414 \
+      --host 127.0.0.1 --port 8090 --served-model-name GLM-4-32B-0414 \
+      --enable-auto-tool-choice --tool-call-parser glm45 \
+      --max-model-len 8192 --trust-remote-code --gpu-memory-utilization 0.90 --max-num-seqs 8 --enforce-eager \
+      > /tmp/vllm_glm.log 2>&1 &
+    VLLM_PID=$!
+    for i in $(seq 1 90); do
+      curl -sf http://127.0.0.1:8090/v1/models >/dev/null 2>&1 && { echo "VLLM_READY after ${i}0s"; break; }
+      sleep 10
+    done
+    curl -sf http://127.0.0.1:8090/v1/models >/dev/null 2>&1 || { echo "VLLM NOT READY"; tail -50 /tmp/vllm_glm.log; exit 1; }
+
+    echo "=== TOOL CALL TEST (glm45 parser, tool_choice=auto) ==="
+    python3 /mnt/songzijun/Capability_Evolution/TRIM/scripts/toolcall_test.py
+    kill $VLLM_PID 2>/dev/null || true
+    echo "DIAG_DONE"
+QueueId: "2334"
+Priority: 8
+Framework: "pytorch"
+Preemptible: false
+ResourceConfigs:
+  - NodeRole: "worker"
+    NodeNumber: 1
+    PerNodeResourceSpec:
+      ResourcePriority: "GUARANTEED_PUBLIC"
+      ResourceName: "cloudml.ng1gm402-8-8.20-224"
+      ResourceNumber: 1
+Tags:
+  - "MemQA-General-V5"

@@ -1,0 +1,170 @@
+# CloudML custom_train: TRIM Harness-1 BC+, Qwen3-4B-Instruct-2507 (original
+# bf16, dense 4B, NOT dequant), full RL (CISPO, H_zero baseline,
+# --train_method rl --component zero) via torch_ddp_lora backend, FOUR 8-GPU
+# gm402-80g nodes (4 nodes x 8 cards = 32 GPUs), 200 steps.
+#
+# === THIS YAML vs cloudml_custom_train_harness1_bcplus_full_qwen3_4b_rl_ddp_200step_zero_32gpu_4node_20260925.yaml ===
+# That YAML is the 9ixnl-verified Qwen3-4B rl/zero 32gpu baseline (identical
+# multi-node DDP launch path). This YAML differs only in:
+#   1. REWARD = final-answer recall ONLY. terminal_reward_breakdown in
+#      trim/training/four_cell_runtime.py has been edited so `total` ==
+#      curated_recall (curated ∩ gold / |gold|, in [0,1]); the legacy
+#      0.80*recall + 0.10*legal + <=0.10*shaping terms and the -0.2 invalid
+#      penalty are dropped from the reward (diagnostic fields still emitted).
+#      rl/zero has no teacher projection, so the reward edit is the only
+#      training-side change.
+#   2. enableTensorboard: true. The platform injects $TENSORBOARD_LOG_PATH;
+#      trainer_adapter.py's _make_tensorboard_writer (coordinator-only)
+#      writes per-step RL metrics there (reward stats / loss / CISPO clip /
+#      tokens / timing / peak_mem). The submit script passes --enable_tensorboard.
+#   3. Distinct jobName / OUT / entry so this job does NOT collide with 9ixnl.
+#
+# === PATH: rl/zero (H_zero RL baseline, NOT trim/all distill) ===
+# rl/zero = pure on-policy RL with H_zero (no teacher projection), so it does
+# NOT touch the curate-clipping code path (x2j3u FAILED@step0 was trim/all's
+# teacher curate projection; rl/zero has no teacher curate refs). Hence the
+# entry's PATCH_CHECK asserts only the three DDP-generic patches
+# (startup_timeout / 4-tuple / EADDRINUSE), NOT the trim/all-specific
+# curate-clipping patch.
+#
+# === Qwen3-4B specifics (dense bf16, NOT mxfp4) ===
+#  * Dense bf16 4B (7.6G). NO triton_kernels / VLLM_MXFP4_USE_MARLIN /
+#    Marlin / TRITON_UNFUSED backend. vLLM 0.19.1 loads Qwen3 via the
+#    standard bf16 + LoRA path. The 3 DDP patches are still required.
+#  * SCAPE_FORCE_LOCAL_HARMONY=1 is SET (harmless on Qwen; Qwen is
+#    is_hf_chat_family=True and never touches openai_harmony's to_json).
+#  * mb=4 (NOT 1): Qwen3-4B dense 4B backward CAN enable gradient
+#    checkpointing (gpt-oss MoE cannot), so mb>=2 does NOT OOM; mb=4 is the
+#    verified Qwen3-4B DDP setting.
+#
+# IMPORTANT: JuiceFS endpoint is NOT submitted via this YAML (--filename) path.
+# The actual submit uses direct CLI flags and passes --juicefs_mount_configs
+# JSON explicitly, where juiceFsCluster must be "bj9-cloudml" (the schema field
+# is juiceFsCluster; there is no literal "endpoint" key; its value IS the
+# cluster/endpoint identifier, verified by 7nzzn describe juiceFSCluster field).
+# This file is a readable draft / audit snapshot only; submit via
+# submit_qwen3_4b_rl_only_recall_32gpu_4node_20260928.sh.
+#
+# world_size=32 is REQUIRED (4 nodes, 8 ranks/node via torchrun --nnodes 4
+# --nproc_per_node 8). Post-submit provenance audit (CLAUDE.md): verify
+# world_size is truly 32 by the three-tuple — (1) stdout has torchrun
+# --nnodes 4 --nproc_per_node 8; (2) checkpoints/<cell>/step_000001/ has the
+# DDP rank0 merged optimizer.pt (DDP path = single file, NOT FSDP2 shards);
+# (3) vllm_sessions/ has 32 _r0.._r31 sessions.
+#
+# imageCommand below is a PLACEHOLDER — the entry script has bash heredocs
+# and nested indentation, so inlining it as a YAML block scalar breaks
+# parsing. The actual submission passes it via the CLI flag
+# --image_command "$(cat entry_qwen3_4b_rl_only_recall_32gpu_4node_20260928.sh)"
+# in the submit script. This YAML is an audit snapshot of resource/env/
+# JuiceFS config; do NOT submit with --filename.
+
+jobName: trim-harness1-bcplus-full-qwen3-4b-rl-only-recall-32gpu-4node-20260928
+description: >-
+  TRIM Harness-1 BC+ full RL (CISPO, H_zero baseline, --train_method rl
+  --component zero) Qwen3-4B-Instruct-2507 (dense bf16 4B) on FOUR 8-GPU
+  gm402-80g nodes (32 GPUs) via torch_ddp_lora backend. REWARD = final-answer
+  recall ONLY (terminal_reward_breakdown total=curated_recall, dropped the
+  legacy 0.80*recall + 0.10*legal + <=0.10*shaping + -0.2 invalid penalty;
+  diagnostic fields still emitted for metrics/audit). TENSORBOARD ON
+  (enableTensorboard=true; platform injects TENSORBOARD_LOG_PATH;
+  trainer_adapter.py _make_tensorboard_writer writes reward/loss/cispo/tokens
+  /timing/mem scalars per step). run_train_multinode.py --nnodes 4
+  --nproc-per-node 8 self-torchruns world_size=32: per-rank vLLM TP=1 rollout
+  + DDP LoRA CISPO optimizer step (full replica per rank, not FSDP2
+  sharding). 200 steps, 32 groups/step, group-size 8, max-turns 40 (NOT
+  default 6; MAX_TURNS env is a no-op), max-model-len 8192, mb=4 (Qwen3-4B
+  dense backward can grad-ckpt; NOT the gpt-oss mb1-only OOM floor), gpu-mem
+  0.90, local_legacy BM25, SEC RL data + corpus under TRIM/data, offline
+  tiktoken, four-pack torch2.10.0/vllm0.19.1/tf4.57.6/pyserini2.0.0, tensorboard
+  pip-installed in entry. Entry unsets CloudML-injected RANK/WORLD_SIZE/PET_*
+  so main() self-launches torchrun (deterministic 4-node rendezvous via
+  --master-addr/--node-rank). NO CUDA_LAUNCH_BLOCKING (DDP multi-proc). NO
+  DISABLE_CUSTOM_ALL_REDUCE (TP=1). SCAPE_FORCE_LOCAL_HARMONY=1 SET (harmless
+  on Qwen). Model cp to /tmp per node (4-way JuiceFS read, not 32-way). rl/zero
+  has no teacher curate projection, so curate-clipping patch NOT required
+  (only 3 DDP-generic patches asserted). RDMA on (>=2 nodes x 8 GPU). rl/zero
+  with recall-only reward is sparse/binary-ish, so drop_constant_reward_groups
+  will drop groups with no reward spread early in training — expected GRPO
+  behavior, smaller effective batches. world_size=32 audit required post-submit.
+accessType: PRIVATE
+tags:
+- MemQA-General-V5
+imageConfig:
+  imageUrl: micr.cloud.mioffice.cn/songzijun/songzijun-cto:3050749-songzijun-cto
+  imageCommand: "FILLED_BY_SUBMIT_SCRIPT_VIA_cat_entry"
+  # NOTE: imageCommand is a bash entry script with heredocs and nested
+  # indentation, so inlining it as a YAML block scalar breaks parsing. The
+  # actual submission passes it via the CLI flag
+  # --image_command "$(cat entry_qwen3_4b_rl_only_recall_32gpu_4node_20260928.sh)"
+  # in submit_qwen3_4b_rl_only_recall_32gpu_4node_20260928.sh. This YAML is an
+  # audit snapshot of resource/env/JuiceFS config; do NOT submit with
+  # --filename (use the submit script).
+juiceFsMountConfigs:
+- volume: songzijun
+  juiceFsCluster: bj9-cloudml
+  subPath: /
+  mountPath: /mnt/songzijun
+  readOnly: false
+envConfigs:
+- key: PYTHONUNBUFFERED
+  value: '1'
+- key: CUDA_VISIBLE_DEVICES
+  value: 0,1,2,3,4,5,6,7
+- key: TRIM_GPU_KEEPALIVE
+  value: '0'
+- key: PYTORCH_CUDA_ALLOC_CONF
+  value: expandable_segments:True
+- key: PYTHONPATH
+  value: /mnt/songzijun/Capability_Evolution/TRIM:/mnt/songzijun/Capability_Evolution/SCAPE-EasyOPD
+- key: OPENAI_API_KEY
+  value: '**-****-***********-***-*-****-***'
+- key: SCAPE_LOCAL_OPENAI_EMBEDDINGS
+  value: '1'
+- key: SCAPE_FORCE_LOCAL_HARMONY
+  value: '1'
+- key: TIKTOKEN_ENCODINGS_BASE
+  value: /tmp/tiktoken-bundle/share/tiktoken
+- key: TIKTOKEN_CACHE_DIR
+  value: /tmp/tiktoken-bundle/tiktoken_cache
+- key: TIKTOKEN_RS_CACHE_DIR
+  value: /tmp/tiktoken-bundle/tiktoken_rs_cache
+# OUT is shared across all 4 pods via --env (multi-node铁律: identical <out>
+# so all_gather_via_disk cross-node rollout shards resolve). Never use
+# per-pod $(date). The platform-injected $TENSORBOARD_LOG_PATH is NOT listed
+# here — it is auto-injected only when enableTensorboard is true.
+- key: OUT
+  value: /mnt/songzijun/Capability_Evolution/TRIM/outputs/qwen3-4B-rl-only-recall-32gpu_20260928
+queueId: '2334'
+priority: 8
+preemptible: false
+framework: pytorch
+rdma: true
+resourceConfigs:
+- nodeRole: worker
+  nodeNumber: 4
+  perNodeResourceSpec:
+    resourcePriority: GUARANTEED_PUBLIC
+    resourceName: cloudml.ng1gm402-8-8.20-224
+    resourceNumber: 8
+  elastic: false
+  preemptible: false
+enableTensorboard: true
+enableMetrics: false
+retryConfig:
+  enableRetry: false
+  maxRetryTimes: 1
+  policySets:
+  - JobFailed
+diagOptions:
+- name: HangDetection
+  enable: false
+alertConfig:
+  enableAlert: true
+  alertItems:
+  - alertConditions:
+    - FAILED
+    alertLevel: P2
+    alertReceivers:
+      persons:
+      - songzijun

@@ -10,7 +10,11 @@ from typing import Any, Mapping
 from trim.training.sft_ablation.contracts import LOSS_VERSION, fingerprint
 from trim.training.sft_ablation.io_util import sha256_text
 
-SCHEMA_VERSION = "sft_run_contract_v2"
+SCHEMA_VERSION = "sft_run_contract_v3"
+# Old DDP runs sealed sft_run_contract_v2. Both schemas describe the same
+# dotted fields below, so a v2 checkpoint can still exact-resume under the new
+# code; the schema stamp itself is informational for that comparison.
+KNOWN_SCHEMA_VERSIONS = frozenset({"sft_run_contract_v2", "sft_run_contract_v3"})
 
 # Exact resume must agree on these dotted fields. A new out directory is a new run.
 EXACT_RESUME_PATHS = (
@@ -32,6 +36,7 @@ EXACT_RESUME_PATHS = (
     "optimization.seed",
     "optimization.max_model_len",
     "optimization.logits_mode",
+    "optimization.gradient_checkpointing",
     "model.init_adapter_digest",
     "model.base_path",
 )
@@ -47,8 +52,10 @@ def _lookup(record: Mapping[str, Any], path: str) -> Any:
 
 
 def require_exact_resume(saved: Mapping[str, Any], live: Mapping[str, Any]) -> None:
-    if saved.get("schema_version") != SCHEMA_VERSION or live.get("schema_version") != SCHEMA_VERSION:
-        raise ValueError("exact resume requires sft_run_contract_v2 on both sides")
+    left_schema = saved.get("schema_version")
+    right_schema = live.get("schema_version")
+    if left_schema not in KNOWN_SCHEMA_VERSIONS or right_schema not in KNOWN_SCHEMA_VERSIONS:
+        raise ValueError("exact resume requires a known sft_run_contract schema on both sides")
     mismatch = []
     for path in EXACT_RESUME_PATHS:
         try:
@@ -102,6 +109,8 @@ def build_v2_contract(
     nnodes: int,
     nproc_per_node: int,
     init_adapter_digest: str,
+    backend: str = "accelerate_ddp",
+    adapter_config: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     experiment = str(args.experiment)
     from trim.training.sft_ablation.contracts import WEIGHT_POLICY
@@ -118,7 +127,7 @@ def build_v2_contract(
         },
         "optimization": {
             "loss": LOSS_VERSION,
-            "backend": "accelerate_ddp",
+            "backend": str(backend),
             "global_batch_size": int(args.global_batch_size),
             "micro_batch_size_per_gpu": int(args.micro_batch_size),
             "gradient_ranks": int(gradient_ranks),
@@ -154,5 +163,39 @@ def build_v2_contract(
             "attn_implementation": str(getattr(args, "attn_implementation", "") or ""),
         },
     }
+    if adapter_config:
+        # PEFT adapter_config.json is the fact; CLI defaults are only a hint.
+        payload["model"]["adapter_config"] = dict(adapter_config)
+    if str(backend) == "accelerate_fsdp2":
+        payload["optimization"]["fsdp2"] = {
+            "fsdp_version": 2,
+            "wrap": "transformer_based_wrap",
+            "reshard_after_forward": True,
+            "state_dict_type": "SHARDED_STATE_DICT",
+            "cpu_ram_efficient_loading": True,
+            "cpu_offload": False,
+            "activation_checkpointing_plugin": False,
+            "mixed_precision_policy": "param_bf16_reduce_fp32",
+        }
     payload["contract_digest"] = fingerprint(payload)
     return payload
+
+
+def adapter_config_from(adapter_path: Any) -> dict[str, Any] | None:
+    """Read the real PEFT configuration if the adapter directory provides one."""
+    import json
+
+    try:
+        path = Path(str(adapter_path)) / "adapter_config.json"
+        if not path.is_file():
+            return None
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    keep = {}
+    for key in ("r", "lora_alpha", "lora_dropout", "target_modules", "peft_type", "task_type", "bias"):
+        if key in payload:
+            keep[key] = payload[key]
+    return keep or None

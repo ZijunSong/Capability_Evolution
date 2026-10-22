@@ -1,0 +1,87 @@
+# CustomTrainJob YAML for Harness-1 BC+ trim GPT-OSS-20B (original mxfp4,
+# non-dequant) via torch_ddp_lora on one 8-GPU gm402-80g node, 200 steps.
+#
+# IMPORTANT: This YAML intentionally does NOT carry a JuiceFS mount stanza.
+# Per user instruction, the JuiceFS volume (songzijun, cluster bj9-cloudml)
+# is mounted at submit time via the CLI flag --juicefs_mount_configs (JSON),
+# NOT via --filename. So submit this job with `cml custom_train submit` using
+# the explicit CLI flags (see submit_gptoss20b_trim_ddp_200step_8gpu.sh),
+# not with `--filename <this.yaml>`.
+#
+# world_size=8 is REQUIRED. Post-submit provenance audit (CLAUDE.md):
+#   (1) stdout has torchrun --nproc_per_node 8;
+#   (2) checkpoints/<cell>/step_000001/ has 8 optimizer.rank0000..0007.pt;
+#   (3) vllm_sessions/ has 8 _r0.._r7 sessions.
+# Any one missing => actually single-GPU run, NOT a valid 8-GPU artifact.
+jobName: trim-harness1-bcplus-full-gptoss20b-trim-ddp-200step-8gpu
+description: >-
+  Harness-1 BC+ trim GPT-OSS-20B (original mxfp4, non-dequant) via
+  torch_ddp_lora, 8x gm402-80g single node, 200 steps, 32 grp/step, gs8, mb1,
+  max-turns 40, max-model-len 8192, gpu-mem 0.90, local_legacy BM25.
+  Four-pack torch2.10.0/vllm0.19.1/tf4.57.6/pyserini2.0.0. Code-tree patches
+  already in place: trainer_adapter startup_timeout_s=3600, 4-tuple unpack,
+  EADDRINUSE retry x3. SCAPE_FORCE_LOCAL_HARMONY intentionally unset (gpt-oss
+  to_json bug). Model cp to /tmp before exec (8-rank JuiceFS read hang fix).
+  world_size=8. JuiceFS (songzijun, bj9-cloudml) mounted at /mnt/songzijun
+  via CLI --juicefs_mount_configs, NOT via this YAML.
+accessType: PRIVATE
+tags:
+- MemQA-General-V5
+imageConfig:
+  imageUrl: micr.cloud.mioffice.cn/songzijun/songzijun-cto:3050749-songzijun-cto
+  imageCommand: <read verbatim from entry_gptoss20b_trim_ddp_200step_8gpu.sh>
+modelUri: ''
+# JuiceFS NOT declared here — passed via --juicefs_mount_configs at submit.
+envConfigs:
+- key: PYTHONUNBUFFERED
+  value: '1'
+- key: CUDA_VISIBLE_DEVICES
+  value: 0,1,2,3,4,5,6,7
+- key: TRIM_GPU_KEEPALIVE
+  value: '0'
+- key: PYTORCH_CUDA_ALLOC_CONF
+  value: expandable_segments:True
+- key: PYTHONPATH
+  value: /mnt/songzijun/Capability_Evolution/TRIM:/mnt/songzijun/Capability_Evolution/SCAPE-EasyOPD
+- key: OPENAI_API_KEY
+  value: '**-****-***********-***-*-****-***'
+- key: SCAPE_LOCAL_OPENAI_EMBEDDINGS
+  value: '1'
+- key: TIKTOKEN_ENCODINGS_BASE
+  value: /tmp/tiktoken-bundle/share/tiktoken
+- key: TIKTOKEN_CACHE_DIR
+  value: /tmp/tiktoken-bundle/tiktoken_cache
+- key: TIKTOKEN_RS_CACHE_DIR
+  value: /tmp/tiktoken-bundle/tiktoken_rs_cache
+queueId: '2334'
+priority: 8
+preemptible: false
+framework: pytorch
+resourceConfigs:
+- nodeRole: worker
+  nodeNumber: 1
+  perNodeResourceSpec:
+    resourcePriority: GUARANTEED_PUBLIC
+    resourceName: cloudml.ng1gm402-8-8.20-224
+    resourceNumber: 8
+  elastic: false
+  preemptible: false
+enableTensorboard: false
+enableMetrics: false
+retryConfig:
+  enableRetry: false
+  maxRetryTimes: 1
+  policySets:
+  - JobFailed
+diagOptions:
+- name: HangDetection
+  enable: false
+alertConfig:
+  enableAlert: true
+  alertItems:
+  - alertConditions:
+    - FAILED
+    alertLevel: P2
+    alertReceivers:
+      persons:
+      - songzijun

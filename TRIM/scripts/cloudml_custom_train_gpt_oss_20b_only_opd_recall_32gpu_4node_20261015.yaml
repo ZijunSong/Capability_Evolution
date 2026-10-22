@@ -1,0 +1,81 @@
+# CloudML custom_train YAML for Harness-1 BC+ GPT-OSS-20B only-opd (final-answer-recall)
+# 4 nodes x 8 gm402-80g = 32 GPUs. Fork of the verified 20261002 recall-only bf16 baseline.
+#
+# Equivalent to submit_gpt_oss_20b_only_opd_recall_32gpu_4node_20261015.sh (pure CLI).
+# Per user: NOT submitted yet — this file is for review/archive only. The actual
+# submission uses the pure-CLI command so that JuiceFS is passed via
+# --juicefs_mount_configs (NOT via --filename). DO NOT submit this YAML directly
+# unless you switch to the --filename path.
+JobName: "trim-harness1-bcplus-full-gpt-oss-20b-only-opd-recall-bf16-32gpu-4node-20261015"
+Description: "TRIM Harness-1 BC+ GPT-OSS-20B bf16-dequant 4node 32gpu torch_ddp_lora. 200step only-opd (teacher_full student_zero, rl_enabled=False, OPD distill only). REWARD=final-answer-recall EXPLICIT (score_explicit_reward, no env, no logprobs). mb1 gpu-mem0.85 (bf16 40GB weights, CLAUDE.md 20261015 铁律). priority8 MemQA-General-V5. bf16 fixes mxfp4 Marlin PTX+NaN. world_size=32 audit."
+AccessType: "PRIVATE"
+Tags:
+  - "MemQA-General-V5"
+ImageConfig:
+  ImageUrl: "micr.cloud.mioffice.cn/songzijun/songzijun-cto:3050749-songzijun-cto"
+  # image_command read verbatim from the entry script to avoid CLI nested-quote
+  # escaping bugs. In --filename mode you would inline the entry here.
+  ImageCommand: "bash /mnt/songzijun/Capability_Evolution/TRIM/scripts/entry_gpt_oss_20b_only_opd_recall_32gpu_4node_20261015.sh"
+QueueId: "2334"
+Priority: 8
+Framework: "pytorch"
+Preemptible: false
+RDMA: true
+ResourceConfigs:
+  - NodeRole: "worker"
+    NodeNumber: 4
+    PerNodeResourceSpec:
+      ResourcePriority: "GUARANTEED_PUBLIC"
+      ResourceName: "cloudml.ng1gm402-8-8.20-224"
+      ResourceNumber: 8
+# JuiceFS mount: volume=songzijun, cluster=bj9-cloudml, mounted at /mnt/songzijun.
+# CloudML JuiceFS schema field is juiceFsCluster (NOT endpoint); value
+# "bj9-cloudml" is the cluster/endpoint identifier.
+JuiceFSMountConfigs:
+  - Volume: "songzijun"
+    SubPath: "/"
+    JuiceFSCluster: "bj9-cloudml"
+    MountPath: "/mnt/songzijun"
+    ReadOnly: false
+EnvConfigs:
+  - Key: "PYTHONUNBUFFERED"
+    Value: "1"
+  - Key: "CUDA_VISIBLE_DEVICES"
+    Value: "0,1,2,3,4,5,6,7"
+  - Key: "TRIM_GPU_KEEPALIVE"
+    Value: "0"
+  - Key: "PYTORCH_CUDA_ALLOC_CONF"
+    Value: "expandable_segments:True"
+  - Key: "PYTHONPATH"
+    Value: "/mnt/songzijun/Capability_Evolution/TRIM:/mnt/songzijun/Capability_Evolution/SCAPE-EasyOPD"
+  - Key: "OPENAI_API_KEY"
+    Value: "**-****-***********-***-*-****-***"
+  - Key: "SCAPE_LOCAL_OPENAI_EMBEDDINGS"
+    Value: "1"
+  - Key: "TIKTOKEN_ENCODINGS_BASE"
+    Value: "/tmp/tiktoken-bundle/share/tiktoken"
+  - Key: "TIKTOKEN_CACHE_DIR"
+    Value: "/tmp/tiktoken-bundle/tiktoken_cache"
+  - Key: "TIKTOKEN_RS_CACHE_DIR"
+    Value: "/tmp/tiktoken-bundle/tiktoken_rs_cache"
+  # NOTE: TRIM_REWARD_MODE env is INTENTIONALLY ABSENT. --rl-reward
+  # final-answer-recall is the EXPLICIT path (terminal_reward_breakdown ->
+  # reward_policy.score_explicit_reward, no env). The env only routes the
+  # legacy fn when rl_reward is None; setting it would be redundant/misleading.
+  - Key: "OUT"
+    Value: "/mnt/songzijun/outputs/gpt-oss-20b-only-opd-recall-bf16-32gpu_20261015"
+RetryConfig:
+  EnableRetry: false
+  MaxRetryTimes: 1
+  PolicySets:
+    - "JobFailed"
+DiagOptions:
+  - Name: "HangDetection"
+    Enable: false
+AlertConfig:
+  EnableAlert: true
+  AlertItems:
+    - AlertConditions: ["FAILED"]
+      AlertLevel: P2
+      AlertReceivers:
+        Persons: ["songzijun"]

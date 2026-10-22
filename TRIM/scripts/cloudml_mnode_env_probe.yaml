@@ -1,0 +1,42 @@
+# CloudML custom_train: 多节点环境注入探针（CPU-only，2 节点，快速）
+# 目的：探明 framework=pytorch + nodeNumber=2 时 CloudML 是否注入 RANK/WORLD_SIZE/
+# NODE_RANK/MASTER_ADDR/MASTER_PORT，或是否自带 torchrun 启动器，以及每节点是否各起一份进程。
+# CPU-only（resourceNumber=4 纯CPU），不烧 GPU，秒级完成。JuiceFS endpoint 经 CLI 传入。
+JobName: "mnode_env_probe_20260915"
+Description: "multi-node pytorch env injection probe: 2 CPU nodes, prints RANK/WORLD_SIZE/MASTER_ADDR presence"
+AccessType: "PRIVATE"
+Tags:
+  - "MemQA-General-V5"
+ImageConfig:
+  ImageUrl: "micr.cloud.mioffice.cn/songzijun/songzijun-cto:3050749-songzijun-cto"
+  ImageCommand: "bash -lc 'cp /mnt/songzijun/Capability_Evolution/TRIM/scripts/probe_multinode_env.sh /tmp/probe.sh && bash /tmp/probe.sh'"
+QueueId: "2334"
+Priority: 8
+Framework: "pytorch"
+ResourceConfigs:
+  - NodeRole: "worker"
+    NodeNumber: 2
+    PerNodeResourceSpec:
+      ResourcePriority: "GUARANTEED_PUBLIC"
+      ResourceName: "cloudml.cputype1-108.1-8"
+      ResourceNumber: 4
+Preemptible: false
+EnableTensorboard: false
+EnableMetrics: false
+RetryConfig:
+  EnableRetry: false
+  MaxRetryTimes: 1
+  PolicySets:
+    - "JobFailed"
+DiagOptions:
+  - Name: "HangDetection"
+    Enable: false
+AlertConfig:
+  EnableAlert: true
+  AlertItems:
+    - AlertConditions:
+        - "FAILED"
+      AlertLevel: P2
+      AlertReceivers:
+        Persons:
+          - songzijun

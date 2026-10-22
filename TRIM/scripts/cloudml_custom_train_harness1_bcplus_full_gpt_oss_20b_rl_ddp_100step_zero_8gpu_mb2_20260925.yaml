@@ -1,0 +1,83 @@
+# CloudML custom_train: TRIM Harness-1 BC+ full, GPT-OSS-20B (original mxfp4,
+# non-dequant per user instruction), RL training via torch_ddp_lora backend,
+# single node 8x gm402-80g, 100 steps, component=zero.
+#
+# IMPORTANT: JuiceFS endpoint is NOT submitted via this YAML (--filename) path.
+# The actual submit uses direct CLI flags and passes --juicefs_mount_configs JSON
+# explicitly, where endpoint (juiceFsCluster) must be "bj9-cloudml".
+# This file is a readable draft / audit snapshot only; its imageCommand is a
+# placeholder overridden at submit time by `--image_command "$(cat <entry>)"`,
+# and juiceFsMountConfigs is intentionally omitted (mounted via CLI JSON).
+#
+# Launch logic mirrors entry_gpt_oss_20b_rl_ddp_100step_zero_8gpu_mb2_20260925.sh
+# (dependency lock + preflight + tiktoken + JVM + DDP-LoRA wrap probe + PATCH_CHECK
+# + cp model to /tmp + run_train.py). All five gpt-oss mxfp4 + torch_ddp_lora
+# pitfalls are fixed in the mounted code tree and re-asserted in-pod by PATCH_CHECK.
+
+jobName: trim-harness1-bcplus-full-gpt-oss-20b-rl-ddp-100step-zero-8gpu-mb2
+description: 'TRIM Harness-1 BC+ RL GPT-OSS-20B mxfp4(non-dequant) 8gpu torch_ddp_lora nproc8. 100step component=zero mb2 gpu-mem0.90. RECOVERY from t-k6v0p mb4 OOM@student forward. four-pack torch2.10/vllm0.19.1/tf4.57.6/pyserini2.0.0. world_size=8. five pitfalls fixed.'
+accessType: PRIVATE
+tags:
+- MemQA-General-V5
+imageConfig:
+  imageUrl: micr.cloud.mioffice.cn/songzijun/songzijun-cto:3050749-songzijun-cto
+  # Placeholder; the real entry command is injected at submit time via
+  # `--image_command "$(cat entry_gpt_oss_20b_rl_ddp_100step_zero_8gpu_mb2_20260925.sh)"`.
+  imageCommand: "#!/usr/bin/env bash\nset -euxo pipefail\necho 'placeholder: real imageCommand injected via submit --image_command'\nsleep 1"
+modelUri: ''
+# juiceFsMountConfigs intentionally omitted: JuiceFS is mounted via the
+# `cml custom_train submit --juicefs_mount_configs` CLI JSON (endpoint/
+# juiceFsCluster=bj9-cloudml), NOT via this YAML --filename, per request.
+envConfigs:
+- key: PYTHONUNBUFFERED
+  value: '1'
+- key: CUDA_VISIBLE_DEVICES
+  value: 0,1,2,3,4,5,6,7
+- key: TRIM_GPU_KEEPALIVE
+  value: '0'
+- key: PYTORCH_CUDA_ALLOC_CONF
+  value: expandable_segments:True
+- key: PYTHONPATH
+  value: /mnt/songzijun/Capability_Evolution/TRIM:/mnt/songzijun/Capability_Evolution/SCAPE-EasyOPD
+- key: OPENAI_API_KEY
+  value: '**-****-***********-***-*-****-***'
+- key: SCAPE_LOCAL_OPENAI_EMBEDDINGS
+  value: '1'
+- key: TIKTOKEN_ENCODINGS_BASE
+  value: /tmp/tiktoken-bundle/share/tiktoken
+- key: TIKTOKEN_CACHE_DIR
+  value: /tmp/tiktoken-bundle/tiktoken_cache
+- key: TIKTOKEN_RS_CACHE_DIR
+  value: /tmp/tiktoken-bundle/tiktoken_rs_cache
+queueId: '2334'
+priority: 8
+preemptible: false
+framework: pytorch
+resourceConfigs:
+- nodeRole: worker
+  nodeNumber: 1
+  perNodeResourceSpec:
+    resourcePriority: GUARANTEED_PUBLIC
+    resourceName: cloudml.ng1gm402-8-8.20-224
+    resourceNumber: 8
+  elastic: false
+  preemptible: false
+enableTensorboard: false
+enableMetrics: false
+retryConfig:
+  enableRetry: false
+  maxRetryTimes: 1
+  policySets:
+  - JobFailed
+diagOptions:
+- name: HangDetection
+  enable: false
+alertConfig:
+  enableAlert: true
+  alertItems:
+  - alertConditions:
+    - FAILED
+    alertLevel: P2
+    alertReceivers:
+      persons:
+      - songzijun

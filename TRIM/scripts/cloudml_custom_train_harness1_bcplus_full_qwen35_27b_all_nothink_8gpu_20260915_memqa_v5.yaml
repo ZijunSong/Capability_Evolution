@@ -1,0 +1,58 @@
+# CloudML custom_train YAML
+# TRIM Harness-1 BC+ full / Qwen3.5-27B / ALL (no-thinking) eval / 单节点 8x gm402-80g
+# 提交日期 2026-09-15，标签 MemQA-General-V5，priority 8。
+#
+# 被测模型 = /mnt/songzijun/models/Qwen3.5-27B
+#   (Qwen3_5ForConditionalGeneration / qwen3_5 / 64 层 linear+full 混合 / dense /
+#    11 shards 51.75 GiB bf16 / 多模态 VLM, BC+ 走纯文本 / Qwen2Tokenizer)
+#
+# Thinking 关闭：模型目录 chat_template（chat_template.jinja 独立文件 + tokenizer_config.json
+#   内嵌字段两处）的 enable_thinking 守卫已改为 "is not true"，默认即走 no-thinking 分支。
+#   vLLM 0.19.1 serve CLI 不支持 --chat-template-kwargs flag，故用模板默认值而非 serve 参数。
+#   不改 scorer/runner（CLAUDE.md：官方 runner 不 fork）。模板备份在
+#   /mnt/songzijun/models/Qwen3.5-27B/*.orig_thinking_on_20260914_141539。
+# 关键修复：wrapper 显式 STRIP --reasoning-parser qwen3（no-thinking 下它会吞 tool call
+#   → tool_calls=[] content=null，recovery1 smoke 失败根因）。
+#
+# 重要：JuiceFS 挂载不在本 YAML 中配置——按要求通过直接 CLI 参数
+#   --juicefs_mount_configs '<JSON>' 提交，其中 endpoint/JuiceFSCluster 为 "bj9-cloudml"，
+#   volume=songzijun, mount=/mnt/songzijun, read-write。本文件 JuiceFSMountConfigs 不作为提交依据。
+# ImageCommand 调用
+#   TRIM/scripts/boot_qwen35_27b_all_nothink_eval_cloudml_8gpu_20260915.sh，该脚本把自身从
+#   JuiceFS cp 到 /tmp 再 exec（规避 JuiceFS heredoc 回读抖动），然后完成依赖锁定 /
+#   GPU·架构(vLLM ModelRegistry qwen3_5 探测)·JVM·PyJNI·Lucene·import-chain·tiktoken
+#   preflight 后 exec run_bcplus_w_harness1_qwen35_27b_all_nothink_gpu8_eval.sh：
+#   6 个单卡 Qwen3.5-27B actor (TP=1, GPU 0..5) + harness-1 verifier (GPU 6) +
+#   64 个 API-client worker, retrieval=local_bm25 (Pyserini/Lucene), --reranker none --offline,
+#   无 Chroma 服务。component=all（带 verify）。
+#
+# runtime 锁定口径（CLAUDE.md）：torch 2.10.0+cu128 / vllm 0.19.1 / transformers 4.57.6 / pyserini 2.0.0。
+# 关键风险：vLLM 0.19.1 是否注册 Qwen3_5ForConditionalGeneration 无法本地验证；
+#   启动脚本已加 ModelRegistry 探测，不支持则 exit 5 干净退出（保留 attempt 供审计）。
+# RUN_ID 与前序 memqa_v5 attempt 显式隔离，不覆盖原 attempt 输出。
+JobName: "trim-run-eval-h1-bcplus-full-qwen35-27b-all-nothink-8gpu-20260916-memqa-general-v5-recovery-v2-64k"
+Description: >-
+  TRIM Harness-1 BC+ full, Qwen3.5-27B (qwen3_5 dense 27B VLM, pure-text BC+),
+  all eval (with harness-1 verifier), no-thinking via model chat_template default.
+  8x gm402-80g, local_bm25 (no Chroma), upstream_api. Boot: pinned runtime +
+  preflight then exec all eval: 7 actors (TP=1) GPU 0-6 + harness-1 verifier GPU
+  7 + 64 workers. JuiceFS endpoint=bj9-cloudml via CLI. Drops
+  --reasoning-parser qwen3 (no-thinking). GPU_UTIL 0.90.
+AccessType: "PUBLIC"
+ImageConfig:
+  ImageUrl: "micr.cloud.mioffice.cn/songzijun/songzijun-cto:3050749-songzijun-cto"
+  ImageCommand: "bash /mnt/songzijun/Capability_Evolution/TRIM/scripts/boot_qwen35_27b_all_nothink_eval_cloudml_8gpu_20260915.sh"
+QueueId: "2334"
+Priority: 8
+Framework: "pytorch"
+Tags:
+  - "MemQA-General-V5"
+ResourceConfigs:
+  - NodeRole: "worker"
+    NodeNumber: 1
+    PerNodeResourceSpec:
+      ResourcePriority: "GUARANTEED_PUBLIC"
+      ResourceName: "cloudml.ng1gm402-8-8.20-224"
+      ResourceNumber: 8
+# 非抢占（GUARANTEED_PUBLIC 保障资源）；不加 preemptible。
+# JuiceFS 通过 CLI --juicefs_mount_configs 显式 JSON 传入（endpoint=bj9-cloudml）。

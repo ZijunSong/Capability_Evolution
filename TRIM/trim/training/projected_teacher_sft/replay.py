@@ -19,6 +19,14 @@ class NoopCurate(ValueError):
     """An exactly verified no-op; consume the event without stepping env."""
 
 
+class RetryableReplayError(RuntimeError):
+    """Infrastructure failure (timeout/429/5xx/service down).
+
+    The attempt is not committed: the whole trajectory is replayed from a fresh
+    state. Never confuse this with a semantic stop that keeps its legal prefix.
+    """
+
+
 @dataclass
 class ReplayDecision:
     snapshot: EnvironmentSnapshot
@@ -34,6 +42,8 @@ class ExecuteResult:
     snapshot: EnvironmentSnapshot | None = None
     prompt_ids: list[int] = field(default_factory=list)
     ended: bool = False
+    failure_class: str = ""  # "infra" | "semantic" | ""
+    retryable: bool = False
 
 
 def replay_projected_trace(
@@ -90,7 +100,16 @@ def replay_projected_trace(
             break
         result = env.execute(step.target_action)
         if not result.ok:
-            audit.append({"cursor": cursor, "status": "stop_execution", "reason": result.reason})
+            if getattr(result, "retryable", False):
+                raise RetryableReplayError(f"infra failure at cursor {cursor}: {result.reason}")
+            audit.append(
+                {
+                    "cursor": cursor,
+                    "status": "stop_execution",
+                    "reason": result.reason,
+                    "failure_class": getattr(result, "failure_class", "") or "semantic",
+                }
+            )
             break
         row.metadata["student_post_state_hash"] = result.post_state_hash
         row.metadata["teacher_event_cursor"] = cursor

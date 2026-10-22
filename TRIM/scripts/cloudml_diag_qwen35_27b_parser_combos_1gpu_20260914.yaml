@@ -1,0 +1,25 @@
+# CloudML custom_train YAML — 诊断任务：Qwen3.5-27B parser 组合探测（1 卡）
+JobName: "trim-diag-qwen35-27b-parser-combos-1gpu-20260914"
+Description: >-
+  Diagnostic: probe correct vLLM tool/parser combo for Qwen3.5-27B in no-thinking
+  mode. recovery1 smoke failed because --reasoning-parser qwen3 swallowed the tool
+  call into reasoning field (tool_calls empty, content null). This 1-GPU job loads
+  the model once and tests 4 combos (qwen3_coder+qwen3, qwen3_coder only, hermes,
+  hermes+qwen3) to find which yields non-empty tool_calls. JuiceFS endpoint=
+  bj9-cloudml via CLI.
+AccessType: "PUBLIC"
+ImageConfig:
+  ImageUrl: "micr.cloud.mioffice.cn/songzijun/songzijun-cto:3050749-songzijun-cto"
+  ImageCommand: "bash /mnt/songzijun/Capability_Evolution/TRIM/scripts/diag_qwen35_parser_combos_1gpu.sh"
+QueueId: "2334"
+Priority: 8
+Framework: "pytorch"
+Tags:
+  - "MemQA-General-V5"
+ResourceConfigs:
+  - NodeRole: "worker"
+    NodeNumber: 1
+    PerNodeResourceSpec:
+      ResourcePriority: "GUARANTEED_PUBLIC"
+      ResourceName: "cloudml.ng1gm402-8-8.20-224"
+      ResourceNumber: 1

@@ -1,0 +1,168 @@
+# CloudML custom_train: TRIM Harness-1 BC+ full, GPT-OSS-20B (original mxfp4,
+# non-dequant per user instruction), RL (CISPO) training via torch_ddp_lora
+# backend, FOUR 8-GPU gm402-80g nodes (4 nodes x 8 cards = 32 GPUs), --component
+# zero (H_zero baseline), 200 steps.
+#
+# This is the MULTI-NODE variant of
+# cloudml_custom_train_harness1_bcplus_full_gpt_oss_20b_rl_ddp_200step_zero_8gpu_20260924.yaml
+# (single node 8-GPU). The single-node YAML execs run_train.py; this YAML execs
+# run_train_multinode.py, which is the real multi-node launcher: each node runs
+# ONE Scheme A process that itself torchruns --nnodes 4 --nproc_per_node 8
+# (world_size=32), shards on-policy query groups across 32 ranks, gathers
+# rollout trajectories onto rank 0 via shared disk (<out>/tmp/rollout_shards),
+# rank 0 runs the DDP-LoRA CISPO optimizer step, then every rank barriers and
+# reloads the fresh adapter for the next rollout.
+#
+# === FIRST 4-node 32-GPU submission in this workspace — read the risks ===
+#
+# 1. CloudML custom_train framework=pytorch nodeNumber=4 creates a PyTorchJob
+#    CRD (confirmed by events of the 2026-09-15 mnode_env_probe ic07h: events
+#    show "SuccessfulCreatePyTorchJob" + master-0/worker-0 pods + init-pytorch
+#    container). init-pytorch INJECTS RANK/WORLD_SIZE/PET_*/MASTER_ADDR env.
+#    The entry script unsets RANK/WORLD_SIZE/LOCAL_RANK/LOCAL_WORLD_SIZE/PET_*
+#    and the torchelastic markers so run_train_multinode.py's under_torchrun()
+#    returns False and main() self-launches torchrun via _exec_torchrun (instead
+#    of short-circuiting into _worker with the injected WORLD_SIZE). The entry
+#    relies on CloudML injecting MASTER_ADDR + NODE_RANK (captured before unset).
+#
+# 2. starfs-user-pv FailedMount risk: the 2026-09-15 probe was killed at
+#    deploying because CloudML multi-node auto-injects a "starfs-user-pv-..."
+#    volume that failed to mount (FailedMount events, NOT our JuiceFS config).
+#    This is a platform-injected volume for multi-node PyTorchJob, independent
+#    of our juiceFsMountConfigs. If the platform issue persists, the 4-node job
+#    will also stall at deploying. Cannot verify without submitting. The
+#    single-node 8-GPU jobs do NOT hit this (no starfs injection at nodeNumber=1).
+#
+# 3. --dist-backend nccl + cross-node object collectives: trainer_adapter.py:181
+#    hardcodes init_dist_if_needed(backend="nccl") and then calls
+#    dist.broadcast_object_list / all_gather_object (CPU object collectives).
+#    Single-node world_size=8 worked (PyTorch 2.10 nccl tolerates these via
+#    internal tensor serialization). Cross-4-node is UNPROVEN and is the highest
+#    multi-node-specific code risk. The code has NO gloo sidegroup; if these
+#    fail across nodes, a gloo-new-group patch is needed. Matches the proven
+#    single-node DDP path; flag for post-submit audit.
+#
+# 4. workspace quota: kscn-hd-cloudml-prod gm402-80g GUARANTEED_PUBLIC quota is
+#    APPLIED=1024 LEFT=0 (exhausted). Cluster idle FREE=40. queue 2334
+#    RESOURCEFREE=8. Whether a 32-GPU GUARANTEED_PUBLIC gang can be scheduled
+#    despite LEFT=0 depends on whether CloudML enforces workspace quota as a
+#    hard ceiling on GUARANTEED_PUBLIC (historical single-node 8-GPU jobs kept
+#    getting scheduled, suggesting the public-pool guarantee does NOT strictly
+#    block at LEFT=0, but a 32-GPU gang is a much larger ask). May queue.
+#
+# IMPORTANT: JuiceFS endpoint is NOT submitted via this YAML (--filename) path.
+# The actual submit uses direct CLI flags and passes --juicefs_mount_configs
+# JSON explicitly, where juiceFsCluster must be "bj9-cloudml" (the schema field
+# is juiceFsCluster; there is no literal "endpoint" key; its value IS the
+# cluster/endpoint identifier). This file is a readable draft / audit snapshot
+# only; submit via
+# submit_gpt_oss_20b_rl_ddp_200step_zero_32gpu_4node_20260925.sh.
+#
+# world_size=32 is REQUIRED (4 nodes, 8 ranks/node via torchrun --nnodes 4
+# --nproc_per_node 8). Post-submit provenance audit (CLAUDE.md): verify
+# world_size is truly 32 by the three-tuple — (1) stdout has torchrun --nnodes 4
+# --nproc_per_node 8; (2) checkpoints/<cell>/step_000001/ has 32
+# optimizer.rank0000..0031.pt; (3) vllm_sessions/ has 32 _r0.._r31 sessions.
+# Any one missing => actually single-node or partial run, result is NOT a valid
+# "32-GPU 4-node DDP" artifact.
+#
+# imageCommand below is the entry script inlined as a single \n-escaped string,
+# kept in sync with
+# entry_gpt_oss_20b_rl_ddp_200step_zero_32gpu_4node_20260925.sh.
+
+jobName: trim-harness1-bcplus-full-gpt-oss-20b-rl-ddp-200step-zero-32gpu-4node-20260925-run2
+description: >-
+  RUN2 (independent fresh 200-step run, NOT a resume of the running 7nzzn
+  recov1). Harness-1 BC+ full RL (CISPO) GPT-OSS-20B (original mxfp4,
+  non-dequant per user) on FOUR 8-GPU gm402-80g nodes (32 GPUs) via
+  torch_ddp_lora backend. --component zero (H_zero baseline).
+  run_train_multinode.py --nnodes 4 --nproc-per-node 8 self-torchruns
+  world_size=32: per-rank vLLM TP=1 rollout + DDP LoRA CISPO optimizer step
+  (full replica per rank, not FSDP2 sharding). 200 steps, 32 groups/step,
+  group-size 8, max-turns 40 (NOT default 6; MAX_TURNS env is a no-op),
+  max-model-len 8192, mb=1 (gpt-oss MoE backward OOM safe floor; mb>=2 OOMs
+  per k6v0p), gpu-mem 0.90, local_legacy BM25, SEC RL data + corpus under
+  TRIM/data, offline tiktoken, four-pack torch2.10.0/vllm0.19.1/tf4.57.6/
+  pyserini2.0.0. Entry unsets CloudML-injected RANK/WORLD_SIZE/PET_* so main()
+  self-launches torchrun (deterministic 4-node rendezvous via --master-addr/
+  --node-rank). NO CUDA_LAUNCH_BLOCKING (DDP multi-proc). NO
+  DISABLE_CUSTOM_ALL_REDUCE (TP=1). SCAPE_FORCE_LOCAL_HARMONY unset (gpt-oss
+  to_json crash). Model cp to /tmp per node (4-way JuiceFS read, not 32-way).
+  RDMA on (>=2 nodes x 8 GPU). Multi-node risks (most retired by 7nzzn):
+  starfs-user-pv FailedMount (7nzzn did NOT hit), cross-node object collectives
+  (7nzzn verified Gloo rendezvous works), workspace quota LEFT=0 (7nzzn
+  scheduled despite it). world_size=32 audit required post-submit.
+accessType: PRIVATE
+tags:
+- MemQA-General-V5
+imageConfig:
+  imageUrl: micr.cloud.mioffice.cn/songzijun/songzijun-cto:3050749-songzijun-cto
+  imageCommand: "FILLED_BY_SUBMIT_SCRIPT_VIA_cat_entry"
+  # NOTE: imageCommand is a bash entry script with heredocs and nested
+  # indentation, so inlining it as a YAML block scalar breaks parsing. The
+  # actual submission passes it via the CLI flag --image_command "$(cat
+  # entry_gpt_oss_20b_rl_ddp_200step_zero_32gpu_4node_20260925.sh)" in
+  # submit_gpt_oss_20b_rl_ddp_200step_zero_32gpu_4node_20260925_run2.sh. This
+  # YAML is an audit snapshot of resource/env/JuiceFS config; do NOT submit
+  # with --filename (use the submit script). The entry file is 303 lines and is
+  # kept in sync with imageConfig above.
+juiceFsMountConfigs:
+- volume: songzijun
+  juiceFsCluster: bj9-cloudml
+  subPath: /
+  mountPath: /mnt/songzijun
+  readOnly: false
+envConfigs:
+- key: PYTHONUNBUFFERED
+  value: '1'
+- key: CUDA_VISIBLE_DEVICES
+  value: 0,1,2,3,4,5,6,7
+- key: TRIM_GPU_KEEPALIVE
+  value: '0'
+- key: PYTORCH_CUDA_ALLOC_CONF
+  value: expandable_segments:True
+- key: PYTHONPATH
+  value: /mnt/songzijun/Capability_Evolution/TRIM:/mnt/songzijun/Capability_Evolution/SCAPE-EasyOPD
+- key: OPENAI_API_KEY
+  value: '**-****-***********-***-*-****-***'
+- key: SCAPE_LOCAL_OPENAI_EMBEDDINGS
+  value: '1'
+- key: TIKTOKEN_ENCODINGS_BASE
+  value: /tmp/tiktoken-bundle/share/tiktoken
+- key: TIKTOKEN_CACHE_DIR
+  value: /tmp/tiktoken-bundle/tiktoken_cache
+- key: TIKTOKEN_RS_CACHE_DIR
+  value: /tmp/tiktoken-bundle/tiktoken_rs_cache
+queueId: '2334'
+priority: 8
+preemptible: false
+framework: pytorch
+rdma: true
+resourceConfigs:
+- nodeRole: worker
+  nodeNumber: 4
+  perNodeResourceSpec:
+    resourcePriority: GUARANTEED_PUBLIC
+    resourceName: cloudml.ng1gm402-8-8.20-224
+    resourceNumber: 8
+  elastic: false
+  preemptible: false
+enableTensorboard: false
+enableMetrics: false
+retryConfig:
+  enableRetry: false
+  maxRetryTimes: 1
+  policySets:
+  - JobFailed
+diagOptions:
+- name: HangDetection
+  enable: false
+alertConfig:
+  enableAlert: true
+  alertItems:
+  - alertConditions:
+    - FAILED
+    alertLevel: P2
+    alertReceivers:
+      persons:
+      - songzijun

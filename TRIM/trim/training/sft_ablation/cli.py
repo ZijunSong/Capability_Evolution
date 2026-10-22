@@ -8,6 +8,7 @@ from typing import Sequence
 
 from trim.training.sft_ablation.contracts import PROFILES
 from trim.training.sft_ablation.geometry import flag_present
+from trim.training.sft_engine.backend import ACCELERATED_BACKENDS
 
 FORBIDDEN = (
     "--train_method",
@@ -76,16 +77,23 @@ def _add_shared(parser: argparse.ArgumentParser, *, experiment: str) -> None:
     parser.add_argument("--bm25-index", default="")
     parser.add_argument("--docstore", default="")
     parser.add_argument("--corpus", default="")
+    parser.add_argument("--retrieval-dataset", default="")
+    parser.add_argument("--retrieval-collection-split", default="")
+    parser.add_argument("--retrieval-reranker", default="")
     parser.add_argument("--verifier", default="")
     parser.add_argument("--resume", default="")
     parser.add_argument("--experiment", default=experiment)
-    parser.add_argument("--ce-backend", choices=("legacy", "accelerate_ddp"), default="legacy")
+    parser.add_argument(
+        "--ce-backend",
+        choices=("legacy", "accelerate_ddp", "accelerate_fsdp2"),
+        default="legacy",
+    )
     parser.add_argument("--global-batch-size", type=int, default=None)
     parser.add_argument("--source-contract", default="")
     parser.add_argument("--dataset-manifest", default="")
     parser.add_argument("--gradient-checkpointing", choices=("off", "non_reentrant"), default="off")
     parser.add_argument("--logits-mode", choices=("action_positions", "full"), default="action_positions")
-    parser.add_argument("--attn-implementation", default="")
+    parser.add_argument("--attn-implementation", choices=("", "eager", "sdpa", "flash_attention_2"), default="")
     parser.add_argument("--model-precision", choices=("bf16",), default="bf16")
     parser.add_argument("--save-every", type=int, default=10)
     parser.add_argument("--log-every-microbatches", type=int, default=1)
@@ -162,20 +170,23 @@ def parse_sft_args(experiment: str, argv: Sequence[str] | None = None) -> argpar
             raise SystemExit("queries-per-round must be positive")
     else:
         args.queries_per_round = int(args.batch_size)
-    if args.ce_backend == "accelerate_ddp":
+    if args.ce_backend in ACCELERATED_BACKENDS:
+        # Shared contract of both accelerate engines: mb1 action-only BF16 CE
+        # with manual global mass. FSDP2 differs only in how the base is
+        # resident and how checkpoints are written.
         if int(args.micro_batch_size) != 1:
-            raise SystemExit("accelerate_ddp requires --micro-batch-size 1")
+            raise SystemExit(f"{args.ce_backend} requires --micro-batch-size 1")
         if args.logits_mode != "action_positions":
-            raise SystemExit("accelerate_ddp refuses to fall back from action-position logits")
-        if args.gradient_checkpointing != "off":
-            raise SystemExit("gradient checkpointing stays off until the locked stack is validated")
+            raise SystemExit(f"{args.ce_backend} refuses to fall back from action-position logits")
+        if args.gradient_checkpointing not in {"off", "non_reentrant"}:
+            raise SystemExit(f"{args.ce_backend} accepts only off or non_reentrant gradient checkpointing")
         if args.model_precision != "bf16" or args.dtype != "bfloat16":
-            raise SystemExit("accelerate_ddp SFT requires BF16")
+            raise SystemExit(f"{args.ce_backend} SFT requires BF16")
         if int(args.global_batch_size) < 1 or int(args.save_every) < 1:
             raise SystemExit("global-batch-size and save-every must be positive")
         if experiment != "student_onpolicy_sft" and args.stage == "all":
             raise SystemExit(
-                "accelerate_ddp does not collect and train in one GPU job. "
+                f"{args.ce_backend} does not collect and train in one GPU job. "
                 "Seal the dataset, then relaunch with --stage train."
             )
     return args

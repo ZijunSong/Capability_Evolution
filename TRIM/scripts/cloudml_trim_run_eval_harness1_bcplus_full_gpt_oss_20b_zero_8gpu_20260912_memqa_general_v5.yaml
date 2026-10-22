@@ -1,0 +1,35 @@
+# CloudML custom_train YAML
+# TRIM Harness-1 BC+ full / GPT-OSS-20B / ZERO eval / 单节点 8x gm402-80g
+#
+# 重要：JuiceFS 挂载不在本 YAML 中配置——按要求通过直接 CLI 参数
+#   --juicefs_mount_configs '<JSON>' 提交，其中 endpoint/JuiceFSCluster 为 "bj9-cloudml"，
+#   volume=songzijun, subpath=/, mount=/mnt/songzijun, read-write。
+# ImageCommand 调用 TRIM/scripts/run_bcplus_full_gptoss20b_zero_cloudml_8gpu.sh，
+# 该脚本完成依赖锁定 / GPU·JVM·PyJNI·Lucene·import-chain·tiktoken preflight 后
+# 再启动 gpt-oss-20b ZERO eval（8 单卡 vLLM actor + 16 worker, local_bm25, 无 Chroma）。
+#
+# runtime 锁定口径（CLAUDE.md）：torch 2.10.0+cu128 / vllm 0.19.1 / transformers 4.57.6 / pyserini 2.0.0。
+# gpt-oss-20b zero 走裸模型（不加载 LoRA），与 vLLM lora_shrink 补丁无关（脚本仍幂等应用）。
+jobName: "trim-run-eval-h1-bcplus-full-gpt-oss-20b-zero-8gpu-20260912-memqa-general-v5-recovery4"
+description: >-
+  TRIM Harness-1 BC+ full, GPT-OSS-20B, zero component eval, 8x gm402-80g,
+  local_bm25 retrieval (no Chroma server), upstream_api eval path. Boot script
+  installs pinned runtime + full preflight then runs gpt-oss-20b zero eval.
+accessType: "PUBLIC"
+imageConfig:
+  imageUrl: "micr.cloud.mioffice.cn/songzijun/songzijun-cto:3050749-songzijun-cto"
+  imageCommand: "bash /mnt/songzijun/Capability_Evolution/TRIM/scripts/run_bcplus_full_gptoss20b_zero_cloudml_8gpu.sh"
+queueId: "2334"
+priority: 8
+framework: "pytorch"
+tags:
+  - "MemQA-General-V5"
+resourceConfigs:
+  - nodeRole: "worker"
+    nodeNumber: 1
+    perNodeResourceSpec:
+      resourcePriority: "GUARANTEED_PUBLIC"
+      resourceName: "cloudml.ng1gm402-8-8.20-224"
+      resourceNumber: 8
+# 非抢占（GUARANTEED_PUBLIC 保障资源）；不加 preemptible。
+# JuiceFS 通过 CLI --juicefs_mount_configs 显式 JSON 传入（endpoint=bj9-cloudml）。

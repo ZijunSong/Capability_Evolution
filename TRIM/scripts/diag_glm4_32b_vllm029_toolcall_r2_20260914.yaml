@@ -1,0 +1,65 @@
+JobName: "diag-glm4-32b-vllm029-toolcall-20260914-r2"
+Description: "Test GLM-4-32B-0414 tool calling under vLLM 0.29.0 (isolated venv). Trigger parser registration, test glm45, dump response."
+AccessType: "PRIVATE"
+ImageConfig:
+  ImageUrl: "micr.cloud.mioffice.cn/songzijun/songzijun-cto:3050749-songzijun-cto"
+  ImageCommand: |
+    set -euxo pipefail
+    export PYTHONUNBUFFERED=1
+    export CUDA_VISIBLE_DEVICES=0
+    python3 -c "import zipfile; zipfile.ZipFile('/mnt/songzijun/tiktoken-bundle.zip').extractall('/tmp')"
+    export TIKTOKEN_ENCODINGS_BASE=/tmp/tiktoken-bundle/share/tiktoken
+    python3 -m venv /tmp/vllm029env
+    . /tmp/vllm029env/bin/activate
+    python -m pip install --no-cache-dir --upgrade pip
+    python3 -m pip install --no-cache-dir "vllm==0.29.0"
+    python3 -m pip install --no-cache-dir structlog chromadb sentence-transformers regex latex2sympy2 word2number sentencepiece openai tenacity json_repair
+    python3 -m pip install --no-cache-dir --no-deps chz tinker
+    python3 -m pip install --no-cache-dir "pyserini==2.0.0"
+
+    echo "=== versions ==="
+    python3 -c "import torch,vllm,transformers; print('torch',torch.__version__,'vllm',vllm.__version__,'transformers',transformers.__version__)"
+    echo "=== trigger parser registration ==="
+    python3 -c "import vllm.tool_parsers; from vllm.tool_parsers.abstract_tool_parser import ToolParserManager; print('parsers', sorted(ToolParserManager.tool_parsers.keys()))"
+
+    echo "=== GLM chat template test ==="
+    python3 /mnt/songzijun/Capability_Evolution/TRIM/scripts/chat_template_test.py
+
+    JVM_PATH=$(find /usr /opt -type f -name libjvm.so 2>/dev/null | head -1 || true)
+    [ -z "$JVM_PATH" ] && { apt-get update; DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends openjdk-21-jre-headless; JVM_PATH=$(find /usr /opt -type f -name libjvm.so 2>/dev/null | head -1); }
+    test -n "$JVM_PATH"; export JVM_PATH
+    export JAVA_HOME=$(dirname "$(dirname "$(dirname "$JVM_PATH")")")
+    export LD_LIBRARY_PATH=$(dirname "$JVM_PATH"):${LD_LIBRARY_PATH:-}
+    PYSERINI_ROOT=$(python3 -c 'import pathlib,pyserini;print(pathlib.Path(pyserini.__file__).resolve().parent)')
+    export ANSERINI_CLASSPATH=$(find "$PYSERINI_ROOT/resources/jars" -name '*.jar' -print | paste -sd: -)
+    export CLASSPATH="$ANSERINI_CLASSPATH"
+
+    echo "=== START vLLM 0.29.0 glm45 ==="
+    CUDA_VISIBLE_DEVICES=0 nohup vllm serve /mnt/songzijun/models/GLM-4-32B-0414 \
+      --host 127.0.0.1 --port 8090 --served-model-name GLM-4-32B-0414 \
+      --enable-auto-tool-choice --tool-call-parser glm45 \
+      --max-model-len 8192 --trust-remote-code --gpu-memory-utilization 0.90 --max-num-seqs 8 --enforce-eager \
+      > /tmp/vllm_glm.log 2>&1 &
+    VLLM_PID=$!
+    for i in $(seq 1 120); do
+      curl -sf http://127.0.0.1:8090/v1/models >/dev/null 2>&1 && { echo "VLLM_READY after ${i}0s"; break; }
+      sleep 10
+    done
+    curl -sf http://127.0.0.1:8090/v1/models >/dev/null 2>&1 || { echo "VLLM NOT READY"; tail -60 /tmp/vllm_glm.log; exit 1; }
+    echo "=== TOOL CALL TEST ==="
+    python3 /mnt/songzijun/Capability_Evolution/TRIM/scripts/toolcall_test.py
+    echo "DIAG_DONE"
+    kill $VLLM_PID 2>/dev/null || true
+QueueId: "2334"
+Priority: 8
+Framework: "pytorch"
+Preemptible: false
+ResourceConfigs:
+  - NodeRole: "worker"
+    NodeNumber: 1
+    PerNodeResourceSpec:
+      ResourcePriority: "GUARANTEED_PUBLIC"
+      ResourceName: "cloudml.ng1gm402-8-8.20-224"
+      ResourceNumber: 1
+Tags:
+  - "MemQA-General-V5"

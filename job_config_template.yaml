@@ -1,0 +1,135 @@
+# ---基本信息---
+# [必填项] 自定义任务名称，支持 1~120 位字符，只包含大小写字母、数字、中划线（-）、下划线（_），且不以中划线或下划线开头/结尾
+jobName: "custom-train-job-name"
+# 描述，0~500 位字符
+description: ""
+# 可见范围
+# 支持 PUBLIC(空间可见), QUEUE(本队列成员可见), PRIVATE(仅创建人可见)，默认值为 PUBLIC
+accessType: "PUBLIC"
+# 标签
+#tags: ["tagName1","tagName2"]
+
+# ---环境信息---
+# ---镜像配置
+imageConfig:
+    imageUrl: "replace with your imageUrl" # [必填项] 镜像 URL 地址，必须以micr.cloud.mioffice.cn/开头
+    imageCommand: "echo 'hello world' && sleep 900" # [必填项] 入口命令；当前平台执行依赖镜像内置 bash，请确认镜像 PATH 中可找到 bash（例如包含 /bin/bash 或 /usr/bin/bash），Alpine / distroless 默认通常不包含 bash
+# ---模型仓库配置
+# 选择的模型将被自动挂载到容器内 /preset-models 路径下
+#modelUri: "public/Qwen3-0.6B"
+# ---存储配置
+# 同一个卷不允许多次挂载
+# 多个挂载卷时，挂载路径不能重复；挂载路径必须为绝对路径，且不能为 / 或 /ml-engine/code
+# 卷子目录必须为绝对路径
+# ---JuiceFS存储
+# 可以访问 https://cloud.mioffice.cn/juicefs 获取 JuiceFS 存储卷信息
+#juiceFsMountConfigs:
+#    - volume: "replace with your JuiceFSVolumeName" # 必填，JuiceFS卷名称
+#      subPath: "replace with your subPath" # 非必填，JuiceFS卷子目录
+#      juiceFsCluster: "replace with your juiceFsClusterName" # 必填，JuiceFS集群名称
+#      mountPath: "replace with your mountPath" # 必填，挂载路径
+#      readOnly: false # 非必填，是否只读
+# ---NAS存储
+# 目前仅支持天津自驾集群
+#nasMountConfigs:
+#    - fileSystem: "replace with your NAS fileSystem" # 必填，NAS文件系统名称
+#      volume: "replace with your NAS volume" # 必填，NAS卷名称
+#      mountPath: "replace with your mountPath" # 必填，挂载路径
+#      readOnly: false # 必填，是否只读
+# ---CPFS存储
+# 目前仅支持张家口阿里云集群
+#cpfsMountConfigs:
+#    - volume: "replace with your CPFS volumeName" # 必填，CPFS卷名称
+#      cpfsCluster: "replace with your CPFS cluster" # 必填，CPFS集群名称
+#      mountPath: "replace with your mountPath" # 必填，挂载路径
+#      readOnly: false # 非必填，是否只读
+# ---代码配置
+# 对于 GitLab Url 需以 https:// 开头，.git 结尾
+#codeConfig:
+#    codeUrl: "replace with your codeUrl"
+#    codeBranch: "replace with your codeBranch"
+#    codeCommit: "replace with your codeCommit"
+# ---环境变量
+#envConfigs:
+#    - key: "key1"
+#      value: "value1"
+
+# ---资源信息---
+# ---队列配置
+# 可通过 cml queue list 指令查看您所在队列信息列表
+#queueId: "replace with your queueId" # 队列ID
+# ---任务优先级配置
+# 数字越大优先级越高，队列内按优先级分组，组内 FIFO
+# 仅支持配置部分档位：2、5、8，默认优先级为 5
+priority: 5
+# ---是否使用闲时资源
+#preemptible: true
+# ---训练框架
+# 支持 [pytorch, ray, tensorflow, mpi]，默认值为 pytorch
+framework: "pytorch"
+# ---资源配置
+# 可通过 cml queue list 指令查看您所在队列拥有的资源信息列表
+# pytorch 框架 nodeRole 支持 [worker]
+# ray 框架 nodeRole 支持 [head,worker], head 必选
+# tensorflow 框架 nodeRole 支持 [ps,worker]
+# mpi 框架 nodeRole 支持 [worker]
+resourceConfigs:
+    - nodeRole: "worker" # 节点角色
+      nodeNumber: 1 # 节点数量，默认值为 1
+      perNodeResourceSpec:
+          resourcePriority: "GUARANTEED" # 资源优先级
+          resourceName: "replace with your resourceName" # [必填项] 资源名称
+          resourceNumber: 1 # [必填项] 单节点资源数量，GPU 使用整数，vGPU 支持 0.25、0.5；CPU 资源不可小于 4
+# ---运行参数配置
+# 支持设置 Ray driver 的 runtimeEnv
+#runtimeEnv: |-
+#    {
+#        "pip": [
+#            "emoji"
+#        ]
+#    }
+
+# ---其他信息---
+# ---开启tensorboard
+# 开启后，平台将自动注入 $TENSORBOARD_LOG_PATH 环境变量，代表 TensorBoard 日志保存目录，在训练容器内可访问该路径
+#enableTensorboard: true
+# ---开启训练可观测
+#enableMetrics: true
+# ---任务诊断策略
+# 仅 GPU 规格任务且 pytorch 框架支持任务诊断
+# 目前仅支持 HangDetection 策略
+diagOptions:
+    - name: "HangDetection"         # 是否开启 Hang 检测，默认关闭
+      enable: false
+# ---自动重试
+# 自动重试的触发条件支持 JobFailed（任务失败）、NodeFailure（节点故障）、JobPreempted（任务被抢占）
+# NodeFailure 仅单节点资源数量为 8 卡 & pytorch 框架的任务可开启
+# JobPreempted 仅 BEST_EFFORT 弹性资源 & pytorch 框架的任务可开启
+retryConfig:
+    enableRetry: false      # 是否开启自动重试, 默认关闭
+    maxRetryTimes: 5        # 最大重试次数, 取值范围 [1, 100], 默认值为 5
+    policySets:             # 自动重试的触发条件
+         - "JobFailed"
+# ---是否使用RDMA
+# 仅节点数量>=2 且单节点资源数量为 8 时才允许开启，如需开启，则可以反注释下方配置
+#rdma: true
+# ---告警配置
+# P0 告警级别不支持配置飞书群
+#alertConfig:
+#    enableAlert: true           # 是否开启告警
+#    alertItems:                 # 告警项
+#        - alertConditions:          # 必填, 告警触发条件, 支持 START_RUNNING(开始运行), SUCCEED(完成), FAILED(失败), HANG(Hang检测), RETRY(自动重试)
+#            - START_RUNNING
+#            - SUCCEED
+#            - FAILED
+#          alertConditionParams:         # 非必填, 告警触发条件额外参数
+#            retryAlertType: "last_time"     # 自动重试告警触发类型，支持 last_time(最后一次重试)、every_time(每次重试)、custom_define(自定义)
+#            ignoreAlertRetryTimes: 0        # 自定义自动重试类型时必填，表示前x次重试不告警，后面每次重试均告警
+#          alertLevel: P2            # 必填, 告警级别, 支持 P0(飞书+电话), P1(飞书), P2(飞书)
+#          alertReceivers:           # 必填, 告警接收人, 至少 1 种通知对象
+#            persons:                    # 个人, 限制 10 人
+#                - "emailPrefix"
+#            feishuGroups:               # 飞书群, 限制 10 个
+#                - chatId: "xxx"
+#            falconGroups:                # Falcon 报警组, 限制 10 个
+#                - oncallName: "xxx"

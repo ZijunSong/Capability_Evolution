@@ -1,0 +1,41 @@
+jobName: trim-diag-mxfp4-triton-lora-1gpu
+description: 'Diag: verify triton_kernels+VLLM_MXFP4_USE_MARLIN=0 flips vLLM 0.19.1 mxfp4 LoRA backend from MARLIN(crashes cudaErrorUnsupportedPtxVersion on gm402 sm_90, RECOVERY_LOG recovery2/cmcxl) to TRITON_UNFUSED(bypass). Probes triton_kernels install/import + select_mxfp4_moe_backend default vs MARLIN=0. 1 GPU, exits ~10min. No training.'
+accessType: PRIVATE
+tags:
+- MemQA-General-V5
+imageConfig:
+  imageUrl: micr.cloud.mioffice.cn/songzijun/songzijun-cto:3050749-songzijun-cto
+  imageCommand: bash /mnt/songzijun/Capability_Evolution/TRIM/scripts/diag_mxfp4_triton_lora_1gpu.sh
+modelUri: ''
+# juiceFsMountConfigs via CLI --juicefs_mount_configs, not this YAML.
+envConfigs:
+- key: PYTHONUNBUFFERED
+  value: '1'
+- key: PYTHONPATH
+  value: /mnt/songzijun/Capability_Evolution/TRIM:/mnt/songzijun/Capability_Evolution/SCAPE-EasyOPD
+- key: PYTORCH_CUDA_ALLOC_CONF
+  value: expandable_segments:True
+- key: OPENAI_API_KEY
+  value: '**-****-***********-***-*-****-***'
+queueId: '2334'
+priority: 8
+preemptible: false
+framework: pytorch
+resourceConfigs:
+- nodeRole: worker
+  nodeNumber: 1
+  perNodeResourceSpec:
+    resourcePriority: GUARANTEED_PUBLIC
+    resourceName: cloudml.ng1gm402-8-8.20-224
+    resourceNumber: 1
+  elastic: false
+  preemptible: false
+enableTensorboard: false
+enableMetrics: false
+retryConfig:
+  enableRetry: false
+diagOptions:
+- name: HangDetection
+  enable: false
+alertConfig:
+  enableAlert: false

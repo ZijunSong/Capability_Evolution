@@ -1,0 +1,195 @@
+# CloudML custom_train: TRIM Harness-1 BC+, GPT-OSS-20B (original mxfp4,
+# non-dequant per user instruction), TRIM (OPD teacher projection) training via
+# torch_ddp_lora backend, FOUR 8-GPU gm402-80g nodes (4 nodes x 8 cards = 32
+# GPUs), --component all (H_full, all advanced components ON), 100 steps.
+# --train_method trim (NOT rl).
+#
+# This is the TRIM/ALL 100-step MULTI-NODE variant. Derived from
+# cloudml_custom_train_harness1_bcplus_full_gpt_oss_20b_rl_ddp_100step_zero_32gpu_4node_20260925.yaml
+# (the 100-step RL/ZERO 4-node job ghynp). Deltas vs that YAML:
+#   * train_method rl -> trim  (OPD teacher projection, NOT on-policy RL/CISPO)
+#   * component zero -> all    (H_full: all advanced components ON; zero was H_zero)
+#   * rdzv-id gptoss20b-rl-32-100step -> gptoss20b-trim-32-100step (distinct rendezvous)
+#   * jobName / out dir / description carry trim/all
+#   * preflight adds curate-clipping tolerant-skip patch assertions (REQUIRED
+#     for --component all; RL/ZERO did not need it because zero-mask rollouts
+#     never trigger teacher-curate-references-clipped-docs; single-node TRIM/ALL
+#     x2j3u FAILED without this patch at step0 datum on doc 0000950103-25-007493_26)
+# Everything else (mb=1, gpu-mem 0.90, 4 nodes, unset rank env, model cp /tmp,
+# RDMA, three code-tree patches) is identical.
+#
+# === MULTI-NODE LAUNCH PATH (read this) ===
+# run_train_multinode.py is the real multi-node launcher (unlike run_train.py
+# which is single-node-only). Each node runs ONE Scheme A process that itself
+# torchruns --nnodes 4 --nproc_per_node 8 (world_size=32), shards the query
+# groups across 32 ranks, gathers rollout trajectories onto rank 0 via shared
+# disk (<out>/tmp/rollout_shards), rank 0 runs the DDP-LoRA OPD optimizer step
+# (full replica per rank, not FSDP2 sharding), then every rank barriers and
+# reloads the fresh adapter for the next rollout. run_train_multinode.py's own
+# docstring uses `--train_method trim --component all` as the canonical example,
+# so TRIM/ALL + multi-node is a supported combination (train_method controls
+# the loss/teacher path; training-backend torch_ddp_lora controls the DDP
+# wrap; they are orthogonal).
+#
+# === CloudML custom_train framework=pytorch nodeNumber=4 (verified by 7nzzn) ===
+# Creates a PyTorchJob CRD (events: "SuccessfulCreatePyTorchJob" + master-0 /
+# worker-0/1/2 pods + init-pytorch container). The 2026-09-15 probe's three
+# risks are all RESOLVED by the 7nzzn run (CLAUDE.md "多节点实测结果"):
+#   1. starfs-user-pv FailedMount: DID NOT recur on 7nzzn (4 pods went
+#      deploying->running normally). Platform issue cleared.
+#   2. cross-node nccl object collectives: SAFE. PyTorch auto-uses Gloo for
+#      rendezvous + object collectives (broadcast_object_list /
+#      all_gather_object), nccl only for DDP gradient all-reduce. 7nzzn stdout:
+#      "[Gloo] Rank 0-31 is connected to 31 peer ranks" + topology_confirmed.
+#   3. CloudML env injection: framework=pytorch nodeNumber=4 injects
+#      MASTER_ADDR (master pod service DNS, e.g. tj-...-master-0) + NODE_RANK,
+#      but does NOT inject RANK/WORLD_SIZE/PET_* (7nzzn PREFLIGHT showed
+#      rank_env: None, world_size_env: None, pet_nproc_per_node: None). The
+#      entry's unset-RANK block is defensive insurance (harmless, kept for
+#      future CRD behavior change).
+#
+# === mb=1 (NOT 4) — OOM safety, see CLAUDE.md ===
+# The reference command in the /goal used --train-micro-batch-size 4. That
+# value FAILED on gpt-oss-20b mxfp4 RL torch_ddp_lora: t-k6v0p (2026-09-24)
+# step0 student forward OOM, 8 ranks simultaneous "Tried to allocate 32GiB /
+# 4.39GB free / 74.78GB used" at fsdp2_actor.py:369 DDP forward. Root cause:
+# gpt-oss MoE backward CANNOT enable gradient checkpointing (hf_tool_opd.py
+# MoE saved-tensor mismatch), so mb>=2 does not get the activation-mem savings
+# and DDP non-reentrant grad-ckpt can't hold it. The ONLY verified-safe config
+# across 7nzzn / 33sd1 / j7bje is mb=1 + gpu-mem 0.90 + expandable_segments,
+# peak_mem 74714 MB / 80GB constant per rank. TRIM/ALL backward is the same
+# gpt-oss MoE backward, so the same OOM floor applies. Multi-node does NOT
+# change the per-rank budget (each rank is still TP=1 single-GPU), so mb=1
+# still fits. This YAML therefore hardcodes mb=1. If you want mb=4, expect
+# step0 OOM.
+#
+# === --out MUST be shared across nodes (7nzzn korur bug, FIXED) ===
+# `run_train_multinode.py` writes per-rank rollout shards to <out>/tmp/rollout_shards
+# and rank 0 interleaves them via all_gather_via_disk. If each pod uses a
+# different <out> (e.g. a per-pod $(date) timestamp), the shards are invisible
+# across nodes and step 0 backward crashes with FileNotFoundError. The korur
+# first-attempt used `--out ...$(date)` and 4 pods produced 2 different out
+# dirs (master 13s late). It was killed before backward. 7nzzn (recov1) fixed
+# this by reading OUT from env (injected once by submit --env OUT=<fixed>), so
+# all 4 pods share the same path. This YAML + entry + submit keep that fix.
+#
+# IMPORTANT: JuiceFS endpoint is NOT submitted via this YAML (--filename) path.
+# The actual submit uses direct CLI flags and passes --juicefs_mount_configs
+# JSON explicitly, where juiceFsCluster must be "bj9-cloudml" (the schema field
+# is juiceFsCluster; there is no literal "endpoint" key; its value IS the
+# cluster/endpoint identifier). This file is a readable draft / audit snapshot
+# only; submit via submit_gpt_oss_20b_trim_ddp_100step_all_32gpu_4node_20260925.sh.
+#
+# world_size=32 is REQUIRED (4 nodes, 8 ranks/node via torchrun --nnodes 4
+# --nproc_per_node 8). Post-submit provenance audit (CLAUDE.md): verify
+# world_size is truly 32 by the three-tuple — (1) stdout has torchrun --nnodes 4
+# --nproc_per_node 8; (2) checkpoints/<cell>/step_000001/ has 32
+# optimizer.rank0000..0031.pt; (3) vllm_sessions/ has 32 _r0.._r31 sessions.
+# For TRIM/ALL additionally: preflight PATCH_CHECK_OK MUST include
+# "skip_clipped_doc": True (curate-clipping tolerant-skip patch) or step0
+# datum will abort on doc 0000950103-25-007493_26 (same as single-node
+# x2j3u FAILED). Any one missing => actually single-node or partial run, result
+# is NOT a valid "32-GPU 4-node DDP" artifact.
+#
+# imageCommand below is a PLACEHOLDER. The entry script contains a bash heredoc
+# (python3 - <<'PY') and nested indentation that YAML block-scalar parsing
+# chokes on ("while scanning a simple key" / "could not find expected ':'"),
+# so it CANNOT be inlined as imageCommand: | here. The actual submit reads the
+# entry verbatim via the CLI flag --image_command "$(cat <entry>)" (no YAML
+# parsing), which is the standard pattern for cml custom_train multi-node
+# entries with heredocs. Kept in sync with
+# entry_gpt_oss_20b_trim_ddp_100step_all_32gpu_4node_20260925.sh.
+
+jobName: trim-harness1-bcplus-full-gpt-oss-20b-trim-ddp-100step-all-32gpu-4node-20260925
+description: >-
+  Harness-1 BC+ TRIM (OPD teacher projection) GPT-OSS-20B (original mxfp4,
+  non-dequant per user) on FOUR 8-GPU gm402-80g nodes (32 GPUs) via
+  torch_ddp_lora backend. --train_method trim (NOT rl), --component all (H_full,
+  all advanced components ON). run_train_multinode.py --nnodes 4 --nproc-per-node
+  8 self-torchruns world_size=32: per-rank vLLM TP=1 rollout + DDP LoRA OPD
+  optimizer step (full replica per rank, not FSDP2 sharding). 100 steps, 32
+  groups/step, group-size 8, max-turns 40 (NOT default 6; MAX_TURNS env is a
+  no-op), max-model-len 8192, mb=1 (gpt-oss MoE backward OOM safe floor; mb=4
+  FAILED on t-k6v0p), gpu-mem 0.90, local_legacy BM25, SEC RL data + corpus
+  under TRIM/data, offline tiktoken, four-pack torch2.10.0/vllm0.19.1/tf4.57.6/
+  pyserini2.0.0. Entry unsets CloudML-injected rank env so main() self-launches
+  torchrun. NO CUDA_LAUNCH_BLOCKING (DDP multi-proc). NO
+  DISABLE_CUSTOM_ALL_REDUCE (TP=1). SCAPE_FORCE_LOCAL_HARMONY unset (gpt-oss
+  to_json crash). Model cp to /tmp per node (4-way JuiceFS read, not 32-way).
+  curate-clipping tolerant-skip patch asserted in preflight (REQUIRED for
+  --component all; x2j3u FAILED without it at step0 datum). RDMA on (>=2 nodes
+  x 8 GPU). Shared --out via --env OUT (korur out-bug fix). Risks: TWO 32-GPU
+  4-node jobs (7nzzn + ghynp) are RUNNING right now occupying 64 cards, so this
+  3rd 32-GPU gang will QUEUE until cards release; workspace quota gm402 LEFT=0
+  (public pool historically not strict). world_size=32 audit required.
+accessType: PRIVATE
+tags:
+- MemQA-General-V5
+imageConfig:
+  imageUrl: micr.cloud.mioffice.cn/songzijun/songzijun-cto:3050749-songzijun-cto
+  imageCommand: "FILLED_BY_SUBMIT_SCRIPT_VIA_cat_entry"
+# JuiceFS mount is intentionally declared here as an audit snapshot, but the
+# actual submission passes it via the CLI flag --juicefs_mount_configs JSON
+# (juiceFsCluster=bj9-cloudml), NOT via this YAML --filename.
+juiceFsMountConfigs:
+- volume: songzijun
+  juiceFsCluster: bj9-cloudml
+  subPath: /
+  mountPath: /mnt/songzijun
+  readOnly: false
+envConfigs:
+- key: PYTHONUNBUFFERED
+  value: '1'
+- key: CUDA_VISIBLE_DEVICES
+  value: 0,1,2,3,4,5,6,7
+- key: TRIM_GPU_KEEPALIVE
+  value: '0'
+- key: PYTORCH_CUDA_ALLOC_CONF
+  value: expandable_segments:True
+- key: PYTHONPATH
+  value: /mnt/songzijun/Capability_Evolution/TRIM:/mnt/songzijun/Capability_Evolution/SCAPE-EasyOPD
+- key: OPENAI_API_KEY
+  value: '**-****-***********-***-*-****-***'
+- key: SCAPE_LOCAL_OPENAI_EMBEDDINGS
+  value: '1'
+- key: TIKTOKEN_ENCODINGS_BASE
+  value: /tmp/tiktoken-bundle/share/tiktoken
+- key: TIKTOKEN_CACHE_DIR
+  value: /tmp/tiktoken-bundle/tiktoken_cache
+- key: TIKTOKEN_RS_CACHE_DIR
+  value: /tmp/tiktoken-bundle/tiktoken_rs_cache
+- key: OUT
+  value: /mnt/songzijun/Capability_Evolution/TRIM/outputs/cloudml_custom_train_harness1_bcplus_full_gpt_oss_20b_trim_ddp_100step_all_32gpu_4node_20260925
+queueId: '2334'
+priority: 8
+preemptible: false
+framework: pytorch
+rdma: true
+resourceConfigs:
+- nodeRole: worker
+  nodeNumber: 4
+  perNodeResourceSpec:
+    resourcePriority: GUARANTEED_PUBLIC
+    resourceName: cloudml.ng1gm402-8-8.20-224
+    resourceNumber: 8
+  elastic: false
+  preemptible: false
+enableTensorboard: false
+enableMetrics: false
+retryConfig:
+  enableRetry: false
+  maxRetryTimes: 1
+  policySets:
+  - JobFailed
+diagOptions:
+- name: HangDetection
+  enable: false
+alertConfig:
+  enableAlert: true
+  alertItems:
+  - alertConditions:
+    - FAILED
+    alertLevel: P2
+    alertReceivers:
+      persons:
+      - songzijun

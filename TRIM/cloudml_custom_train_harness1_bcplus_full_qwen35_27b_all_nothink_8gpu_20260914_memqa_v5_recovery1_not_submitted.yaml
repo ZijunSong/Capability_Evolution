@@ -1,0 +1,88 @@
+# Prepared 2026-09-14; NOT SUBMITTED as a standalone file — this is the
+# recovery1 variant of cloudml_custom_train_harness1_bcplus_full_qwen35_27b
+# _all_nothink_8gpu_20260914_memqa_v5_not_submitted.yaml.
+#
+# Recovery1 rationale: the initial run (t-20260914132747-g9qji) capped actor
+# --max-model-len to 16384 to protect KV headroom. That caused HTTP 400 on BC+
+# multi-turn queries whose prompt + 2048 output exceeded 16k (~60 errors across
+# 57/64 shards, and rising as retrieval accumulated context). This recovery
+# restores the profile default max-model-len 32768 (paged KV evicts long-context
+# outliers instead of hard-failing). Output is isolated via RUN_ID=..._recovery1
+# so the stopped attempt's partial shards are NOT mixed in.
+#
+# JuiceFS is intentionally omitted. Submit with the direct CLI
+# --juicefs_mount_configs argument so endpoint/cluster=bj9-cloudml is explicit
+# (CLAUDE.md: JuiceFS endpoint must NOT go through the YAML --filename path).
+
+jobName: "trim-run-eval-harness1-bcplus-full-qwen35-27b-all-nothink-8gpu-20260914-memqa-v5-recovery4"
+description: "Harness-1 BC+ full eval of Qwen3.5-27B (all, thinking off) 8x gm402-80g — recovery4 (max-model-len profile default 32768, line 52 empty default)"
+accessType: "PRIVATE"
+tags:
+  - "MemQA-General-V5"
+
+imageConfig:
+  imageUrl: "micr.cloud.mioffice.cn/songzijun/songzijun-cto:3050749-songzijun-cto"
+  # Copy both the launch script AND the wrapper to /tmp (local FS) before exec,
+  # so a JuiceFS client cache lag cannot serve a stale wrapper revision. The
+  # earlier recovery0 run read a stale wrapper and capped max-model-len to 16384.
+  # EVAL_SCRIPT_OVERRIDE points the launch script at the /tmp wrapper copy.
+  imageCommand: |-
+    set -euo pipefail
+    cp /mnt/songzijun/Capability_Evolution/TRIM/scripts/run_qwen35_27b_all_nothink_eval_cloudml_8gpu.sh /tmp/trim_launch_qwen35_27b_all_nothink.sh
+    cp /mnt/songzijun/Capability_Evolution/TRIM/scripts/run_bcplus_w_harness1_qwen35_27b_all_gpu8_eval_nothinking.sh /tmp/trim_wrapper_qwen35_27b_all_nothink.sh
+    # Version guard: the /tmp-localized wrapper must contain the new max-model-len
+    # logic (empty default → profile 32768, NOT :-16384), the SCRIPT_DIR fallback
+    # for /tmp exec, and the "only overrides when explicitly set" comment. A stale
+    # wrapper caps max-model-len to 16384 → HTTP 400, or fails to find lib from /tmp.
+    grep -q "would re-cap to 16384 and re-trigger HTTP 400" /tmp/trim_wrapper_qwen35_27b_all_nothink.sh || { echo "FATAL: stale wrapper (line 52 still :-16384 default)"; exit 2; }
+    grep -q "only overrides when explicitly set" /tmp/trim_wrapper_qwen35_27b_all_nothink.sh || { echo "FATAL: stale wrapper (missing new max-model-len logic)"; exit 2; }
+    grep -q "Fall back to the canonical JuiceFS scripts dir" /tmp/trim_wrapper_qwen35_27b_all_nothink.sh || { echo "FATAL: stale wrapper (missing SCRIPT_DIR fallback for /tmp exec)"; exit 2; }
+    export EVAL_SCRIPT_OVERRIDE=/tmp/trim_wrapper_qwen35_27b_all_nothink.sh
+    exec bash /tmp/trim_launch_qwen35_27b_all_nothink.sh
+
+envConfigs:
+  - key: "PYTHONUNBUFFERED"
+    value: "1"
+  - key: "CUDA_VISIBLE_DEVICES"
+    value: "0,1,2,3,4,5,6,7"
+  - key: "MAX_TURNS"
+    value: "40"
+  # Isolate output from the stopped attempt (run q9qji); the launch script reads
+  # RUN_ID via ${RUN_ID:-default}, so this env override wins without a script edit.
+  - key: "RUN_ID"
+    value: "qwen35_27b_all_nothink_8gpu_20260914_memqa_v5_recovery4"
+
+queueId: "2334"
+priority: 8
+preemptible: false
+framework: "pytorch"
+resourceConfigs:
+  - nodeRole: "worker"
+    nodeNumber: 1
+    perNodeResourceSpec:
+      resourcePriority: "GUARANTEED_PUBLIC"
+      resourceName: "cloudml.ng1gm402-8-8.20-224"
+      resourceNumber: 8
+    elastic: false
+    preemptible: false
+
+enableTensorboard: false
+enableMetrics: false
+diagOptions:
+  - name: "HangDetection"
+    enable: false
+retryConfig:
+  enableRetry: false
+  maxRetryTimes: 1
+  policySets:
+    - "JobFailed"
+alertConfig:
+  enableAlert: true
+  alertItems:
+    - alertConditions:
+        - "START_RUNNING"
+        - "FAILED"
+      alertLevel: "P2"
+      alertReceivers:
+        persons:
+          - "songzijun"

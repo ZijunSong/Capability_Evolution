@@ -1,0 +1,50 @@
+# CloudML custom_train YAML
+# TRIM Harness-1 BC+ full / Gemma-3-27B-it / ZERO eval / 单节点 8x gm402-80g
+# 提交日期 2026-09-17，标签 MemQA-General-V5，priority 8，queue 2334 (gm402-80g)。
+#
+# 被测模型 = /mnt/songzijun/models/gemma-3-27b-it
+#   (Gemma3ForConditionalGeneration / gemma3 / 62 层 text_config hidden 5376 /
+#    dense / 12 shards ~51.10 GiB bf16 / 多模态 VLM siglip vision, BC+ 走纯文本路径 /
+#    SentencePiece tokenizer: tokenizer.model + tokenizer.json，非 harmony o200k)
+#
+# Thinking：Gemma3 IT 无 thinking 模式，chat_template 无 enable_thinking 守卫、不输出
+#   独立 reasoning 块。GEMMA_PROFILE 无 reasoning_parser，无需 strip。不动 scorer/runner。
+#
+# Runtime = bishop 口径（与用户另一台机器跑通 Gemma3-27B-it all eval 的环境一致）：
+#   torch 2.11.0+cu130 / vllm 0.25.1 / transformers 5.14.1 / pyserini 1.6.0 / jinja2 3.1.6。
+#   非 CLAUDE.md 四件套 (torch 2.10.0+cu128/vllm 0.19.1/tf 4.57.6/pyserini 2.0.0)；
+#   本 zero 结果与 bishop 口径 all 结果同口径可比，不与四件套口径 BC+ 结果直接比较。
+#   HEAD ba7677d 的 GEMMA_PROFILE 已含 --chat-template tool_chat_template_gemma3_pythonic.jinja
+#   + tool_call_parser=pythonic（9/17 merge 293c2ac 修复 9/15 toolcall 失败），zero 仍走
+#   smoke_test_tool_call（needs_tool_smoke_test=True），pythonic 模板是修复的必要条件。
+#
+# 重要：JuiceFS 挂载不在本 YAML 中配置——按要求通过直接 CLI 参数
+#   --juicefs_mount_configs '<JSON>' 提交，其中 JuiceFSCluster/endpoint 为 "bj9-cloudml"，
+#   volume=songzijun, mount=/mnt/songzijun, read-write。本文件 JuiceFSMountConfigs 不作为提交依据。
+# ImageCommand 调用 TRIM/scripts/boot_gemma3_27b_zero_eval_cloudml_8gpu_20260917_memqa_v5.sh，
+#   该脚本把自身从 JuiceFS cp 到 /tmp 再 exec（规避 JuiceFS heredoc 回读抖动），然后完成
+#   bishop 依赖锁定 / GPU·架构(vLLM ModelRegistry Gemma3 探测)·GEMMA_PROFILE pythonic 模板·
+#   JVM·PyJNI·Lucene·import-chain·tiktoken preflight 后 exec run_bcplus_w_harness1_gemma3_27b_zero_gpu8_eval.sh：
+#   8 个单卡 Gemma-3-27B-it actor (TP=1, GPU 0..7) + 16 个 API-client worker (2/GPU),
+#   retrieval=local_bm25 (Pyserini/Lucene), --reranker none --offline, 无 Chroma 服务, 无 verifier。
+#   component=zero（v8d mask 0/10，无 verify）。8 卡全载充分利用显存。
+JobName: "trim-run-eval-h1-bcplus-full-gemma3-27b-zero-8gpu-20260917-memqa-v5"
+Description: "TRIM H1 BC+ full, Gemma-3-27B-it (gemma3 dense 27B VLM, pure-text), zero eval (no verifier), no thinking. Runtime=bishop (torch2.11.0/vllm0.25.1/transformers5.14.1/pyserini1.6.0). 8x gm402-80g, local_bm25, upstream_api. Boot installs bishop runtime + preflight (GPU/rt/vLLM Gemma3 probe/pythonic chat-template/JVM/Lucene/tiktoken/import) then exec zero eval: 8 actors TP=1 GPU0-7 + 16 workers. JuiceFS via CLI endpoint=bj9-cloudml. tool_call_parser=pythonic, GPU_UTIL 0.90."
+AccessType: "PUBLIC"
+ImageConfig:
+  ImageUrl: "micr.cloud.mioffice.cn/songzijun/songzijun-cto:3050749-songzijun-cto"
+  ImageCommand: "bash /mnt/songzijun/Capability_Evolution/TRIM/scripts/boot_gemma3_27b_zero_eval_cloudml_8gpu_20260917_memqa_v5.sh"
+QueueId: "2334"
+Priority: 8
+Framework: "pytorch"
+Tags:
+  - "MemQA-General-V5"
+ResourceConfigs:
+  - NodeRole: "worker"
+    NodeNumber: 1
+    PerNodeResourceSpec:
+      ResourcePriority: "GUARANTEED_PUBLIC"
+      ResourceName: "cloudml.ng1gm402-8-8.20-224"
+      ResourceNumber: 8
+# 非抢占（GUARANTEED_PUBLIC 保障资源）；不加 preemptible。
+# JuiceFS 通过 CLI --juicefs_mount_configs 显式 JSON 传入（JuiceFSCluster=bj9-cloudml）。

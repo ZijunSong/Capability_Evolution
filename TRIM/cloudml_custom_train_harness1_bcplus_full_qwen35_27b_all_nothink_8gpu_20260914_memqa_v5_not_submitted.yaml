@@ -1,0 +1,79 @@
+# Prepared 2026-09-14; NOT SUBMITTED (do not submit until the two open risks are
+# confirmed by the operator — see "Pending risks" below).
+#
+# Task: TRIM Harness-1 BC+ full / Qwen3.5-27B / ALL (no-thinking) eval / 8x gm402-80g.
+#
+# JuiceFS is intentionally omitted here. Submit with the direct CLI
+# --juicefs_mount_configs argument so endpoint/cluster=bj9-cloudml is explicit
+# (CLAUDE.md: JuiceFS endpoint must NOT go through the YAML --filename path).
+#
+# Pending risks the operator should confirm before submitting:
+#   1. vLLM 0.19.1 support for Qwen3_5ForConditionalGeneration is unverified locally
+#      (host transformers 5.17.0, no vllm). The launch script runs a vLLM
+#      ModelRegistry arch probe in preflight and exits 5 cleanly if the arch is
+#      not registered, so a missing arch will fail fast rather than half-run.
+#   2. Thinking-off relies on vLLM serve-level --chat-template-kwargs
+#      {"enable_thinking":false} applying when the upstream_api worker omits
+#      chat_template_kwargs in its request (worker does not pass it). vLLM 0.19.1
+#      merge behavior of server-default kwargs for requests that omit them is
+#      the assumption; verify via the wrapper smoke test in the launch logs.
+
+jobName: "trim-run-eval-harness1-bcplus-full-qwen35-27b-all-nothink-8gpu-20260914-memqa-v5"
+description: "Harness-1 BC+ full eval of Qwen3.5-27B (all components, thinking off) on eight gm402-80g GPUs"
+accessType: "PRIVATE"
+tags:
+  - "MemQA-General-V5"
+
+imageConfig:
+  imageUrl: "micr.cloud.mioffice.cn/songzijun/songzijun-cto:3050749-songzijun-cto"
+  # cp the launch script to /tmp then exec: avoids JuiceFS heredoc-reread flakiness
+  # (CLAUDE.md: cloudml-trim-launch-heredoc-juicefs-reread). The script itself
+  # installs the locked four-package runtime, runs JVM/tiktoken/import preflight,
+  # then execs the no-thinking all wrapper (6 Qwen3.5-27B actors + harness-1 verifier).
+  imageCommand: |-
+    set -euo pipefail
+    cp /mnt/songzijun/Capability_Evolution/TRIM/scripts/run_qwen35_27b_all_nothink_eval_cloudml_8gpu.sh /tmp/trim_launch_qwen35_27b_all_nothink.sh
+    exec bash /tmp/trim_launch_qwen35_27b_all_nothink.sh
+
+envConfigs:
+  - key: "PYTHONUNBUFFERED"
+    value: "1"
+  - key: "CUDA_VISIBLE_DEVICES"
+    value: "0,1,2,3,4,5,6,7"
+  - key: "MAX_TURNS"
+    value: "40"
+
+queueId: "2334"
+priority: 8
+preemptible: false
+framework: "pytorch"
+resourceConfigs:
+  - nodeRole: "worker"
+    nodeNumber: 1
+    perNodeResourceSpec:
+      resourcePriority: "GUARANTEED_PUBLIC"
+      resourceName: "cloudml.ng1gm402-8-8.20-224"
+      resourceNumber: 8
+    elastic: false
+    preemptible: false
+
+enableTensorboard: false
+enableMetrics: false
+diagOptions:
+  - name: "HangDetection"
+    enable: false
+retryConfig:
+  enableRetry: false
+  maxRetryTimes: 1
+  policySets:
+    - "JobFailed"
+alertConfig:
+  enableAlert: true
+  alertItems:
+    - alertConditions:
+        - "START_RUNNING"
+        - "FAILED"
+      alertLevel: "P2"
+      alertReceivers:
+        persons:
+          - "songzijun"

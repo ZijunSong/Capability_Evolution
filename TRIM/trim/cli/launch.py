@@ -930,6 +930,12 @@ def add_eval_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     add_common_args(parser)
     parser.set_defaults(max_model_len=HARNESS1_EVAL_MAX_MODEL_LEN)
     parser.add_argument(
+        "--harness-bank",
+        dest="harness_bank",
+        default=None,
+        help="Frozen dynamic bank directory. Absent preserves the static component path.",
+    )
+    parser.add_argument(
         "--max-turns",
         type=int,
         default=HARNESS1_EVAL_MAX_TURNS,

@@ -1,0 +1,91 @@
+JobName: "diag-glm4-32b-toolcall-probe-20260914"
+Description: "Diagnose GLM-4-32B-0414 tool-call parsing under vLLM 0.19.1: list registered tool parsers, start vLLM with glm45 parser, send one tool-call request, dump raw response."
+AccessType: "PRIVATE"
+ImageConfig:
+  ImageUrl: "micr.cloud.mioffice.cn/songzijun/songzijun-cto:3050749-songzijun-cto"
+  ImageCommand: |
+    set -euxo pipefail
+    export PYTHONUNBUFFERED=1
+    export CUDA_VISIBLE_DEVICES=0
+    export PY=python3
+    export VLLM=vllm
+
+    python3 -c "import zipfile; zipfile.ZipFile('/mnt/songzijun/tiktoken-bundle.zip').extractall('/tmp')"
+    test -f /tmp/tiktoken-bundle/share/tiktoken/o200k_base.tiktoken
+    export TIKTOKEN_ENCODINGS_BASE=/tmp/tiktoken-bundle/share/tiktoken
+    export TIKTOKEN_RS_CACHE_DIR=/tmp/tiktoken-bundle/tiktoken_rs_cache
+    export TIKTOKEN_CACHE_DIR=/tmp/tiktoken-bundle/tiktoken_cache
+
+    python3 -m pip install --no-cache-dir --ignore-installed --upgrade-strategy only-if-needed \
+      "torch==2.10.0" "vllm==0.19.1" "transformers==4.57.6"
+
+    echo "=== LIST REGISTERED TOOL PARSERS ==="
+    python3 - <<'PY'
+    import importlib
+    for modname in ["vllm.entrypoints.openai.tool_parsers", "vllm.entrypoints.openai.api_server"]:
+        try:
+            mod = importlib.import_module(modname)
+            mgr = getattr(mod, "ToolParserManager", None)
+            if mgr is not None:
+                print(f"{modname}: {sorted(mgr.tool_parsers.keys())}")
+        except Exception as e:
+            print(f"{modname}: UNAVAILABLE {e}")
+    # Also dump the glm45 parser source location and the regex/keys it uses, if importable
+    try:
+        from vllm.entrypoints.openai.tool_parsers.glm_tool_parser import GLM45ToolParser
+        import inspect
+        src = inspect.getsource(GLM45ToolParser)
+        print("=== GLM45ToolParser source (first 2000 chars) ===")
+        print(src[:2000])
+    except Exception as e:
+        print("GLM45ToolParser inspect failed:", e)
+    PY
+
+    echo "=== START vLLM with glm45 parser ==="
+    CUDA_VISIBLE_DEVICES=0 nohup vllm serve /mnt/songzijun/models/GLM-4-32B-0414 \
+      --host 127.0.0.1 --port 8090 --served-model-name GLM-4-32B-0414 \
+      --enable-auto-tool-choice --tool-call-parser glm45 \
+      --max-model-len 8192 --trust-remote-code --gpu-memory-utilization 0.90 --max-num-seqs 8 --enforce-eager \
+      > /tmp/vllm_glm.log 2>&1 &
+    VLLM_PID=$!
+    echo "vllm pid=$VLLM_PID"
+    for i in $(seq 1 90); do
+      if curl -sf http://127.0.0.1:8090/v1/models >/dev/null 2>&1; then echo "VLLM_READY after ${i}0s"; break; fi
+      sleep 10
+    done
+    curl -sf http://127.0.0.1:8090/v1/models || { echo "VLLM NOT READY"; tail -50 /tmp/vllm_glm.log; exit 1; }
+
+    echo "=== TOOL CALL TEST (glm45 parser, tool_choice=auto) ==="
+    python3 - <<'PY'
+    import json, urllib.request
+    payload = {
+    "model": "GLM-4-32B-0414",
+    "messages": [{"role":"user","content":"Search the corpus for smoke test query."}],
+    "tools":[{"type":"function","function":{"name":"search_corpus","description":"Search corpus","parameters":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}}],
+    "tool_choice":"auto","max_tokens":256,"temperature":0.0}
+    req=urllib.request.Request("http://127.0.0.1:8090/v1/chat/completions",data=json.dumps(payload).encode(),headers={"Content-Type":"application/json"},method="POST")
+    try:
+        with urllib.request.urlopen(req,timeout=120) as r: body=json.loads(r.read().decode())
+    except Exception as e:
+        print("REQ_FAIL",e); raise SystemExit(1)
+    print("RAW_RESPONSE", json.dumps(body,ensure_ascii=False)[:1000])
+    msg=(body.get("choices") or [{}])[0].get("message",{})
+    print("CONTENT", repr(msg.get("content")))
+    print("TOOL_CALLS", json.dumps(msg.get("tool_calls"),ensure_ascii=False))
+    PY
+
+    kill $VLLM_PID 2>/dev/null || true
+    echo "DIAG_DONE"
+QueueId: "2334"
+Priority: 8
+Framework: "pytorch"
+Preemptible: false
+ResourceConfigs:
+  - NodeRole: "worker"
+    NodeNumber: 1
+    PerNodeResourceSpec:
+      ResourcePriority: "GUARANTEED_PUBLIC"
+      ResourceName: "cloudml.ng1gm402-8-8.20-224"
+      ResourceNumber: 1
+Tags:
+  - "MemQA-General-V5"

@@ -1,0 +1,353 @@
+# CloudML custom_train configuration for TRIM Harness-1 BC+ full Qwen3-4B-Instruct "all" eval.
+# Prepared 2026-09-13; NOT SUBMITTED. tag=MemQA-General-V5, priority=8.
+#
+# Topology (7 actor vLLM + 1 verify vLLM, single-node 8x gm402-80g, GUARANTEED_PUBLIC):
+#   Driven by scripts/run_bcplus_w_harness1_qwen_all_gpu8_eval.sh, which sources the env-parameterized
+#   lib scripts/lib_bcplus_w_harness1_gpu8_eval.sh and calls lib_bcplus_gpu8_run_all. Unlike the older
+#   run_bcplus_full_gpu8_eval.sh wrapper, this lib's start_all_stack reads ALL_ACTOR_GPUS/PORTS,
+#   ALL_VERIFY_GPU/PORT, ALL_TP, ALL_EVAL_TP from env, so NO bash function override is needed here.
+#
+# CRITICAL GUARD — PYTHONPATH overwrite by the lib (same trap that failed t-20260912190343-cmomc):
+#   lib_bcplus_w_harness1_gpu8_eval.sh:38 runs `export PYTHONPATH=".:${REL_SCAPE_EASYOPD}"` inside
+#   lib_bcplus_gpu8_init(), which DROPS the envConfigs PYTHONPATH carrying
+#   sitecustomize_qwen_all_recovery_20260912/ (first) + sitecustomize_dir/. Without re-asserting it,
+#   `python3 scripts/run_eval.py` would NOT load our sitecustomize, so the per-query wall-clock
+#   monkeypatch on _worker_config would be absent -> worker cfg query_timeout_s=None -> a single
+#   hung query (hermes format_retry death-loop, the t-20260911222900-owa0l rank2 qid=792 failure mode)
+#   hangs the whole shard forever. This was verified STILL needed on HEAD ec0b66e: run_eval.py
+#   builds worker_extra WITHOUT query_timeout_s (no --query-timeout-s CLI arg in trim/cli/launch.py),
+#   worker reads cfg["query_timeout_s"] at harness1_api_worker.py:78 and wraps each query in
+#   asyncio.wait_for; _worker_config merges extra via cfg.update(dict(extra)) at
+#   harness1_api_launch.py:75-76, still the monkeypatch target at harness1_api_launch.py:45.
+#   Fix here: do NOT call lib_bcplus_gpu8_run_all directly (it would re-run init and overwrite
+#   PYTHONPATH then launch run_eval in the same shell where the patch was lost). Instead we source
+#   only the lib (which defines functions but does NOT run them), then:
+#     1) export the topology env (defaults already match the lib, set explicitly for auditability),
+#     2) call lib_bcplus_gpu8_init  (cd into TRIM_ROOT; sets REL_* and EXPORT PYTHONPATH overwrite),
+#     3) RE-PUT PYTHONPATH with the recovery sitecustomize dir FIRST,
+#     4) PATCH_LIVE_POST_SOURCE assertion that the monkeypatch is live,
+#     5) call lib_bcplus_gpu8_run_all (start_all_stack + run_eval_cell + cleanup + manifest).
+#   This keeps the wrapper's verified start_vllm_bg/wait_api/verify_api_model/cleanup while guaranteeing
+#   query_timeout_s=600 reaches every worker.
+#
+# PER-QUERY TIMEOUT GUARD (sitecustomize, 600s default via QUERY_TIMEOUT_S):
+#   sitecustomize_qwen_all_recovery_20260912/sitecustomize.py monkeypatches _worker_config to
+#   setdefault("query_timeout_s", timeout); on TimeoutError the worker records an infra_error for
+#   that query and CONTINUES (shard does not hang). Same file also performs the anserini fatjar
+#   jnius registration that sitecustomize_dir does, because Python imports only the first
+#   sitecustomize on PYTHONPATH.
+#
+# NO Chroma server dependency:
+#   --retrieval-backend local_bm25 --reranker none --offline. HARNESS1_FORBID_CHROMA=1 set by lib
+#   (lib_bcplus_w_harness1_gpu8_eval.sh:40); SCAPE_CHROMA_PATH=/tmp/empty_chroma forces embedded
+#   chromadb if that branch is ever hit. Qwen3-4B "all" upstream_api path imports neither chz/tinker/
+#   json_repair/structlog/chromadb directly (verified on ec0b66e); the four-package + openai_harmony
+#   install list is kept identical to the prior successful Qwen3-4B all run for safety since the
+#   harness-1 verifier is a gpt-oss derivative and may touch openai_harmony.
+#
+# TOKENIZER NOTE:
+#   Qwen3-4B-Instruct-2507 uses its own HF tokenizer.json (tool-call-parser hermes) and does NOT
+#   consume the tiktoken/o200k vocab. The harness-1 verifier (gpt-oss derivative) needs o200k_base,
+#   so the offline tiktoken bundle is extracted and wired (TIKTOKEN_ENCODINGS_BASE etc.).
+#   bundle confirmed to contain: share/tiktoken/{o200k_base,cl100k_base}.tiktoken (+ cache dirs).
+#
+# LOCKED FOUR-PACKAGE RUNTIME (CLAUDE.md): Torch 2.10.0 / Transformers 4.57.6 /
+# vLLM 0.19.1 / Pyserini 2.0.0. Import-chain deps (structlog/chromadb/chz/tinker/json_repair/
+# openai_harmony) installed --ignore-installed (base image distutils `blinker 1.4` blocks pip
+# uninstall; internal Xiaomi PyPI). --no-deps NOT used so the four-package versions win.
+#
+# JUICEFS is intentionally OMITTED from this YAML. Submit with the direct CLI
+# --juicefs_mount_configs argument so endpoint=bj9-cloudml is explicit in the API request
+# (see submit script). Do NOT use the YAML --filename path for mounts.
+jobName: "eval-bcplus-full-qwen3-4b-all-8gpu-20260913-memqa-general-v5-seed2"
+description: "Qwen3-4B all eval 20260913: 8-GPU Qwen3-4B-Instruct-2507 bcplus_full component=all upstream_api + local_bm25, 830 queries, 7 actor vLLM GPU0-6 + 1 verify vLLM GPU7, ALL_TP=7 ALL_EVAL_TP=7, per-query timeout 600s via recovery sitecustomize (run_eval.py still omits query_timeout_s on HEAD ec0b66e). Driven by scripts/run_bcplus_w_harness1_qwen_all_gpu8_eval.sh (env-parameterized lib, no function override). Locked Torch2.10.0/vLLM0.19.1/TF4.57.6/Pyserini2.0.0+openai_harmony. NO Chroma."
+accessType: "PRIVATE"
+tags:
+  - "MemQA-General-V5"
+
+imageConfig:
+  imageUrl: "micr.cloud.mioffice.cn/songzijun/songzijun-cto:3050749-songzijun-cto"
+  imageCommand: |-
+    set -euxo pipefail
+    export PYTHONUNBUFFERED=1
+    export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+    export MAX_TURNS=40
+    export PY=python3
+    export VLLM=vllm
+    export VLLM_DISABLE_CUSTOM_ALL_REDUCE=1
+    export OPENAI_API_KEY="${OPENAI_API_KEY:-*****-*******-***********}"
+    export SCAPE_LOCAL_OPENAI_EMBEDDINGS=1
+    export SCAPE_CHROMA_PATH=/tmp/empty_chroma
+    mkdir -p "$SCAPE_CHROMA_PATH"
+
+    # --- per-query wall-clock guard: a hung query is skipped, not fatal ---
+    # Loaded as the first sitecustomize on PYTHONPATH (envConfigs below). Default 600s;
+    # QUERY_TIMEOUT_S overrides; =0 disables.
+    export QUERY_TIMEOUT_S=600
+
+    # --- offline tiktoken: harness-1 verifier (gpt-oss derivative) needs o200k_base ---
+    # Qwen3-4B itself uses its HF tokenizer.json and does not consume this; kept for the verifier.
+    # bundle confirmed to contain share/tiktoken/{o200k_base,cl100k_base}.tiktoken.
+    python3 -c "import zipfile; zipfile.ZipFile('/mnt/songzijun/tiktoken-bundle.zip').extractall('/tmp')"
+    test -f /tmp/tiktoken-bundle/share/tiktoken/o200k_base.tiktoken
+    test -f /tmp/tiktoken-bundle/share/tiktoken/cl100k_base.tiktoken
+    export TIKTOKEN_ENCODINGS_BASE=/tmp/tiktoken-bundle/share/tiktoken
+    export TIKTOKEN_RS_CACHE_DIR=/tmp/tiktoken-bundle/tiktoken_rs_cache
+    export TIKTOKEN_CACHE_DIR=/tmp/tiktoken-bundle/tiktoken_cache
+
+    nvidia-smi -L
+    test -f /mnt/songzijun/Capability_Evolution/TRIM/scripts/run_bcplus_w_harness1_qwen_all_gpu8_eval.sh
+    test -f /mnt/songzijun/Capability_Evolution/TRIM/scripts/lib_bcplus_w_harness1_gpu8_eval.sh
+    test -f /mnt/songzijun/Capability_Evolution/TRIM/scripts/run_eval.py
+    test -f /mnt/songzijun/Capability_Evolution/TRIM/sitecustomize_qwen_all_recovery_20260912/sitecustomize.py
+    test -d /mnt/songzijun/Capability_Evolution/TRIM/sitecustomize_dir
+    test -d /mnt/songzijun/models/Qwen3-4B-Instruct-2507
+    test -d /mnt/songzijun/models/harness-1
+    test -d /mnt/songzijun/Capability_Evolution/SCOPE/external/BrowseComp-Plus/indexes/bm25
+    test -f /mnt/songzijun/Capability_Evolution/SCOPE/external/BrowseComp-Plus/data/browsecomp_plus_corpus_full.jsonl
+
+    # --- JVM for Pyserini Lucene (probe first; do not trust a non-empty JAVA_HOME) ---
+    JVM_PATH=$(find /usr /opt -type f -name libjvm.so 2>/dev/null | head -1 || true)
+    if [ -z "${JVM_PATH}" ]; then
+      apt-get update
+      DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends openjdk-21-jre-headless
+      JVM_PATH=$(find /usr /opt -type f -name libjvm.so 2>/dev/null | head -1 || true)
+    fi
+    test -n "${JVM_PATH}"
+    test -f "${JVM_PATH}"
+    ldd "${JVM_PATH}"
+    export JVM_PATH
+    export JAVA_HOME=$(dirname "$(dirname "$(dirname "${JVM_PATH}")")")
+    export LD_LIBRARY_PATH=$(dirname "${JVM_PATH}"):${LD_LIBRARY_PATH:-}
+
+    # --- locked four-package runtime + import-chain deps ---
+    # --ignore-installed because base image distutils `blinker 1.4` blocks pip uninstall
+    # (internal Xiaomi PyPI). --no-deps NOT used so the four-package versions win.
+    # openai_harmony: harness-1 verifier (gpt-oss derivative) path may touch harmony encoding.
+    # structlog/chromadb/chz/tinker/json_repair: kept identical to the prior successful Qwen3-4B all
+    # run for safety (none are statically imported by the Qwen upstream_api eval path on ec0b66e,
+    # but the verifier import chain is gpt-oss-derived and the cost of a missing transitive dep at
+    # verifier load is far higher than the install).
+    python3 -m pip install --no-cache-dir --ignore-installed --upgrade-strategy only-if-needed \
+      "torch==2.10.0" "vllm==0.19.1" "transformers==4.57.6" "pyserini==2.0.0" \
+      openai_harmony structlog chromadb chz tinker json_repair \
+      tqdm sentence-transformers regex sympy latex2sympy2 word2number sentencepiece openai tenacity
+
+    # --- ANSERINI_CLASSPATH -> pyserini resources/jars (NOT the package root) ---
+    PYSERINI_ROOT=$(python3 -c 'import pathlib, pyserini; print(pathlib.Path(pyserini.__file__).resolve().parent)')
+    export ANSERINI_CLASSPATH=$(find "$PYSERINI_ROOT/resources/jars" -type f -name '*.jar' -print | paste -sd: -)
+    test -n "$ANSERINI_CLASSPATH"
+    export CLASSPATH="$ANSERINI_CLASSPATH"
+
+    # --- preflight: four versions + 8 GPU + PyJNI + Lucene bcplus index opens + query_timeout patch ---
+    # sitecustomize already monkeypatched _worker_config at interpreter startup (PYTHONPATH carries
+    # sitecustomize_qwen_all_recovery_20260912/ first); the assertion confirms the patch is live.
+    python3 - <<'PY'
+    import importlib.metadata
+    import os
+    import torch
+    import transformers
+    import vllm
+    from jnius import autoclass
+    autoclass("java.lang.String")
+    import trim.eval.harness1_api_launch as H
+    versions = {
+        "torch": torch.__version__,
+        "vllm": vllm.__version__,
+        "transformers": transformers.__version__,
+        "pyserini": importlib.metadata.version("pyserini"),
+        "gpu_count": torch.cuda.device_count(),
+        "JVM_PATH": os.environ["JVM_PATH"],
+        "JAVA_HOME": os.environ["JAVA_HOME"],
+        "TIKTOKEN_ENCODINGS_BASE": os.environ.get("TIKTOKEN_ENCODINGS_BASE"),
+        "o200k_base_present": os.path.isfile(
+            os.path.join(os.environ["TIKTOKEN_ENCODINGS_BASE"], "o200k_base.tiktoken")
+        ),
+        "QUERY_TIMEOUT_S": os.environ.get("QUERY_TIMEOUT_S"),
+        "query_timeout_patch_live": getattr(H, "_qwen_all_recovery_timeout_patched", False),
+        "worker_config_wrapped": getattr(H._worker_config, "__name__", "n/a"),
+        "java_ok": True,
+    }
+    print("PREFLIGHT", versions, flush=True)
+    assert versions["torch"].startswith("2.10.0")
+    assert versions["vllm"] == "0.19.1"
+    assert versions["transformers"] == "4.57.6"
+    assert versions["pyserini"] == "2.0.0"
+    assert versions["gpu_count"] == 8
+    assert versions["o200k_base_present"]
+    assert versions["query_timeout_patch_live"], "sitecustomize query_timeout patch did NOT load"
+    assert getattr(H._worker_config, "__name__", "") == "_patched_worker_config"
+    from pyserini.search.lucene import LuceneSearcher
+    s = LuceneSearcher("/mnt/songzijun/Capability_Evolution/SCOPE/external/BrowseComp-Plus/indexes/bm25")
+    n_docs = s.num_docs if not callable(s.num_docs) else s.num_docs()
+    print("LUCENE_OK", {"num_docs": n_docs}, flush=True)
+    assert n_docs > 0
+    PY
+
+    # --- 8-GPU Qwen3-4B "all" topology: 7 actor vLLM (GPU 0-6) + 1 verify vLLM (GPU 7) ---
+    # Source the dedicated qwen-all wrapper. It sources the env-parameterized lib and calls
+    # lib_bcplus_gpu8_run_all — BUT we must NOT let it run yet (it would re-run init, overwrite
+    # PYTHONPATH, and launch run_eval in a shell where the recovery sitecustomize was just dropped).
+    # So instead we source only the LIB (defines functions; runs nothing), then drive the run
+    # ourselves with the PYTHONPATH restore in between.
+    #
+    # Step 1: topology env (defaults already match the lib; explicit for audit + run_eval --tp).
+    export RUN_ID="$(date +%Y%m%d_%H%M%S)_bcplus_full_qwen3_4b_all_8gpu"
+    export MODEL_PATH="/mnt/songzijun/models/Qwen3-4B-Instruct-2507"
+    export MODEL_SLUG="Qwen3-4B-Instruct-2507"
+    export API_MODEL="Qwen3-4B-Instruct-2507"
+    export COMPONENT="all"
+    export BENCHMARK="bcplus_full"
+    # 7 single-card actor vLLM on GPU 0-6, unique even ports 8040..8052 (disjoint from verifier).
+    export ALL_ACTOR_GPUS=0,1,2,3,4,5,6
+    export ALL_ACTOR_PORTS=8040,8042,8044,8046,8048,8050,8052
+    export ALL_TP=7
+    export ALL_VERIFY_GPU=7
+    export ALL_VERIFY_PORT=8060
+    export ALL_EVAL_TP=7
+    export GPU_UTIL=0.90
+    export VLLM_MAX_NUM_SEQS=128
+    export WORKER_STAGGER=5
+
+    # Step 2: source the lib (defines lib_bcplus_gpu8_init / start_all_stack / run_eval_cell /
+    # lib_bcplus_gpu8_cleanup / lib_bcplus_gpu8_run_all / start_vllm_bg / wait_api / etc.).
+    # Sourcing the lib alone runs NOTHING (all functions). We deliberately do NOT execute
+    # run_bcplus_w_harness1_qwen_all_gpu8_eval.sh (it would call lib_bcplus_gpu8_run_all and
+    # hit the PYTHONPATH-overwrite trap with the patch missing during run_eval).
+    #
+    # CRITICAL: the lib's lib_bcplus_gpu8_init() asserts `: "${SCRIPT_DIR:?...}"` at line 5 and
+    # derives TRIM_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)". The wrapper sets SCRIPT_DIR itself,
+    # but we source the lib directly, so we MUST set SCRIPT_DIR to the scripts dir FIRST (else
+    # init aborts under set -e — this is exactly the t-20260913093954-fmztv failure at line 5).
+    export SCRIPT_DIR=/mnt/songzijun/Capability_Evolution/TRIM/scripts
+    source /mnt/songzijun/Capability_Evolution/TRIM/scripts/lib_bcplus_w_harness1_gpu8_eval.sh
+
+    # Step 3: the r2 fix for the r1 failure. r1 called lib_bcplus_gpu8_run_all, which (lib line
+    # 393) calls lib_bcplus_gpu8_init AGAIN internally; that 2nd init runs the lib's line 38
+    # `export PYTHONPATH=".:${REL_SCAPE_EASYOPD}"`, re-overwriting PYTHONPATH and DROPPING the
+    # recovery sitecustomize before run_eval_cell's `python3 scripts/run_eval.py` ran. Result:
+    # sitecustomize never loaded in the run_eval.py process -> _worker_config was the ORIGINAL
+    # (un-patched) -> worker_extra had no query_timeout_s -> WORKER_CONFIG.json had no
+    # query_timeout_s -> worker query_timeout_s=None -> no per-query guard (the owa0l rank2
+    # qid=792 hermes format_retry death-loop failure mode). r1's PATCH_LIVE_POST_INIT assertion
+    # was a false positive: it ran in the brief window AFTER our Step4 restore but BEFORE the
+    # 2nd init inside run_all clobbered PYTHONPATH.
+    #
+    # Fix: do NOT call lib_bcplus_gpu8_run_all (it re-inits). Instead inline its body (lib lines
+    # 392-415) so lib_bcplus_gpu8_init is called EXACTLY ONCE, then we restore PYTHONPATH once
+    # and it stays restored through start_all_stack + run_eval_cell (neither touches PYTHONPATH,
+    # verified: start_all_stack has no init/PYTHONPATH refs). This is the same shape as the
+    # successful sbfsg run (old wrapper run_eval() called python3 directly without re-init).
+    lib_bcplus_gpu8_init
+    trap lib_bcplus_gpu8_cleanup EXIT
+
+    # RESTORE the recovery sitecustomize to the FRONT of PYTHONPATH (init just overwrote it at
+    # lib line 38). sitecustomize FIRST so its sitecustomize.py wins (Python imports only the 1st).
+    # REL_SCAPE_EASYOPD was set by init (== ../SCAPE-EasyOPD relative to TRIM_ROOT we cd'd into).
+    export PYTHONPATH="/mnt/songzijun/Capability_Evolution/TRIM/sitecustomize_qwen_all_recovery_20260912:/mnt/songzijun/Capability_Evolution/TRIM/sitecustomize_dir:/mnt/songzijun/Capability_Evolution:/mnt/songzijun/Capability_Evolution/TRIM:/mnt/songzijun/Capability_Evolution/SCAPE-EasyOPD:.:${REL_SCAPE_EASYOPD}"
+
+    # Step 4: assert the per-query timeout patch is live in a fresh python that resolves trim from
+    # the restored PYTHONPATH (sitecustomize FIRST). This is the same check r1 had, but r2 ALSO
+    # verifies post-run (below) that WORKER_CONFIG.json actually contains query_timeout_s — the
+    # real proof, since r1's check passed yet the worker never got the guard.
+    python3 -c "import trim.eval.harness1_api_launch as H; assert getattr(H,'_qwen_all_recovery_timeout_patched',False), 'query_timeout patch NOT live after restore'; assert getattr(H._worker_config,'__name__','')=='_patched_worker_config'; print('PATCH_LIVE_POST_RESTORE', H._worker_config.__name__, 'query_timeout_s default=600')"
+
+    log "RUN_ID=${RUN_ID} model=${MODEL_SLUG} component=${COMPONENT} actors=${ALL_ACTOR_GPUS} verify=gpu${ALL_VERIFY_GPU}:${ALL_VERIFY_PORT} tp=${ALL_TP} eval_tp=${ALL_EVAL_TP} gpu_util=${GPU_UTIL} stagger=${WORKER_STAGGER} query_timeout_s=${QUERY_TIMEOUT_S}"
+
+    [[ -d "${MODEL_PATH}" ]] || { log "missing model dir ${MODEL_PATH}"; exit 1; }
+    assert_local_retrieval_ready
+    ensure_full_corpus
+
+    # Step 5: inline the rest of lib_bcplus_gpu8_run_all (lib lines 400-414). start_all_stack is
+    # env-driven (7 actors GPU0-6 ports 8040..8052 + verify GPU7:8060). run_eval_cell launches
+    # `python3 scripts/run_eval.py --tp 7 --component all ...`; that python3 inherits THIS shell's
+    # PYTHONPATH (sitecustomize FIRST, restored above) -> sitecustomize loads -> _worker_config is
+    # the patched _patched_worker_config -> worker_extra gets query_timeout_s=600 -> every shard's
+    # WORKER_CONFIG.json carries query_timeout_s -> each worker subprocess has the 600s guard.
+    csv_to_array "${ALL_ACTOR_PORTS}" _r2_actor_ports
+    ALL_ACTOR_URLS="$(join_urls "${_r2_actor_ports[@]}")"
+    _r2_out_suffix="gpu${ALL_ACTOR_GPUS//,/}v${ALL_VERIFY_GPU}"
+    log "START inline-run_all actors=${ALL_ACTOR_GPUS} verify=gpu${ALL_VERIFY_GPU}:${ALL_VERIFY_PORT} tp=${ALL_TP} eval_tp=${ALL_EVAL_TP} urls=${ALL_ACTOR_URLS}"
+    start_all_stack
+    run_eval_cell "${ALL_ACTOR_URLS}" "${ALL_EVAL_TP}" "${_r2_out_suffix}"
+    lib_bcplus_gpu8_cleanup
+    trap - EXIT
+
+    write_cell_manifest "${ALL_ACTOR_URLS}" "${_r2_out_suffix}" "${ALL_EVAL_TP}"
+
+    # r2 PROOF (not in lib): confirm at least one shard's WORKER_CONFIG.json actually carries
+    # query_timeout_s=600 — the definitive check r1 lacked. run_eval_cell wrote shards under
+    # ${REL_OUT}/eval_h1_${BENCHMARK}_${MODEL_SLUG}_all_${_r2_out_suffix}_${RUN_ID}/upstream_api/shards/rank0/.
+    _r2_out_dir="${REL_OUT}/eval_h1_${BENCHMARK}_${MODEL_SLUG}_all_${_r2_out_suffix}_${RUN_ID}"
+    python3 - "${_r2_out_dir}" <<'PY'
+    import json, os, sys
+    d = sys.argv[1] + "/upstream_api/shards/rank0/WORKER_CONFIG.json"
+    assert os.path.isfile(d), "rank0 WORKER_CONFIG.json missing at " + d
+    v = json.load(open(d)).get("query_timeout_s")
+    print("PROOF rank0 query_timeout_s =", v)
+    assert v == 600.0, "query_timeout_s NOT 600 in WORKER_CONFIG.json — guard did NOT reach worker!"
+    print("PROOF_OK query_timeout guard live in worker config")
+    PY
+
+    log "finished qwen3-4b all 8gpu (830 queries); outputs under ${_r2_out_dir}"
+
+envConfigs:
+  - key: "PYTHONUNBUFFERED"
+    value: "1"
+  - key: "CUDA_VISIBLE_DEVICES"
+    value: "0,1,2,3,4,5,6,7"
+  - key: "MAX_TURNS"
+    value: "40"
+  # recovery sitecustomize dir FIRST so its sitecustomize.py wins (Python imports only the
+  # first one); it carries BOTH the query_timeout monkeypatch AND the jnius anserini classpath
+  # registration (which sitecustomize_dir/ would otherwise provide).
+  - key: "PYTHONPATH"
+    value: "/mnt/songzijun/Capability_Evolution/TRIM/sitecustomize_qwen_all_recovery_20260912:/mnt/songzijun/Capability_Evolution/TRIM/sitecustomize_dir:/mnt/songzijun/Capability_Evolution:/mnt/songzijun/Capability_Evolution/TRIM:/mnt/songzijun/Capability_Evolution/SCAPE-EasyOPD"
+  - key: "VLLM_DISABLE_CUSTOM_ALL_REDUCE"
+    value: "1"
+  - key: "SCAPE_LOCAL_OPENAI_EMBEDDINGS"
+    value: "1"
+  - key: "SCAPE_CHROMA_PATH"
+    value: "/tmp/empty_chroma"
+  - key: "TIKTOKEN_ENCODINGS_BASE"
+    value: "/tmp/tiktoken-bundle/share/tiktoken"
+  - key: "TIKTOKEN_RS_CACHE_DIR"
+    value: "/tmp/tiktoken-bundle/tiktoken_rs_cache"
+  - key: "TIKTOKEN_CACHE_DIR"
+    value: "/tmp/tiktoken-bundle/tiktoken_cache"
+  - key: "QUERY_TIMEOUT_S"
+    value: "600"
+
+queueId: "2334"
+priority: 8
+preemptible: false
+framework: "pytorch"
+resourceConfigs:
+  - nodeRole: "worker"
+    nodeNumber: 1
+    perNodeResourceSpec:
+      resourcePriority: "GUARANTEED_PUBLIC"
+      resourceName: "cloudml.ng1gm402-8-8.20-224"
+      resourceNumber: 8
+    elastic: false
+    preemptible: false
+
+enableTensorboard: false
+enableMetrics: false
+diagOptions:
+  - name: "HangDetection"
+    enable: false
+retryConfig:
+  enableRetry: false
+  maxRetryTimes: 1
+  policySets:
+    - "JobFailed"
+alertConfig:
+  enableAlert: true
+  alertItems:
+    - alertConditions:
+        - "FAILED"
+      alertLevel: "P2"
+      alertReceivers:
+        persons:
+          - "songzijun"

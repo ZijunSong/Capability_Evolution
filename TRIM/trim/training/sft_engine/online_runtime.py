@@ -16,8 +16,9 @@ from trim.training.sft_ablation.contracts import SFTBatchRow, fingerprint, packa
 from trim.training.sft_ablation.fixed_train import select_batch_indices
 from trim.training.sft_ablation.io_util import atomic_write_json, read_json, sha256_tree
 from trim.training.sft_ablation.session import append_metrics
+from trim.training.sft_engine.backend import backend_name
 from trim.training.sft_engine.checkpoint import find_selection, latest_v2
-from trim.training.sft_engine.contract import build_v2_contract
+from trim.training.sft_engine.contract import adapter_config_from, build_v2_contract
 from trim.training.sft_engine.profile import summarize_progress
 from trim.training.student_onpolicy_sft.runtime import LoopState, Policy, run_online_ce
 
@@ -47,25 +48,27 @@ def run_phase_job(args: Any) -> int:
     """One CE update from a sealed round, then exit."""
     if not str(getattr(args, "resume_round", "") or ""):
         raise SystemExit("phase_jobs requires --resume-round pointing at a sealed targets directory")
-    from trim.training.sft_engine.fixed_runtime import _now, _seed_rank
-    from trim.training.sft_engine.accelerate_engine import update_global_batch
-    from trim.training.sft_engine.checkpoint import load_v2_training_state, publish_v2_checkpoint
-    from trim.training.sft_engine.distributed import broadcast_ints
-    from trim.training.sft_engine.model import (
-        build_optimizer,
-        load_ddp_model,
-        make_accelerator,
-        probe_action_logits,
+    from trim.training.sft_engine.backend import (
+        create_training_context,
+        make_training_accelerator,
+        save_training_checkpoint,
+        update,
     )
+    from trim.training.sft_engine.fixed_runtime import _now
+    from trim.training.sft_engine.distributed import broadcast_ints
 
-    accelerator = make_accelerator()
+    accelerator = make_training_accelerator(args)
     out = Path(args.out)
+    decision_path = out / f"phase_decision_{Path(args.resume_round).name}.json"
     if int(accelerator.process_index) == 0:
         out.mkdir(parents=True, exist_ok=True)
-        atomic_write_json(out / "phase_decision.json", inspect_sealed_round(args, Path(args.resume_round)))
+        atomic_write_json(decision_path, inspect_sealed_round(args, Path(args.resume_round)))
     accelerator.wait_for_everyone()
-    decision = read_json(out / "phase_decision.json")
+    decision = read_json(decision_path)
     if decision["action"] == "skip":
+        if int(accelerator.process_index) == 0:
+            _repair_consume_marks(Path(args.resume_round), decision, out)
+        accelerator.wait_for_everyone()
         return 0
     if decision["action"] != "update":
         raise RuntimeError(decision.get("reason") or "sealed student round was refused")
@@ -84,32 +87,16 @@ def run_phase_job(args: Any) -> int:
         raise RuntimeError("rank disagreed on the sealed-round selection")
     contract = _student_contract(args, accelerator)
     _write_contract(out, contract, accelerator)
-    model = load_ddp_model(
-        str(args.model_name),
-        str(decision["adapter"]),
-        accelerator,
-        attn_impl=str(getattr(args, "attn_implementation", "") or "") or None,
+    ctx = create_training_context(
+        args,
+        adapter_path=str(decision["adapter"]),
+        contract=contract,
+        resume_dir=Path(decision["resume"]) if decision.get("resume") else None,
+        accelerator=accelerator,
     )
-    probe_action_logits(model, accelerator.device)
-    optimizer, scheduler = build_optimizer(model, args)
-    model, optimizer = accelerator.prepare(model, optimizer)
-    if decision.get("resume"):
-        load_v2_training_state(
-            Path(decision["resume"]),
-            model=accelerator.unwrap_model(model),
-            optimizer=optimizer,
-            scheduler=scheduler,
-            contract=contract,
-            rank=int(accelerator.process_index),
-        )
-    else:
-        _seed_rank(int(args.seed), int(accelerator.process_index))
     started = _now()
-    result = update_global_batch(
-        accelerator,
-        model,
-        optimizer,
-        scheduler,
+    result = update(
+        ctx,
         batch,
         int(args.max_model_len),
         grad_clip=float(args.grad_clip),
@@ -118,12 +105,9 @@ def run_phase_job(args: Any) -> int:
     if not result["updated"]:
         raise RuntimeError("sealed student round produced no update")
     step = int(decision["optimizer_step"]) + 1
-    published = publish_v2_checkpoint(
-        accelerator,
+    published = save_training_checkpoint(
+        ctx,
         out / "checkpoints" / f"step-{step:06d}",
-        model=model,
-        optimizer=optimizer,
-        scheduler=scheduler,
         contract=contract,
         optimizer_step=step,
         policy_version=f"student_onpolicy_sft:step{step}",
@@ -168,6 +152,42 @@ def inspect_sealed_round(args: Any, round_dir: Path) -> dict[str, Any]:
     policy_digest = str(policy.get("digest") or "")
     if not policy_digest:
         return {"action": "refuse", "reason": "sealed round has no source policy digest"}
+    ordered = sorted(rows, key=lambda row: row.row_id)
+    logical, _cursor, _uses = select_batch_indices(
+        len(ordered),
+        cursor=0,
+        batch_size=min(len(ordered), int(args.global_batch_size)),
+        seed=int(args.seed),
+    )
+    chosen = [ordered[index] for index in logical]
+    selection = fingerprint([row.row_id for row in chosen])
+    source_rows_digest = package_digest(chosen)
+    round_id = _round_id_from_path(round_dir)
+    # 1. A committed checkpoint for THIS transaction means the update already
+    #    ran: only the CONSUMED/loop_state marks may be missing (crash between
+    #    commit and bookkeeping). Do not step a second time (11.6).
+    committed = find_round_transaction(
+        Path(args.out) / "checkpoints",
+        round_id=round_id,
+        policy_digest=policy_digest,
+        source_rows_digest=source_rows_digest,
+        selection_digest=selection,
+    )
+    if committed is not None:
+        manifest = read_json(committed / "SFT_CHECKPOINT.json")
+        return {
+            "action": "skip",
+            "reason": "round transaction already committed",
+            "selection_digest": selection,
+            "checkpoint": str(committed),
+            "optimizer_step": int(manifest.get("optimizer_step") or 0),
+            "consume": {
+                "selection_digest": selection,
+                "checkpoint": str(committed),
+                "optimizer_step": int(manifest.get("optimizer_step") or 0),
+                "round_id": round_id,
+            },
+        }
     init_digest = sha256_tree(Path(args.init_adapter)) if str(args.init_adapter or "") and Path(args.init_adapter).exists() else ""
     latest = latest_v2(Path(args.out) / "checkpoints")
     if latest is None:
@@ -185,15 +205,7 @@ def inspect_sealed_round(args: Any, round_dir: Path) -> dict[str, Any]:
         step = int(manifest["optimizer_step"])
     if step >= int(args.num_updates):
         return {"action": "skip", "reason": "update budget already reached", "optimizer_step": step}
-    ordered = sorted(rows, key=lambda row: row.row_id)
-    logical, _cursor, _uses = select_batch_indices(
-        len(ordered),
-        cursor=0,
-        batch_size=min(len(ordered), int(args.global_batch_size)),
-        seed=int(args.seed),
-    )
-    chosen = [ordered[index] for index in logical]
-    selection = fingerprint([row.row_id for row in chosen])
+    # 2. Legacy selection-only match (pre-transaction checkpoints).
     existing = find_selection(Path(args.out) / "checkpoints", selection)
     if existing is not None:
         return {
@@ -202,19 +214,72 @@ def inspect_sealed_round(args: Any, round_dir: Path) -> dict[str, Any]:
             "selection_digest": selection,
             "checkpoint": str(existing),
             "optimizer_step": step,
+            "consume": {
+                "selection_digest": selection,
+                "checkpoint": str(existing),
+                "optimizer_step": step,
+                "round_id": round_id,
+            },
         }
-    round_id = _round_id_from_path(round_dir)
     return {
         "action": "update",
         "adapter": adapter,
         "resume": resume,
         "optimizer_step": step,
         "selection_digest": selection,
+        "source_rows_digest": source_rows_digest,
         "rollout_adapter_digest": policy_digest,
         "round_id": round_id,
         "legacy_targets_without_ready": not (round_dir / "READY.json").is_file(),
         "n_rows": len(chosen),
     }
+
+
+def _repair_consume_marks(round_dir: Path, decision: dict[str, Any], out: Path) -> None:
+    """Finish the COMMITTED→CONSUMED bookkeeping an interrupted run left behind."""
+    consume = dict(decision.get("consume") or {})
+    if not consume:
+        return
+    consumed = round_dir / "CONSUMED.json"
+    if not consumed.is_file():
+        atomic_write_json(consumed, {"selection_digest": consume.get("selection_digest"), "checkpoint": consume.get("checkpoint")})
+    state_path = out / "loop_state.json"
+    want_step = int(consume.get("optimizer_step") or 0)
+    want_round = int(consume.get("round_id") or 0) + 1
+    if state_path.is_file():
+        saved = read_json(state_path)
+        if int(saved.get("optimizer_step") or 0) >= want_step:
+            return  # never regress a newer loop state
+    atomic_write_json(state_path, {"optimizer_step": want_step, "round_id": want_round, "empty_rounds": 0})
+
+
+def find_round_transaction(
+    root: Path,
+    *,
+    round_id: int,
+    policy_digest: str,
+    source_rows_digest: str,
+    selection_digest: str,
+) -> Path | None:
+    """Locate a COMMITTED checkpoint written for exactly this round transaction."""
+    root = Path(root)
+    if not root.is_dir() or not selection_digest:
+        return None
+    for path in sorted(item for item in root.iterdir() if item.is_dir()):
+        manifest_path = path / "SFT_CHECKPOINT.json"
+        if not manifest_path.is_file() or not (path / "COMMITTED.json").is_file():
+            continue
+        manifest = read_json(manifest_path)
+        if str(manifest.get("selection_digest") or "") != selection_digest:
+            continue
+        if str(manifest.get("rollout_adapter_digest") or "") != policy_digest:
+            continue
+        if str(manifest.get("source_digest") or "") != source_rows_digest:
+            continue
+        if int(manifest.get("pending_round") if manifest.get("pending_round") is not None else -1) != int(round_id):
+            continue
+        return path
+    return None
 
 
 class SplitPoolPorts:
@@ -238,11 +303,9 @@ class SplitPoolPorts:
         return int(self.acc.process_index)
 
     def restore_or_initialize(self) -> LoopState:
-        from trim.training.sft_engine.checkpoint import load_v2_training_state
-        from trim.training.sft_engine.fixed_runtime import _seed_rank
-        from trim.training.sft_engine.model import build_optimizer, load_ddp_model, make_accelerator, probe_action_logits
+        from trim.training.sft_engine.backend import create_training_context, make_training_accelerator
 
-        self.acc = make_accelerator()
+        self.acc = make_training_accelerator(self.args)
         if self.rank == 0:
             self.out.mkdir(parents=True, exist_ok=True)
             from trim.training.sft_ablation.query_pool import load_train_queries
@@ -252,29 +315,23 @@ class SplitPoolPorts:
         _write_contract(self.out, self.contract, self.acc)
         latest = latest_v2(self.out / "checkpoints")
         adapter = str(latest / "adapter") if latest is not None else str(self.args.init_adapter)
-        self.model = load_ddp_model(
-            str(self.args.model_name),
-            adapter,
-            self.acc,
-            attn_impl=str(getattr(self.args, "attn_implementation", "") or "") or None,
+        ctx = create_training_context(
+            self.args,
+            adapter_path=adapter,
+            contract=self.contract,
+            resume_dir=latest,
+            accelerator=self.acc,
         )
-        probe_action_logits(self.model, self.acc.device)
-        self.optimizer, self.scheduler = build_optimizer(self.model, self.args)
-        self.model, self.optimizer = self.acc.prepare(self.model, self.optimizer)
+        self.model = ctx.model
+        self.optimizer = ctx.optimizer
+        self.scheduler = ctx.scheduler
         state = LoopState()
         if latest is not None:
-            manifest = load_v2_training_state(
-                latest,
-                model=self.acc.unwrap_model(self.model),
-                optimizer=self.optimizer,
-                scheduler=self.scheduler,
-                contract=self.contract,
-                rank=self.rank,
-            )
+            manifest = ctx.resume_manifest
+            if manifest is None:
+                raise RuntimeError("committed checkpoint was not restored")
             state.optimizer_step = int(manifest["optimizer_step"])
             state.round_id = int(manifest["sampler"].get("round_id") or manifest["optimizer_step"])
-        else:
-            _seed_rank(int(self.args.seed), self.rank)
         if self.rank == 0:
             atomic_write_json(self.out / "loop_state.json", _state_dict(state))
         self.acc.wait_for_everyone()
@@ -283,8 +340,14 @@ class SplitPoolPorts:
     def publish_and_verify_policy(self, state: LoopState) -> Policy:
         pointer = self.out / "policy_current.json"
         ack = self.out / "policy_ack.json"
+        staging = self.out / "policies" / f".tmp-step-{state.optimizer_step:06d}"
+        # Adapter export is collective (FSDP2 DTensor aggregation), so every
+        # rank enters it; only the pointer/ACK work stays on rank 0.
+        self._guard(lambda: self._export_policy(state, staging))
+        self.acc.wait_for_everyone()
         if self.rank == 0:
-            self._guard(lambda: self._publish(state, pointer, ack))
+            self._guard(lambda: self._publish(state, staging, pointer, ack))
+        self.acc.wait_for_everyone()
         self._wait_value(ack, "optimizer_step", int(state.optimizer_step))
         payload = read_json(pointer)
         if int(payload["optimizer_step"]) != int(state.optimizer_step):
@@ -391,17 +454,14 @@ class SplitPoolPorts:
         return CEUpdateResult(result)
 
     def save_and_publish_checkpoint(self, state: LoopState, result: Any) -> None:
-        from trim.training.sft_engine.checkpoint import publish_v2_checkpoint
+        from trim.training.sft_engine.backend import export_policy_adapter, save_training_checkpoint
 
         if self.source_policy is None:
             raise RuntimeError("missing rollout policy for this update")
         batch = getattr(self, "_batch", [])
-        published = publish_v2_checkpoint(
-            self.acc,
+        published = save_training_checkpoint(
+            self._ctx(),
             self.out / "checkpoints" / f"step-{state.optimizer_step:06d}",
-            model=self.model,
-            optimizer=self.optimizer,
-            scheduler=self.scheduler,
             contract=self.contract,
             optimizer_step=state.optimizer_step,
             policy_version=f"student_onpolicy_sft:step{state.optimizer_step}",
@@ -411,6 +471,8 @@ class SplitPoolPorts:
             selection_digest=str(result.payload.get("selection_digest") or ""),
             pending_round=state.round_id,
         )
+        # Final adapter export is collective under FSDP2 (DTensor aggregation).
+        export_policy_adapter(self._ctx(), self.out / "adapters" / "final")
         if self.rank == 0:
             manifest = read_json(published / "SFT_CHECKPOINT.json")
             append_metrics(
@@ -425,10 +487,21 @@ class SplitPoolPorts:
                     float(result.payload.get("update_wall_s") or 0.0),
                 ),
             )
-            final = self.out / "adapters" / "final"
-            final.mkdir(parents=True, exist_ok=True)
-            self.acc.unwrap_model(self.model).save_pretrained(final)
         self.acc.wait_for_everyone()
+
+    def _ctx(self) -> Any:
+        from types import SimpleNamespace
+
+        from trim.training.sft_engine.backend import backend_name
+
+        return SimpleNamespace(
+            backend=backend_name(self.args),
+            accelerator=self.acc,
+            model=self.model,
+            optimizer=self.optimizer,
+            scheduler=self.scheduler,
+            contract=self.contract,
+        )
 
     def persist_loop_state(self, state: LoopState) -> None:
         path = self.out / "loop_state.json"
@@ -447,23 +520,28 @@ class SplitPoolPorts:
             "online_layout": "split_pools",
         }
 
-    def _publish(self, state: LoopState, pointer: Path, ack: Path) -> None:
+    def _export_policy(self, state: LoopState, staging: Path) -> None:
+        import shutil
+
+        from trim.training.sft_engine.backend import export_policy_adapter
+
+        if self.rank == 0 and staging.exists():
+            shutil.rmtree(staging)
+        self.acc.wait_for_everyone()
+        export_policy_adapter(self._ctx(), staging)
+
+    def _publish(self, state: LoopState, staging: Path, pointer: Path, ack: Path) -> None:
         from trim.training.student_onpolicy_sft.rollout_service import RolloutPool
 
         if ack.is_file():
             ack.unlink()
-        directory = self.out / "policies" / f".tmp-step-{state.optimizer_step:06d}"
-        if directory.exists():
-            import shutil
-
-            shutil.rmtree(directory)
-        directory.mkdir(parents=True)
-        self.acc.unwrap_model(self.model).save_pretrained(directory)
-        digest = sha256_tree(directory)
+        if not staging.is_dir() or not any(staging.iterdir()):
+            raise RuntimeError("policy export produced no adapter files")
+        digest = sha256_tree(staging)
         final = self.out / "policies" / f"step-{state.optimizer_step:06d}-{digest[:16]}"
         if final.exists():
             raise FileExistsError(f"policy directory already exists: {final}")
-        directory.rename(final)
+        staging.rename(final)
         version = f"student_onpolicy_sft:step{state.optimizer_step}:{digest[:16]}"
         atomic_write_json(
             pointer,
@@ -615,6 +693,8 @@ def _student_contract(args: Any, accelerator: Any) -> dict[str, Any]:
         nnodes=max(1, int(accelerator.num_processes) // max(1, int(os.environ.get("LOCAL_WORLD_SIZE") or accelerator.num_processes))),
         nproc_per_node=int(os.environ.get("LOCAL_WORLD_SIZE") or accelerator.num_processes),
         init_adapter_digest=init_digest,
+        backend=backend_name(args),
+        adapter_config=adapter_config_from(args.init_adapter) if str(args.init_adapter or "") else None,
     )
 
 

@@ -1,0 +1,80 @@
+# CloudML custom_train: TRIM Harness-1 BC+ full / Qwen3-4B-Instruct-2507 / 2-node×8gpu=16gpu 多节点环境探针
+#
+# 目的：探究如何启动多节点训练，而非完成整个训练任务。
+#   RL/trim 训练框架层为单进程设计（four_cell_runtime._run_four_cell_body 单进程 asyncio 循环
+#   + 1 个 vLLM rollout worker 子进程，TP 默认=torch.cuda.device_count()=本节点 GPU 数=8；
+#   不读 NNODES/NODE_RANK/RANK/WORLD_SIZE/MASTER_ADDR，不 import ray/verl，RL 路径无 torch.distributed）。
+#   因此 2 节点直接 exec run_train.py 会让两节点各自独立跑一遍（重复 + 输出冲突）。
+#   本任务只跑多节点环境探针，不 exec run_train.py，摸清 CloudML 多节点注入了什么、框架缺口边界。
+#
+# 镜像: micr.cloud.mioffice.cn/songzijun/songzijun-cto:3050749-songzijun-cto
+#   （基础层缺 torch 等依赖，按 CLAUDE.md 经验在启动阶段显式锁定并安装四包配置）
+# JuiceFS: volume=songzijun, cluster=bj9-cloudml (endpoint), mount=/mnt/songzijun
+#   重要：JuiceFS endpoint 不通过本 YAML（--filename）方式提交。
+#   实际提交使用直接 CLI 参数，并通过 --juicefs_mount_configs 显式传入 JSON，
+#   其中 endpoint（juiceFsCluster）必须为 "bj9-cloudml"。
+#   本文件仅为可读底稿 / 审计快照；其 JuiceFSMountConfigs 不作为提交依据。
+#
+# 启动逻辑见 TRIM/scripts/run_train_cloudml_16gpu_2node_probe.sh（依赖锁定 + preflight + 多节点环境探针）。
+JobName: "trim_harness1_bcplus_full_qwen3_4b_trim_16step_16gpu_2node_probe_20260914"
+Description: "TRIM Harness-1 BC+ full / Qwen3-4B-Instruct-2507 (original bf16) / 2-node x 8x gm402-80g = 16gpu MULTI-NODE ENV PROBE (not full training). RL/trim framework is single-process by design; this job only probes the CloudML multi-node environment (node identity / RDMA / NCCL / injected distributed env / torch.distributed init feasibility) and does NOT exec run_train.py. Launch script: TRIM/scripts/run_train_cloudml_16gpu_2node_probe.sh"
+AccessType: "PRIVATE"
+Tags:
+  - "MemQA-General-V5"
+ImageConfig:
+  ImageUrl: "micr.cloud.mioffice.cn/songzijun/songzijun-cto:3050749-songzijun-cto"
+  ImageCommand: "bash -lc '/mnt/songzijun/Capability_Evolution/TRIM/scripts/run_train_cloudml_16gpu_2node_probe.sh'"
+QueueId: "2334"
+Priority: 8
+Framework: "pytorch"
+RDMA: true
+ResourceConfigs:
+  - NodeRole: "worker"
+    NodeNumber: 2
+    PerNodeResourceSpec:
+      ResourcePriority: "GUARANTEED_PUBLIC"
+      ResourceName: "cloudml.ng1gm402-8-8.20-224"
+      ResourceNumber: 8
+EnvConfigs:
+  - Key: "PYTHONUNBUFFERED"
+    Value: "1"
+  - Key: "PYTHONPATH"
+    Value: "/mnt/songzijun/Capability_Evolution/TRIM:/mnt/songzijun/Capability_Evolution/SCAPE-EasyOPD"
+  - Key: "MAX_TURNS"
+    Value: "40"
+  - Key: "DISABLE_CUSTOM_ALL_REDUCE"
+    Value: "1"
+  - Key: "SCAPE_LOCAL_OPENAI_EMBEDDINGS"
+    Value: "1"
+  - Key: "SCAPE_FORCE_LOCAL_HARMONY"
+    Value: "1"
+  - Key: "SCAPE_CHROMA_PATH"
+    Value: "/tmp/empty_chroma"
+  - Key: "TIKTOKEN_ENCODINGS_BASE"
+    Value: "/tmp/tiktoken-bundle/share/tiktoken"
+  - Key: "TIKTOKEN_RS_CACHE_DIR"
+    Value: "/tmp/tiktoken-bundle/tiktoken_rs_cache"
+  - Key: "TIKTOKEN_CACHE_DIR"
+    Value: "/tmp/tiktoken-bundle/tiktoken_cache"
+Preemptible: false
+EnableTensorboard: false
+EnableMetrics: false
+RetryConfig:
+  EnableRetry: false
+  MaxRetryTimes: 1
+  PolicySets:
+    - "JobFailed"
+DiagOptions:
+  - Name: "HangDetection"
+    Enable: false
+AlertConfig:
+  EnableAlert: true
+  AlertItems:
+    - AlertConditions:
+        - "FAILED"
+      AlertLevel: P2
+      AlertReceivers:
+        Persons:
+          - songzijun
+# JuiceFS 挂载不在此 YAML 定义；endpoint（juiceFsCluster=bj9-cloudml）
+# 经 CLI --juicefs_mount_configs 显式传入（见提交命令）。

@@ -1,0 +1,40 @@
+# CloudML custom_train: TRIM Harness-1 BC+ full, GPT-OSS-20B, RL training, 8x gm402-80g
+# 单节点 8 卡 PyTorch 训练任务。
+#
+# 重要：JuiceFS endpoint 不通过本 YAML（--filename）方式提交。
+# 实际提交使用直接 CLI 参数，并通过 --juicefs_mount_configs 显式传入 JSON，
+# 其中 endpoint（juiceFsCluster）必须为 "bj9-cloudml"。
+# 本文件仅为可读底稿 / 审计快照；其 JuiceFSMountConfigs 段不作为提交依据。
+#
+# 启动逻辑见 TRIM/scripts/run_train_cloudml_8gpu.sh（依赖锁定 + preflight + tiktoken + 训练）。
+JobName: "trim_harness1_bcplus_full_gpt_oss_20b_rl_8gpu_20260911_recovery3"
+Description: "TRIM Harness-1 BC+ full / GPT-OSS-20B / RL training (run_train.py). Single node 8x gm402-80g. JuiceFS-mounted model/code/data/tiktoken. Launch script: TRIM/scripts/run_train_cloudml_8gpu.sh"
+AccessType: "PRIVATE"
+ImageConfig:
+  ImageUrl: "micr.cloud.mioffice.cn/songzijun/songzijun-cto:3050749-songzijun-cto"
+  ImageCommand: "bash -lc '/mnt/songzijun/Capability_Evolution/TRIM/scripts/run_train_cloudml_8gpu.sh'"
+QueueId: "2334"
+Priority: 8
+Framework: "pytorch"
+ResourceConfigs:
+  - NodeRole: "worker"
+    NodeNumber: 1
+    PerNodeResourceSpec:
+      ResourcePriority: "GUARANTEED_PUBLIC"
+      ResourceName: "cloudml.ng1gm402-8-8.20-224"
+      ResourceNumber: 8
+Tags:
+  - "MemQA-General-V5"
+EnvConfigs:
+  - Key: "MAX_TURNS"
+    Value: "40"
+  - Key: "PYTHONPATH"
+    Value: "/mnt/songzijun/Capability_Evolution/TRIM:/mnt/songzijun/Capability_Evolution/SCAPE-EasyOPD"
+  - Key: "SCAPE_SEC_RL_DATA"
+    Value: "/mnt/songzijun/Capability_Evolution/TRIM/data/harness-1-rl-data"
+  - Key: "SCAPE_SEC_CORPUS_ROOT"
+    Value: "/mnt/songzijun/Capability_Evolution/TRIM/data/harness-1-sec-corpus"
+  - Key: "DISABLE_CUSTOM_ALL_REDUCE"
+    Value: "1"
+# JuiceFS 挂载不在此 YAML 定义；endpoint（juiceFsCluster=bj9-cloudml）
+# 经 CLI --juicefs_mount_configs 显式传入（见提交命令）。

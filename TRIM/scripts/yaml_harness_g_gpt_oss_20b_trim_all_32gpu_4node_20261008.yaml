@@ -1,0 +1,210 @@
+jobName: trim-harness-g-gpt-oss-20b-trim-all-32gpu-4node-20261008-to-50
+description: 'Harness-G / GPT-OSS-20B (mxfp4) trim/all 4node32gpu torch_ddp_lora. fresh train to step 50 (first evalhook segment). mb1 gpu-mem0.90 (mxfp4 MoE no grad-ckpt). Harness-G legacy_local graph runtime, bcplus_train_664, 8 graph-menu components, corpus graph. Eval hooks at 0/50/100/150/200. Subsequent segments via --env RESUME=1 + EVAL_TARGET_STEP=100/150/200.'
+accessType: PRIVATE
+tags:
+  - MemQA-General-V5
+imageConfig:
+  imageUrl: micr.cloud.mioffice.cn/songzijun/songzijun-cto:3050749-songzijun-cto
+  imageCommand: |-
+    #!/usr/bin/env bash
+    # CloudML imageCommand entry — Harness-G / GPT-OSS-20B (original mxfp4) / trim / all
+    # 4 nodes × 8 gm402-80g = 32 GPUs. torch_ddp_lora. original mxfp4 (non-dequant per user).
+    # EVALHOOK VARIANT. Harness-G: legacy_local, bcplus_train_664, local_bm25, corpus graph.
+    # trim = CISPO + projected actions + SEED-scale gap. all = 8 graph-menu components (no verifier).
+    # GPT-OSS mxfp4: mb1, no SCAPE_FORCE_LOCAL_HARMONY, model cp /tmp, startup_timeout 3600, openai_harmony 必需.
+    set -euxo pipefail
+
+    export PYTHONUNBUFFERED=1
+    export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+    export TRIM_GPU_KEEPALIVE=0
+    export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+    export PYTHONPATH=/mnt/songzijun/Capability_Evolution/TRIM:/mnt/songzijun/Capability_Evolution/SCAPE-EasyOPD
+
+    NODE_RANK="${NODE_RANK:-${PET_NODE_RANK:-${NODE_INDEX:-${NODE_NUMBER:-}}}}"
+    if [ -z "${NODE_RANK:-}" ]; then echo "FATAL: NODE_RANK not set" >&2; exit 1; fi
+    if [ -z "${MASTER_ADDR:-}" ]; then echo "FATAL: MASTER_ADDR not set" >&2; exit 1; fi
+    : "${MASTER_PORT:=29500}"
+    export MASTER_ADDR NODE_RANK MASTER_PORT
+
+    unset RANK WORLD_SIZE LOCAL_RANK LOCAL_WORLD_SIZE GROUP_RANK ROLE_RANK \
+          GROUP_WORLD_SIZE TORCHELASTIC_RUN_ID TORCHELASTIC_RESTART_COUNT \
+          TORCHELASTIC_MAX_RESTARTS TORCHELASTIC_USE_AGENT_STORE \
+          PET_MASTER_ADDR PET_MASTER_PORT PET_NNODES PET_NPROC_PER_NODE PET_NODE_RANK
+
+    echo "MULTINODE_ENV master_addr=${MASTER_ADDR} node_rank=${NODE_RANK} master_port=${MASTER_PORT} host=$(hostname)"
+
+    if [ -z "${OUT:-}" ]; then echo "FATAL: OUT not set" >&2; exit 1; fi
+    export OUT
+    echo "MULTINODE_OUT out=${OUT} host=$(hostname) node_rank=${NODE_RANK}"
+
+    # FIX1 (to_json bug): SCAPE_FORCE_LOCAL_HARMONY INTENTIONALLY NOT SET.
+    export OPENAI_API_KEY="${OPENAI_API_KEY:-**-****-***********-***-*-****-***}"
+    export SCAPE_LOCAL_OPENAI_EMBEDDINGS=1
+    export SCAPE_CHROMA_PATH=/tmp/empty_chroma
+    mkdir -p "$SCAPE_CHROMA_PATH"
+
+    python3 -c "import zipfile; zipfile.ZipFile('/mnt/songzijun/tiktoken-bundle.zip').extractall('/tmp')"
+    test -f /tmp/tiktoken-bundle/share/tiktoken/o200k_base.tiktoken
+    test -f /tmp/tiktoken-bundle/share/tiktoken/cl100k_base.tiktoken
+    export TIKTOKEN_ENCODINGS_BASE=/tmp/tiktoken-bundle/share/tiktoken
+    export TIKTOKEN_RS_CACHE_DIR=/tmp/tiktoken-bundle/tiktoken_rs_cache
+    export TIKTOKEN_CACHE_DIR=/tmp/tiktoken-bundle/tiktoken_cache
+
+    nvidia-smi -L
+    test -f /mnt/songzijun/Capability_Evolution/TRIM/scripts/run_train_multinode.py
+    test -f /mnt/songzijun/Capability_Evolution/TRIM/scripts/run_train.py
+    test -f /mnt/songzijun/models/openai/gpt-oss-20b/config.json
+    test -f /mnt/songzijun/Capability_Evolution/SCOPE/external/BrowseComp-Plus/indexes/harness_g_corpus_graph.pkl
+    test -f /mnt/songzijun/Capability_Evolution/SCAPE-EasyOPD/manifests/COMPONENT_SWEEP_TRAIN_POOL.json
+    test -f /mnt/songzijun/Capability_Evolution/TRIM/manifests/browsecomp_plus_830/SPLIT.json
+
+    JVM_PATH=$(find /usr /opt -type f -name libjvm.so 2>/dev/null | head -1 || true)
+    if [ -z "${JVM_PATH}" ]; then
+      apt-get update
+      DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends openjdk-21-jre-headless
+      JVM_PATH=$(find /usr /opt -type f -name libjvm.so 2>/dev/null | head -1 || true)
+    fi
+    test -n "${JVM_PATH}"; test -f "${JVM_PATH}"; ldd "${JVM_PATH}"
+    export JVM_PATH
+    export JAVA_HOME=$(dirname "$(dirname "$(dirname "${JVM_PATH}")")")
+    export LD_LIBRARY_PATH=$(dirname "${JVM_PATH}"):${LD_LIBRARY_PATH:-}
+
+    PYPI_INDEX="https://pkgs.d.xiaomi.net/artifactory/api/pypi/pypi-virtual/simple"
+    python3 -m pip install --no-cache-dir --ignore-installed --upgrade-strategy only-if-needed \
+      --index-url "${PYPI_INDEX}" \
+      "torch==2.10.0" "transformers==4.57.6" "accelerate==1.13.0" "datasets==4.8.4" \
+      "hydra-core==1.3.2" "omegaconf==2.3.0" "vllm==0.19.1" peft structlog \
+      tqdm regex sympy latex2sympy2 word2number sentencepiece pyserini==2.0.0 pyjnius \
+      openai tenacity anthropic
+    python3 -m pip install --no-cache-dir --no-deps --index-url "${PYPI_INDEX}" "openai_harmony" || echo "[deps] WARN openai_harmony install issue (gpt-oss 必需，失败需排查)"
+
+    PYSERINI_ROOT=$(python3 -c 'import pathlib, pyserini; print(pathlib.Path(pyserini.__file__).resolve().parent)')
+    export ANSERINI_CLASSPATH=$(find "$PYSERINI_ROOT/resources/jars" -type f -name '*.jar' -print | paste -sd: -)
+    test -n "$ANSERINI_CLASSPATH"; export CLASSPATH="$ANSERINI_CLASSPATH"
+
+    python3 - <<'PY'
+    import importlib.metadata, json, os, socket, torch, transformers, vllm
+    from jnius import autoclass; autoclass("java.lang.String")
+    v = {"torch": torch.__version__, "vllm": vllm.__version__, "transformers": transformers.__version__,
+         "pyserini": importlib.metadata.version("pyserini"), "structlog": importlib.metadata.version("structlog"),
+         "gpu_count": torch.cuda.device_count(), "JVM_PATH": os.environ["JVM_PATH"], "host": socket.gethostname(),
+         "master_addr": os.environ.get("MASTER_ADDR"), "node_rank": os.environ.get("NODE_RANK"),
+         "rank_env": os.environ.get("RANK"), "world_size_env": os.environ.get("WORLD_SIZE")}
+    print("PREFLIGHT", v, flush=True)
+    assert v["torch"].startswith("2.10.0"); assert v["vllm"]=="0.19.1"; assert v["transformers"]=="4.57.6"; assert v["pyserini"]=="2.0.0"
+    assert v["gpu_count"]==8
+    m = json.load(open("/mnt/songzijun/models/openai/gpt-oss-20b/config.json"))
+    q = m.get("quantization_config") or {}
+    print("MODEL_PROBE", {"arch": m.get("architectures"), "quant": q.get("quant_method")}, flush=True)
+    assert m.get("architectures")==["GptOssForCausalLM"]; assert q.get("quant_method")=="mxfp4"
+    from trim.training.harness_g_train import default_graph_path
+    gp = default_graph_path(); assert gp, "harness_g_corpus_graph.pkl not found"
+    print("GRAPH_PATH_OK", {"graph_index_path": gp}, flush=True)
+    from trim.integrations.verl.trainer_adapter import _actor_wrap
+    assert _actor_wrap("torch_ddp_lora")=="ddp"; print("DDP_LORA_WRAP_OK", flush=True)
+    import pathlib, re
+    ta = pathlib.Path("/mnt/songzijun/Capability_Evolution/TRIM/trim/integrations/verl/trainer_adapter.py").read_text()
+    assert "startup_timeout_s=3600.0" in ta
+    assert re.search(r"train_rows,\s*eval_rows,\s*pool_meta,\s*_?frozen_points\s*=\s*resolve_queries", ta)
+    assert "EADDRINUSE" in ta
+    print("PATCH_CHECK_OK", flush=True)
+    PY
+
+    # FIX2: copy original mxfp4 model weights to local /tmp before exec
+    MODEL_SRC=/mnt/songzijun/models/openai/gpt-oss-20b
+    MODEL_LOCAL=/tmp/gpt-oss-20b
+    if [ ! -f "$MODEL_LOCAL/config.json" ]; then rm -rf "$MODEL_LOCAL"; mkdir -p "$MODEL_LOCAL"; cp -r "$MODEL_SRC"/. "$MODEL_LOCAL"/; fi
+    test -f "$MODEL_LOCAL/config.json"
+    test -f "$MODEL_LOCAL/model.safetensors.index.json" || true
+    echo "MODEL_LOCAL_READY $MODEL_LOCAL host=$(hostname) node_rank=${NODE_RANK}"
+
+    python3 -m py_compile /mnt/songzijun/Capability_Evolution/TRIM/scripts/run_train_multinode.py
+    python3 -m py_compile /mnt/songzijun/Capability_Evolution/TRIM/scripts/run_train.py
+    cd /mnt/songzijun/Capability_Evolution
+
+    : "${EVAL_TARGET_STEP:?EVAL_TARGET_STEP is required (50/100/150/200)}"
+    : "${RESUME:=0}"
+    TRAIN_STEPS_ARG="--train-steps ${EVAL_TARGET_STEP}"
+    RESUME_ARG=""
+    RDZV_ID="gptoss20b-trim-harnessg-32"
+    if [ "${RESUME}" = "1" ]; then
+      RESUME_ARG="--resume"; RDZV_ID="gptoss20b-trim-harnessg-32-resume"
+      test -d "${OUT}/checkpoints/rl/latest"; test -f "${OUT}/checkpoints/rl/latest/STEP_COMPLETE"
+      echo "RESUME_TARGET latest=$(readlink -f "${OUT}/checkpoints/rl/latest") target_step=${EVAL_TARGET_STEP}"
+    fi
+    echo "EVALHOOK_GATE eval_target_step=${EVAL_TARGET_STEP} resume=${RESUME} rdzv_id=${RDZV_ID} train_steps_arg=${TRAIN_STEPS_ARG}"
+
+    exec python3 /mnt/songzijun/Capability_Evolution/TRIM/scripts/run_train_multinode.py \
+      --nnodes 4 --nproc-per-node 8 --node-rank "${NODE_RANK}" --master-addr "${MASTER_ADDR}" --master-port "${MASTER_PORT}" \
+      --dist-backend nccl --rdzv-backend static --rdzv-id "${RDZV_ID}" \
+      --training-backend torch_ddp_lora --harness Harness-G --benchmark bcplus_full \
+      --model_name /tmp/gpt-oss-20b --train_method trim --component all --train-env local_legacy \
+      --max-turns 40 --max-model-len 8192 --gpu-memory-utilization 0.90 \
+      ${TRAIN_STEPS_ARG} --train-groups-per-step 32 --group-size 8 --train-micro-batch-size 1 --train-heartbeat-every 8 \
+      ${RESUME_ARG} --out "${OUT}"
+juiceFsMountConfigs:
+  - volume: songzijun
+    juiceFsCluster: bj9-cloudml
+    subPath: /
+    mountPath: /mnt/songzijun
+    readOnly: false
+envConfigs:
+  - key: PYTHONUNBUFFERED
+    value: "1"
+  - key: CUDA_VISIBLE_DEVICES
+    value: 0,1,2,3,4,5,6,7
+  - key: TRIM_GPU_KEEPALIVE
+    value: "0"
+  - key: PYTORCH_CUDA_ALLOC_CONF
+    value: expandable_segments:True
+  - key: PYTHONPATH
+    value: /mnt/songzijun/Capability_Evolution/TRIM:/mnt/songzijun/Capability_Evolution/SCAPE-EasyOPD
+  - key: OPENAI_API_KEY
+    value: '**-****-***********-***-*-****-***'
+  - key: SCAPE_LOCAL_OPENAI_EMBEDDINGS
+    value: "1"
+  - key: TIKTOKEN_ENCODINGS_BASE
+    value: /tmp/tiktoken-bundle/share/tiktoken
+  - key: TIKTOKEN_CACHE_DIR
+    value: /tmp/tiktoken-bundle/tiktoken_cache
+  - key: TIKTOKEN_RS_CACHE_DIR
+    value: /tmp/tiktoken-bundle/tiktoken_rs_cache
+  - key: OUT
+    value: /mnt/songzijun/Capability_Evolution/TRIM/outputs/cloudml_custom_train_harness_g_gpt_oss_20b_trim_all_32gpu_4node_20261008
+  - key: EVAL_TARGET_STEP
+    value: "50"
+  - key: RESUME
+    value: "0"
+queueId: "2334"
+priority: 8
+preemptible: false
+framework: pytorch
+resourceConfigs:
+  - nodeRole: worker
+    nodeNumber: 4
+    perNodeResourceSpec:
+      resourcePriority: GUARANTEED_PUBLIC
+      resourceName: cloudml.ng1gm402-8-8.20-224
+      resourceNumber: 8
+    elastic: false
+    preemptible: false
+enableTensorboard: false
+enableMetrics: false
+retryConfig:
+  enableRetry: false
+  maxRetryTimes: 1
+  policySets:
+    - JobFailed
+rdma: true
+diagOptions:
+  - name: HangDetection
+    enable: false
+alertConfig:
+  enableAlert: true
+  alertItems:
+    - alertConditions:
+        - FAILED
+      alertLevel: P2
+      alertReceivers:
+        persons:
+          - songzijun

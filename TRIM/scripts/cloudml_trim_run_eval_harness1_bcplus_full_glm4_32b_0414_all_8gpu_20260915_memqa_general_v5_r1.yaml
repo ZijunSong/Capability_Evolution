@@ -1,0 +1,41 @@
+# CloudML custom_train YAML
+# TRIM Harness-1 BC+ full / GLM-4-32B-0414 / ALL (component=all) eval / 单节点 8x gm402-80g
+# 筹备日期 2026-09-15，标签 MemQA-General-V5，priority 8。
+#
+# 重要：JuiceFS 挂载不在本 YAML 中配置——按要求通过直接 CLI 参数
+#   --juicefs_mount_configs '<JSON>' 提交，其中 endpoint/JuiceFSCluster 为 "bj9-cloudml"，
+#   volume=songzijun, mount=/mnt/songzijun, read-write。本文件 JuiceFSMountConfigs 不作为提交依据。
+# ImageCommand 调用
+#   TRIM/scripts/run_bcplus_full_glm4_32b_0414_zero_cloudml_8gpu_20260914.sh（复用 zero 的 boot wrapper，
+#   preflight 与依赖锁定完全相同），但 exec 目标改为
+#   run_bcplus_full_glm4_32b_0414_all_gpu8_eval.sh：
+#   7 个单卡 vLLM actor (TP=1, GPU 0..6) + 1 harness-1 verifier (GPU 7) + 64 eval workers,
+#   retrieval=local_bm25 (Pyserini/Lucene), --reranker none --offline, 无 Chroma 服务。
+#
+# runtime 锁定口径（CLAU.md）：torch 2.10.0+cu128 / vllm 0.19.1 / transformers 4.57.6 / pyserini 2.0.0。
+# GLM-4-32B-0414 = dense 32.6B（非 MoE），chat_template 无 thinking 标记 =>
+#   默认非 thinking（不传 --reasoning-parser / enable_thinking，符合用户要求）。
+#   tool-call-parser=glm45（model_profiles.py 对 GLM-4 系列路由）。
+#   vLLM glm45/glm47 无法解析 GLM-4-32B-0414 的 name\n{json} 纯文本工具调用，
+#   评测侧 api_adapter.extract_tool_calls_from_content() 回退解析，无 smoke_test 门槛。
+# RUN_ID 与前序 attempt 显式隔离，不覆盖原 attempt 输出。
+JobName: "trim-run-eval-h1-bcplus-full-glm4-32b-0414-all-8gpu-20260915-memqa-general-v5-r1"
+Description: "TRIM Harness-1 BC+ full, GLM-4-32B-0414 ALL eval, 8x gm402-80g, 7 actors+1 verify, ALL_EVAL_TP=64, local_bm25, no Chroma, upstream_api. Dense 32B, glm45 parser + extract_tool_calls_from_content fallback, no smoke test gate. JuiceFS endpoint=bj9-cloudml via CLI."
+AccessType: "PUBLIC"
+ImageConfig:
+  ImageUrl: "micr.cloud.mioffice.cn/songzijun/songzijun-cto:3050749-songzijun-cto"
+  ImageCommand: "bash /mnt/songzijun/Capability_Evolution/TRIM/scripts/run_bcplus_full_glm4_32b_0414_all_cloudml_8gpu_20260915.sh"
+QueueId: "2334"
+Priority: 8
+Framework: "pytorch"
+Tags:
+  - "MemQA-General-V5"
+ResourceConfigs:
+  - NodeRole: "worker"
+    NodeNumber: 1
+    PerNodeResourceSpec:
+      ResourcePriority: "GUARANTEED_PUBLIC"
+      ResourceName: "cloudml.ng1gm402-8-8.20-224"
+      ResourceNumber: 8
+# 非抢占（GUARANTEED_PUBLIC 保障资源）；不加 preemptible。
+# JuiceFS 通过 CLI --juicefs_mount_configs 显式 JSON 传入（endpoint=bj9-cloudml）。

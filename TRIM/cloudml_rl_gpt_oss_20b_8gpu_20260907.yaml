@@ -1,0 +1,71 @@
+# CloudML custom_train configuration for TRIM Harness-1 RL.
+# JuiceFS is intentionally omitted. Supply it at submit time with
+# --juicefs_mount_configs so the endpoint is explicit in the CLI request.
+jobName: "trim-harness1-bcplus-full-gpt-oss-20b-rl-8gpu-20260907"
+description: "TRIM Harness-1 BC+ full RL training with GPT-OSS-20B on one 8-GPU gm402-80g node"
+accessType: "PRIVATE"
+imageConfig:
+  imageUrl: "micr.cloud.mioffice.cn/songzijun/songzijun-cto:3050749-songzijun-cto"
+  imageCommand: >-
+    set -euxo pipefail;
+    export PYTHONUNBUFFERED=1;
+    export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7;
+    export MAX_TURNS=40;
+    export PYTHONPATH=TRIM:SCAPE-EasyOPD;
+    cd /mnt/songzijun/Capability_Evolution;
+    test -d TRIM/data;
+    test -f TRIM/data/harness-1-rl-data.tar.gz;
+    if [ ! -f TRIM/data/harness-1-rl-data/manifest.json ]; then
+      tar -xzf TRIM/data/harness-1-rl-data.tar.gz --no-same-owner -C TRIM/data;
+    fi;
+    if [ ! -f TRIM/data/harness-1-sec-corpus/manifest.json ] ||
+       [ ! -f TRIM/data/harness-1-sec-corpus/indexes/bm25/_DONE ]; then
+      tar -xzf TRIM/data/harness-1-sec-corpus.tar.gz --no-same-owner -C TRIM/data;
+    fi;
+    exec python TRIM/scripts/run_train.py
+      --harness Harness-1
+      --benchmark bcplus_full
+      --model_name /mnt/songzijun/models/openai/gpt-oss-20b
+      --train_method rl
+      --component all
+      --rl-data /mnt/songzijun/Capability_Evolution/TRIM/data/harness-1-rl-data
+      --sec-corpus-root /mnt/songzijun/Capability_Evolution/TRIM/data/harness-1-sec-corpus
+      --train-groups-per-step 32
+      --train-micro-batch-size 4
+      --train-heartbeat-every 8
+      --out /mnt/songzijun/Capability_Evolution/TRIM/outputs/cloudml_trim_harness1_bcplus_full_gpt_oss_20b_rl_8gpu_20260907
+
+envConfigs:
+  - key: "PYTHONUNBUFFERED"
+    value: "1"
+  - key: "CUDA_VISIBLE_DEVICES"
+    value: "0,1,2,3,4,5,6,7"
+  - key: "MAX_TURNS"
+    value: "40"
+  - key: "PYTHONPATH"
+    value: "TRIM:SCAPE-EasyOPD"
+
+queueId: "2334"
+priority: 5
+preemptible: false
+framework: "pytorch"
+resourceConfigs:
+  - nodeRole: "worker"
+    nodeNumber: 1
+    perNodeResourceSpec:
+      resourcePriority: "GUARANTEED_PUBLIC"
+      resourceName: "cloudml.ng1gm402-8-8.20-224"
+      resourceNumber: 8
+    elastic: false
+    preemptible: false
+
+enableTensorboard: false
+enableMetrics: false
+diagOptions:
+  - name: "HangDetection"
+    enable: false
+retryConfig:
+  enableRetry: false
+  maxRetryTimes: 1
+  policySets:
+    - "JobFailed"

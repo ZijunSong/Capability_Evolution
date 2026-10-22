@@ -64,6 +64,34 @@ def _parse(argv: Sequence[str] | None) -> tuple[argparse.Namespace, list[str]]:
     parser.add_argument("--rollout-replicas", type=int, default=DEFAULT_REPLICAS_PER_NODE)
     parser.add_argument("--node-rank", type=int, default=None)
     parser.add_argument("--tensor-parallel-size", type=int, default=1)
+    parser.add_argument(
+        "--evaluation-path",
+        choices=("legacy_local", "upstream_api"),
+        default="legacy_local",
+        help=(
+            "Candidate evaluation runtime. Qwen3.5 requires upstream_api; "
+            "legacy_local uses the in-process LLM API and cannot parse Qwen3.5 tool calls."
+        ),
+    )
+    parser.add_argument(
+        "--api-base-url",
+        default=None,
+        help="OpenAI-compatible actor URL(s) for upstream_api candidate evaluation.",
+    )
+    parser.add_argument("--api-model", default=None)
+    parser.add_argument("--api-key", default=None)
+    parser.add_argument(
+        "--verify-base-url",
+        default=None,
+        help="OpenAI-compatible verifier URL for component=all (verify_tool). "
+        "run_harness_evolve scores with --component all, whose mask sets verify_tool=True; "
+        "env_bridge raises if verify_tool is on but no verifier is provided.",
+    )
+    parser.add_argument(
+        "--verify-model",
+        default=None,
+        help="Verifier served-model name matching --verify-base-url (e.g. harness-1-verifier).",
+    )
     parser.add_argument("--model_name", required=True)
     parser.add_argument("--zero-rollout-dir", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
@@ -78,6 +106,11 @@ def _parse(argv: Sequence[str] | None) -> tuple[argparse.Namespace, list[str]]:
             raise SystemExit(f"{token} is not set on the harness-search entry")
     if known.node_rank is not None and not 0 <= int(known.node_rank) < int(known.nnodes):
         raise SystemExit(f"--node-rank {known.node_rank} is outside 0..{int(known.nnodes) - 1}")
+    if known.evaluation_path == "upstream_api" and int(known.nnodes) != 1:
+        raise SystemExit(
+            "--evaluation-path upstream_api currently requires --nnodes 1: "
+            "candidate actor servers are local to the single-node eval process"
+        )
     return known, extra
 
 
@@ -90,25 +123,75 @@ def _read_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def load_zero_baseline(zero_dir: Path) -> tuple[float, dict[str, float], list[dict[str, Any]]]:
-    summary_path = zero_dir / "ZERO_ROLLOUT.json"
+def _load_jsonl(path: Path) -> list[dict[str, Any]]:
+    if not path.is_file():
+        return []
+    rows: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            rows.append(json.loads(line))
+    return rows
+
+
+def _load_upstream_baseline(zero_dir: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    api_dir = zero_dir / "upstream_api"
+    summary_path = api_dir / "SUMMARY.json"
+    done_path = api_dir / "DONE.json"
     if not summary_path.is_file():
-        raise SystemExit(f"missing {summary_path}; finish the H0 zero rollout first")
+        raise SystemExit(f"missing {summary_path}; finish the upstream_api H0 rollout first")
     summary = _read_json(summary_path)
-    if summary.get("component") not in {None, "zero"}:
-        raise SystemExit("zero rollout summary is not an H0 zero run")
-    zero_mod = _zero_module()
-    traces: list[dict[str, Any]] = []
-    node_root = zero_dir / "nodes"
-    if node_root.is_dir():
-        for node_dir in sorted(node_root.glob("node*")):
-            traces.extend(zero_mod._load_traces(node_dir))
+    done = _read_json(done_path) if done_path.is_file() else {}
+    expected = int(summary.get("n_planned") or done.get("n_planned") or 0)
+    completed = int(summary.get("n_queries") or done.get("n_queries") or 0)
+    complete = bool(summary.get("execution_complete")) and not bool(summary.get("partial"))
+    if done:
+        complete = complete and bool(done.get("execution_complete")) and not bool(done.get("partial"))
+    if expected and completed != expected:
+        complete = False
+    if not complete:
+        raise SystemExit(
+            f"refusing incomplete upstream_api baseline {api_dir}: "
+            f"completed={completed} planned={expected} partial={summary.get('partial', done.get('partial'))}"
+        )
+    traces = _load_jsonl(api_dir / "PER_QUERY.jsonl")
+    if expected and len(traces) != expected:
+        raise SystemExit(f"upstream_api baseline trace count mismatch: {len(traces)} != {expected}")
+    return summary, traces
+
+
+def load_zero_baseline(zero_dir: Path) -> tuple[float, dict[str, float], list[dict[str, Any]]]:
+    upstream_summary = zero_dir / "upstream_api" / "SUMMARY.json"
+    if upstream_summary.is_file():
+        summary, traces = _load_upstream_baseline(zero_dir)
+    else:
+        summary_path = zero_dir / "ZERO_ROLLOUT.json"
+        if not summary_path.is_file():
+            raise SystemExit(
+                f"missing {summary_path} or {upstream_summary}; finish the H0 zero rollout first"
+            )
+        summary = _read_json(summary_path)
+        if summary.get("component") not in {None, "zero"}:
+            raise SystemExit("zero rollout summary is not an H0 zero run")
+        if not summary.get("execution_complete", False):
+            raise SystemExit("refusing incomplete legacy_local H0 zero rollout")
+        zero_mod = _zero_module()
+        traces = []
+        node_root = zero_dir / "nodes"
+        if node_root.is_dir():
+            for node_dir in sorted(node_root.glob("node*")):
+                traces.extend(zero_mod._load_traces(node_dir))
+        expected = int(summary.get("n_expected") or 0)
+        if expected and len(traces) != expected:
+            raise SystemExit(f"legacy H0 trace count mismatch: {len(traces)} != {expected}")
     by_id: dict[str, float] = {}
     for trace in traces:
         qid = str(trace.get("query_id") or "")
         if not qid:
             continue
-        by_id[qid] = float(trace.get("final_answer_recall") if trace.get("final_answer_recall") is not None else trace.get("recall") or 0.0)
+        value = trace.get("final_answer_recall")
+        if value is None:
+            value = trace.get("recall")
+        by_id[qid] = float(value or 0.0)
     quality = summary.get("final_answer_recall")
     if quality is None:
         if not by_id:
@@ -173,6 +256,20 @@ def _wait_nodes(gen_dir: Path, nnodes: int, timeout_s: float) -> None:
         time.sleep(15)
 
 
+def _eval_trace_root(node_dir: Path) -> Path:
+    """Return the canonical per-query output root for either eval runtime."""
+    upstream = node_dir / "upstream_api"
+    return upstream if (upstream / "PER_QUERY.jsonl").is_file() else node_dir
+
+
+def _load_eval_traces(node_dir: Path) -> list[dict[str, Any]]:
+    root = _eval_trace_root(node_dir)
+    if (root / "PER_QUERY.jsonl").is_file():
+        return _load_jsonl(root / "PER_QUERY.jsonl")
+    zero_mod = _zero_module()
+    return zero_mod._load_traces(node_dir)
+
+
 def _eval_shard(args: argparse.Namespace, extra: Sequence[str], *, bank_dir: Path, gen_dir: Path, node_rank: int, rows: list[dict]) -> None:
     zero_mod = _zero_module()
     owned = zero_mod.node_rows(
@@ -184,6 +281,19 @@ def _eval_shard(args: argparse.Namespace, extra: Sequence[str], *, bank_dir: Pat
     node_dir = gen_dir / "nodes" / f"node{node_rank}"
     id_path = node_dir / "query_ids.txt"
     zero_mod._write_ids(id_path, owned)
+    evaluation_path = str(args.evaluation_path)
+    if evaluation_path == "upstream_api" and not args.api_base_url:
+        raise SystemExit(
+            "--evaluation-path upstream_api requires --api-base-url; "
+            "run vLLM serve actors separately and pass their /v1 URL(s)"
+        )
+    # component=all mask sets verify_tool=True; env_bridge raises if verify_tool is on
+    # but no verifier is provided. Require --verify-base-url for the all-presets eval.
+    if not args.verify_base_url:
+        raise SystemExit(
+            "--component all sets verify_tool=True; --verify-base-url is required. "
+            "Start a verifier serve (harness-1) and pass its /v1 URL."
+        )
     argv = [
         "--harness",
         "Harness-1",
@@ -192,7 +302,7 @@ def _eval_shard(args: argparse.Namespace, extra: Sequence[str], *, bank_dir: Pat
         "--component",
         "all",
         "--evaluation-path",
-        "legacy_local",
+        evaluation_path,
         "--harness-bank",
         str(bank_dir),
         "--model_name",
@@ -205,15 +315,75 @@ def _eval_shard(args: argparse.Namespace, extra: Sequence[str], *, bank_dir: Pat
         str(int(args.tensor_parallel_size)),
         "--out",
         str(node_dir),
-        *list(extra),
     ]
+    if args.api_base_url:
+        argv.extend(["--api-base-url", str(args.api_base_url)])
+    if args.api_model:
+        argv.extend(["--api-model", str(args.api_model)])
+    if args.api_key:
+        argv.extend(["--api-key", str(args.api_key)])
+    if args.verify_base_url:
+        argv.extend(["--verify-base-url", str(args.verify_base_url)])
+    if args.verify_model:
+        argv.extend(["--verify-model", str(args.verify_model)])
+    argv.extend(list(extra))
     code = int(_eval_main()(argv) or 0)
     if code != 0:
         raise SystemExit(code)
+    trace_root = _eval_trace_root(node_dir)
+    summary = _read_json(trace_root / "SUMMARY.json") if (trace_root / "SUMMARY.json").is_file() else {}
+    done = _read_json(trace_root / "DONE.json") if (trace_root / "DONE.json").is_file() else {}
+    complete = bool(summary.get("execution_complete", done.get("execution_complete", False)))
+    n_queries = int(summary.get("n_queries", done.get("n_queries", 0)) or 0)
+    if not complete or n_queries != len(owned) or summary.get("partial") or done.get("partial"):
+        raise SystemExit(
+            f"candidate eval incomplete for node {node_rank}: "
+            f"completed={n_queries} expected={len(owned)} partial={summary.get('partial', done.get('partial'))}"
+        )
     _write_json(node_dir / "NODE_DONE.json", {"ok": True, "node_rank": node_rank, "n_queries": len(owned)})
 
 
-def _generate_text(model_name: str, prompt: str, *, session_dir: Path) -> str:
+def _generate_text(model_name: str, prompt: str, *, session_dir: Path, api_base_url: str | None = None, api_model: str | None = None) -> str:
+    """Generate text for the proposer. If api_base_url is provided (upstream_api mode),
+    use the already-running serve actors via OpenAI HTTP client instead of starting a
+    new VLLMGenerateClient (which would conflict with the serve actors for GPU memory)."""
+    if api_base_url:
+        import urllib.request
+        import urllib.error
+
+        # Try each actor URL in order; skip failed ones (some actors may have timed out
+        # during serve startup, especially for large models like 27B where GPU0 often fails).
+        urls = [u.strip().rstrip("/") + "/chat/completions" for u in api_base_url.split(",")]
+        model = api_model or model_name
+        payload = json.dumps({
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 512,
+            "temperature": 0.0,
+            "seed": 0,
+        }).encode("utf-8")
+        last_exc = None
+        for url in urls:
+            req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
+            try:
+                with urllib.request.urlopen(req, timeout=120) as resp:
+                    body = json.loads(resp.read().decode("utf-8"))
+                return str((body.get("choices") or [{}])[0].get("message", {}).get("content") or "")
+            except urllib.error.HTTPError as exc:
+                # 400/500 from vLLM (e.g., tool-call-parser expects tools but proposer sends none)
+                resp_body = ""
+                try:
+                    resp_body = exc.read().decode("utf-8", errors="replace")[:500]
+                except Exception:
+                    pass
+                last_exc = RuntimeError(f"HTTP {exc.code} from {url}: {resp_body}")
+                continue
+            except (urllib.error.URLError, OSError) as exc:
+                last_exc = exc
+                continue
+        raise RuntimeError(f"proposer HTTP call failed on all {len(urls)} actor URLs; last error: {last_exc}") from last_exc
+
+    # legacy_local fallback: start a dedicated VLLMGenerateClient (only when no serve actors)
     from trim.eval.model_tokenizer import load_model_encoding
     from trim.training.vllm_hybrid import GenerateRequest, VLLMGenerateClient
 
@@ -271,7 +441,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             break
     proposer = SelfHarnessProposer(
         generate_text=lambda prompt: _generate_text(
-            str(args.model_name), prompt, session_dir=args.out / "proposer_vllm"
+            str(args.model_name), prompt, session_dir=args.out / "proposer_vllm",
+            api_base_url=str(args.api_base_url) if args.api_base_url else None,
+            api_model=str(args.api_model) if args.api_model else None,
         ),
         work_dir=args.out / "candidates",
         failure_counts=counts or {"bad_query": 1},
@@ -283,10 +455,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         _write_json(gen_dir / "READY.json", {"bank_dir": proposal.bank_dir, "bank_sha256": proposal.content_hash})
         _eval_shard(args, extra, bank_dir=Path(proposal.bank_dir), gen_dir=gen_dir, node_rank=0, rows=rows)
         _wait_nodes(gen_dir, int(args.nnodes), float(args.merge_timeout_s))
-        zero_mod = _zero_module()
         traces = []
         for node in range(int(args.nnodes)):
-            traces.extend(zero_mod._load_traces(gen_dir / "nodes" / f"node{node}"))
+            traces.extend(_load_eval_traces(gen_dir / "nodes" / f"node{node}"))
+        if len(traces) != len(rows):
+            raise SystemExit(
+                f"candidate merge is incomplete: got {len(traces)} traces for {len(rows)} queries"
+            )
         from trim.evolution.campaign import score_against_zero
 
         return score_against_zero(proposal, traces, zero_by_id)

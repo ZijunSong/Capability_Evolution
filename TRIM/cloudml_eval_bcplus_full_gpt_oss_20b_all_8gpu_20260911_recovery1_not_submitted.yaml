@@ -1,0 +1,293 @@
+# CloudML custom_train configuration for TRIM Harness-1 BC+ full GPT-OSS-20B "all" eval.
+# Prepared 2026-09-11; NOT SUBMITTED.
+#
+# What this job runs:
+#   Only the "gpt all" slice of scripts/run_bcplus_full_gpu4_eval.sh (the wrapper
+#   otherwise runs 6 groups: {gpt-oss-20b, harness-1, Qwen3-4B} x {zero, all}). We
+#   `source` the wrapper so its verified vLLM start/stop functions are reused, but
+#   call only start_all_stack + run_eval for gpt-oss-20b component=all. main() is
+#   guarded by [[ "${BASH_SOURCE[0]}" == "${0}" ]] and does NOT run under source.
+#
+# 4-card -> 8-card topology change:
+#   wrapper default "all" = 3 single-card actor vLLMs + 1 verify vLLM, ALL_TP=3.
+#   Here: 7 actor vLLMs (GPU 0-6, ports 8040..8052) + 1 verify vLLM (GPU 7, port 8060),
+#   ALL_TP=7. --tp is --eval-replicas (launch.py:831), i.e. data-parallel replica count;
+#   each replica shard maps to one actor URL via identity_for_actor_rank (rank % len(urls)).
+#   tensor_parallel_size per vLLM stays 1 (single-card actors + single-card verifier).
+#
+# No Chroma server dependency:
+#   --retrieval-backend local_bm25 --reranker none --offline. The worker sets
+#   HARNESS1_FORBID_CHROMA=1 (harness1_api_worker.py:57), build_local_toolset records
+#   chroma_initialized=False, offline_credentials.py fills CHROMA_API_KEY/CHROMA_DATABASE
+#   =local-offline. SCAPE_CHROMA_PATH=/tmp/empty_chroma is kept only as a belt-and-suspenders
+#   forcing chromadb.PersistentClient (embedded, on-disk) if the Chroma branch is ever hit.
+#   No CHROMA_HOST/PORT/URL or HttpClient exists anywhere in the codebase.
+#
+# Locked four-package runtime (CLAUDE.md): Torch 2.10.0 / Transformers 4.57.6 /
+# vLLM 0.19.1 / Pyserini 2.0.0. gpt-oss-20b uses the real openai_harmony encoder, so the
+# offline tiktoken bundle (o200k_base) is extracted and wired (SCAPE_FORCE_LOCAL_HARMONY
+# is intentionally NOT set — see trim-gptoss20b-train recovery2 experience).
+#
+# JuiceFS is intentionally OMITTED from this YAML. Submit with the direct CLI
+# --juicefs_mount_configs argument so endpoint=bj9-cloudml is explicit in the API
+# request (see submit_..._not_submitted.sh). Do NOT use the YAML --filename path for mounts.
+jobName: "eval-bcplus-full-gpt-oss-20b-all-8gpu-20260911-recovery1"
+description: "Recovery1 of t-20260911101823-9wg6w: fix ModuleNotFoundError 'chz' — load_upstream_modules -> training.train_rl -> tinker_cookbook.rl.types imports chz+tinker at module load; base image is clean, neither is pulled by vllm/transformers/pyserini. Add chz+tinker to pip. Keep 8-GPU 7-actor+1-verify topology, GPU_UTIL=0.90, max-num-seqs 256/128, local_bm25 (no Chroma), offline tiktoken + Pyserini/JVM preflight. Original failed attempt preserved."
+accessType: "PRIVATE"
+tags:
+  - "MemQA-General-V5"
+
+imageConfig:
+  imageUrl: "micr.cloud.mioffice.cn/songzijun/songzijun-cto:3050749-songzijun-cto"
+  imageCommand: |-
+    set -euxo pipefail
+    export PYTHONUNBUFFERED=1
+    export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+    export MAX_TURNS=40
+    export PY=python3
+    export VLLM=vllm
+    export VLLM_DISABLE_CUSTOM_ALL_REDUCE=1
+    export OPENAI_API_KEY="${OPENAI_API_KEY:-*****-*******-***********}"
+    export SCAPE_LOCAL_OPENAI_EMBEDDINGS=1
+    export SCAPE_CHROMA_PATH=/tmp/empty_chroma
+    mkdir -p "$SCAPE_CHROMA_PATH"
+
+    # --- offline tiktoken: gpt-oss-20b harmony encoder needs o200k_base ---
+    python3 -c "import zipfile; zipfile.ZipFile('/mnt/songzijun/tiktoken-bundle.zip').extractall('/tmp')"
+    test -f /tmp/tiktoken-bundle/share/tiktoken/o200k_base.tiktoken
+    test -f /tmp/tiktoken-bundle/share/tiktoken/cl100k_base.tiktoken
+    export TIKTOKEN_ENCODINGS_BASE=/tmp/tiktoken-bundle/share/tiktoken
+    export TIKTOKEN_RS_CACHE_DIR=/tmp/tiktoken-bundle/tiktoken_rs_cache
+    export TIKTOKEN_CACHE_DIR=/tmp/tiktoken-bundle/tiktoken_cache
+
+    nvidia-smi -L
+    test -f /mnt/songzijun/Capability_Evolution/TRIM/scripts/run_bcplus_full_gpu4_eval.sh
+    test -f /mnt/songzijun/Capability_Evolution/TRIM/scripts/run_eval.py
+    test -d /mnt/songzijun/models/gpt-oss-20b
+    test -d /mnt/songzijun/models/harness-1
+    test -d /mnt/songzijun/Capability_Evolution/SCOPE/external/BrowseComp-Plus/indexes/bm25
+    test -f /mnt/songzijun/Capability_Evolution/SCOPE/external/BrowseComp-Plus/data/browsecomp_plus_corpus_full.jsonl
+
+    # --- JVM for Pyserini Lucene (probe first; do not trust a non-empty JAVA_HOME) ---
+    JVM_PATH=$(find /usr /opt -type f -name libjvm.so 2>/dev/null | head -1 || true)
+    if [ -z "${JVM_PATH}" ]; then
+      apt-get update
+      DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends openjdk-21-jre-headless
+      JVM_PATH=$(find /usr /opt -type f -name libjvm.so 2>/dev/null | head -1 || true)
+    fi
+    test -n "${JVM_PATH}"
+    test -f "${JVM_PATH}"
+    ldd "${JVM_PATH}"
+    export JVM_PATH
+    export JAVA_HOME=$(dirname "$(dirname "$(dirname "${JVM_PATH}")")")
+    export LD_LIBRARY_PATH=$(dirname "${JVM_PATH}"):${LD_LIBRARY_PATH:-}
+
+    # --- locked four-package runtime + harness import-chain deps (structlog/chromadb) ---
+    # chz + tinker are required because load_upstream_modules() (env_bridge.py:44) imports
+    # training.train_rl -> tinker_cookbook.rl.types, which does `import chz`/`import tinker`
+    # at module load. The base image is clean; the vllm/transformers/pyserini stack does NOT
+    # pull them in transitively (verified via diag job t-20260911104106-sbmtm). `import tinker`
+    # has no network/credential side effects (pure import OK). See recovery1 note.
+    python3 -m pip install --no-cache-dir --ignore-installed --upgrade-strategy only-if-needed \
+      "torch==2.10.0" "vllm==0.19.1" "transformers==4.57.6" "pyserini==2.0.0" \
+      structlog chromadb chz tinker tqdm sentence-transformers regex sympy latex2sympy2 word2number sentencepiece openai tenacity
+
+    # --- ANSERINI_CLASSPATH -> pyserini resources/jars (NOT the package root) ---
+    PYSERINI_ROOT=$(python3 -c 'import pathlib, pyserini; print(pathlib.Path(pyserini.__file__).resolve().parent)')
+    export ANSERINI_CLASSPATH=$(find "$PYSERINI_ROOT/resources/jars" -type f -name '*.jar' -print | paste -sd: -)
+    test -n "$ANSERINI_CLASSPATH"
+    export CLASSPATH="$ANSERINI_CLASSPATH"
+
+    # --- preflight: four versions + 8 GPU + PyJNI + Lucene bcplus index opens ---
+    python3 - <<'PY'
+    import importlib.metadata
+    import os
+    import torch
+    import transformers
+    import vllm
+    import chz
+    import tinker
+    from jnius import autoclass
+    autoclass("java.lang.String")
+    versions = {
+        "torch": torch.__version__,
+        "vllm": vllm.__version__,
+        "transformers": transformers.__version__,
+        "pyserini": importlib.metadata.version("pyserini"),
+        "structlog": importlib.metadata.version("structlog"),
+        "chromadb": importlib.metadata.version("chromadb"),
+        "chz": importlib.metadata.version("chz"),
+        "tinker": importlib.metadata.version("tinker"),
+        "gpu_count": torch.cuda.device_count(),
+        "JVM_PATH": os.environ["JVM_PATH"],
+        "JAVA_HOME": os.environ["JAVA_HOME"],
+        "TIKTOKEN_ENCODINGS_BASE": os.environ.get("TIKTOKEN_ENCODINGS_BASE"),
+        "o200k_base_present": os.path.isfile(
+            os.path.join(os.environ["TIKTOKEN_ENCODINGS_BASE"], "o200k_base.tiktoken")
+        ),
+        "java_ok": True,
+    }
+    print("PREFLIGHT", versions, flush=True)
+    assert versions["torch"].startswith("2.10.0")
+    assert versions["vllm"] == "0.19.1"
+    assert versions["transformers"] == "4.57.6"
+    assert versions["pyserini"] == "2.0.0"
+    assert versions["chz"] == "0.4.0"
+    assert versions["tinker"] == "0.28.1"
+    assert versions["gpu_count"] == 8
+    assert versions["o200k_base_present"]
+    from pyserini.search.lucene import LuceneSearcher
+    s = LuceneSearcher("/mnt/songzijun/Capability_Evolution/SCOPE/external/BrowseComp-Plus/indexes/bm25")
+    n_docs = s.num_docs if not callable(s.num_docs) else s.num_docs()
+    print("LUCENE_OK", {"num_docs": n_docs}, flush=True)
+    assert n_docs > 0
+    PY
+
+    # --- 8-GPU gpt-oss-20b "all" topology: 7 actor vLLM (GPU 0-6) + 1 verify vLLM (GPU 7) ---
+    # Source the verified wrapper: its functions (start_all_stack/run_eval/cleanup/
+    # start_vllm_bg/wait_api/verify_api_model) become available; main() is guarded and
+    # does NOT run. The wrapper cd's into TRIM_ROOT and resolves REL_* paths from there.
+    export RUN_ID="$(date +%Y%m%d_%H%M%S)_bcplus_full_gpt_oss_20b_all_8gpu"
+    export ALL_ACTOR_GPUS=0,1,2,3,4,5,6
+    export ALL_VERIFY_GPU=7
+    export ALL_ACTOR_PORTS=8040,8042,8044,8046,8048,8050,8052
+    export ALL_VERIFY_PORT=8060
+    export ALL_TP=7
+    # Raised for throughput: higher KV-cache util (gpt-oss-20b MoE fits on one gm402-80g
+    # card at max_model_len=32768) and shorter API-worker stagger so the 7 shards start
+    # near-simultaneously instead of serially waiting 7*30s.
+    export GPU_UTIL=0.90
+    export WORKER_STAGGER=5
+    source /mnt/songzijun/Capability_Evolution/TRIM/scripts/run_bcplus_full_gpu4_eval.sh
+
+    # Override the wrapper's vllm_extra_for_model to raise per-server concurrency. The
+    # upstream_api eval path does NOT consume --max-num-seqs at the runner level (it is
+    # only read in the legacy_local branch), so the effective lever is the vLLM server
+    # itself: a larger --max-num-seqs lets each single-card actor vLLM keep more
+    # multi-turn/retry/verify requests in flight concurrently. This is a shell function
+    # override AFTER sourcing (the wrapper cd'd into TRIM_ROOT and defined the original);
+    # it does not modify the repo script on disk. --enforce-eager is still applied by the
+    # wrapper's start_vllm_bg (gm402 has no flash-attn → SDPA + eager, per CLAUDE.md).
+    vllm_extra_for_model() {
+      local slug="$1"
+      case "${slug}" in
+        gpt-oss-20b|harness-1)
+          echo "--enable-auto-tool-choice --tool-call-parser openai --max-model-len 32768 --trust-remote-code --moe-backend triton --max-num-seqs 256"
+          ;;
+        *)
+          echo "--enable-auto-tool-choice --tool-call-parser openai --max-model-len 32768 --max-num-seqs 256"
+          ;;
+      esac
+    }
+    # The verifier (harness-1) is spawned by start_all_stack with a hardcoded extra string;
+    # patch start_all_stack to inject a larger --max-num-seqs there too, without touching
+    # the repo file. Keep its --max-model-len 8192 --moe-backend triton.
+    _orig_start_all_stack=start_all_stack
+    start_all_stack() {
+      local model_path="$1" api_model="$2" model_slug="$3"
+      stop_all_actors
+      stop_verify
+      local actor_gpus=() actor_ports=()
+      csv_to_array "${ALL_ACTOR_GPUS}" actor_gpus
+      csv_to_array "${ALL_ACTOR_PORTS}" actor_ports
+      if ((${#actor_gpus[@]} != ALL_TP)); then
+        log "ALL_ACTOR_GPUS count (${#actor_gpus[@]}) must match ALL_TP (${ALL_TP})"
+        exit 1
+      fi
+      if ((${#actor_ports[@]} != ALL_TP)); then
+        log "ALL_ACTOR_PORTS count (${#actor_ports[@]}) must match ALL_TP (${ALL_TP})"
+        exit 1
+      fi
+      local extra
+      extra="$(vllm_extra_for_model "${model_slug}")"
+      ACTOR_PIDS=()
+      local i gpu port pid
+      for i in "${!actor_gpus[@]}"; do
+        gpu="${actor_gpus[$i]}"
+        port="${actor_ports[$i]}"
+        pid="$(start_vllm_bg "${gpu}" "${port}" "${model_path}" "${api_model}" \
+          "${extra}" "${REL_LOGS}/actor_${model_slug}_all_gpu${gpu}.log")"
+        pid="$(normalize_pid "${pid}")"
+        ACTOR_PIDS+=("${pid}")
+      done
+      VERIFY_PID="$(start_vllm_bg "${ALL_VERIFY_GPU}" "${ALL_VERIFY_PORT}" "${VERIFY_MODEL_PATH}" \
+        "${VERIFY_MODEL_NAME}" "--max-model-len 8192 --trust-remote-code --moe-backend triton --max-num-seqs 128" \
+        "${REL_LOGS}/verify_${model_slug}.log")"
+      VERIFY_PID="$(normalize_pid "${VERIFY_PID}")"
+    }
+
+    # Build the 7 comma-joined actor URLs the way main() does (run_eval --api-base-url).
+    csv_to_array "${ALL_ACTOR_PORTS}" _ALL_PORTS_CHECK
+    ALL_ACTOR_URLS="$(join_urls "${_ALL_PORTS_CHECK[@]}")"
+    log "RUN_ID=${RUN_ID} actors=${ALL_ACTOR_GPUS} verify=gpu${ALL_VERIFY_GPU}:${ALL_VERIFY_PORT} tp=${ALL_TP} gpu_util=${GPU_UTIL} stagger=${WORKER_STAGGER} actor_max_num_seqs=256 verify_max_num_seqs=128 urls=${ALL_ACTOR_URLS}"
+
+    ensure_full_corpus
+
+    MODEL_PATH="${REL_MODELS}/gpt-oss-20b"
+    API_MODEL="gpt-oss-20b"
+    SLUG="gpt-oss-20b"
+    test -d "${MODEL_PATH}"
+
+    start_all_stack "${MODEL_PATH}" "${API_MODEL}" "${SLUG}"
+    run_eval "${MODEL_PATH}" "${SLUG}" "${API_MODEL}" "all" \
+      "${ALL_ACTOR_URLS}" "${ALL_TP}" "gpu${ALL_ACTOR_GPUS//,/}v${ALL_VERIFY_GPU}"
+
+    stop_all_actors
+    stop_verify
+    log "finished gpt-oss-20b all 8gpu; outputs under ${REL_OUT}/eval_h1_bcplus_full_*_${RUN_ID}"
+
+envConfigs:
+  - key: "PYTHONUNBUFFERED"
+    value: "1"
+  - key: "CUDA_VISIBLE_DEVICES"
+    value: "0,1,2,3,4,5,6,7"
+  - key: "MAX_TURNS"
+    value: "40"
+  - key: "PYTHONPATH"
+    value: "/mnt/songzijun/Capability_Evolution:/mnt/songzijun/Capability_Evolution/TRIM:/mnt/songzijun/Capability_Evolution/SCAPE-EasyOPD"
+  - key: "VLLM_DISABLE_CUSTOM_ALL_REDUCE"
+    value: "1"
+  - key: "SCAPE_LOCAL_OPENAI_EMBEDDINGS"
+    value: "1"
+  - key: "SCAPE_CHROMA_PATH"
+    value: "/tmp/empty_chroma"
+  - key: "TIKTOKEN_ENCODINGS_BASE"
+    value: "/tmp/tiktoken-bundle/share/tiktoken"
+  - key: "TIKTOKEN_RS_CACHE_DIR"
+    value: "/tmp/tiktoken-bundle/tiktoken_rs_cache"
+  - key: "TIKTOKEN_CACHE_DIR"
+    value: "/tmp/tiktoken-bundle/tiktoken_cache"
+
+queueId: "2334"
+priority: 8
+preemptible: false
+framework: "pytorch"
+resourceConfigs:
+  - nodeRole: "worker"
+    nodeNumber: 1
+    perNodeResourceSpec:
+      resourcePriority: "GUARANTEED_PUBLIC"
+      resourceName: "cloudml.ng1gm402-8-8.20-224"
+      resourceNumber: 8
+    elastic: false
+    preemptible: false
+
+enableTensorboard: false
+enableMetrics: false
+diagOptions:
+  - name: "HangDetection"
+    enable: false
+retryConfig:
+  enableRetry: false
+  maxRetryTimes: 1
+  policySets:
+    - "JobFailed"
+alertConfig:
+  enableAlert: true
+  alertItems:
+    - alertConditions:
+        - "FAILED"
+      alertLevel: "P2"
+      alertReceivers:
+        persons:
+          - "songzijun"

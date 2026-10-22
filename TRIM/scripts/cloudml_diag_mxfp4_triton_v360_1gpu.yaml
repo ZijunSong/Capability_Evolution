@@ -1,0 +1,40 @@
+jobName: trim-diag-mxfp4-triton-v360-1gpu
+description: 'Diag r3: triton_kernels v3.6.0 (triton-lang/triton tag v3.6.0, vendored on JuiceFS) fixes recov1 matmul_ogs ModuleNotFoundError. Actually loads mxfp4 model into vLLM TRITON_UNFUSED backend to confirm step0 init passes. 1gpu ~12min.'
+accessType: PRIVATE
+tags:
+- MemQA-General-V5
+imageConfig:
+  imageUrl: micr.cloud.mioffice.cn/songzijun/songzijun-cto:3050749-songzijun-cto
+  imageCommand: bash /mnt/songzijun/Capability_Evolution/TRIM/scripts/diag_mxfp4_triton_v360_1gpu.sh
+modelUri: ''
+envConfigs:
+- key: PYTHONUNBUFFERED
+  value: '1'
+- key: PYTHONPATH
+  value: /mnt/songzijun/Capability_Evolution/TRIM:/mnt/songzijun/Capability_Evolution/SCAPE-EasyOPD
+- key: PYTORCH_CUDA_ALLOC_CONF
+  value: expandable_segments:True
+- key: OPENAI_API_KEY
+  value: '**-****-***********-***-*-****-***'
+queueId: '2334'
+priority: 8
+preemptible: false
+framework: pytorch
+resourceConfigs:
+- nodeRole: worker
+  nodeNumber: 1
+  perNodeResourceSpec:
+    resourcePriority: GUARANTEED_PUBLIC
+    resourceName: cloudml.ng1gm402-8-8.20-224
+    resourceNumber: 1
+  elastic: false
+  preemptible: false
+enableTensorboard: false
+enableMetrics: false
+retryConfig:
+  enableRetry: false
+diagOptions:
+- name: HangDetection
+  enable: false
+alertConfig:
+  enableAlert: false

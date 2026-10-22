@@ -1,0 +1,187 @@
+# CloudML custom_train: TRIM Harness-1 BC+, Qwen3-4B-Instruct-2507 (original
+# bf16, dense 4B, NOT dequant), trim (SR-OPD / CISPO distill,
+# --train_method trim --component all) via torch_ddp_lora backend, FOUR 8-GPU
+# gm402-80g nodes (4 nodes x 8 cards = 32 GPUs), 200 steps.
+#
+# This is the Qwen3-4B MULTI-NODE trim/all YAML. The launch path is the same
+# 7nzzn-verified multi-node DDP path (run_train_multinode.py self-launches
+# torchrun --nnodes 4 --nproc_per_node 8, world_size=32, per-rank vLLM TP=1
+# single-GPU + DDP-LoRA CISPO/OPD, rollout shards gathered across 4 nodes via
+# shared <out>/tmp/rollout_shards, rank 0 runs optimizer step, every rank
+# barriers and reloads the fresh adapter). The gpt-oss trim/all 32gpu YAML is
+# the structural template; the Qwen3-4B rl/ddp single-node entry is the
+# Qwen-specific template.
+#
+# === PATH NOTE: trim/all (NOT rl/zero) — FIRST multi-node Qwen3-4B trim/all ===
+# The two running 32-GPU jobs (7nzzn 200step zero, ghynp 100step zero) are
+# --train_method rl --component zero (H_zero RL baseline). THIS YAML's entry is
+# --train_method trim --component all (SR-OPD + RL joint distill, the CISPO
+# teacher-student path). The trim/all path has NEVER been run multi-node
+# before; single-node it is the ethqp/axztt path (gpt-oss) and the Qwen3-4B
+# trim 16step/200step path. The distinguishing code-tree dependency of trim/all
+# is the curate-clipping tolerant-skip patch (action_is_visible +
+# tinker_opd_datum skip path), without which step0 datum build aborts on
+# "projected curate refs docs not visible after clipping" (x2j3u FAILED@step0,
+# fixed in ethqp). The entry's PATCH_CHECK asserts it.
+#
+# === Qwen3-4B vs GPT-OSS-20B differences ===
+#  * Dense bf16 4B (7.6G), NOT mxfp4. NO triton_kernels /
+#    VLLM_MXFP4_USE_MARLIN / Marlin / TRITON_UNFUSED backend. vLLM 0.19.1 loads
+#    Qwen3 via the standard bf16 + LoRA path. The 4 DDP patches are still
+#    required (startup_timeout / 4-tuple / EADDRINUSE / curate-clipping).
+#  * SCAPE_FORCE_LOCAL_HARMONY=1 is SET (harmless on Qwen, matches the verified
+#    single-node Qwen3-4B rl/ddp entry; gpt-oss deletes it because of the
+#    _LocalConversation to_json crash via openai_harmony, which Qwen does NOT
+#    hit — Qwen is is_hf_chat_family=True).
+#  * mb=4 (NOT 1): the user-specified micro-batch is 4. Qwen3-4B dense 4B
+#    backward CAN enable gradient checkpointing (gpt-oss MoE cannot), so mb>=2
+#    does NOT OOM; mb=4 is the verified Qwen3-4B DDP setting (eixmm / lxb0w /
+#    tt6mw / 89uyy). The gpt-oss mxfp4 mb1-only铁证 (k6v0p) does NOT apply.
+#
+# === Multi-node risks (most retired by 7nzzn 2026-09-25) ===
+# 1. PyTorchJob CRD injection: custom_train framework=pytorch nodeNumber=4
+#    creates a PyTorchJob CRD with master-0/worker pods + init-pytorch that
+#    injects MASTER_ADDR/NODE_RANK (NOT RANK/WORLD_SIZE, verified by 7nzzn
+#    PREFLIGHT rank_env=None world_size_env=None). The entry unsets the rank
+#    env defensively so run_train_multinode.py self-launches torchrun.
+# 2. starfs-user-pv FailedMount: the 2026-09-15 probe was killed at deploying
+#    because CloudML multi-node auto-injects a starfs-user-pv volume that
+#    failed to mount. 7nzzn (2026-09-25) did NOT hit this (platform issue
+#    resolved). Low risk now, still watch events.
+# 3. cross-node nccl object collectives: 7nzzn verified Gloo rendezvous +
+#    object ops work cross-4-node (PyTorch auto-uses Gloo for
+#    broadcast_object_list/all_gather_object). Risk retired by 7nzzn.
+# 4. workspace quota: kscn gm402 GUARANTEED_PUBLIC LEFT=0; 7nzzn (32-GPU gang)
+#    was scheduled despite this, so the public pool does NOT strictly block at
+#    LEFT=0. Still, 32-GPU gang may queue if pool is busy.
+# 5. GPU contention (2026-09-25 specific): at submit time queue 2334
+#    RESOURCEFREE and idle FREE depend on how many 32-GPU gangs are running.
+#    Check cml queue list / queue pending / resource idle list at submit and
+#    verify with cml custom_train describe (state + events
+#    Scheduled/Unschedulable/FailedQueueScheduling) after.
+#
+# IMPORTANT: JuiceFS endpoint is NOT submitted via this YAML (--filename) path.
+# The actual submit uses direct CLI flags and passes --juicefs_mount_configs
+# JSON explicitly, where juiceFsCluster must be "bj9-cloudml" (the schema field
+# is juiceFsCluster; there is no literal "endpoint" key; its value IS the
+# cluster/endpoint identifier, verified by 7nzzn describe juiceFSCluster field).
+# This file is a readable draft / audit snapshot only; submit via
+# submit_qwen3_4b_trim_ddp_200step_all_32gpu_4node_20260925.sh.
+#
+# world_size=32 is REQUIRED (4 nodes, 8 ranks/node via torchrun --nnodes 4
+# --nproc_per_node 8). Post-submit provenance audit (CLAUDE.md): verify
+# world_size is truly 32 by the three-tuple — (1) stdout has torchrun
+# --nnodes 4 --nproc_per_node 8; (2) checkpoints/<cell>/step_000001/ has 32
+# optimizer.rank0000..0031.pt; (3) vllm_sessions/ has 32 _r0.._r31 sessions.
+# Any one missing => actually single-node or partial run, result is NOT a
+# valid "32-GPU 4-node DDP" artifact.
+#
+# imageCommand below is a PLACEHOLDER — the entry script has bash heredocs
+# and nested indentation, so inlining it as a YAML block scalar breaks
+# parsing (confirmed during run2 prep). The actual submission passes it via
+# the CLI flag --image_command "$(cat entry_qwen3_4b_trim_ddp_200step_all_32gpu_4node_20260925.sh)"
+# in the submit script. This YAML is an audit snapshot of resource/env/
+# JuiceFS config; do NOT submit with --filename.
+
+jobName: trim-harness1-bcplus-full-qwen3-4b-trim-ddp-200step-all-32gpu-4node-20260925
+description: >-
+  TRIM Harness-1 BC+ trim (SR-OPD/CISPO distill, --train_method trim
+  --component all) Qwen3-4B-Instruct-2507 (dense bf16 4B) on FOUR 8-GPU
+  gm402-80g nodes (32 GPUs) via torch_ddp_lora backend. FIRST multi-node
+  Qwen3-4B trim/all (7nzzn/ghynp are rl/zero gpt-oss). run_train_multinode.py
+  --nnodes 4 --nproc-per-node 8 self-torchruns world_size=32: per-rank vLLM
+  TP=1 rollout + DDP LoRA CISPO/OPD optimizer step (full replica per rank, not
+  FSDP2 sharding). 200 steps, 32 groups/step, group-size 8, max-turns 40 (NOT
+  default 6; MAX_TURNS env is a no-op), max-model-len 8192, mb=4 (Qwen3-4B
+  dense backward can grad-ckpt; NOT the gpt-oss mb1-only OOM floor), gpu-mem
+  0.90, local_legacy BM25, SEC RL data + corpus under TRIM/data, offline
+  tiktoken, four-pack torch2.10.0/vllm0.19.1/tf4.57.6/pyserini2.0.0. Entry
+  unsets CloudML-injected RANK/WORLD_SIZE/PET_* so main() self-launches
+  torchrun (deterministic 4-node rendezvous via --master-addr/--node-rank).
+  NO CUDA_LAUNCH_BLOCKING (DDP multi-proc). NO DISABLE_CUSTOM_ALL_REDUCE
+  (TP=1). SCAPE_FORCE_LOCAL_HARMONY=1 SET (harmless on Qwen, NOT the gpt-oss
+  to_json crash). Model cp to /tmp per node (4-way JuiceFS read, not 32-way).
+  trim/all-specific curate-clipping patch (action_is_visible +
+  tinker_opd_datum skip) asserted in PATCH_CHECK (x2j3u FAILED without it).
+  RDMA on (>=2 nodes x 8 GPU). Multi-node risks (most retired by 7nzzn):
+  starfs-user-pv FailedMount (7nzzn did NOT hit), cross-node object
+  collectives (7nzzn verified Gloo rendezvous works), workspace quota LEFT=0
+  (7nzzn scheduled despite it). world_size=32 audit required post-submit.
+accessType: PRIVATE
+tags:
+- MemQA-General-V5
+imageConfig:
+  imageUrl: micr.cloud.mioffice.cn/songzijun/songzijun-cto:3050749-songzijun-cto
+  imageCommand: "FILLED_BY_SUBMIT_SCRIPT_VIA_cat_entry"
+  # NOTE: imageCommand is a bash entry script with heredocs and nested
+  # indentation, so inlining it as a YAML block scalar breaks parsing. The
+  # actual submission passes it via the CLI flag
+  # --image_command "$(cat entry_qwen3_4b_trim_ddp_200step_all_32gpu_4node_20260925.sh)"
+  # in submit_qwen3_4b_trim_ddp_200step_all_32gpu_4node_20260925.sh. This
+  # YAML is an audit snapshot of resource/env/JuiceFS config; do NOT submit
+  # with --filename (use the submit script). The entry file is kept in sync
+  # with imageConfig above.
+juiceFsMountConfigs:
+- volume: songzijun
+  juiceFsCluster: bj9-cloudml
+  subPath: /
+  mountPath: /mnt/songzijun
+  readOnly: false
+envConfigs:
+- key: PYTHONUNBUFFERED
+  value: '1'
+- key: CUDA_VISIBLE_DEVICES
+  value: 0,1,2,3,4,5,6,7
+- key: TRIM_GPU_KEEPALIVE
+  value: '0'
+- key: PYTORCH_CUDA_ALLOC_CONF
+  value: expandable_segments:True
+- key: PYTHONPATH
+  value: /mnt/songzijun/Capability_Evolution/TRIM:/mnt/songzijun/Capability_Evolution/SCAPE-EasyOPD
+- key: OPENAI_API_KEY
+  value: '**-****-***********-***-*-****-***'
+- key: SCAPE_LOCAL_OPENAI_EMBEDDINGS
+  value: '1'
+- key: SCAPE_FORCE_LOCAL_HARMONY
+  value: '1'
+- key: TIKTOKEN_ENCODINGS_BASE
+  value: /tmp/tiktoken-bundle/share/tiktoken
+- key: TIKTOKEN_CACHE_DIR
+  value: /tmp/tiktoken-bundle/tiktoken_cache
+- key: TIKTOKEN_RS_CACHE_DIR
+  value: /tmp/tiktoken-bundle/tiktoken_rs_cache
+- key: OUT
+  value: /mnt/songzijun/Capability_Evolution/TRIM/outputs/cloudml_custom_train_harness1_bcplus_full_qwen3_4b_trim_ddp_200step_all_32gpu_4node_20260925
+queueId: '2334'
+priority: 8
+preemptible: false
+framework: pytorch
+rdma: true
+resourceConfigs:
+- nodeRole: worker
+  nodeNumber: 4
+  perNodeResourceSpec:
+    resourcePriority: GUARANTEED_PUBLIC
+    resourceName: cloudml.ng1gm402-8-8.20-224
+    resourceNumber: 8
+  elastic: false
+  preemptible: false
+enableTensorboard: false
+enableMetrics: false
+retryConfig:
+  enableRetry: false
+  maxRetryTimes: 1
+  policySets:
+  - JobFailed
+diagOptions:
+- name: HangDetection
+  enable: false
+alertConfig:
+  enableAlert: true
+  alertItems:
+  - alertConditions:
+    - FAILED
+    alertLevel: P2
+    alertReceivers:
+      persons:
+      - songzijun

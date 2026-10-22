@@ -1,0 +1,64 @@
+jobName: trim-harness1-bcplus-full-qwen3-4b-trim-ddp-200step-8gpu-20260918
+description: 'Harness-1 BC+ full trim Qwen3-4B-Instruct-2507 bf16 on 8-GPU gm402-80g via torch_ddp_lora. nproc=8: per-rank vLLM TP=1 rollout + DDP LoRA CISPO. 200 steps, 32 grp/step, gs8, max-turns 40, max-model-len 8192, gpu-mem-util 0.90, local_legacy BM25, SEC data under TRIM/data, offline tiktoken, four-pack torch2.10.0/vllm0.19.1/tf4.57.6/pyserini2.0.0. 6e8dea4 fixes WORLD_SIZE=1 skip-torchrun, 8 ranks truly start. No CUDA_LAUNCH_BLOCKING, no DISABLE_CUSTOM_ALL_REDUCE.'
+accessType: PRIVATE
+tags:
+- MemQA-General-V5
+imageConfig:
+  imageUrl: micr.cloud.mioffice.cn/songzijun/songzijun-cto:3050749-songzijun-cto
+  imageCommand: "set -euxo pipefail\nexport PYTHONUNBUFFERED=1\nexport CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7\nexport TRIM_GPU_KEEPALIVE=0\nexport PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True\nexport PYTHONPATH=/mnt/songzijun/Capability_Evolution/TRIM:/mnt/songzijun/Capability_Evolution/SCAPE-EasyOPD\n# torch_ddp_lora path: NO CUDA_LAUNCH_BLOCKING (DDP is real multi-proc torchrun,\n# not accelerate device_map=auto async race). NO DISABLE_CUSTOM_ALL_REDUCE\n# (per-rank vLLM TP=1, no TP all-reduce to fix).\n# Placeholder key so pyserini.encode._openai module-level openai.OpenAI()\n# does not raise OpenAIError at import (RL/trim uses local BM25, never calls OpenAI API).\nexport OPENAI_API_KEY=\"${OPENAI_API_KEY:-**-****-***********-***-*-****-***}\"\nexport SCAPE_LOCAL_OPENAI_EMBEDDINGS=1\nexport SCAPE_FORCE_LOCAL_HARMONY=1\nexport SCAPE_CHROMA_PATH=/tmp/empty_chroma\nmkdir -p \"$SCAPE_CHROMA_PATH\"\n\n# Offline tiktoken: extract the bundle to /tmp so harmony_runtime can\n# auto-discover it, and also set the env vars explicitly (bundle README 方式 B).\npython3 -c \"import zipfile; zipfile.ZipFile('/mnt/songzijun/tiktoken-bundle.zip').extractall('/tmp')\"\ntest -f /tmp/tiktoken-bundle/share/tiktoken/o200k_base.tiktoken\ntest -f /tmp/tiktoken-bundle/share/tiktoken/cl100k_base.tiktoken\nexport TIKTOKEN_ENCODINGS_BASE=/tmp/tiktoken-bundle/share/tiktoken\nexport TIKTOKEN_RS_CACHE_DIR=/tmp/tiktoken-bundle/tiktoken_rs_cache\nexport TIKTOKEN_CACHE_DIR=/tmp/tiktoken-bundle/tiktoken_cache\n\nnvidia-smi -L\ntest -f /mnt/songzijun/Capability_Evolution/TRIM/scripts/run_train.py\ntest -f /mnt/songzijun/models/Qwen3-4B-Instruct-2507/config.json\ntest -f /mnt/songzijun/Capability_Evolution/TRIM/data/harness-1-rl-data/manifest.json\ntest -f /mnt/songzijun/Capability_Evolution/TRIM/data/harness-1-sec-corpus/manifest.json\n\nJVM_PATH=$(find /usr /opt -type f -name libjvm.so 2>/dev/null | head -1 || true)\nif [ -z \"${JVM_PATH}\" ]; then\n  apt-get update\n  DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends openjdk-21-jre-headless\n  JVM_PATH=$(find /usr /opt -type f -name libjvm.so 2>/dev/null | head -1 || true)\nfi\ntest -n \"${JVM_PATH}\"\ntest -f \"${JVM_PATH}\"\nldd \"${JVM_PATH}\"\nexport JVM_PATH\nexport JAVA_HOME=$(dirname \"$(dirname \"$(dirname \"${JVM_PATH}\")\")\")\nexport LD_LIBRARY_PATH=$(dirname \"${JVM_PATH}\"):${LD_LIBRARY_PATH:-}\n\npython3 -m pip install --no-cache-dir --ignore-installed --upgrade-strategy only-if-needed \\\n  \"torch==2.10.0\" \"transformers==4.57.6\" \"accelerate==1.13.0\" \"datasets==4.8.4\" \\\n  \"hydra-core==1.3.2\" \"omegaconf==2.3.0\" \"vllm==0.19.1\" peft structlog chromadb \\\n  tqdm regex sympy latex2sympy2 word2number sentencepiece pyserini openai tenacity anthropic\n\nPYSERINI_ROOT=$(python3 -c 'import pathlib, pyserini; print(pathlib.Path(pyserini.__file__).resolve().parent)')\nexport ANSERINI_CLASSPATH=$(find \"$PYSERINI_ROOT/resources/jars\" -type f -name '*.jar' -print | paste -sd: -)\ntest -n \"$ANSERINI_CLASSPATH\"\nexport CLASSPATH=\"$ANSERINI_CLASSPATH\"\n\npython3 - <<'PY'\nimport importlib.metadata\nimport os\nimport torch\nimport transformers\nimport vllm\nfrom jnius import autoclass\nautoclass(\"java.lang.String\")\nversions = {\n    \"torch\": torch.__version__,\n    \"vllm\": vllm.__version__,\n    \"transformers\": transformers.__version__,\n    \"pyserini\": importlib.metadata.version(\"pyserini\"),\n    \"peft\": importlib.metadata.version(\"peft\"),\n    \"structlog\": importlib.metadata.version(\"structlog\"),\n    \"chromadb\": importlib.metadata.version(\"chromadb\"),\n    \"gpu_count\": torch.cuda.device_count(),\n    \"JVM_PATH\": os.environ[\"JVM_PATH\"],\n    \"JAVA_HOME\": os.environ[\"JAVA_HOME\"],\n    \"TIKTOKEN_ENCODINGS_BASE\": os.environ.get(\"TIKTOKEN_ENCODINGS_BASE\"),\n    \"o200k_base_present\": os.path.isfile(\n        os.path.join(os.environ[\"TIKTOKEN_ENCODINGS_BASE\"], \"o200k_base.tiktoken\")\n    ),\n    \"java_ok\": True,\n}\nprint(\"PREFLIGHT\", versions, flush=True)\nassert versions[\"torch\"].startswith(\"2.10.0\")\nassert versions[\"vllm\"] == \"0.19.1\"\nassert versions[\"transformers\"] == \"4.57.6\"\nassert versions[\"pyserini\"] == \"2.0.0\"\nassert versions[\"gpu_count\"] == 8\nassert versions[\"o200k_base_present\"]\nfrom pyserini.search.lucene import LuceneSearcher\ns = LuceneSearcher(\"/mnt/songzijun/Capability_Evolution/TRIM/data/harness-1-sec-corpus/indexes/bm25\")\nn_docs = s.num_docs if not callable(s.num_docs) else s.num_docs()\nprint(\"LUCENE_OK\", {\"num_docs\": n_docs}, flush=True)\nassert n_docs > 0\n# DDP-LoRA wrap probe: torch_ddp_lora backend must select the plain \"ddp\" actor\n# wrap (full replica per rank), NOT the FSDP2 sharded wrap. Vendored\n# trim.integrations.verl (external verl NOT imported).\nfrom trim.integrations.verl.trainer_adapter import _actor_wrap\nassert _actor_wrap(\"torch_ddp_lora\") == \"ddp\"\nprint(\"DDP_LORA_WRAP_OK\", {\"wrap\": _actor_wrap(\"torch_ddp_lora\")}, flush=True)\nPY\n\npython3 -m py_compile /mnt/songzijun/Capability_Evolution/TRIM/scripts/run_train.py\ncd /mnt/songzijun/Capability_Evolution\nexec python3 /mnt/songzijun/Capability_Evolution/TRIM/scripts/run_train.py \\\n  --training-backend torch_ddp_lora \\\n  --nproc-per-node 8 \\\n  --harness Harness-1 \\\n  --benchmark bcplus_full \\\n  --model_name /mnt/songzijun/models/Qwen3-4B-Instruct-2507 \\\n  --train_method trim \\\n  --component all \\\n  --train-env local_legacy \\\n  --train-data sec \\\n  --rl-data /mnt/songzijun/Capability_Evolution/TRIM/data/harness-1-rl-data \\\n  --sec-corpus-root /mnt/songzijun/Capability_Evolution/TRIM/data/harness-1-sec-corpus \\\n  --train-steps 200 \\\n  --train-groups-per-step 32 \\\n  --group-size 8 \\\n  --train-micro-batch-size 4 \\\n  --train-heartbeat-every 8 \\\n  --max-turns 40 \\\n  --max-model-len 8192 \\\n  --gpu-memory-utilization 0.90 \\\n  --out /mnt/songzijun/Capability_Evolution/TRIM/outputs/cloudml_custom_train_harness1_bcplus_full_qwen3_4b_trim_ddp_200step_8gpu_20260918_$(date +%Y%m%d_%H%M%S)"
+modelUri: ''
+envConfigs:
+- key: PYTHONUNBUFFERED
+  value: '1'
+- key: CUDA_VISIBLE_DEVICES
+  value: 0,1,2,3,4,5,6,7
+- key: TRIM_GPU_KEEPALIVE
+  value: '0'
+- key: PYTORCH_CUDA_ALLOC_CONF
+  value: expandable_segments:True
+- key: PYTHONPATH
+  value: /mnt/songzijun/Capability_Evolution/TRIM:/mnt/songzijun/Capability_Evolution/SCAPE-EasyOPD
+- key: OPENAI_API_KEY
+  value: '**-****-***********-***-*-****-***'
+- key: SCAPE_LOCAL_OPENAI_EMBEDDINGS
+  value: '1'
+- key: SCAPE_FORCE_LOCAL_HARMONY
+  value: '1'
+- key: TIKTOKEN_ENCODINGS_BASE
+  value: /tmp/tiktoken-bundle/share/tiktoken
+- key: TIKTOKEN_CACHE_DIR
+  value: /tmp/tiktoken-bundle/tiktoken_cache
+- key: TIKTOKEN_RS_CACHE_DIR
+  value: /tmp/tiktoken-bundle/tiktoken_rs_cache
+queueId: '2334'
+priority: 8
+preemptible: false
+framework: pytorch
+resourceConfigs:
+- nodeRole: worker
+  nodeNumber: 1
+  perNodeResourceSpec:
+    resourcePriority: GUARANTEED_PUBLIC
+    resourceName: cloudml.ng1gm402-8-8.20-224
+    resourceNumber: 8
+  elastic: false
+  preemptible: false
+enableTensorboard: false
+enableMetrics: false
+retryConfig:
+  enableRetry: false
+  maxRetryTimes: 1
+  policySets:
+  - JobFailed
+diagOptions:
+- name: HangDetection
+  enable: false
+alertConfig:
+  enableAlert: true
+  alertItems:
+  - alertConditions:
+    - FAILED
+    alertLevel: P2
+    alertReceivers:
+      persons:
+      - songzijun

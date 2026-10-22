@@ -1,0 +1,19 @@
+# 诊断 YAML: 枚举 vLLM 0.19.1 tool parsers（单卡，~3min）
+JobName: "diag-vllm-parsers-1gpu-20260914"
+Description: "Diagnose vLLM 0.19.1 registered tool-call parsers (GLM-4-32B-0414 zero eval recall=0 root cause). 1 GPU, no model load."
+AccessType: "PUBLIC"
+ImageConfig:
+  ImageUrl: "micr.cloud.mioffice.cn/songzijun/songzijun-cto:3050749-songzijun-cto"
+  ImageCommand: "bash /mnt/songzijun/Capability_Evolution/TRIM/scripts/diag_vllm_parsers_1gpu.sh"
+QueueId: "2334"
+Priority: 8
+Framework: "pytorch"
+Tags:
+  - "MemQA-General-V5"
+ResourceConfigs:
+  - NodeRole: "worker"
+    NodeNumber: 1
+    PerNodeResourceSpec:
+      ResourcePriority: "GUARANTEED_PUBLIC"
+      ResourceName: "cloudml.ng1gm402-8-8.20-224"
+      ResourceNumber: 1

@@ -1,0 +1,59 @@
+# CloudML custom_train: TRIM Harness-1 BC+ full / Qwen3-4B-Instruct-2507 / ZERO eval, 8x gm402-80g
+# 单节点 8 卡 PyTorch 任务（本任务为评测，仅借 pytorch 框架占位以获得 8 卡 gang 调度）。
+#
+# 状态: NOT SUBMITTED. 仅作可读底稿 / 审计快照。
+#
+# 重要：JuiceFS endpoint 不通过本 YAML（--filename）方式提交。
+# 实际提交使用直接 CLI 参数，并通过 --juicefs_mount_configs 显式传入 JSON，
+# 其中 endpoint / juiceFsCluster 必须为 "bj9-cloudml"。
+# 本文件的 JuiceFSMountConfigs 字段不作为提交依据（提交命令见同名 .sh）。
+#
+# 启动逻辑见 TRIM/scripts/run_qwen3_4b_zero_eval_cloudml_8gpu.sh
+#   （依赖锁定四件套 torch2.10/transformers4.57.6/vllm0.19.1/pyserini2.0.0
+#    + preflight[GPU/JVM/PyJNI/Lucene/导入链/tiktoken离线] + 8GPU 断言
+#    + tiktoken 三变量 TIKTOKEN_ENCODINGS_BASE/TIKTOKEN_CACHE_DIR/TIKTOKEN_RS_CACHE_DIR
+#    + 调用 zero eval 脚本）。
+# eval 脚本：TRIM/scripts/run_bcplus_full_qwen3_4b_zero_gpu8_eval.sh
+#   8 个单卡 vLLM actor (TP=1) + 32 API-client workers（4 workers/GPU，充分利用 8 卡），local_bm25 无 Chroma，无 verifier。
+# tiktoken：/mnt/songzijun/tiktoken-bundle.zip 解压到 /tmp/tiktoken-bundle
+#   o200k_base.tiktoken（gpt-oss/harmony 离线词表；不存在独立 o200k_harmony.tiktoken）
+#   cl100k_base.tiktoken（fallback）。
+JobName: "trim_harness1_bcplus_full_qwen3_4b_zero_eval_8gpu_20260913_seed3"
+Description: "TRIM Harness-1 BC+ full / Qwen3-4B / ZERO eval (upstream_api + local_bm25, no Chroma). 8x gm402-80g queue 2334: 8 single-GPU vLLM actors (TP=1) + 32 workers (4/GPU, GPU_UTIL=0.90). (independent run seed3, for 3-seed mean). Launch: TRIM/scripts/run_qwen3_4b_zero_eval_cloudml_8gpu.sh (locked deps + preflight + tiktoken offline triple-env)."
+AccessType: "PRIVATE"
+ImageConfig:
+  ImageUrl: "micr.cloud.mioffice.cn/songzijun/songzijun-cto:3050749-songzijun-cto"
+  ImageCommand: "bash -lc '/mnt/songzijun/Capability_Evolution/TRIM/scripts/run_qwen3_4b_zero_eval_cloudml_8gpu.sh'"
+QueueId: "2334"
+Priority: 8
+Preemptible: false
+Framework: "pytorch"
+ResourceConfigs:
+  - NodeRole: "worker"
+    NodeNumber: 1
+    PerNodeResourceSpec:
+      ResourcePriority: "GUARANTEED_PUBLIC"
+      ResourceName: "cloudml.ng1gm402-8-8.20-224"
+      ResourceNumber: 8
+    Elastic: false
+    Preemptible: false
+Tags:
+  - "MemQA-General-V5"
+EnvConfigs:
+  - Key: "PYTHONPATH"
+    Value: "/mnt/songzijun/Capability_Evolution/TRIM:/mnt/songzijun/Capability_Evolution/SCAPE-EasyOPD"
+  - Key: "RUN_ID"
+    Value: "qwen3_4b_zero_8gpu_20260913_memqa_v5_seed3"
+  - Key: "MAX_NUM_SEQS"
+    Value: "8"
+  - Key: "TP"
+    Value: "32"
+  - Key: "MAX_MODEL_LEN"
+    Value: "32768"
+  - Key: "GPU_UTIL"
+    Value: "0.90"
+  - Key: "WORKER_STAGGER"
+    Value: "10"
+# JuiceFS 挂载不在此 YAML 定义；endpoint（juiceFsCluster=bj9-cloudml）
+# 经 CLI --juicefs_mount_configs 显式传入（见提交命令）。
+#   {"volume":"songzijun","juiceFsCluster":"bj9-cloudml","endpoint":"bj9-cloudml","subPath":"/","mountPath":"/mnt/songzijun","readOnly":false}

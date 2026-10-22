@@ -142,3 +142,18 @@ TRIM/data/harness-1-sft-data/
 !**/method.md
 !SCAPE/**/*.md
 !TRIM/**/*.md
+
+# --- local-only experiment result dumps / archives (dirs, not code) ---
+**/*_archive/
+TRIM/.tiktoken_cache/
+TRIM/experiments/
+TRIM/experiment_reports/
+TRIM/archive_*/
+TRIM/qwen3_4b_zero_vs_all_*/
+TRIM/qwen3_4b_all_eval_*/
+TRIM/third_party/triton_kernels_wheels/
+*.whl
+*.orig
+
+# --- platform job export dumps (configs live in TRIM/scripts/) ---
+**/10063-t-*-export.yaml

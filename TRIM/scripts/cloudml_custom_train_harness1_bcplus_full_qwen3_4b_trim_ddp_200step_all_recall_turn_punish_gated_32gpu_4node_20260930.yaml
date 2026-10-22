@@ -1,0 +1,181 @@
+# CloudML custom_train: TRIM Harness-1 BC+, Qwen3-4B-Instruct-2507 (original
+# bf16, dense 4B, NOT dequant), trim (SR-OPD / CISPO distill,
+# --train_method trim --component all) via torch_ddp_lora backend, FOUR 8-GPU
+# gm402-80g nodes (4 nodes x 8 cards = 32 GPUs), 200 steps.
+#
+# === THIS VARIANT: trim/all + final-answer recall + turn-count penalty reward (GATED) + TensorBoard ===
+# Forked from the iowty YAML (trim/all, default 4-term reward). Two behavioral
+# deltas vs iowty:
+#   1. Reward: TRIM_REWARD_MODE=recall_turn enables
+#      total = recall - 0.15*(n_turns/40)*[rec>0] (GATED, penalty zeroed when
+#      rec=0; fix for jf8fc reward collapse). Env-gated, unset reproduces iowty.
+#   2. TensorBoard: enableTensorboard=true + enableMetrics=true so the platform
+#      injects $TENSORBOARD_LOG_PATH, which trainer_adapter._make_tensorboard_writer
+#      picks up (reward/ loss/ cispo/ tokens/ timing_s/ mem/ scalar blocks every
+#      optimizer step; turn_penalty_mean / n_turns_mean in the reward block).
+#      metrics.jsonl / step_timing.jsonl / turn_samples.jsonl under <OUT>/rl/.
+#
+# Independent jobName + OUT (-recall-turn-punish-gated) so this run does NOT
+# collide with iowty's provenance; distinct --rdzv-id
+# (qwen3-4B-trim-recall-turn-punish-gated-32).
+#
+# Everything else identical to iowty: dense bf16 4B (no mxfp4/triton/Marlin),
+# mb=4, gpu-mem 0.90, SCAPE_FORCE_LOCAL_HARMONY=1 (harmless on Qwen), model cp
+# to /tmp per node, PATCH_CHECK asserts all 4 patches (3 DDP-generic +
+# trim/all-specific curate-clipping: action_is_visible + tinker_opd_datum skip,
+# without which step0 datum build aborts on "projected curate refs docs not
+# visible after clipping", x2j3u FAILED@step0, fixed in ethqp).
+#
+# === Qwen3-4B vs GPT-OSS-20B differences ===
+#  * Dense bf16 4B (7.6G), NOT mxfp4. NO triton_kernels /
+#    VLLM_MXFP4_USE_MARLIN / Marlin / TRITON_UNFUSED backend. vLLM 0.19.1 loads
+#    Qwen3 via the standard bf16 + LoRA path. The 4 DDP patches are still
+#    required (startup_timeout / 4-tuple / EADDRINUSE / curate-clipping).
+#  * SCAPE_FORCE_LOCAL_HARMONY=1 is SET (harmless on Qwen, matches the verified
+#    iowty entry; gpt-oss deletes it because of the _LocalConversation to_json
+#    crash via openai_harmony, which Qwen does NOT hit — Qwen is
+#    is_hf_chat_family=True).
+#  * mb=4 (NOT 1): Qwen3-4B dense 4B backward CAN enable gradient checkpointing
+#    (gpt-oss MoE cannot), so mb>=2 does NOT OOM; mb=4 is the verified Qwen3-4B
+#    DDP setting (eixmm / lxb0w / tt6mw / 89uyy). The gpt-oss mxfp4 mb1-only
+#    铁证 (k6v0p) does NOT apply.
+#
+# === Multi-node risks (most retired by 7nzzn 2026-09-25) ===
+# 1. PyTorchJob CRD injection: custom_train framework=pytorch nodeNumber=4
+#    creates a PyTorchJob CRD with master-0/worker pods + init-pytorch that
+#    injects MASTER_ADDR/NODE_RANK (NOT RANK/WORLD_SIZE, verified by 7nzzn
+#    PREFLIGHT rank_env=None world_size_env=None). The entry unsets the rank
+#    env defensively so run_train_multinode.py self-launches torchrun.
+# 2. starfs-user-pv FailedMount: the 2026-09-15 probe was killed at deploying
+#    because CloudML multi-node auto-injects a starfs-user-pv volume that
+#    failed to mount. 7nzzn (2026-09-25) did NOT hit this (platform issue
+#    resolved). Low risk now, still watch events.
+# 3. cross-node nccl object collectives: 7nzzn verified Gloo rendezvous +
+#    object ops work cross-4-node (PyTorch auto-uses Gloo for
+#    broadcast_object_list/all_gather_object). Risk retired by 7nzzn.
+# 4. workspace quota: kscn gm402 GUARANTEED_PUBLIC LEFT=0; 7nzzn (32-GPU gang)
+#    was scheduled despite this, so the public pool does NOT strictly block at
+#    LEFT=0. Still, 32-GPU gang may queue if pool is busy.
+# 5. GPU contention: at submit time queue 2334 RESOURCEFREE and idle FREE
+#    depend on how many 32-GPU gangs are running. Check cml queue list / queue
+#    pending / resource idle list at submit and verify with
+#    cml custom_train describe (state + events
+#    Scheduled/Unschedulable/FailedQueueScheduling) after.
+#
+# IMPORTANT: JuiceFS endpoint is NOT submitted via this YAML (--filename) path.
+# The actual submit uses direct CLI flags and passes --juicefs_mount_configs
+# JSON explicitly, where juiceFsCluster must be "bj9-cloudml" (the schema field
+# is juiceFsCluster; there is no literal "endpoint" key; its value IS the
+# cluster/endpoint identifier, verified by 7nzzn describe juiceFSCluster field).
+# This file is a readable draft / audit snapshot only; submit via
+# submit_qwen3_4b_trim_ddp_200step_all_recall_turn_punish_gated_32gpu_4node_20260930.sh.
+#
+# world_size=32 is REQUIRED (4 nodes, 8 ranks/node via torchrun --nnodes 4
+# --nproc_per_node 8). Post-submit provenance audit (CLAUDE.md): verify
+# world_size is truly 32 by the three-tuple — (1) stdout has torchrun
+# --nnodes 4 --nproc_per_node 8; (2) checkpoints/<cell>/step_000001/ has 32
+# optimizer.rank0000..0031.pt; (3) vllm_sessions/ has 32 _r0.._r31 sessions.
+# Any one missing => actually single-node or partial run, result is NOT a
+# valid "32-GPU 4-node DDP" artifact. Plus reward: stdout PREFLIGHT must show
+# reward_mode=recall_turn; metrics.jsonl must show
+# protocol=final_answer_recall_gated_turn_penalty + turn_penalty>0.
+#
+# imageCommand below is a PLACEHOLDER — the entry script has bash heredocs
+# and nested indentation, so inlining it as a YAML block scalar breaks
+# parsing (confirmed during run2 prep). The actual submission passes it via
+# the CLI flag --image_command "$(cat entry_qwen3_4b_trim_ddp_200step_all_recall_turn_punish_gated_32gpu_4node_20260930.sh)"
+# in the submit script. This YAML is an audit snapshot of resource/env/
+# JuiceFS config; do NOT submit with --filename.
+
+jobName: trim-harness1-bcplus-full-qwen3-4b-trim-ddp-200step-all-recall-turn-punish-gated-32gpu-4node-20260930
+description: >-
+  TRIM Harness-1 BC+ trim (train_method=trim component=all) Qwen3-4B-Instruct-2507
+  dense bf16 4B 4node 32gpu torch_ddp_lora. GATED turn penalty:
+  total=recall-0.15*(n_turns/40)*[rec>0] (turn penalty zeroed when rec=0, fixes
+  jf8fc reward collapse to n_turns=1). tensorboard on. mb4 gpu-mem0.90
+  max-turns40 max-model-len8192. curate-clipping patch asserted (action_is_visible
+  + tinker_opd_datum skip). Shared --out via --env OUT. RDMA on. world_size=32
+  audit.
+accessType: PRIVATE
+tags:
+- MemQA-General-V5
+imageConfig:
+  imageUrl: micr.cloud.mioffice.cn/songzijun/songzijun-cto:3050749-songzijun-cto
+  imageCommand: "FILLED_BY_SUBMIT_SCRIPT_VIA_cat_entry"
+  # NOTE: imageCommand is a bash entry script with heredocs and nested
+  # indentation, so inlining it as a YAML block scalar breaks parsing. The
+  # actual submission passes it via the CLI flag
+  # --image_command "$(cat entry_qwen3_4b_trim_ddp_200step_all_recall_turn_punish_gated_32gpu_4node_20260930.sh)"
+  # in the submit script. This YAML is an audit snapshot of resource/env/
+  # JuiceFS config; do NOT submit with --filename (use the submit script). The
+  # entry file is kept in sync with imageConfig above.
+juiceFsMountConfigs:
+- volume: songzijun
+  juiceFsCluster: bj9-cloudml
+  subPath: /
+  mountPath: /mnt/songzijun
+  readOnly: false
+envConfigs:
+- key: PYTHONUNBUFFERED
+  value: '1'
+- key: CUDA_VISIBLE_DEVICES
+  value: 0,1,2,3,4,5,6,7
+- key: TRIM_GPU_KEEPALIVE
+  value: '0'
+- key: PYTORCH_CUDA_ALLOC_CONF
+  value: expandable_segments:True
+- key: PYTHONPATH
+  value: /mnt/songzijun/Capability_Evolution/TRIM:/mnt/songzijun/Capability_Evolution/SCAPE-EasyOPD
+- key: OPENAI_API_KEY
+  value: '**-****-***********-***-*-****-***'
+- key: SCAPE_LOCAL_OPENAI_EMBEDDINGS
+  value: '1'
+- key: SCAPE_FORCE_LOCAL_HARMONY
+  value: '1'
+- key: TIKTOKEN_ENCODINGS_BASE
+  value: /tmp/tiktoken-bundle/share/tiktoken
+- key: TIKTOKEN_CACHE_DIR
+  value: /tmp/tiktoken-bundle/tiktoken_cache
+- key: TIKTOKEN_RS_CACHE_DIR
+  value: /tmp/tiktoken-bundle/tiktoken_rs_cache
+- key: TRIM_REWARD_MODE
+  value: recall_turn
+- key: TRIM_TURN_PENALTY
+  value: '0.15'
+- key: TRIM_TURN_NORM
+  value: '40'
+- key: OUT
+  value: /mnt/songzijun/outputs/qwen3-4b-trim-recall-turn-punish-gated-32gpu_20260930
+queueId: '2334'
+priority: 8
+preemptible: false
+framework: pytorch
+rdma: true
+resourceConfigs:
+- nodeRole: worker
+  nodeNumber: 4
+  perNodeResourceSpec:
+    resourcePriority: GUARANTEED_PUBLIC
+    resourceName: cloudml.ng1gm402-8-8.20-224
+    resourceNumber: 8
+  elastic: false
+  preemptible: false
+enableTensorboard: true
+enableMetrics: true
+retryConfig:
+  enableRetry: false
+  maxRetryTimes: 1
+  policySets:
+  - JobFailed
+diagOptions:
+- name: HangDetection
+  enable: false
+alertConfig:
+  enableAlert: true
+  alertItems:
+  - alertConditions:
+    - FAILED
+    alertLevel: P2
+    alertReceivers:
+      persons:
+      - songzijun

@@ -312,7 +312,9 @@ class StudentPorts:
 
 
 def run(args: Any, dist: Any) -> int:
-    if getattr(args, "ce_backend", "legacy") == "accelerate_ddp":
+    from trim.training.sft_engine.backend import is_accelerated
+
+    if is_accelerated(getattr(args, "ce_backend", "legacy")):
         from trim.training.sft_engine.online_runtime import run_student_v2
 
         return run_student_v2(args)

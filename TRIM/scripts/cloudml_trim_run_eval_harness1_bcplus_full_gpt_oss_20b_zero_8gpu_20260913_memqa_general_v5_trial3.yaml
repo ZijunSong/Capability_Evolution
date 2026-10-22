@@ -1,0 +1,43 @@
+# CloudML custom_train YAML
+# TRIM Harness-1 BC+ full / GPT-OSS-20B / ZERO eval / 单节点 8x gm402-80g
+# 提交日期 2026-09-13，标签 MemQA-General-V5，priority 8。
+#
+# 重要：JuiceFS 挂载不在本 YAML 中配置——按要求通过直接 CLI 参数
+#   --juicefs_mount_configs '<JSON>' 提交，其中 endpoint/JuiceFSCluster 为 "bj9-cloudml"，
+#   volume=songzijun, mount=/mnt/songzijun, read-write。本文件 JuiceFSMountConfigs 不作为提交依据。
+# ImageCommand 调用
+#   TRIM/scripts/run_bcplus_full_gptoss20b_zero_cloudml_8gpu_memqa_general_v5_20260913.sh，
+#   该脚本完成依赖锁定 / GPU·JVM·PyJNI·Lucene·import-chain·tiktoken preflight 后
+#   exec run_bcplus_full_gptoss20b_zero_gpu8_eval.sh：
+#   8 个单卡 vLLM actor (TP=1, GPU 0..7) + 16 个 API-client worker,
+#   retrieval=local_bm25 (Pyserini/Lucene), --reranker none --offline, 无 Chroma 服务。
+#
+# runtime 锁定口径（CLAUDE.md）：torch 2.10.0+cu128 / vllm 0.19.1 / transformers 4.57.6 / pyserini 2.0.0。
+# gpt-oss-20b zero 走裸模型（不加载 LoRA），与 vLLM lora_shrink 补丁无关（脚本仍幂等应用）。
+# RUN_ID 与前序 memqa_v5 attempt 显式隔离，不覆盖原 attempt 输出。
+JobName: "trim-run-eval-h1-bcplus-full-gpt-oss-20b-zero-8gpu-20260913-memqa-general-v5-trial3"
+Description: >-
+  TRIM Harness-1 BC+ full, GPT-OSS-20B, zero component eval, 8x gm402-80g,
+  local_bm25 retrieval (no Chroma server), upstream_api eval path. Boot script
+  installs pinned runtime + full preflight (GPU/JVM/PyJNI/Lucene/tiktoken/import-chain)
+  then execs run_bcplus_full_gptoss20b_zero_gpu8_eval.sh: 8 single-GPU vLLM actors
+  (TP=1, GPU 0..7) + 16 API-client workers, local_bm25, no Chroma. RUN_ID isolated
+  from prior memqa_v5 attempts (no overwrite). JuiceFS endpoint=bj9-cloudml via CLI.
+AccessType: "PUBLIC"
+ImageConfig:
+  ImageUrl: "micr.cloud.mioffice.cn/songzijun/songzijun-cto:3050749-songzijun-cto"
+  ImageCommand: "bash /mnt/songzijun/Capability_Evolution/TRIM/scripts/run_bcplus_full_gptoss20b_zero_cloudml_8gpu_memqa_general_v5_20260913_trial3.sh"
+QueueId: "2334"
+Priority: 8
+Framework: "pytorch"
+Tags:
+  - "MemQA-General-V5"
+ResourceConfigs:
+  - NodeRole: "worker"
+    NodeNumber: 1
+    PerNodeResourceSpec:
+      ResourcePriority: "GUARANTEED_PUBLIC"
+      ResourceName: "cloudml.ng1gm402-8-8.20-224"
+      ResourceNumber: 8
+# 非抢占（GUARANTEED_PUBLIC 保障资源）；不加 preemptible。
+# JuiceFS 通过 CLI --juicefs_mount_configs 显式 JSON 传入（endpoint=bj9-cloudml）。
