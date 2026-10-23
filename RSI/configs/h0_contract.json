@@ -1,0 +1,9 @@
+{
+  "contract_version": "rsi_h0_v1",
+  "action_schema": "rsi_action_v1",
+  "parser": "strict_json_single_object_v1",
+  "context_policy": "deterministic_window_v1",
+  "visibility_protocol": "student_visible_history_v1",
+  "scoring_protocol": "official_per_domain_v1",
+  "notes": "H0 is the fixed minimal loop: render goal/tools/history -> one action -> basic tool -> real observation. No decomposition, reflection, verification, retrieval planning, summarizer, cross-task memory, or extra LLM calls."
+}

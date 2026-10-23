@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rsi"
+version = "0.1.0"
+description = "Independent Harness self-evolution and HarnessOPD internalization system (RSI)"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+authors = [{ name = "RSI implementation" }]
+dependencies = [
+    "pyyaml>=6.0",
+    "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+# The HF reference training backend and the tiny-model integration tests.
+train = [
+    "torch>=2.1",
+    "transformers>=4.44",
+]
+# Production FSDP2 backend (multi-GPU). Requires `train` too.
+fsdp2 = [
+    "torch>=2.1",
+]
+# Official benchmark environments. Each is optional; `rsi.cli doctor` reports
+# whichever is missing and the corresponding adapter refuses to run.
+appworld = ["appworld>=0.1.0"]
+spreadsheetbench = ["openpyxl>=3.1", "pandas>=2.0"]
+swebench = ["swebench>=2.0", "docker>=6.0"]
+dev = [
+    "pytest>=7.4",
+    "pyyaml>=6.0",
+    "numpy>=1.24",
+    "torch>=2.1",
+    "transformers>=4.44",
+]
+
+[project.scripts]
+rsi = "rsi.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+rsi = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "integration: tests that exercise a real (tiny) model update",
+    "e2e: end-to-end campaign tests",
+]

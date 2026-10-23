@@ -1,0 +1,86 @@
+schema_version: rsi_campaign_v1
+tier: toy
+campaign_id: toy_smoke
+seed: 17
+max_rounds: 2
+
+# Toy smoke: no real benchmark is called. Every artifact is marked synthetic=true
+# and report merge refuses to fold these results into formal summaries.
+
+policy:
+  initial_artifact: null          # built in-process (tiny HF; scripted for unit tests)
+  provider: tiny_hf               # scripted | tiny_hf | hf_path | api
+  trainable: true
+  teacher_sync: batch_snapshot
+  adapter_mode: cumulative
+  cross_round_optimizer: reset
+
+runtime:
+  contract: configs/h0_contract.json
+  harness: minimal
+  context_policy: deterministic_window_v1
+  max_actions: 4
+  max_extra_llm_calls: 2
+  max_chars: 2000
+  max_new_tokens: 48
+  temperature: 1.0
+
+suite:
+  registry: configs/environments.yaml
+  domains: [toy_file, toy_kv]
+  split_manifest: data/splits/toy_smoke.json
+  aggregate: equal_domain_macro
+  shared_model: true
+  shared_bank: true
+  statistics_mode: pilot_reused_dev
+
+evolution:
+  seed_mode: empty_each_round
+  proposer_mode: self
+  proposer_policy: current
+  proposer_max_new_tokens: 128
+  proposer_max_retries: 1
+  algorithm: archive_code_search
+  max_generations: 2
+  candidates_per_generation: 1
+  max_candidate_evaluations: 2
+  plateau_patience: 2
+  editable_scope: bank_only
+  dev_panel_per_domain: 4
+  frozen_thresholds: false
+
+opd:
+  routes: [explicit_map, native_anchor]
+  max_shadow_events: 2
+  max_targets_per_decision: 1
+  uncertain_realizability: skip
+  objective: gated_projected_gap_v1
+  lambda: 0.01
+  gate_beta: 5.0
+  min_real_support_policy: configs/probe_policy.json
+
+training:
+  method: harness_opd_rl
+  backend: hf_reference
+  reward: task_outcome
+  max_optimizer_steps_per_round: 2
+  rollout_refresh: each_batch
+  batch_episodes: 2
+  budget: configs/train_budget.json
+  learning_rate: 0.001
+
+promotion:
+  policy: configs/promotion_policy.json
+  allow_partial_internalization: true
+
+evaluation:
+  statistics_mode: pilot_reused_dev
+  final_test_access: after_campaign_freeze
+  compare_cells: [old_min, old_full, new_min, new_full]
+  confirm_panel_per_domain: 4
+
+execution:
+  mode: execute
+  candidate_isolation: subprocess
+  job_backend: local
+  runs_root: runs

@@ -1,0 +1,13 @@
+{
+  "schema_version": "rsi_promotion_v1",
+  "min_delta_w": 0.0,
+  "require_non_regression": true,
+  "max_domain_regression": 0.02,
+  "require_protocol_ok": true,
+  "allow_partial_internalization": true,
+  "require_full_teacher_recovery_for_full_claim": true,
+  "cost_constraints": {
+    "max_cost_increase_ratio": 2.0
+  },
+  "notes": "Default toy/pilot thresholds. C relative to A must clear min_delta_w; per-domain regression beyond max_domain_regression blocks promotion. Partial internalization may promote with the partial_internalization flag. Formal campaigns must freeze stricter values in their own policy file."
+}

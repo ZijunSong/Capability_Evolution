@@ -1,0 +1,26 @@
+schema_version: rsi_environments_v1
+environments:
+  toy_file:
+    synthetic: true
+    module: rsi.environments.toy_registry
+  toy_kv:
+    synthetic: true
+    module: rsi.environments.toy_registry
+  appworld:
+    synthetic: false
+    official: "https://github.com/StonyBrookNLP/appworld"
+    metric: "official TGC/SGC (scenario-level aggregation)"
+    optional_deps: [appworld]
+    dataset_revision: "PIN_AT_PREPARE_TIME"
+  spreadsheetbench:
+    synthetic: false
+    official: "https://github.com/RUCKBReasoning/SpreadsheetBench"
+    metric: "official execution/file-result correctness"
+    optional_deps: [openpyxl, pandas]
+    dataset_revision: "PIN_AT_PREPARE_TIME"
+  swebench:
+    synthetic: false
+    official: "https://github.com/SWE-bench/SWE-bench"
+    metric: "official resolved rate"
+    optional_deps: [docker, swebench]
+    dataset_revision: "PIN_AT_PREPARE_TIME"

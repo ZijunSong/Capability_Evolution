@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "rsi_candidate_patch_v1",
+  "title": "CandidatePatch",
+  "type": "object",
+  "required": ["parent_bank_digest", "operation", "hypothesis"],
+  "properties": {
+    "parent_bank_digest": { "type": "string", "minLength": 64, "maxLength": 64 },
+    "operation": { "enum": ["add", "edit", "compose", "prune", "replace"] },
+    "hypothesis": { "type": "string" },
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "content"],
+        "properties": {
+          "path": { "type": "string", "pattern": "^(components/|manifest\\.json$)" },
+          "content": { "type": "string" }
+        }
+      }
+    },
+    "delete_paths": { "type": "array", "items": { "type": "string" } },
+    "manifest_patch": { "type": "object" },
+    "alignment_hints": { "type": "object" },
+    "evidence_refs": { "type": "array", "items": { "type": "string" } },
+    "expected_cost_change": { "type": "object" },
+    "self_checks": { "type": "array", "items": { "type": "string" } }
+  },
+  "additionalProperties": false
+}

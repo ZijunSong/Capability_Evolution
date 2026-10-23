@@ -1,0 +1,12 @@
+{
+  "schema_version": "rsi_bank_manifest_v1",
+  "bank_id": "empty",
+  "components": [],
+  "hooks": [],
+  "tools": [],
+  "skills": [],
+  "parent_digest": null,
+  "extra": {
+    "note": "Initial empty advanced-component library. Production scaffolds and test fixtures must never auto-enter the active bank."
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "rsi_bank_manifest_v1",
+  "title": "BankManifest",
+  "type": "object",
+  "required": ["schema_version", "bank_id", "components"],
+  "properties": {
+    "schema_version": { "const": "rsi_bank_manifest_v1" },
+    "bank_id": { "type": "string" },
+    "components": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "version", "files", "entrypoint"],
+        "properties": {
+          "id": { "type": "string" },
+          "version": { "type": "string" },
+          "files": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+          "entrypoint": { "type": "string", "pattern": "^.+:[A-Za-z_][A-Za-z0-9_]*$" },
+          "depends_on": { "type": "array", "items": { "type": "string" } },
+          "conflicts_with": { "type": "array", "items": { "type": "string" } },
+          "hook_order": { "type": "integer" },
+          "required_capabilities": { "type": "array", "items": { "type": "string" } },
+          "state_schema": { "type": "object" },
+          "resource_caps": { "type": "object" },
+          "provenance": { "type": "object" },
+          "alignment_hints": { "type": "object" },
+          "kind": {
+            "enum": [
+              "tool_wrapper", "tool_composition", "context_policy", "decision_hook",
+              "workflow", "task_memory", "error_recovery", "candidate_validation",
+              "aux_model_call", "other"
+            ]
+          }
+        }
+      }
+    },
+    "hooks": { "type": "array" },
+    "tools": { "type": "array" },
+    "skills": { "type": "array" },
+    "parent_digest": { "type": ["string", "null"] },
+    "extra": { "type": "object" }
+  }
+}

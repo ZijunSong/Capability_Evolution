@@ -1,0 +1,19 @@
+# Generated run artifacts (contain local absolute paths)
+runs/
+cands/
+
+# Generated dataset splits (rebuild with `rsi.cli data prepare`)
+data/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+.venv/
+
+# Editor
+.idea/
+.vscode/

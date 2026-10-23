@@ -1,0 +1,9 @@
+{
+  "schema_version": "rsi_train_budget_v1",
+  "max_optimizer_steps_per_round": 16,
+  "max_episodes_per_round": 256,
+  "max_effective_action_tokens": 1000000,
+  "max_extra_llm_calls_per_episode": 2,
+  "max_wall_hours": 24,
+  "notes": "Pilot starting values (not literature claims). Formal budgets are chosen from effective tokens, query diversity, environment cost and dev curves."
+}

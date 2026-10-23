@@ -1,0 +1,16 @@
+{
+  "schema_version": "rsi_probe_policy_v1",
+  "minimum_engineering_support": {
+    "min_opd_samples": 1,
+    "min_effective_supervised_tokens": 1,
+    "min_finite_opd_grad_norm": 1e-12,
+    "require_nonzero_grad": true
+  },
+  "coverage_reporting": [
+    "legal_targets/all_student_decisions",
+    "legal_targets/triggered_decisions",
+    "supported_task_clusters/all_task_clusters"
+  ],
+  "no_fixed_coverage_threshold": true,
+  "notes": "Training admission reads real probe statistics only (never structural triggers). The 10% coverage heuristic from earlier drafts is intentionally NOT enforced; formal thresholds are frozen after a pilot."
+}

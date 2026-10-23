@@ -1,0 +1,85 @@
+schema_version: rsi_campaign_v1
+tier: formal
+campaign_id: formal_multidomain
+seed: 20261023
+max_rounds: 3
+
+# Formal config: MUST carry frozen thresholds and a real statistics plan.
+# The loader rejects placeholder / pilot values (see rsi.config._validate_tier).
+
+policy:
+  initial_artifact: artifacts/base_policy.json
+  provider: hf_path
+  model_path: INJECT_AT_LAUNCH
+  trainable: true
+  teacher_sync: batch_snapshot
+  adapter_mode: cumulative
+  cross_round_optimizer: reset
+
+runtime:
+  contract: configs/h0_contract.json
+  harness: minimal
+  context_policy: deterministic_window_v1
+  max_actions: 60
+  max_extra_llm_calls: 2
+  max_chars: 24000
+
+suite:
+  registry: configs/environments.yaml
+  domains: [appworld, spreadsheetbench, swebench]
+  split_manifest: data/splits/formal.json
+  aggregate: equal_domain_macro
+  shared_model: true
+  shared_bank: true
+  statistics_mode: pre_registered_confirm
+  cluster_grouping: [scenario, workbook_problem, issue_family]
+
+evolution:
+  seed_mode: empty_each_round
+  proposer_mode: self
+  proposer_policy: current
+  algorithm: archive_code_search
+  max_generations: 8
+  candidates_per_generation: 2
+  max_candidate_evaluations: 16
+  plateau_patience: 3
+  editable_scope: bank_only
+  dev_panel_per_domain: 32
+  frozen_thresholds: true
+  frozen_thresholds_ref: configs/formal_thresholds.json
+
+opd:
+  routes: [explicit_map, native_anchor]
+  max_shadow_events: 8
+  max_targets_per_decision: 1
+  uncertain_realizability: skip
+  objective: gated_projected_gap_v1
+  lambda: 0.01
+  gate_beta: 5.0
+  min_real_support_policy: configs/probe_policy_frozen.json
+
+training:
+  method: harness_opd_rl
+  backend: torch_fsdp2
+  reward: task_outcome
+  max_optimizer_steps_per_round: 200
+  rollout_refresh: each_batch
+  budget: configs/train_budget_formal.json
+
+promotion:
+  policy: configs/promotion_policy_frozen.json
+  allow_partial_internalization: true
+  policy_file: configs/promotion_policy_frozen.json
+
+evaluation:
+  statistics_mode: pre_registered_confirm
+  final_test_access: after_campaign_freeze
+  compare_cells: [old_min, old_full, new_min, new_full]
+  confirm_panel_per_domain: 64
+  alpha_spending: configs/alpha_spending.json
+
+execution:
+  mode: execute
+  candidate_isolation: container
+  job_backend: local
+  runs_root: runs
