@@ -142,6 +142,7 @@ TRIM/data/harness-1-sft-data/
 !**/method.md
 !SCAPE/**/*.md
 !TRIM/**/*.md
+!RSI/**/*.md
 
 # --- local-only experiment result dumps / archives (dirs, not code) ---
 **/*_archive/
