@@ -1,0 +1,86 @@
+{
+  "schema_version": "rsi_split_v1",
+  "campaign_id": "e0_react",
+  "official_split_source": "appworld-data-0.2.0 datasets/*.txt",
+  "manifests": {
+    "appworld": {
+      "manifest_id": "e0_react:appworld",
+      "domain": "appworld",
+      "assignments": [
+        {
+          "role": "e0_probe",
+          "task_ids": [
+            "appworld:07b42fd_1",
+            "appworld:229360a_1",
+            "appworld:22cc237_1",
+            "appworld:27e1026_1",
+            "appworld:287e338_1",
+            "appworld:29caf6f_1",
+            "appworld:2a163ab_1",
+            "appworld:302c169_1",
+            "appworld:0d8a4ee_1",
+            "appworld:23cf851_1",
+            "appworld:37a8675_1",
+            "appworld:383cbac_1",
+            "appworld:396c5a2_1",
+            "appworld:3ab5b8b_1",
+            "appworld:4ec8de5_1",
+            "appworld:4fab96f_1"
+          ],
+          "round_index": null
+        }
+      ],
+      "groups": {
+        "appworld:07b42fd": [
+          "appworld:07b42fd_1"
+        ],
+        "appworld:229360a": [
+          "appworld:229360a_1"
+        ],
+        "appworld:22cc237": [
+          "appworld:22cc237_1"
+        ],
+        "appworld:27e1026": [
+          "appworld:27e1026_1"
+        ],
+        "appworld:287e338": [
+          "appworld:287e338_1"
+        ],
+        "appworld:29caf6f": [
+          "appworld:29caf6f_1"
+        ],
+        "appworld:2a163ab": [
+          "appworld:2a163ab_1"
+        ],
+        "appworld:302c169": [
+          "appworld:302c169_1"
+        ],
+        "appworld:0d8a4ee": [
+          "appworld:0d8a4ee_1"
+        ],
+        "appworld:23cf851": [
+          "appworld:23cf851_1"
+        ],
+        "appworld:37a8675": [
+          "appworld:37a8675_1"
+        ],
+        "appworld:383cbac": [
+          "appworld:383cbac_1"
+        ],
+        "appworld:396c5a2": [
+          "appworld:396c5a2_1"
+        ],
+        "appworld:3ab5b8b": [
+          "appworld:3ab5b8b_1"
+        ],
+        "appworld:4ec8de5": [
+          "appworld:4ec8de5_1"
+        ],
+        "appworld:4fab96f": [
+          "appworld:4fab96f_1"
+        ]
+      },
+      "digest": "97193c41432cf87df1474950e8452e6e767aac44641ab33c295da6dad5b80ed8"
+    }
+  }
+}
