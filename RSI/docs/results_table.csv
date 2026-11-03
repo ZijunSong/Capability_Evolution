@@ -1,6 +1,6 @@
 实验组,Model,训练情况,harness配置,Metric,AppWorld-325,SWE-bench,WebShop,AlfWorld,均值,备注
-exp_h0,Qwen3.5-9B,base model,H0 minimal(空bank),Success Rate,0.00%,N/A,N/A,N/A,0.00%,满目标完成率(TGC=1.0);0/321;task_error 4 例基础设施剔除
-exp_h0,Qwen3.5-9B,base model,H0 minimal(空bank),Goal Score (TGC),23.51%,N/A,N/A,N/A,23.51%,official TGC valid 321(含err记0=23.23%);per-pool: wt28.13/hs33.10/wd15.32/ch25.47/cw33.33/ft23.64/tt13.41
+exp_h0,Qwen3.5-9B,base model,H0 minimal(空bank),Success Rate,0.00%,N/A,N/A,0.99%,0.00%,满目标完成率(TGC=1.0);alfworld 38/3827=0.99%;appworld 0/321
+exp_h0,Qwen3.5-9B,base model,H0 minimal(空bank),Goal Score (TGC),23.51%,N/A,N/A,0.99%,12.25%,official TGC valid(alfworld=3827/3827零err 2026-11-03 r7);alfworld per-pool: wt0.60/hs1.36/wd0.51/ch1.37/cw1.13/ft0.00/tt2.14;appworld=23.51
 exp_h0,Qwen3.5-9B,base model,H0 minimal(空bank),Turn Mean,N/A,N/A,N/A,N/A,N/A,n_decisions 记录层缺口(全0)待修后回填;全部 budget_wall 终止
 exp_h0,Qwen3.5-9B,base model,H0 minimal(空bank),Wall Time (s/task),33.6,N/A,N/A,N/A,33.6,valid 均值;p95=46.6;t=2026-11-02 dhlol
 exp_h0,Qwen3.5-27B,base model,H0 minimal(空bank),Success Rate,N/A,N/A,N/A,N/A,N/A,kygt9 挂死→cmjpt(r3) 重提中

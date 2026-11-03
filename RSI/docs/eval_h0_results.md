@@ -92,3 +92,34 @@
 - bank preflight `BANK_OK digest match 73ddc436`；7 文件 bank_digest/harness/seed 全部核验。
 - 逐 task 配对核验：318/318 valid-in-both 分值一致到浮点精度；termination 翻转但分值不变的 41/43（work_train）为同轨迹不同收尾，符合"压缩指令只改收尾"机制。
 - per-task wall_ms 口径两轮不可比（H0 未含模型调用时间，HK 含；用 costs.wall_ms_total 比较才公平：3.0h vs 20.25h）。
+
+---
+
+# Qwen3.5-9B · 完整 ALFWorld · minimal harness · official engine-won（2026-11-03）
+
+- **job**：`t-20261103104127-vlkxe`（rsi-eval-h0-alfworld-qwen35-9b-8gpu-20261102-r7），succeed，runTime≈3.9h（14:36 收官），8×M402 单节点
+- **产物**：`runs/eval_h0_alfworld_qwen35_9b_bench_r7/eval/eval_<split>_minimal_1beba6d6_17.json`（7 文件）
+- **provenance**：seed=17，harness=minimal（空 bank），bank_digest=1beba6d6…，synthetic=False
+- **口径**：official task success（scorer 独立重放轨迹读 engine `won`）；**3827/3827 全 valid、0 task_error**
+- **面板**：final=valid_unseen(134)、transfer=valid_seen(140)、dev 五池=官方 train(3553) task-instance hash 分组；instruction=官方 turk_annotations.anns[0].task_desc
+- **失败链（r1-r7 六轮修复，2026-11-02/03）**：lmtw2 源码树污染丢 requirements-vis.txt → e21lh PEP660 .pth 同进程不生效 → bwozi 8-worker 并发爬 JuiceFS（缓存+预热修复）→ y9qbm 缓存 print 污染 stdout JSON → v9urg 全 task_error 缺 fast_downward（PddlEnv 硬依赖）→ zqpvg Finish 分支 Observation(done=) TypeError。全部修复沉淀为单测/entry 硬断言（见 memory）。
+
+## 核心结果（TGC=engine won 率，valid-only）
+
+| split | n_total | n_valid | n_err | **TGC** | ok(1.0) | finish | max_actions | env_done |
+|---|---|---|---|---|---|---|---|---|
+| work_train | 664 | 664 | 0 | **0.60%** | 4 | 489 | 171 | 4 |
+| harness_select | 662 | 662 | 0 | **1.36%** | 9 | 485 | 168 | 9 |
+| weight_dev | 788 | 788 | 0 | **0.51%** | 4 | 572 | 212 | 4 |
+| confirm_h | 732 | 732 | 0 | **1.37%** | 10 | 535 | 187 | 10 |
+| confirm_w | 707 | 707 | 0 | **1.13%** | 8 | 511 | 188 | 8 |
+| final_test | 134 | 134 | 0 | **0.00%** | 0 | 97 | 37 | 0 |
+| transfer_test | 140 | 140 | 0 | **2.14%** | 3 | 103 | 34 | 3 |
+| **ALL** | **3827** | **3827** | **0** | **0.99%** | **38** | 3275 | 977 | 38 |
+
+## 分析（初判）
+1. **zero-shot 9B 在 ALFWorld 上极弱（0.99%）vs AppWorld 23.51%**——量级差符合预期：ALFWorld 要求严格文本命令语法 + 多步 household 状态跟踪，且环境没有 ReAct 式思考引导（minimal harness 只暴露一个 free-text `command` 工具）。
+2. **终止形态**：85.6% 主动 finish（自信放弃，score 0）、25.5% 预算耗尽、仅 1.0% 真赢——与 AppWorld 的 100% budget_wall 相反，alfworld 里模型能"自我终止"但终止时几乎总是没完成。harness 进化空间：更好的收敛判断（何时 finish）+ 动作语法引导。
+3. **transfer(2.14%) > final(0.00%)**：valid_seen（transfer）显著高于 valid_unseen（final）——分布外泛化为零，134 个 unseen 场景一个都没赢。dev 五池 0.5-1.4% 与 confirm 池相当。
+4. **满分 task 类型**：watch/light 类（look_at_obj_in_light）与 pick_and_place_simple 为主——单目标短链任务可成，multi-step（heat/cool_then_place）近乎全灭。
+5. 对 harness 进化实验的意义：confirm_w（1.13%）/harness_select（1.36%）区分度低（天花板效应不在，是地板效应），后续 Hk 对比要用同 pool paired delta 而非绝对值。

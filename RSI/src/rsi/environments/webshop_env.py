@@ -325,7 +325,6 @@ class WebShopAdapter:
             return StepResult(
                 observation=Observation(
                     content="finished",
-                    done=True,
                     provenance=ObservationProvenance(source_tool="finish", source_ref=self._task_id),
                 ),
                 done=True,
@@ -531,6 +530,25 @@ class WebShopScorer:
     def __init__(self, data_root: str | None = None):
         self._root = Path(data_root or os.environ.get("RSI_WEBSHOP_ROOT", DEFAULT_WEBSHOP_ROOT))
         self._private: dict[str, dict[str, Any]] = {}
+        self._lazy_loaded = False
+
+    def _lazy_load_private(self) -> None:
+        """Pull the frozen goal gold into scorer memory on first evaluate.
+
+        The panel runners never call ``load_private`` (that seam exists for
+        callers that already hold provider records); the scorer lives on the
+        evaluator side, so reading ``frozen_goals.json`` directly stays inside
+        the privacy boundary — the gold never reaches the actor view.
+        """
+        if self._lazy_loaded:
+            return
+        try:
+            _manifest, goals, _prices = _load_frozen(self._root)
+        except Exception as e:  # noqa: BLE001 - surfaced by evaluate as loud error
+            raise EnvironmentError_(f"scorer cannot load frozen goals from {self._root}: {e!r}") from e
+        for i, g in enumerate(goals):
+            self._private[f"webshop:g{i:05d}"] = dict(g)
+        self._lazy_loaded = True
 
     def check_ready(self) -> tuple[bool, str]:
         try:
@@ -554,6 +572,8 @@ class WebShopScorer:
     def evaluate(self, final_artifact: ArtifactRef, private_task_ref: PrivateTaskRef) -> ScoreRecord:
         _require_webshop_deps()
         task_id = private_task_ref.ref_id
+        if task_id not in self._private:
+            self._lazy_load_private()
         if task_id not in self._private:
             raise EnvironmentError_(f"no private goal record loaded for {task_id}")
         goal = self._private[task_id]

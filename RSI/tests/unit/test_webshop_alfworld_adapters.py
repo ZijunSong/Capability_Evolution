@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import rsi.environments.alfworld_env as alf_mod
 import rsi.environments.webshop_env as web_mod
-from rsi.contracts.action import ToolCall
+from rsi.contracts.action import Finish, ToolCall
 from rsi.contracts.errors import EnvironmentError_, ProtocolViolation
 from rsi.contracts.observation import ArtifactRef
 from rsi.contracts.task import PrivateTaskRef, PublicTask
@@ -327,6 +327,26 @@ def test_alfworld_rejects_game_outside_root(alfworld_adapter):
     )
     with pytest.raises(EnvironmentError_):
         adapter.reset(evil, seed=1)
+
+
+def test_alfworld_finish_action_step_result(alfworld_adapter):
+    """Finish must carry done on StepResult only — Observation has no ``done``
+    field (zqpvg 复盘: passing done=True raised TypeError, killing every task
+    whose model emitted a Finish action)."""
+    adapter, task = alfworld_adapter
+    adapter.reset(task, seed=1)
+    res = adapter.step(Finish())
+    assert res.done is True
+    assert res.observation.content == "finished"
+    assert res.observation.ok is True
+
+
+def test_alfworld_step_observation_has_no_done_kwarg(alfworld_adapter):
+    """Observation dataclass exposes no done field; guard against regression."""
+    import dataclasses
+
+    fields = {f.name for f in dataclasses.fields(alf_mod.Observation)}
+    assert "done" not in fields
 
 
 # --------------------------------------------------------------------------

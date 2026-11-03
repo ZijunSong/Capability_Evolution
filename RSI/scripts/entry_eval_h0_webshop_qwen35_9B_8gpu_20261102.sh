@@ -18,6 +18,10 @@ CFG_RUNTIME=/tmp/rsi_eval_h0_webshop_cfg_9B.yaml
 export PYTHONPATH="$RSI_ROOT/src:${PYTHONPATH:-}"
 export PYTHONUNBUFFERED=1
 export RSI_WEBSHOP_FULL_ALLOW=1   # 224GB 节点放开 flavor=all 执行门
+# pyserini.encode._openai 在 import 时就实例化 OpenAI(api_key=...)；web_agent_site.engine
+# 的 import 链会拉到它——无 key 直接 OpenAIError 杀掉 env 构建（ohukw smoke 8/8 全炸实证，
+# TRIM eval 同款老坑）。本 eval 全离线，占位 key 只为让 import 走通。
+export OPENAI_API_KEY="${OPENAI_API_KEY:-sk-rsi-offline-placeholder}"
 cd "$RSI_ROOT"
 
 echo "== dep preflight =="
@@ -48,7 +52,7 @@ def pip(*args, limit=900):
 
 # 1) 基础包：缺失才装，装则按钉死版本（铁律：dep 块必须钉版本，防漂移到 cu132 毁 driver 匹配）
 need = []
-for mod, pkg in (("yaml", "pyyaml"), ("numpy", "numpy"), ("torch", TORCH_PIN), ("transformers", TF_PIN)):
+for mod, pkg in (("yaml", "pyyaml"), ("numpy", "numpy"), ("torch", TORCH_PIN), ("transformers", TF_PIN), ("accelerate", "accelerate")):
     try:
         importlib.import_module(mod)
     except ImportError:
@@ -60,23 +64,46 @@ if need:
 def audit():
     import torch, transformers
     n = torch.cuda.device_count() if torch.cuda.is_available() else 0
-    print("torch", torch.__version__, "cuda", torch.cuda.is_available(), "devices", n)
+    print("torch", torch.__version__, "cuda_build", torch.version.cuda,
+          "cuda_ok", torch.cuda.is_available(), "devices", n, flush=True)
     print("transformers", transformers.__version__)
-    return torch.__version__.startswith("2.10.") and torch.cuda.is_available() and n >= MIN_GPUS
+    # cu128 铁门：torch build 的 CUDA 必须是 12.8（cu13x build 在 12.8 driver 上
+    # 报 "driver too old (found 12080)"——jbgaw smoke 阶段实证，且中途被升级过的话
+    # 这里就是唯一能抓住的位置）
+    return (torch.__version__.startswith("2.10.")
+            and str(torch.version.cuda).startswith("12.8")
+            and torch.cuda.is_available() and n >= MIN_GPUS)
 
 if not audit():
     print(f"[WARN] torch/CUDA unusable or wrong version — forcing {TORCH_PIN} / {TF_PIN}", flush=True)
-    pip("--force-reinstall", TORCH_PIN, TF_PIN)
+    pip("--force-reinstall", "--no-deps", TORCH_PIN)
+    pip("--force-reinstall", TF_PIN)
     code = (
         "import torch, transformers, sys; "
         "n = torch.cuda.device_count() if torch.cuda.is_available() else 0; "
-        "print('retry torch', torch.__version__, 'cuda', torch.cuda.is_available(), 'devices', n); "
+        "print('retry torch', torch.__version__, 'cuda_build', torch.version.cuda, 'cuda', torch.cuda.is_available(), 'devices', n); "
         "print('retry transformers', transformers.__version__); "
-        "sys.exit(0 if torch.__version__.startswith('2.10.') and torch.cuda.is_available() and n >= %d else 1)" % MIN_GPUS
+        "sys.exit(0 if torch.__version__.startswith('2.10.') and str(torch.version.cuda).startswith('12.8') "
+        "and torch.cuda.is_available() and n >= %d else 1)" % MIN_GPUS
     )
     r = subprocess.run([sys.executable, "-c", code])
     if r.returncode != 0:
         sys.exit("[FATAL] CUDA still unusable after pinning torch %s — node driver vs torch build mismatch" % TORCH_PIN)
+
+# 2b) 尾部复检：causal-conv1d --no-build-isolation / 其他大 pip 有可能中途动 torch
+#     （jbgaw：preflight 早段 audit 全绿，到 smoke 阶段 torch 已变 cu13x build，
+#     "driver too old found 12080"。这里在 preflight 收尾再 audit 一次 fail-fast。）
+if not audit():
+    print("[WARN] torch changed during dep install — re-pinning", flush=True)
+    pip("--force-reinstall", "--no-deps", TORCH_PIN)
+    r = subprocess.run([sys.executable, "-c", (
+        "import torch, sys; "
+        "n = torch.cuda.device_count() if torch.cuda.is_available() else 0; "
+        "print('recheck torch', torch.__version__, 'cuda_build', torch.version.cuda, 'devices', n); "
+        "sys.exit(0 if torch.__version__.startswith('2.10.') and str(torch.version.cuda).startswith('12.8') "
+        "and torch.cuda.is_available() and n >= %d else 1)" % MIN_GPUS)])
+    if r.returncode != 0:
+        sys.exit("[FATAL] torch not cu128 after re-pin — aborting before smoke")
 
 # 3) qwen3_5 注册必须在（tf <5.6 无此模型类型）
 try:

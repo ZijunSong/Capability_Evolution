@@ -277,10 +277,11 @@ class AlfWorldAdapter:
     def step(self, action: Action) -> StepResult:
         self._require_started()
         if isinstance(action, Finish):
+            # done 只属于 StepResult——Observation 没有 done 字段
+            # （zqpvg 复盘：塞 done=True → TypeError，凡模型发 Finish 的 task 全废）。
             return StepResult(
                 observation=Observation(
                     content="finished",
-                    done=True,
                     provenance=ObservationProvenance(source_tool="finish", source_ref=self._task_id),
                 ),
                 done=True,
