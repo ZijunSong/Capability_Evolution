@@ -28,7 +28,7 @@ import sys
 from pathlib import Path
 from typing import Any, Iterable
 
-from rsi.contracts.errors import NotImplementedCapability
+from rsi.contracts.errors import NotImplementedCapability, ProtocolViolation
 from rsi.contracts.task import PrivateTaskRef, PublicTask
 
 DEFAULT_APPWORLD_ROOT = "/mnt/songzijun/datasets/appworld"
@@ -78,6 +78,8 @@ class AppWorldTaskProvider:
         self._task_cache: dict[str, PublicTask] = {}
         self._groups: dict[str, tuple[str, ...]] = {}
         self._roles: dict[str, list[str]] | None = None
+        # "official" (datasets/*.txt gating) | "custom_generated" (explicit opt-in)
+        self._split_source: str = "unresolved"
 
     def _all_task_ids(self) -> list[str]:
         import re
@@ -104,24 +106,56 @@ class AppWorldTaskProvider:
         os.environ.setdefault("APPWORLD_ROOT", self._root)
         from appworld.task import Task
 
+        # Strict mode (default): Task.load failure must fail the preflight,
+        # NOT degrade to a placeholder instruction (audit §8.2/§14).
+        strict = os.environ.get("RSI_APPWORLD_STRICT_TASK_LOAD", "1") != "0"
         instruction = ""
+        load_error: str | None = None
         try:
             raw = Task.load(tid, load_ground_truth=False)
             instruction = str(getattr(raw, "instruction", "") or getattr(raw, "main_goal", ""))
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as e:  # noqa: BLE001
+            load_error = repr(e)
+            if strict:
+                raise ProtocolViolation(
+                    f"appworld Task.load({tid!r}) failed: {e!r} — data preflight "
+                    "must block rather than substitute placeholder instructions"
+                ) from e
+        if strict and not instruction.strip():
+            raise ProtocolViolation(
+                f"appworld task {tid!r} has an empty instruction — refusing to "
+                "substitute a placeholder"
+            )
         scenario = self._generator_id(tid)
         task = PublicTask(
             task_id=f"appworld:{tid}",
             domain=self.domain,
             instruction=instruction or f"(appworld task {tid})",
             group_id=f"appworld:{scenario}",
-            metadata={"appworld_task_id": tid, "scenario": scenario},
+            metadata={
+                "appworld_task_id": tid,
+                "scenario": scenario,
+                **({"load_error": load_error} if load_error else {}),
+            },
         )
         self._task_cache[tid] = task
         self._groups.setdefault(task.group_id, tuple())
         self._groups[task.group_id] = tuple(sorted(set(self._groups[task.group_id]) | {task.task_id}))
         return task
+
+    def _official_split_members(self) -> dict[str, set[str]] | None:
+        """Official train/dev/test membership from ``data/datasets/*.txt``
+        (shipped by ``appworld download datasets``).  None when the listings
+        are absent — the caller then decides, loudly, what to do (audit
+        guide §8.1: official split must gate candidates BEFORE role hashing)."""
+        datasets_dir = Path(self._root) / "data" / "datasets"
+        out: dict[str, set[str]] = {}
+        for name in ("train", "dev", "test_normal", "test_challenge"):
+            f = datasets_dir / f"{name}.txt"
+            if not f.is_file():
+                return None
+            out[name] = {ln.strip() for ln in f.read_text("utf-8").splitlines() if ln.strip()}
+        return out
 
     def _split_roles(self) -> dict[str, list[str]]:
         if self._roles is not None:
@@ -129,17 +163,81 @@ class AppWorldTaskProvider:
         import hashlib
 
         ids = self._all_task_ids()
+        official = self._official_split_members()
+        allow_unofficial = os.environ.get("RSI_APPWORLD_ALLOW_UNOFFICIAL_SPLIT", "") == "1"
+        if official is None:
+            if not allow_unofficial:
+                raise ProtocolViolation(
+                    "appworld official dataset listings missing "
+                    f"({self._root}/data/datasets/*.txt) — run `appworld download "
+                    "datasets` first, or set RSI_APPWORLD_ALLOW_UNOFFICIAL_SPLIT=1 "
+                    "to explicitly mark this a custom-generated split (recorded "
+                    "as such in every manifest; NOT the official test protocol)"
+                )
+            self._split_source = "custom_generated"
+        else:
+            self._split_source = "official"
+            dev_ids: set[str] = official["train"] | official["dev"]
+            n_test = official["test_normal"]
+            n_chal = official["test_challenge"]
+            known = set(ids)
+            missing_dev = dev_ids - known
+            if missing_dev:
+                raise ProtocolViolation(
+                    f"official train/dev lists {len(missing_dev)} task ids not "
+                    "present under data/tasks (dataset/tasks revision mismatch)"
+                )
+            # §8.1: restrict the candidate pool by official membership, then
+            # hash-assign DEVELOPMENT roles inside the non-test pool only.
+            ids = sorted(dev_ids)
+            self._official_test_ids = {"test_normal": sorted(n_test), "test_challenge": sorted(n_chal)}
         # group tasks by scenario, then assign each scenario group to one role
         by_group: dict[str, list[str]] = {}
         for tid in ids:
             by_group.setdefault(self._generator_id(tid), []).append(tid)
-        order = ["work_train", "harness_select", "weight_dev", "confirm_h", "confirm_w", "final_test", "transfer_test"]
+        order = ["work_train", "harness_select", "weight_dev", "confirm_h", "confirm_w"]
         buckets: dict[str, list[str]] = {k: [] for k in order}
         for gid in sorted(by_group):
             h = int(hashlib.sha256(gid.encode()).hexdigest(), 16)
             buckets[order[h % len(order)]].extend(sorted(by_group[gid]))
-        self._roles = buckets
-        return buckets
+        self._roles = dict(buckets)
+        if self._split_source == "custom_generated":
+            # legacy behavior preserved only under the explicit opt-in: the
+            # old 7-role hash split included test pools — keep the mapping but
+            # record the source so nothing claims official status.
+            legacy_order = order + ["final_test", "transfer_test"]
+            legacy_buckets: dict[str, list[str]] = {k: [] for k in legacy_order}
+            for gid in sorted(by_group):
+                h = int(hashlib.sha256(gid.encode()).hexdigest(), 16)
+                legacy_buckets[legacy_order[h % len(legacy_order)]].extend(sorted(by_group[gid]))
+            self._roles = legacy_buckets
+        else:
+            # official mode: final_test = official test_normal verbatim;
+            # transfer_test = official test_challenge verbatim.
+            self._roles["final_test"] = sorted(getattr(self, "_official_test_ids", {}).get("test_normal", []))
+            self._roles["transfer_test"] = sorted(getattr(self, "_official_test_ids", {}).get("test_challenge", []))
+        return self._roles
+
+    def materialize_task_id(self, tid: str) -> PublicTask:
+        """Exact-id materialization for the frozen-manifest path (audit §8.2).
+
+        Manifest ids carry the ``appworld:`` domain prefix while the internal
+        materializer expects the raw AppWorld id; strip exactly one prefix and
+        verify the round-trip so the returned PublicTask.task_id matches the
+        manifest id verbatim.
+        """
+        raw = tid.split(":", 1)[1] if tid.startswith(f"{self.domain}:") else tid
+        task = self._materialize(raw)
+        if task.task_id != tid and not raw.startswith(f"{self.domain}:"):
+            # _materialize re-prefixes raw ids; a manifest id WITH the prefix
+            # must round-trip identically — anything else is a frozen-source
+            # mismatch, not a silent substitution.
+            if task.task_id != raw:
+                raise ProtocolViolation(
+                    f"appworld materialized task_id {task.task_id!r} does not match "
+                    f"manifest id {tid!r}"
+                )
+        return task
 
     def public_tasks(self, role: str, round_index: int | None = None) -> tuple[PublicTask, ...]:
         ids = self._split_roles().get(role, [])
@@ -261,6 +359,18 @@ class SWEBenchTaskProvider:
             "PASS_TO_PASS": r.get("PASS_TO_PASS"),
         }
         return task
+
+    def materialize_task_id(self, tid: str) -> PublicTask:
+        """Exact-id materialization for the frozen-manifest path (audit §8.2).
+
+        Unknown ids are a ProtocolViolation, never a placeholder task."""
+        self._load()
+        try:
+            return self._by_id[tid]
+        except KeyError as exc:
+            raise ProtocolViolation(
+                f"webshop task {tid!r} absent from the frozen goal manifest"
+            ) from exc
 
     def public_tasks(self, role: str, round_index: int | None = None) -> tuple[PublicTask, ...]:
         self._load()
@@ -450,6 +560,18 @@ class WebShopTaskProvider:
         n = self._panel_sizes
         self._roles = {k: (v[: n[k]] if n.get(k) else v) for k, v in self._roles.items()}
         self._loaded = True
+
+    def materialize_task_id(self, tid: str) -> PublicTask:
+        """Exact-id materialization for the frozen-manifest path (audit §8.2).
+
+        Unknown ids are a ProtocolViolation, never a placeholder task."""
+        self._load()
+        try:
+            return self._by_id[tid]
+        except KeyError as exc:
+            raise ProtocolViolation(
+                f"webshop task {tid!r} absent from the frozen goal manifest"
+            ) from exc
 
     def public_tasks(self, role: str, round_index: int | None = None) -> tuple[PublicTask, ...]:
         self._load()
@@ -748,6 +870,18 @@ class AlfWorldTaskProvider:
         n = self._panel_sizes
         self._roles = {k: (v[: n[k]] if n.get(k) else v) for k, v in self._roles.items()}
         self._loaded = True
+
+    def materialize_task_id(self, tid: str) -> PublicTask:
+        """Exact-id materialization for the frozen-manifest path (audit §8.2).
+
+        Unknown ids are a ProtocolViolation, never a placeholder task."""
+        self._load()
+        try:
+            return self._by_id[tid]
+        except KeyError as exc:
+            raise ProtocolViolation(
+                f"alfworld task {tid!r} absent from the frozen ALFWorld manifest"
+            ) from exc
 
     def public_tasks(self, role: str, round_index: int | None = None) -> tuple[PublicTask, ...]:
         self._load()

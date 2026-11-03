@@ -111,10 +111,40 @@ def load_config(path: str | Path) -> CampaignConfig:
         )
     missing = [k for k in REQUIRED_TOP_LEVEL if k not in raw]
     if missing:
-        raise ProtocolViolation(f"config missing sections: {missing}")
+        raise ProtocolViolation(
+            f"config missing sections: {missing} — the v2 templates must carry "
+            "a complete policy section (refactor guide §3 P0: the first v2 "
+            "AppWorld template shipped without one and could not load)"
+        )
     cfg = CampaignConfig(raw=raw, config_path=path, config_dir=path.parent)
     _validate_tier(cfg)
+    _validate_domain_policy(cfg)
     return cfg
+
+
+def _validate_domain_policy(cfg: CampaignConfig) -> None:
+    """Refactor guide §7: in single-domain mode the role-separation keys must
+    agree with suite.domains — a typo'd key (e.g. evolution_domains pointing
+    at another environment) must fail loading, not silently run evolution on
+    a different domain than declared."""
+    suite = cfg.section("suite")
+    domains = set(suite.get("domains") or [])
+    if len(domains) != 1:
+        return  # multi-domain legacy configs keep legacy behavior
+    for key in ("evolution_domains", "opd_domains", "selection_domains"):
+        vals = set(suite.get(key) or [])
+        if vals and vals != domains:
+            raise ProtocolViolation(
+                f"suite.{key}={sorted(vals)} disagrees with suite.domains="
+                f"{sorted(domains)} in single-domain mode — fix the config "
+                "(per-environment campaigns declare one domain everywhere)"
+            )
+    sealed = set(suite.get("sealed_eval_domains") or [])
+    if sealed & domains:
+        raise ProtocolViolation(
+            f"suite.sealed_eval_domains={sorted(sealed)} includes the campaign's "
+            "own domain — a domain cannot be both evolved on and sealed"
+        )
 
 
 def _validate_tier(cfg: CampaignConfig) -> None:

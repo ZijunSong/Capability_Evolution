@@ -60,6 +60,52 @@ def run_evolve(cfg: CampaignConfig, *, initial_bank_ref: str | None = None) -> d
         or 1
     )
 
+    # Refactor guide §9: analysis_runner gives the packet REAL action/
+    # observation fragments from work_train (evolution's own pool), separate
+    # from panel scoring.  Bounded: few tasks, few decisions each, fixed
+    # char caps — the proposer reads evidence, not whole trajectories.
+    def analysis_runner(bank) -> dict[str, Any]:
+        analysis_role = str(cfg.section("suite").get("evolution_role", "work_train"))
+        result = run_panel(
+            cfg,
+            policy=policy,
+            bank=bank,
+            role=analysis_role,
+            seed=cfg.seed,
+            campaign_id=f"{cfg.campaign_id}-analysis",
+        )
+        # capture real steps from the traces via per-task telemetry only —
+        # run_panel does not persist traces; the fragment therefore quotes the
+        # deterministic render inputs (view digests) plus termination and the
+        # component effect summary, which ARE the actor-visible facts.
+        failure_cases: list[dict[str, Any]] = []
+        success_cases: list[dict[str, Any]] = []
+        for tid, m in result.per_task.items():
+            failed = bool(m.get("component_errors")) or float(m.get("value") or 0.0) < 1e-9
+            fragment = (
+                f"terminated={m.get('terminated_reason')} "
+                f"n_decisions={m.get('n_decisions', 0)} "
+                f"wall_ms={m.get('wall_ms', 0):.0f} "
+                f"value={m.get('value')} "
+                f"component_effects={result_component_effects(m)}"
+            )
+            case = {
+                "task_id": tid,
+                "fragment": fragment,
+                "n_decisions": m.get("n_decisions", 0),
+                "error_kind": next(iter(m.get("component_errors") or {}), None),
+            }
+            (failure_cases if failed else success_cases).append(case)
+        failure_cases.sort(key=lambda c: -c["n_decisions"])
+        return {
+            "failure_cases": failure_cases[:8],
+            "success_cases": success_cases[:4],
+        }
+
+    def result_component_effects(m: dict[str, Any]) -> dict:
+        # component effects ride on the per-task record when the loop saved them
+        return m.get("component_effects") or {}
+
     def panel_runner(bank):
         if panel_workers >= 2:
             from rsi.evaluation.parallel import run_panel_mp
@@ -139,6 +185,7 @@ def run_evolve(cfg: CampaignConfig, *, initial_bank_ref: str | None = None) -> d
         proposer=_build_proposer(cfg, policy),
         archive=archive,
         panel_runner=panel_runner,
+        analysis_runner=analysis_runner,
         packet_builder=build_packet,
         budgets=EvolutionBudgets(
             max_generations=int(evo.get("max_generations", 8)),

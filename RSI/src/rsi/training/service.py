@@ -202,7 +202,9 @@ def run_train(cfg: CampaignConfig, *, bank_ref: str, policy: Any | None = None, 
                     from rsi.runtime.budgets import BudgetSpec
                     from rsi.training.collector import collect_rollouts
 
-                    runtime_cfg = cfg.section("runtime")
+                    from rsi.runtime.factory import build_runtime_parts
+
+                    _parts = build_runtime_parts(runtime_cfg)
                     batch = collect_rollouts(
                     policy=policy,
                     teacher_policy=policy,
@@ -212,11 +214,9 @@ def run_train(cfg: CampaignConfig, *, bank_ref: str, policy: Any | None = None, 
                     student_bank=student_bank,
                     teacher_bank=bank,
                     tasks=[task],
-                    budgets=BudgetSpec(
-                        max_actions=int(runtime_cfg.get("max_actions", 20)),
-                        max_extra_llm_calls=int(runtime_cfg.get("max_extra_llm_calls", 2)),
-                    ),
-                    sampling=SamplingParams(max_new_tokens=int(runtime_cfg.get("max_new_tokens", 256))),
+                    budgets=_parts.budgets,
+                    sampling=_parts.sampling,
+                    context_policy=_parts.context_policy,
                     collect_opd=spec.use_opd,
                     uncertain_realizability=str(cfg.section("opd").get("uncertain_realizability", "skip")),
                     max_targets_per_decision=int(cfg.section("opd").get("max_targets_per_decision", 1)),
@@ -341,11 +341,9 @@ def run_train(cfg: CampaignConfig, *, bank_ref: str, policy: Any | None = None, 
                     student_bank=student_bank,
                     teacher_bank=bank,
                     tasks=tasks,
-                    budgets=BudgetSpec(
-                        max_actions=int(runtime_cfg.get("max_actions", 20)),
-                        max_extra_llm_calls=int(runtime_cfg.get("max_extra_llm_calls", 2)),
-                    ),
-                    sampling=SamplingParams(max_new_tokens=int(runtime_cfg.get("max_new_tokens", 256))),
+                    budgets=_parts.budgets,
+                    sampling=_parts.sampling,
+                    context_policy=_parts.context_policy,
                     collect_opd=spec.use_opd,
                     uncertain_realizability=str(cfg.section("opd").get("uncertain_realizability", "skip")),
                     max_targets_per_decision=int(cfg.section("opd").get("max_targets_per_decision", 1)),

@@ -110,6 +110,38 @@ class MinimalLoop:
         )
         composition.initialize_all(ctx)
 
+        # Refactor guide §6.1: every DecisionRecord carries the REAL protocol
+        # identity (renderer + profile + window + budgets + env/tool schemas)
+        # — an empty runtime_contract_digest must not enter new artifacts.
+        from rsi.runtime.context import ContextPolicy as _CP
+
+        try:
+            contract = build_runtime_contract(
+                env=self.env,
+                bank=self.bank,
+                budgets=self.budgets,
+                policy=self.policy,
+                context_policy=self.context_policy if isinstance(self.context_policy, _CP) else None,
+            )
+            contract_digest = (
+                contract.digest() if hasattr(contract, "digest") else digest_of(contract.to_json())
+            )
+        except Exception:  # noqa: BLE001 - toy/test envs may lack identity hooks;
+            # real adapters always provide environment_identity, so a formal
+            # run never hits this fallback (and tests assert on it).
+            contract_digest = digest_of(
+                {
+                    "loop": "MinimalLoop",
+                    "version": "h0_v1",
+                    "profile": (
+                        self.context_policy.profile.digest()
+                        if isinstance(self.context_policy, _CP) and self.context_policy.profile
+                        else None
+                    ),
+                    "max_chars": getattr(self.context_policy, "max_chars", None),
+                }
+            )
+
         events: list[Event] = []
         decisions: list[DecisionRecord] = []
         order = 0
@@ -161,7 +193,7 @@ class MinimalLoop:
             )
             composition.set_decision_index(len(decisions))
             view = composition.apply_before_model(view)
-            v_digest = view_digest(view)
+            v_digest = view_digest(view, policy=self.context_policy)
             snap = self.env.snapshot()
 
             sample, prompt_ids = self._sample_with_network_retry(view, ledger)
@@ -202,6 +234,7 @@ class MinimalLoop:
                     prompt_ids=prompt_ids,
                     action_token_ids=action_token_ids,
                     old_logprobs=old_logprobs,
+                    runtime_contract_digest=contract_digest,
                 )
                 continue
 
@@ -315,6 +348,7 @@ class MinimalLoop:
                     action_token_ids=action_token_ids,
                     old_logprobs=old_logprobs,
                     executed_action_text=executed_text,
+                    runtime_contract_digest=contract_digest,
                 )
                 done = True
                 terminated_reason = "finish"
@@ -354,6 +388,7 @@ class MinimalLoop:
                 action_token_ids=action_token_ids,
                 old_logprobs=old_logprobs,
                 executed_action_text=executed_text,
+                runtime_contract_digest=contract_digest,
             )
             if result.done:
                 done = True
@@ -418,6 +453,7 @@ class MinimalLoop:
         action_token_ids: Sequence[int],
         old_logprobs: Sequence[float],
         executed_action_text: str | None = None,
+        runtime_contract_digest: str = "",
     ) -> None:
         decisions.append(
             DecisionRecord(
@@ -428,7 +464,7 @@ class MinimalLoop:
                 decision_index=decision_index,
                 environment_snapshot_ref=snapshot_ref,
                 public_view_digest=v_digest,
-                runtime_contract_digest="",  # filled by the caller with the frozen contract
+                runtime_contract_digest=runtime_contract_digest,
                 policy_digest=self.policy.policy_artifact.policy_id,
                 tokenizer_digest=self.policy.tokenizer_digest,
                 chat_template_digest=self.policy.chat_template_digest,
@@ -460,12 +496,22 @@ class MinimalLoop:
         return sample.text
 
 
-def build_runtime_contract(*, env: Any, bank: LoadedBank, budgets: BudgetSpec, policy: Any) -> RuntimeContract:
+def build_runtime_contract(
+    *,
+    env: Any,
+    bank: LoadedBank,
+    budgets: BudgetSpec,
+    policy: Any,
+    context_policy: ContextPolicy | None = None,
+) -> RuntimeContract:
+    """Refactor guide §6.1: the contract records the REAL context policy
+    (window + profile digests), not defaults; formal artifacts must not carry
+    an empty runtime_contract_digest."""
     identity = env.environment_identity()
     catalog = env.tool_catalog()
     return RuntimeContract(
         h0_source_hash=digest_of({"loop": "MinimalLoop", "version": "h0_v1"}),
-        base_prompt_hash=prompt_hash(),
+        base_prompt_hash=prompt_hash(context_policy),
         parser_id=ACTION_SCHEMA_ID,
         context_policy_id=CONTEXT_POLICY_ID,
         base_tool_schema_hash=tool_catalog_digest(catalog),

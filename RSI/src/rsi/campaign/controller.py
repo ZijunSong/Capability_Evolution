@@ -186,6 +186,33 @@ class CampaignController:
             budget.charge_eval(result)
             return result["panel_payload"]
 
+        # Refactor guide §9: campaign path gets the same analysis_runner as
+        # the CLI evolve entry — both entries share one evidence behavior.
+        analysis_role = str(self.cfg.section("suite").get("evolution_role", "work_train"))
+
+        def analysis_runner(bank: LoadedBank) -> dict[str, Any]:
+            result = self._eval_panel(
+                policy, bank, role=analysis_role, cache=cache, tag=f"analysis_{bank.bank_digest[:8]}"
+            )
+            per = result["panel_payload"]["per_task"]
+            failures: list[dict[str, Any]] = []
+            successes: list[dict[str, Any]] = []
+            for tid, m in per.items():
+                failed = bool(m.get("component_errors")) or float(m.get("value") or 0.0) < 1e-9
+                case = {
+                    "task_id": tid,
+                    "fragment": (
+                        f"terminated={m.get('terminated_reason')} "
+                        f"n_decisions={m.get('n_decisions', 0)} "
+                        f"value={m.get('value')}"
+                    ),
+                    "n_decisions": m.get("n_decisions", 0),
+                    "error_kind": next(iter(m.get("component_errors") or {}), None),
+                }
+                (failures if failed else successes).append(case)
+            failures.sort(key=lambda c: -c["n_decisions"])
+            return {"failure_cases": failures[:8], "success_cases": successes[:4]}
+
         if self.proposer_factory is not None:
             proposer = self.proposer_factory()
         else:
@@ -198,6 +225,7 @@ class CampaignController:
             proposer=proposer,
             archive=archive,
             panel_runner=panel_runner,
+            analysis_runner=analysis_runner,
             packet_builder=build_packet,
             budgets=EvolutionBudgets(
                 max_generations=int(evo.get("max_generations", 8)),
@@ -427,9 +455,22 @@ class CampaignController:
         return policy
 
     def _eval_panel(self, policy, bank: LoadedBank, *, role: str, cache: ScoreCache | None, tag: str) -> dict[str, Any]:
-        max_n = self.cfg.section("evaluation").get("confirm_panel_per_domain") or self.cfg.section("evolution").get(
-            "dev_panel_per_domain"
-        )
+        # Refactor guide §10.1: panel caps are PER ROLE.  confirm/dev caps must
+        # never clip final_test — an "N-task final" that actually ran 4 is a
+        # fabricated full-report.
+        role_caps = {
+            "harness_select": self.cfg.section("evaluation").get("confirm_panel_per_domain")
+            or self.cfg.section("evolution").get("dev_panel_per_domain"),
+            "weight_dev": self.cfg.section("evaluation").get("confirm_panel_per_domain")
+            or self.cfg.section("evolution").get("dev_panel_per_domain"),
+            "confirm_h": self.cfg.section("evaluation").get("confirm_panel_per_domain"),
+            "confirm_w": self.cfg.section("evaluation").get("confirm_panel_per_domain"),
+            # final_test / transfer_test / work_train: FULL manifest, no cap.
+            "final_test": None,
+            "transfer_test": None,
+            "work_train": None,
+        }
+        max_n = role_caps.get(role)
         result = run_panel(
             self.cfg,
             policy=policy,
@@ -443,10 +484,23 @@ class CampaignController:
         scores: dict[str, dict[str, float]] = {}
         for rec in result.records:
             scores.setdefault(rec.domain, {})[rec.task_id] = rec.value
+        # Refactor guide §10.1: same payload shape as evolution/service.panel_runner —
+        # full telemetry (metric identity, partial, decisions, wall, component
+        # errors), never a value/terminated stub with empty trigger_stats.
         payload = {
             "scores": scores,
             "per_task": {
-                tid: {"value": m["value"], "terminated_reason": m["terminated_reason"], "trigger_stats": {}}
+                tid: {
+                    "value": m["value"],
+                    "metric_name": m.get("metric_name"),
+                    "success": m.get("success"),
+                    "partial_test_pass_rate": (m.get("details") or {}).get("partial_test_pass_rate"),
+                    "measurement_status": (m.get("details") or {}).get("measurement_status"),
+                    "terminated_reason": m["terminated_reason"],
+                    "n_decisions": m.get("n_decisions", 0),
+                    "wall_ms": m.get("wall_ms", 0.0),
+                    "component_errors": m.get("component_errors") or {},
+                }
                 for tid, m in result.per_task.items()
             },
             "cost": result.costs.to_json(),

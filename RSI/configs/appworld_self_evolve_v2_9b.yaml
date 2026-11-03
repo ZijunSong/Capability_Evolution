@@ -8,6 +8,15 @@ max_rounds: 1
 # POINTS: E0/E1 calibrate max_actions/max_wall_ms on 12-24 dev tasks before
 # anything is frozen.  NOT runnable until E0 passes the measurement controls.
 
+policy:
+  initial_artifact: null
+  provider: hf_path
+  model_path: /mnt/songzijun/models/Qwen3.5-9B
+  trainable: false
+  teacher_sync: batch_snapshot
+  adapter_mode: cumulative
+  cross_round_optimizer: reset
+
 runtime:
   contract: configs/h0_contract.json
   clock: real_monotonic

@@ -114,10 +114,17 @@ class EvolutionSearch:
         known_task_ids: Sequence[str] = (),
         baseline_scores: Mapping[str, Mapping[str, float]] | None = None,
         seed_mode: str = "empty_each_round",
+        analysis_runner: Callable[[LoadedBank], Mapping[str, Any]] | None = None,
     ):
         self.proposer = proposer
         self.archive = archive
         self.panel_runner = panel_runner
+        # Refactor guide §9: analysis_runner runs the CURRENT parent on
+        # work_train and returns {"evidence": EvidenceStore-like mapping with
+        # real action/observation fragments} — separated from panel_runner
+        # (scoring on harness_select) so selection cost and analysis cost are
+        # distinct and the packet can quote REAL failures.
+        self.analysis_runner = analysis_runner
         self.packet_builder = packet_builder
         self.budgets = budgets or EvolutionBudgets()
         self.parent_bank_root = parent_bank_root
@@ -166,6 +173,17 @@ class EvolutionSearch:
                 baseline_scores=None,
                 parent_scores=None,
             )
+            analysis = None
+            if self.analysis_runner is not None:
+                try:
+                    analysis = self.analysis_runner(parent)
+                except Exception as e:  # noqa: BLE001 - analysis is enrichment:
+                    # a failing analysis pass must not kill the search; the
+                    # packet falls back to telemetry-only fragments.
+                    self._history.append(
+                        {"analysis_error": repr(e), "generation": gen}
+                    )
+                    analysis = None
             packet = self.packet_builder(
                 generation=gen,
                 policy_digest=str(parent_result.get("policy_digest", "")),
@@ -175,10 +193,12 @@ class EvolutionSearch:
                 diagnosis=diagnosis,
                 failure_fragments=self._fragments_from_per_task(
                     parent_result.get("per_task") or {}, failure=True
-                ),
+                )
+                + self._fragments_from_analysis(analysis, failure=True),
                 success_summaries=self._fragments_from_per_task(
                     parent_result.get("per_task") or {}, failure=False
-                ),
+                )
+                + self._fragments_from_analysis(analysis, failure=False),
                 candidate_history=tuple(self._history),
                 budgets={
                     "max_generations": self.budgets.max_generations,
@@ -343,6 +363,33 @@ class EvolutionSearch:
             if len(fragments) >= limit:
                 break
         return tuple(fragments)
+
+    @staticmethod
+    def _fragments_from_analysis(
+        analysis: Mapping[str, Any] | None, *, failure: bool, limit: int = 6, max_chars: int = 500
+    ) -> tuple[TraceFragment, ...]:
+        """Real action/observation fragments from the analysis runner's
+        EvidenceStore (guide §9): telemetry alone cannot distinguish a wrong
+        API choice from a missed constraint — the packet carries the actual
+        steps.  Only work_train/evolution_train evidence ever reaches here."""
+        if not analysis:
+            return ()
+        cases = (analysis.get("failure_cases") if failure else analysis.get("success_cases")) or []
+        out: list[TraceFragment] = []
+        for c in list(cases)[:limit]:
+            text = str(c.get("fragment", ""))[:max_chars]
+            if not text:
+                continue
+            out.append(
+                TraceFragment(
+                    task_id=str(c.get("task_id", "?")),
+                    outcome="fail" if failure else "success",
+                    events_text=text,
+                    decisions=int(c.get("n_decisions", 0) or 0),
+                    error_kind=c.get("error_kind"),
+                )
+            )
+        return tuple(out)
 
     def _propose_materialize(self, packet: EvolutionPacket, parent: LoadedBank) -> MaterializedCandidate | None:
         last_err: BaseException | None = None

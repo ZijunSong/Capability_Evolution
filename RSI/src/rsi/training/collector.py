@@ -52,6 +52,7 @@ def collect_rollouts(
     tasks: Sequence[PublicTask],
     budgets: BudgetSpec | None = None,
     sampling: Any | None = None,
+    context_policy: Any | None = None,
     reward_fn=None,
     collect_opd: bool = True,
     recipes: Sequence[Recipe] = (),
@@ -97,6 +98,7 @@ def collect_rollouts(
             bank=student_bank,  # Student runs H0 (+empty bank == H0)
             budgets=budgets,
             sampling=sampling,
+            context_policy=context_policy,
             campaign_id=campaign_id,
             batch_index=batch_index,
         )

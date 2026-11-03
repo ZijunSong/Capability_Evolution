@@ -116,8 +116,15 @@ def prepare_data(cfg: CampaignConfig) -> dict[str, Any]:
                 "campaign_id": cfg.campaign_id,
             }
             return out
-        except Exception:  # noqa: BLE001 - fall through to regeneration on any doubt
-            pass
+        except Exception as e:  # noqa: BLE001
+            # Refactor guide §8.3: a damaged authoritative manifest must ABORT,
+            # never silently regenerate a different task set.  Regeneration is
+            # only for explicitly creating a NEW experiment (no manifest yet).
+            raise ProtocolViolation(
+                f"authoritative split manifest {split_path} is damaged "
+                f"({e!r}); fix it or delete it explicitly to create a new "
+                "experiment — refusing to regenerate a different task set"
+            ) from e
     registry = global_registry()
     out: dict[str, Any] = {"split_manifest": str(split_path), "domains": {}}
     manifests: dict[str, Any] = {}
@@ -179,6 +186,17 @@ def prepare_data(cfg: CampaignConfig) -> dict[str, Any]:
     }
     split_path.write_text(json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False), "utf-8")
     out["frozen_sources"] = payload["frozen_sources"]
+    # Refactor guide §8.3: a campaign whose EVERY domain was skipped produced
+    # no usable task set — returning ok=True there manufactured empty-macro
+    # "successes".  A single-domain campaign with its only domain skipped,
+    # or any campaign with zero materialized tasks, fails the preflight.
+    materialized = [d for d, info in out["domains"].items() if "skipped" not in info]
+    if not materialized:
+        raise ProtocolViolation(
+            "data prepare produced no usable task set: every domain was "
+            f"skipped ({out['domains']}) — fix the environment deps/data "
+            "before running a campaign"
+        )
     out["ok"] = True
     return out
 

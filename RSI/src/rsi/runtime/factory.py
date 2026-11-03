@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from rsi.contracts.policy import SamplingParams
 from rsi.runtime.budgets import BudgetSpec
 from rsi.runtime.context import ContextPolicy
+from rsi.runtime.profiles import H0Profile, profile_from_runtime_config
 
 
 @dataclass(frozen=True)
@@ -24,6 +25,7 @@ class RuntimeParts:
     budgets: BudgetSpec
     sampling: SamplingParams
     context_policy: ContextPolicy
+    profile: H0Profile
 
 
 def build_runtime_parts(
@@ -48,7 +50,10 @@ def build_runtime_parts(
         max_new_tokens=int(runtime_cfg.get("max_new_tokens", 256)),
         temperature=float(runtime_cfg.get("temperature", 1.0)),
     )
+    # Guide §5.2: runtime.profile is REQUIRED — no silent legacy fallback.
+    profile: H0Profile = profile_from_runtime_config(runtime_cfg)
     context_policy = ContextPolicy(
         max_chars=int(runtime_cfg.get("max_chars", max_chars_default)),
+        profile=profile,
     )
-    return RuntimeParts(budgets=budgets, sampling=sampling, context_policy=context_policy)
+    return RuntimeParts(budgets=budgets, sampling=sampling, context_policy=context_policy, profile=profile)
