@@ -78,6 +78,46 @@ def prepare_data(cfg: CampaignConfig) -> dict[str, Any]:
     split_path = cfg.resolve_path(str(suite.get("split_manifest", "data/splits/split.json")))
     assert split_path is not None
     split_path.parent.mkdir(parents=True, exist_ok=True)
+    # PR-3 freeze semantics (audit §10.5): when the config declares the
+    # manifest authoritative and a verified frozen manifest already exists
+    # (checked into the repo), COPY it to the runtime location instead of
+    # regenerating from provider enumeration — regeneration silently swapped
+    # in the provider's legacy 7-role split and erased custom roles
+    # (e0_probe), which is exactly the "manifest is not authoritative" bug.
+    if bool(suite.get("manifest_is_authoritative", False)) and split_path.is_file():
+        try:
+            existing = json.loads(split_path.read_text("utf-8"))
+            for domain, m in dict(existing.get("manifests") or {}).items():
+                manifest = SplitManifest(
+                    manifest_id=str(m["manifest_id"]),
+                    domain=str(m["domain"]),
+                    assignments=tuple(
+                        SplitAssignment(
+                            role=str(a["role"]),
+                            task_ids=tuple(a["task_ids"]),
+                            round_index=a.get("round_index"),
+                        )
+                        for a in m["assignments"]
+                    ),
+                    groups={k: tuple(v) for k, v in dict(m.get("groups") or {}).items()},
+                )
+                if manifest.digest() != m.get("digest"):
+                    raise ValueError("digest mismatch")
+            # all domains verified — the frozen manifest is authoritative
+            out = {
+                "ok": True,
+                "split_manifest": str(split_path),
+                "frozen": True,
+                "domains": {
+                    d: {"manifest_digest": m["digest"], "n_tasks": sum(
+                        len(a["task_ids"]) for a in m["assignments"])}
+                    for d, m in existing["manifests"].items()
+                },
+                "campaign_id": cfg.campaign_id,
+            }
+            return out
+        except Exception:  # noqa: BLE001 - fall through to regeneration on any doubt
+            pass
     registry = global_registry()
     out: dict[str, Any] = {"split_manifest": str(split_path), "domains": {}}
     manifests: dict[str, Any] = {}

@@ -20,6 +20,10 @@ from rsi.contracts.common import canonical_json, digest_of
 from rsi.contracts.errors import ProtocolViolation
 
 SCHEMA_VERSION = "rsi_campaign_v1"
+# rsi_campaign_v2 (audit doc §16) adds domain-role separation keys
+# (evolution/opd/selection/sealed) and scoring/statistics sections; the
+# runtime consumes them via section(), so the loader accepts both markers.
+ACCEPTED_SCHEMA_VERSIONS = ("rsi_campaign_v1", "rsi_campaign_v2")
 
 
 @dataclass
@@ -101,8 +105,10 @@ def load_config(path: str | Path) -> CampaignConfig:
     if not isinstance(raw, dict):
         raise ProtocolViolation("config root must be a mapping")
     version = raw.get("schema_version")
-    if version != SCHEMA_VERSION:
-        raise ProtocolViolation(f"schema_version must be {SCHEMA_VERSION!r}, got {version!r}")
+    if version not in ACCEPTED_SCHEMA_VERSIONS:
+        raise ProtocolViolation(
+            f"schema_version must be one of {ACCEPTED_SCHEMA_VERSIONS}, got {version!r}"
+        )
     missing = [k for k in REQUIRED_TOP_LEVEL if k not in raw]
     if missing:
         raise ProtocolViolation(f"config missing sections: {missing}")
