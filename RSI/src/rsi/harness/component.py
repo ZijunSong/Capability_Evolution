@@ -23,7 +23,14 @@ from rsi.contracts.task import PublicTask
 
 @dataclass
 class EpisodeContext:
-    """Per-episode state handed to ``initialize``."""
+    """Per-episode state handed to ``initialize``.
+
+    The full public surface of the component API — this dataclass plus the
+    five effect dataclasses (ViewPatch / ProposalEffect / StatePatch /
+    FinishEffect) and ``RuntimeAPI`` — is the complete importable contract.
+    There are no submodules (e.g. ``rsi.harness.component.dataclasses``) and
+    no extra types like ``ActionLog``/``ToolResult``.
+    """
 
     episode_id: str
     task: PublicTask
@@ -32,6 +39,14 @@ class EpisodeContext:
     private_state: dict[str, Any] = field(default_factory=dict)
     rng_seed: int = 0
     extra_llm_call_budget: int = 0
+
+    def get(self, name: str, default: Any = None) -> Any:
+        return _dict_style_get(self, name, default)
+
+    def __getitem__(self, name: str) -> Any:
+        return _dict_style_item(self, name)
+    # Episode budgets / limits (no hidden answers — public runtime facts).
+    config: Mapping[str, JSONValue] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -43,6 +58,12 @@ class PublicView:
     history: tuple[Event, ...]
     remaining_action_budget: int
     extra: Mapping[str, JSONValue] = field(default_factory=dict)
+
+    def get(self, name: str, default: Any = None) -> Any:
+        return _dict_style_get(self, name, default)
+
+    def __getitem__(self, name: str) -> Any:
+        return _dict_style_item(self, name)
 
 
 @dataclass(frozen=True)
@@ -134,3 +155,16 @@ class NullComponent:
 
     def before_finish(self, action: Finish, view: PublicView, api: RuntimeAPI) -> FinishEffect:
         return FinishEffect()
+
+
+def _dict_style_get(obj: Any, name: str, default: Any = None) -> Any:
+    if name in getattr(obj, "__dataclass_fields__", {}):
+        return getattr(obj, name)
+    return default
+
+
+def _dict_style_item(obj: Any, name: str) -> Any:
+    fields = getattr(obj, "__dataclass_fields__", {})
+    if name in fields:
+        return getattr(obj, name)
+    raise KeyError(name)

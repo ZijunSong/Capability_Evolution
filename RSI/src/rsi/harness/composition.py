@@ -59,6 +59,9 @@ class HarnessComposition:
         try:
             result = fn()
         except Exception as e:  # noqa: BLE001 - component code
+            # A failing component is disabled and recorded — never silently
+            # counted as active, and never allowed to kill the episode/panel
+            # (task book §6.2: component_runtime_error is its own class).
             self.state.active[comp.manifest.id] = False
             self.state.errors[comp.manifest.id] = f"{hook}: {e!r}"
             self.api.log(
@@ -67,9 +70,7 @@ class HarnessComposition:
                 hook=hook,
                 error=repr(e),
             )
-            raise ComponentRuntimeError(
-                f"component {comp.manifest.id} failed in {hook}: {e!r}"
-            ) from e
+            return None
         self.state.record_trigger(comp.manifest.id)
         return result
 

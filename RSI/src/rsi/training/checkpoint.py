@@ -59,8 +59,23 @@ def save_checkpoint(
     directory.mkdir(parents=True, exist_ok=True)
     import torch
 
-    model_state = {k: v.detach().cpu() for k, v in backend.model.state_dict().items()}
-    torch.save(model_state, directory / "model.pt")
+    from rsi.training.lora import lora_state_dict
+
+    lora_state = lora_state_dict(backend.model)
+    if lora_state:
+        # cumulative-adapter path: checkpoints store the (small) LoRA state
+        torch.save(lora_state, directory / "adapter.pt")
+        state_digest = digest_of(
+            {k: [float(x) for x in v.flatten().tolist()[:8]] for k, v in sorted(lora_state.items())}
+        )
+        saved = "adapter.pt"
+    else:
+        model_state = {k: v.detach().cpu() for k, v in backend.model.state_dict().items()}
+        torch.save(model_state, directory / "model.pt")
+        state_digest = digest_of(
+            {k: [float(x) for x in v.flatten().tolist()[:8]] for k, v in sorted(model_state.items())}
+        )
+        saved = "model.pt"
     if getattr(backend, "_optimizer", None) is not None:
         torch.save(backend._optimizer.state_dict(), directory / "optimizer.pt")
     if rng_state is not None:
@@ -70,7 +85,8 @@ def save_checkpoint(
         "identity": identity.to_json(),
         "sampler_position": sampler_position,
         "extra": dict(extra or {}),
-        "model_digest": digest_of({k: [float(x) for x in v.flatten().tolist()[:8]] for k, v in sorted(model_state.items())}),
+        "saved_state": saved,
+        "model_digest": state_digest,
     }
     (directory / "checkpoint.json").write_text(
         json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False), "utf-8"
@@ -93,8 +109,15 @@ def load_checkpoint(
         raise ProtocolViolation("unknown checkpoint schema")
     import torch
 
-    state = torch.load(directory / "model.pt", map_location="cpu", weights_only=True)
-    backend.model.load_state_dict(state)
+    if payload.get("saved_state") == "adapter.pt" or (not (directory / "model.pt").is_file() and (directory / "adapter.pt").is_file()):
+        from rsi.training.lora import load_lora_state_dict
+
+        load_lora_state_dict(
+            backend.model, torch.load(directory / "adapter.pt", map_location="cpu", weights_only=True)
+        )
+    else:
+        state = torch.load(directory / "model.pt", map_location="cpu", weights_only=True)
+        backend.model.load_state_dict(state)
     if restore_optimizer and (directory / "optimizer.pt").is_file() and getattr(backend, "_optimizer", None) is not None:
         backend._optimizer.load_state_dict(torch.load(directory / "optimizer.pt", map_location="cpu", weights_only=True))
     return payload

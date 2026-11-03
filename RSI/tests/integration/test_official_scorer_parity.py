@@ -77,7 +77,7 @@ def test_toy_kv_fixed_answer_parity():
     assert rec.success
 
 
-@pytest.mark.parametrize("domain", ["appworld", "spreadsheetbench", "swebench"])
+@pytest.mark.parametrize("domain", ["appworld", "spreadsheetbench", "swebench", "webshop", "alfworld"])
 def test_real_benchmark_official_parity_when_available(domain):
     """Adapter vs pinned official evaluator on a fixed action/fixture.
 

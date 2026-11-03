@@ -158,3 +158,9 @@ TRIM/third_party/triton_kernels_wheels/
 
 # --- platform job export dumps (configs live in TRIM/scripts/) ---
 **/10063-t-*-export.yaml
+
+# --- raw eval result shards (formal numbers live in docs/csv; shards too many for git) ---
+TRIM/eval_results/
+RSI/runs/
+RSI/data/
+RSI/logs/

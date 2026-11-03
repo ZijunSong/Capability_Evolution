@@ -7,11 +7,11 @@ and is counted separately from model decision errors.
 
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass, field
 
 from rsi.contracts.common import JSONValue, digest_of
 from rsi.contracts.errors import BudgetExceeded
+from rsi.runtime.clock import monotonic_ms
 
 
 @dataclass
@@ -55,7 +55,7 @@ class BudgetLedger:
     actor_output_tokens_used: int = 0
     tool_calls_used: int = 0
     network_retries_used: int = 0
-    started_ms: float = field(default_factory=lambda: time.perf_counter() * 1000.0)
+    started_ms: float = field(default_factory=monotonic_ms)
 
     def remaining_actions(self) -> int:
         return max(0, self.spec.max_actions - self.actions_used)
@@ -88,7 +88,7 @@ class BudgetLedger:
             raise BudgetExceeded("network retry budget exhausted")
 
     def check_wall(self) -> None:
-        elapsed = time.perf_counter() * 1000.0 - self.started_ms
+        elapsed = monotonic_ms() - self.started_ms
         if elapsed > self.spec.max_wall_ms:
             raise BudgetExceeded(f"wall clock budget exhausted ({self.spec.max_wall_ms}ms)")
 

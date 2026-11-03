@@ -1,0 +1,21 @@
+实验组,Model,训练情况,harness配置,Metric,AppWorld-325,SWE-bench,WebShop,AlfWorld,均值,备注
+exp_h0,Qwen3.5-9B,base model,H0 minimal(空bank),Success Rate,0.00%,N/A,N/A,N/A,0.00%,满目标完成率(TGC=1.0);0/321;task_error 4 例基础设施剔除
+exp_h0,Qwen3.5-9B,base model,H0 minimal(空bank),Goal Score (TGC),23.51%,N/A,N/A,N/A,23.51%,official TGC valid 321(含err记0=23.23%);per-pool: wt28.13/hs33.10/wd15.32/ch25.47/cw33.33/ft23.64/tt13.41
+exp_h0,Qwen3.5-9B,base model,H0 minimal(空bank),Turn Mean,N/A,N/A,N/A,N/A,N/A,n_decisions 记录层缺口(全0)待修后回填;全部 budget_wall 终止
+exp_h0,Qwen3.5-9B,base model,H0 minimal(空bank),Wall Time (s/task),33.6,N/A,N/A,N/A,33.6,valid 均值;p95=46.6;t=2026-11-02 dhlol
+exp_h0,Qwen3.5-27B,base model,H0 minimal(空bank),Success Rate,N/A,N/A,N/A,N/A,N/A,kygt9 挂死→cmjpt(r3) 重提中
+exp_h0,Qwen3.5-27B,base model,H0 minimal(空bank),Goal Score (TGC),N/A,N/A,N/A,N/A,N/A,kygt9 挂死→cmjpt(r3) 重提中
+exp_h0,Qwen3.5-27B,base model,H0 minimal(空bank),Turn Mean,N/A,N/A,N/A,N/A,N/A,同上
+exp_h0,Qwen3.5-27B,base model,H0 minimal(空bank),Wall Time (s/task),N/A,N/A,N/A,N/A,N/A,同上
+exp_hk,Qwen3.5-9B,base model,自进化harness H_k(ContextCompressor 73ddc436),Success Rate,0.00%,N/A,N/A,N/A,0.00%,满目标完成率(TGC=1.0);0/320;task_error 5 例基础设施剔除;与H0持平
+exp_hk,Qwen3.5-9B,base model,自进化harness H_k(ContextCompressor 73ddc436),Goal Score (TGC),23.46%,N/A,N/A,N/A,23.46%,official TGC valid 320(含err记0=23.10%);paired同任务318对比 d=+0.00pp;dev-panel增益0.2591→0.3273未迁移到全benchmark
+exp_hk,Qwen3.5-9B,base model,自进化harness H_k(ContextCompressor 73ddc436),Turn Mean,13.8,N/A,N/A,N/A,13.8,n_decisions记录已修复(H0全0是记录缺口);max=24;与H0不可直接比(其记录全0)
+exp_hk,Qwen3.5-9B,base model,自进化harness H_k(ContextCompressor 73ddc436),Wall Time (s/task),227.8,N/A,N/A,N/A,227.8,valid均值;compute总量20.25h vs H0 3.0h(6.75×,终止策略改变所致);t=2026-11-03 kafnl
+exp_opd_h0,Qwen3.5-9B,HarnessOPD 内化,H0 minimal(空bank),Success Rate,N/A,N/A,N/A,N/A,N/A,预留:训练后×H0(对照模型增益)
+exp_opd_h0,Qwen3.5-9B,HarnessOPD 内化,H0 minimal(空bank),Goal Score (TGC),N/A,N/A,N/A,N/A,N/A,预留
+exp_opd_h0,Qwen3.5-9B,HarnessOPD 内化,H0 minimal(空bank),Turn Mean,N/A,N/A,N/A,N/A,N/A,预留
+exp_opd_h0,Qwen3.5-9B,HarnessOPD 内化,H0 minimal(空bank),Wall Time (s/task),N/A,N/A,N/A,N/A,N/A,预留
+exp_opd_hk,Qwen3.5-9B,HarnessOPD 内化,自进化harness H_k,Success Rate,N/A,N/A,N/A,N/A,N/A,预留:训练后×自进化harness(主结果)
+exp_opd_hk,Qwen3.5-9B,HarnessOPD 内化,自进化harness H_k,Goal Score (TGC),N/A,N/A,N/A,N/A,N/A,预留
+exp_opd_hk,Qwen3.5-9B,HarnessOPD 内化,自进化harness H_k,Turn Mean,N/A,N/A,N/A,N/A,N/A,预留
+exp_opd_hk,Qwen3.5-9B,HarnessOPD 内化,自进化harness H_k,Wall Time (s/task),N/A,N/A,N/A,N/A,N/A,预留

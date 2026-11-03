@@ -118,6 +118,42 @@ def _ast_audit(source: str, filename: str) -> list[str]:
     return problems
 
 
+# Required positional arity of each protocol hook (bound methods: self excluded).
+HOOK_ARITY = {
+    "initialize": 1,
+    "before_model": 2,
+    "after_proposal": 3,
+    "after_observation": 2,
+    "before_finish": 3,
+}
+
+
+def _validate_hook_signatures(instance: Any, component_id: str) -> None:
+    """Reject components whose hooks do not accept the protocol arguments.
+
+    ``callable()`` alone is not enough: a hook defined as ``before_model(self,
+    view)`` loads fine but explodes at call time and used to kill the whole
+    candidate panel.  Signature mismatch is ``candidate_invalid`` at load time.
+    """
+    import inspect
+
+    for hook, n_args in HOOK_ARITY.items():
+        fn = getattr(instance, hook, None)
+        if fn is None:
+            continue
+        try:
+            sig = inspect.signature(fn)
+        except (TypeError, ValueError):  # builtins etc. — assume OK
+            continue
+        try:
+            sig.bind(*([None] * n_args))
+        except TypeError as e:
+            raise CandidateInvalid(
+                f"component {component_id}: hook {hook}{sig} does not accept the "
+                f"protocol signature ({n_args} positional args after self): {e}"
+            ) from e
+
+
 def load_bank(root: str | Path) -> LoadedBank:
     """Load and validate a bank directory (manifest.json + component sources)."""
     root = Path(root).resolve()
@@ -160,6 +196,7 @@ def load_bank(root: str | Path) -> LoadedBank:
         for hook in HOOK_NAMES:
             if not callable(getattr(instance, hook, None)):
                 raise CandidateInvalid(f"component {comp.id}: missing hook {hook!r}")
+        _validate_hook_signatures(instance, comp.id)
         source_hash = digest_of_text(source)
         loaded.append(
             LoadedComponent(

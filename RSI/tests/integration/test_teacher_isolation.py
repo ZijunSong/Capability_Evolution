@@ -91,8 +91,17 @@ def test_hidden_grader_inaccessible():
     # outside the editable scope (validator), while the scorer keeps the map.
     from rsi.evolution.validator import validate_candidate_files
 
+    harmless_src = (
+        "from rsi.harness.component import FinishEffect, ProposalEffect, StatePatch, ViewPatch\n\n\n"
+        "class X:\n"
+        "    def initialize(self, ctx):\n        pass\n\n"
+        "    def before_model(self, view, api):\n        return ViewPatch(changed=False)\n\n"
+        "    def after_proposal(self, action, view, api):\n        return ProposalEffect(action=None)\n\n"
+        "    def after_observation(self, event, api):\n        return StatePatch()\n\n"
+        "    def before_finish(self, action, view, api):\n        return FinishEffect()\n"
+    )
     bad = validate_candidate_files(
-        files={"components/x.py": "value = 1\n"},
+        files={"components/x.py": harmless_src},
         manifest_patch={"id": "x", "entrypoint": "components.x:X", "version": "1", "files": ["components/x.py"]},
         known_task_ids=["toy_file-17-0000"],
     )
@@ -155,7 +164,7 @@ def test_unimplemented_fails(tmp_path):
 
     registry = global_registry()
     with pytest.raises(NotImplementedCapability):
-        registry.resolve("appworld")  # optional dep missing -> loud failure
+        registry.resolve("no-such-domain")  # unknown domain -> loud failure, no fallback
     with pytest.raises(NotImplementedCapability):
         FSDP2Backend(model=build_tiny_model())  # no process group -> loud failure
     # backend that cannot consume OPD must not silently degrade

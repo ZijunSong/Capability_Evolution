@@ -26,13 +26,13 @@ runtime:
 
 suite:
   registry: configs/environments.yaml
-  domains: [appworld, spreadsheetbench, swebench]
+  domains: [appworld, spreadsheetbench, swebench, webshop, alfworld]
   split_manifest: data/splits/formal.json
   aggregate: equal_domain_macro
   shared_model: true
   shared_bank: true
   statistics_mode: pre_registered_confirm
-  cluster_grouping: [scenario, workbook_problem, issue_family]
+  cluster_grouping: [scenario, workbook_problem, issue_family, asin, task_instance]
 
 evolution:
   seed_mode: empty_each_round

@@ -42,6 +42,75 @@ QWEN3_IM_END_ID = 151645
 QWEN3_IM_START_ID = 151644
 
 _TOOL_CALL_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
+# Qwen3.5 chat templates teach the XML function format instead of JSON-in-tool_call:
+#   <tool_call>\n<function=fan_out_search>\n<parameter=queries>\n[...]\n
+
+
+# Qwen3.5 chat templates teach the XML function-call format (fn-name style with
+# parameter tags) instead of the JSON-in-tool_call form matched by _TOOL_CALL_RE.
+# Qwen3-4B emits JSON and parses fine; Qwen3.5-27B emits XML and used to 100%
+# parse_fail (xkkzx 2026-10-23: 256 eps x 40 turns, n_parse_failed=10240 ->
+# constant-zero reward groups -> empty-signal watchdog). Accept both styles.
+_XML_FN_RE = re.compile(
+    r"<tool_call>\s*<function=(?P<name>[A-Za-z_][A-Za-z0-9_]*)>\s*(?P<body>.*?)\s*</function>\s*</tool_call>",
+    re.DOTALL,
+)
+_XML_FN_LEGACY_RE = re.compile(
+    r"<tool_call>\s*<function>(?P<name>[A-Za-z_][A-Za-z0-9_]*)</function>\s*(?P<body>.*?)\s*</tool_call>",
+    re.DOTALL,
+)
+_XML_PARAM_RE = re.compile(
+    r"<parameter=(?P<key1>[A-Za-z0-9_.\-]+)>\s*(?P<val1>.*?)\s*</parameter>"
+    r"|<parameter\s+name=[\"'](?P<key2>[A-Za-z0-9_.\-]+)[\"']>\s*(?P<val2>.*?)\s*</parameter>",
+    re.DOTALL,
+)
+
+
+def _parse_qwen_xml_tool_call(text: str):
+    """Parse the Qwen3.5 XML function-call style. Returns ParsedToolCall or None."""
+    from trim.eval.harmony_runtime import ParsedToolCall
+
+    matches = [m for m in _XML_FN_RE.finditer(text)]
+    if not matches:
+        matches = [m for m in _XML_FN_LEGACY_RE.finditer(text)]
+    if not matches:
+        return None
+    if len(matches) > 1:
+        return ParsedToolCall(
+            parsed=False,
+            legal=False,
+            tool_name=None,
+            arguments=None,
+            parse_method="qwen_xml_tool_call",
+            raw_json=text[:2000] if text else None,
+            error="multiple_qwen_tool_calls",
+        )
+    m = matches[0]
+    name = _canonicalize_tool_name(m.group("name"))
+    args = {}
+    for pm in _XML_PARAM_RE.finditer(m.group("body") or ""):
+        key = pm.group("key1") or pm.group("key2")
+        val = pm.group("val1")
+        if val is None:
+            val = pm.group("val2")
+        v = (val or "").strip()
+        try:
+            loaded = json.loads(v)
+        except Exception:
+            loaded = v
+        if loaded is None:
+            loaded = v
+        args[str(key)] = loaded
+    legal = bool(name) and name in SCHEMA_TOOLS
+    return ParsedToolCall(
+        parsed=True,
+        legal=legal,
+        tool_name=name,
+        arguments=args,
+        parse_method="qwen_xml_tool_call",
+        raw_json=text[:2000] if text else None,
+        error=None,
+    )
 
 
 def patch_transformers_tokenizer_compat() -> None:
@@ -351,6 +420,9 @@ def parse_qwen_tool_call(text: str, completion_ids: Sequence[int] | None = None,
         if stripped.startswith("{") and stripped.endswith("}"):
             raw = stripped
         else:
+            xml_hit = _parse_qwen_xml_tool_call(text)
+            if xml_hit is not None:
+                return xml_hit
             return ParsedToolCall(
                 parsed=False,
                 legal=False,

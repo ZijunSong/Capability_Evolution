@@ -16,7 +16,7 @@
   materializer 原样落盘执行（`tests/unit/test_bank_and_materialization.py`）。
 - **通用**：核心不含任何检索/SEC/BrowseComp 语义；环境经
   `EnvironmentAdapter` 协议接入（toy_file / toy_kv / appworld /
-  spreadsheetbench / swebench）。
+  spreadsheetbench / swebench / webshop / alfworld）。
 - **原方法语义**：HarnessOPD = Student on-policy + 隔离 Teacher fork +
   显式 recipe 映射 / skip-to-anchor + 三层可实现性检查 + gated
   projected-gap + outcome CISPO 联合更新（`src/rsi/opd/`、
@@ -31,7 +31,7 @@
 cd Capability_Evolution/RSI
 python -m pip install -e '.[dev]'      # 开发/测试（含 torch+transformers）
 python -m pip install -e '.[train]'    # 只要训练后端
-python -m pip install -e '.[appworld]' # 可选真实环境（同理 spreadsheetbench / swebench）
+python -m pip install -e '.[appworld]' # 可选真实环境（同理 spreadsheetbench / swebench / webshop / alfworld）
 ```
 
 ## CLI（clean install 真实可运行）

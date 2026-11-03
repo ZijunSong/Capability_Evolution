@@ -58,7 +58,7 @@ lib_bcplus_gpu8_init() {
   : "${MODEL_PATH:?MODEL_PATH must be set}"
   : "${MODEL_SLUG:?MODEL_SLUG must be set}"
   : "${API_MODEL:?API_MODEL must be set}"
-  : "${COMPONENT:?COMPONENT must be zero or all}"
+  : "${COMPONENT:?COMPONENT must be zero|all or a comma list of canonical ids}"
   : "${RUN_ID:?RUN_ID must be set}"
 
   REL_LOGS="${REL_OUT}/logs/${RUN_ID}"
@@ -300,15 +300,35 @@ ensure_full_corpus() {
   grep -q '"index_corpus_delta": 0' "${report}" || { log "corpus/index mismatch; see ${report}"; exit 1; }
 }
 
+# verify_tool requires the harness-1 verifier vLLM: trim/upstream_harness1/env_bridge.py
+# raises RuntimeError("component includes verify_tool; local_bm25 requires --verify-base-url")
+# at eval-toolset build time when mask["verify_tool"] is true but no verifier client exists.
+# Trigger on COMPONENT=="all" OR any token == verify_tool in the comma list (e.g. MSC =
+# verify_tool,token_budget_marker). Coalitions without verify_tool (zero/ccso/rieve/esp) stay
+# on the 8-actor no-verifier layout. Ported from run_bcplus_w_harness1_adapter_gpu8_eval.sh
+# (2026-10-03 MSC patch); previously this gate was only `COMPONENT == "all"`, which broke
+# any custom --component list containing verify_tool.
+verify_tool_enabled() {
+  [[ "${COMPONENT}" == "all" ]] && return 0
+  local IFS=','
+  local tok
+  for tok in ${COMPONENT}; do
+    [[ "${tok}" == "verify_tool" ]] && return 0
+  done
+  return 1
+}
+
 run_eval_cell() {
   local actor_urls="$1" tp="$2" out_suffix="$3"
   local out="${REL_OUT}/eval_h1_${BENCHMARK}_${MODEL_SLUG}_${COMPONENT}_${out_suffix}_${RUN_ID}"
   local log_path="${REL_LOGS}/eval_${MODEL_SLUG}_${COMPONENT}.log"
   local extra=()
-  [[ "${COMPONENT}" == "all" ]] && extra+=(
-    --verify-base-url "http://127.0.0.1:${ALL_VERIFY_PORT}/v1"
-    --verify-model "${VERIFY_MODEL_NAME}"
-  )
+  if verify_tool_enabled; then
+    extra+=(
+      --verify-base-url "http://127.0.0.1:${ALL_VERIFY_PORT}/v1"
+      --verify-model "${VERIFY_MODEL_NAME}"
+    )
+  fi
   # Optional eval sampling seed. run_eval.py --seed (default 42) drives
   # harness1_api_worker base_seed → per-query rollout sampling; distinct seeds
   # give genuinely independent trajectories for multi-seed averaging. Default 42
@@ -405,7 +425,7 @@ lib_bcplus_gpu8_run_zero() {
   csv_to_array "${ZERO_ACTOR_PORTS}" actor_ports
   actor_urls="$(join_urls "${actor_ports[@]}")"
   out_suffix="gpu${ZERO_ACTOR_GPUS//,/}"
-  log "RUN_ID=${RUN_ID} model=${MODEL_SLUG} component=zero actors=${ZERO_ACTOR_GPUS} ports=${ZERO_ACTOR_PORTS} tp=${TP}"
+  log "RUN_ID=${RUN_ID} model=${MODEL_SLUG} component=${COMPONENT} actors=${ZERO_ACTOR_GPUS} ports=${ZERO_ACTOR_PORTS} tp=${TP}"
 
   start_zero_stack
   run_eval_cell "${actor_urls}" "${TP}" "${out_suffix}"
@@ -413,7 +433,7 @@ lib_bcplus_gpu8_run_zero() {
   trap - EXIT
 
   write_cell_manifest "${actor_urls}" "${out_suffix}" "${TP}"
-  log "finished zero; output ${REL_OUT}/eval_h1_${BENCHMARK}_${MODEL_SLUG}_zero_${out_suffix}_${RUN_ID}"
+  log "finished zero stack; output ${REL_OUT}/eval_h1_${BENCHMARK}_${MODEL_SLUG}_${COMPONENT}_${out_suffix}_${RUN_ID}"
 }
 
 lib_bcplus_gpu8_run_all() {
@@ -430,7 +450,7 @@ lib_bcplus_gpu8_run_all() {
   actor_urls="$(join_urls "${actor_ports[@]}")"
   local out_suffix="gpu${ALL_ACTOR_GPUS//,/}v${ALL_VERIFY_GPU}"
 
-  log "RUN_ID=${RUN_ID} model=${MODEL_SLUG} component=all actors=${ALL_ACTOR_GPUS} verify=${ALL_VERIFY_GPU} eval_tp=${ALL_EVAL_TP}"
+  log "RUN_ID=${RUN_ID} model=${MODEL_SLUG} component=${COMPONENT} actors=${ALL_ACTOR_GPUS} verify=${ALL_VERIFY_GPU} eval_tp=${ALL_EVAL_TP}"
 
   start_all_stack
   run_eval_cell "${actor_urls}" "${ALL_EVAL_TP}" "${out_suffix}"
@@ -438,5 +458,5 @@ lib_bcplus_gpu8_run_all() {
   trap - EXIT
 
   write_cell_manifest "${actor_urls}" "${out_suffix}" "${ALL_EVAL_TP}"
-  log "finished all; output ${REL_OUT}/eval_h1_${BENCHMARK}_${MODEL_SLUG}_all_${out_suffix}_${RUN_ID}"
+  log "finished all stack; output ${REL_OUT}/eval_h1_${BENCHMARK}_${MODEL_SLUG}_${COMPONENT}_${out_suffix}_${RUN_ID}"
 }

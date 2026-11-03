@@ -95,10 +95,10 @@ def score_aligned_target(
         student_prompt_ids = list(student_prompt_token_ids)
     else:
         student_prompt_ids = policy.encode(student_prompt_text)
-    target_ids = policy.encode(target_text, add_bos=False) if _accepts_add_bos(policy) else policy.encode(target_text)
-    # Strip a BOS that encode() may prepend so target ids are pure action tokens.
-    if target_ids and target_ids[0] == 256:
-        target_ids = target_ids[1:]
+    # Target ids are raw action tokens: never pass through a chat template
+    # (real-model tokenizers expose encode_action for exactly this).
+    encode_target = getattr(policy, "encode_action", None) or policy.encode
+    target_ids = list(encode_target(target_text))
 
     teacher_view = render_teacher_scoring_view(
         task=task,
@@ -122,13 +122,3 @@ def score_aligned_target(
         student_prompt_token_ids=tuple(student_prompt_ids),
         target_kind=alignment.target_kind,
     )
-
-
-def _accepts_add_bos(policy: Any) -> bool:
-    import inspect
-
-    try:
-        sig = inspect.signature(policy.encode)
-    except (TypeError, ValueError):
-        return False
-    return "add_bos" in sig.parameters

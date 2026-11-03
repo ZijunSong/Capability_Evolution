@@ -207,6 +207,17 @@ def student_mask_for(component_id: Any, *, harness: str | None = None) -> dict[s
 
 
 def teacher_mask_for(component_id: Any, *, harness: str | None = None) -> dict[str, bool]:
+    # [TRIM_TEACHER_COMPONENTS] env-gated exact-coalition override (2026-10-26).
+    # Teacher rollouts/snapshots use EXACTLY the listed components ON (rest OFF)
+    # when the env is set (e.g. TRIM_TEACHER_COMPONENTS="subtractive_curation,...").
+    # Unset/empty = original derivation, unchanged (backwards compatible).
+    import os as _os
+    _tc = _os.environ.get("TRIM_TEACHER_COMPONENTS", "").strip()
+    if _tc:
+        _ids = [t.strip() for t in _tc.replace(";", ",").split(",") if t.strip()]
+        _resolved = harness or infer_harness_from_ids(_ids)
+        _on = set(_ids)
+        return {cid: (cid in _on) for cid in all_component_ids(_resolved)}
     resolved = harness or infer_harness_from_ids(component_id)
     ids = component_ids_of(component_id, harness=resolved)
     if not ids:
@@ -1009,21 +1020,41 @@ def encode_aligned_teacher_prompt(
     frozen_acts: list[tuple[Any, Any]],
     component_id: str,
     teacher_wm_text: str | None = None,
+    teacher_mask: dict[str, bool] | None = None,
 ) -> tuple[list[int], str]:
     """Teacher prefix at the same pre-action decision as the student.
 
     Flipping the mask to H_full does **not** replay hidden capability effects.
     Prefer the saved teacher WM from the same branch that produced the target.
     Extra teacher evidence must come from an independent side branch.
+
+    An explicit ``teacher_mask`` (e.g. the Probe-C ``HarnessPairSpec`` Teacher
+    side) is used as-is and validated against the mask key set; the Teacher
+    view is never silently re-derived as default Full when an explicit mask is
+    supplied. Without it, legacy ``teacher_mask_for(component_id)`` behavior is
+    unchanged.
     """
     from trim.training.opd_prompt_encoding import encode_teacher_rollout_style_prompt
     from trim.training.upstream_train_env import is_upstream_state, wm_text_for_train_state
 
     teacher_st = freeze_train_state(frozen_st)
     g_state = is_harness_g(mask=frozen_st.get("harness_mask"), component_ids=component_id)
-    teacher_st["harness_mask"] = teacher_mask_for(
-        component_id, harness="Harness-G" if g_state else None
-    )
+    if teacher_mask is not None:
+        from trim.adapters.components import all_component_ids
+
+        resolved_harness = "Harness-G" if g_state else None
+        known = set(all_component_ids(resolved_harness))
+        got = set(teacher_mask)
+        if got != known:
+            raise ValueError(
+                f"explicit teacher_mask keys mismatch: extra={sorted(got - known)} "
+                f"missing={sorted(known - got)}"
+            )
+        teacher_st["harness_mask"] = dict(teacher_mask)
+    else:
+        teacher_st["harness_mask"] = teacher_mask_for(
+            component_id, harness="Harness-G" if g_state else None
+        )
     saved = teacher_wm_text
     if not saved:
         meta = teacher_st.get("metadata") if isinstance(teacher_st.get("metadata"), Mapping) else {}

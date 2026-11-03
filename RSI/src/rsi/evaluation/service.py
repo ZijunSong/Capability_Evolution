@@ -32,6 +32,7 @@ class EvalRunResult:
     records: tuple[ScoreRecord, ...]
     costs: CostLedger
     per_task: dict[str, dict[str, Any]] = field(default_factory=dict)
+    skipped_domains: dict[str, str] = field(default_factory=dict)
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -49,6 +50,7 @@ class EvalRunResult:
             ],
             "costs": self.costs.to_json(),
             "per_task": self.per_task,
+            "skipped_domains": self.skipped_domains,
         }
 
 
@@ -90,9 +92,16 @@ def run_panel(
     records: list[ScoreRecord] = []
     costs = CostLedger()
     per_task: dict[str, dict[str, Any]] = {}
+    skipped_domains: dict[str, str] = {}
     campaign = campaign_id or cfg.campaign_id
 
     for domain in domains:
+        executable, why = registry.probe_executable(domain)
+        if not executable:
+            # Loud skip — identical for baseline and every candidate, so
+            # comparisons stay valid; recorded for the report.
+            skipped_domains[domain] = why
+            continue
         bundle = registry.get(domain)
         provider = bundle.task_provider_factory()
         scorer = bundle.scorer_factory()
@@ -136,11 +145,18 @@ def run_panel(
                 "bank_digest": bank.bank_digest,
                 "policy_digest": policy.policy_artifact.policy_id,
                 "synthetic": record.synthetic,
+                "component_errors": dict(result.component_errors),
             }
             env.close()
 
     suite = aggregate_scores(records, aggregate=str(suite_cfg.get("aggregate", "equal_domain_macro")))
-    return EvalRunResult(suite=suite, records=tuple(records), costs=costs, per_task=per_task)
+    return EvalRunResult(
+        suite=suite,
+        records=tuple(records),
+        costs=costs,
+        per_task=per_task,
+        skipped_domains=skipped_domains,
+    )
 
 
 def run_eval(
@@ -153,25 +169,51 @@ def run_eval(
     policy: Any | None = None,
     max_per_domain: int | None = None,
     write: bool = True,
+    workers: int | None = None,
 ) -> dict[str, Any]:
     bank = resolve_bank(harness, bank_ref)
-    pol = policy if policy is not None else build_policy(cfg)
     run_seed = cfg.seed if seed is None else seed
-    result = run_panel(
-        cfg,
-        policy=pol,
-        bank=bank,
-        role=split,
-        seed=run_seed,
-        max_per_domain=max_per_domain,
-    )
+    if workers is None:
+        import os
+
+        workers = int(os.environ.get("RSI_PANEL_WORKERS", 1) or 1)
+    if workers >= 2 and policy is None:
+        # Multi-GPU panel workers rebuild the policy per process; only valid
+        # when the policy comes from the config (no injected instance).
+        # Deliberately NOT building a parent-side policy here: a second 54GB
+        # materialization in the parent was a co-cause of the kygt9 OOM chain.
+        from rsi.evaluation.parallel import run_panel_mp
+        from rsi.providers.factory import policy_identity_digest
+
+        bank_ref_for_worker = bank_ref if harness == "bank" else None
+        result = run_panel_mp(
+            cfg,
+            bank_ref=bank_ref_for_worker,
+            role=split,
+            seed=run_seed,
+            max_per_domain=max_per_domain,
+            workers=workers,
+            require_gpu=True,
+        )
+        pol_policy_digest = policy_identity_digest(cfg)
+    else:
+        pol = policy if policy is not None else build_policy(cfg)
+        pol_policy_digest = pol.policy_artifact.policy_id
+        result = run_panel(
+            cfg,
+            policy=pol,
+            bank=bank,
+            role=split,
+            seed=run_seed,
+            max_per_domain=max_per_domain,
+        )
     payload: dict[str, Any] = {
         "ok": True,
         "command": "eval",
         "harness": harness,
         "bank_ref": bank_ref or "minimal",
         "bank_digest": bank.bank_digest,
-        "policy_digest": pol.policy_artifact.policy_id,
+        "policy_digest": pol_policy_digest,
         "split": split,
         "seed": run_seed,
         "config_digest": cfg.digest(),

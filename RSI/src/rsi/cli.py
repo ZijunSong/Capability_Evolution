@@ -64,6 +64,21 @@ def cmd_eval(args: argparse.Namespace) -> int:
     return 0 if result.get("ok") else 1
 
 
+
+def cmd_confirm_harness(args: argparse.Namespace) -> int:
+    from rsi.evaluation.confirm import run_confirm_harness
+
+    cfg = _load_cfg(args)
+    result = run_confirm_harness(
+        cfg,
+        bank_ref=args.bank,
+        panel_per_domain=int(args.panel_per_domain),
+        workers=int(args.workers) if args.workers else None,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True, ensure_ascii=False))
+    return 0 if result.get("delta_h_macro") is not None else 1
+
+
 def cmd_evolve(args: argparse.Namespace) -> int:
     from rsi.evolution.service import run_evolve
 
@@ -158,6 +173,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--split", default="harness_select")
     p.add_argument("--seed", type=int, default=None)
     p.set_defaults(func=cmd_eval)
+
+    p = sub.add_parser("confirm-harness", help="paired Teacher-vs-Student ΔH on the fresh confirm_h panel")
+    add_config(p)
+    p.add_argument("--bank", required=True, help="champion bank ref (Teacher arm)")
+    p.add_argument("--panel-per-domain", type=int, default=16)
+    p.add_argument("--workers", type=int, default=None)
+    p.set_defaults(func=cmd_confirm_harness)
 
     p = sub.add_parser("evolve", help="run harness code evolution")
     add_config(p)

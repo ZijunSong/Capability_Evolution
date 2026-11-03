@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Mapping
+from typing import Any, Mapping
 
 from rsi.contracts.common import JSONValue, digest_of
 from rsi.contracts.action import Action
@@ -57,6 +57,12 @@ class Observation:
     error_kind: str | None = None
     provenance: ObservationProvenance | None = None
     structured: Mapping[str, JSONValue] = field(default_factory=dict)
+
+    def get(self, name: str, default: Any = None) -> Any:
+        return _dict_style_get(self, name, default)
+
+    def __getitem__(self, name: str) -> Any:
+        return _dict_style_item(self, name)
 
     def to_public_dict(self) -> dict[str, JSONValue]:
         return {
@@ -134,3 +140,22 @@ __all__ = [
     "tool_catalog_digest",
     "Action",
 ]
+
+
+def _dict_style_get(obj: Any, name: str, default: Any = None) -> Any:
+    """Ergonomic read-only dict-style access for component authors.
+
+    Components often treat these dataclasses as mappings (``event.get(...)``);
+    support that safely instead of failing at runtime.  Attribute access is
+    still the canonical API.
+    """
+    if name in getattr(obj, "__dataclass_fields__", {}):
+        return getattr(obj, name)
+    return default
+
+
+def _dict_style_item(obj: Any, name: str) -> Any:
+    fields = getattr(obj, "__dataclass_fields__", {})
+    if name in fields:
+        return getattr(obj, name)
+    raise KeyError(name)

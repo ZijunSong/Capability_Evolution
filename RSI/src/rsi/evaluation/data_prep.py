@@ -28,6 +28,50 @@ ROLE_LIST = (
 )
 
 
+def _freeze_sources() -> dict[str, Any]:
+    """Record content digests of the frozen dataset artifacts (task book §11.1:
+    freeze exact source/version at preprocessing)."""
+    from rsi.contracts.common import digest_of_file
+
+    sources: dict[str, Any] = {}
+    scan = {
+        "spreadsheetbench": [
+            "/mnt/songzijun/datasets/spreadsheetbench/spreadsheetbench_912_v0.1.tar.gz",
+            "/mnt/songzijun/datasets/spreadsheetbench/all_data_912_v0.1/dataset.json",
+        ],
+        "swebench": [
+            "/mnt/songzijun/datasets/swebench/swebench_train.parquet",
+            "/mnt/songzijun/datasets/swebench/swebench_dev.parquet",
+            "/mnt/songzijun/datasets/swebench/verified_test.parquet",
+            "/mnt/songzijun/datasets/swebench/lite_test.parquet",
+        ],
+        "appworld": [
+            "/mnt/songzijun/datasets/appworld/data",
+        ],
+        "webshop": [
+            "/mnt/songzijun/datasets/webshop/frozen_manifest.json",
+            "/mnt/songzijun/datasets/webshop/frozen_goals.json",
+            "/mnt/songzijun/datasets/webshop/data",
+        ],
+        "alfworld": [
+            "/mnt/songzijun/datasets/alfworld/frozen_manifest.json",
+            "/mnt/songzijun/datasets/alfworld/logic",
+        ],
+    }
+    for domain, paths in scan.items():
+        entries = []
+        for p in paths:
+            path = Path(p)
+            if path.is_file():
+                entries.append({"path": p, "sha256": digest_of_file(p), "size": path.stat().st_size})
+            elif path.is_dir():
+                entries.append({"path": p, "kind": "directory", "present": True})
+            else:
+                entries.append({"path": p, "present": False})
+        sources[domain] = entries
+    return sources
+
+
 def prepare_data(cfg: CampaignConfig) -> dict[str, Any]:
     suite = cfg.section("suite")
     domains = list(suite.get("domains") or [])
@@ -41,31 +85,34 @@ def prepare_data(cfg: CampaignConfig) -> dict[str, Any]:
         bundle = registry.get(domain)
         ok, missing = registry.check_deps(domain)
         if not ok:
-            raise NotImplementedCapability(
-                f"cannot prepare data for {domain!r}: missing deps {list(missing)}"
-            )
-        provider = bundle.task_provider_factory()
-        assignments = []
-        for role in ROLE_LIST:
-            if role in ("confirm_h", "confirm_w"):
-                # one confirm panel per round for max_rounds rounds
-                for k in range(cfg.max_rounds):
-                    tasks = provider.public_tasks(role, round_index=k)
+            out["domains"][domain] = {"skipped": f"missing deps: {list(missing)}"}
+            continue
+        try:
+            provider = bundle.task_provider_factory()
+            assignments = []
+            for role in ROLE_LIST:
+                if role in ("confirm_h", "confirm_w"):
+                    # one confirm panel per round for max_rounds rounds
+                    for k in range(cfg.max_rounds):
+                        tasks = provider.public_tasks(role, round_index=k)
+                        if tasks:
+                            assignments.append(
+                                SplitAssignment(role=role, task_ids=tuple(t.task_id for t in tasks), round_index=k)
+                            )
+                else:
+                    tasks = provider.public_tasks(role)
                     if tasks:
-                        assignments.append(
-                            SplitAssignment(role=role, task_ids=tuple(t.task_id for t in tasks), round_index=k)
-                        )
-            else:
-                tasks = provider.public_tasks(role)
-                if tasks:
-                    assignments.append(SplitAssignment(role=role, task_ids=tuple(t.task_id for t in tasks)))
-        manifest = SplitManifest(
-            manifest_id=f"{cfg.campaign_id}:{domain}",
-            domain=domain,
-            assignments=tuple(assignments),
-            groups=provider.groups(),
-        )
-        manifest.check_group_disjoint()
+                        assignments.append(SplitAssignment(role=role, task_ids=tuple(t.task_id for t in tasks)))
+            manifest = SplitManifest(
+                manifest_id=f"{cfg.campaign_id}:{domain}",
+                domain=domain,
+                assignments=tuple(assignments),
+                groups=provider.groups(),
+            )
+            manifest.check_group_disjoint()
+        except NotImplementedCapability as e:
+            out["domains"][domain] = {"skipped": str(e)}
+            continue
         manifests[domain] = manifest
         out["domains"][domain] = {
             "manifest_digest": manifest.digest(),
@@ -75,6 +122,7 @@ def prepare_data(cfg: CampaignConfig) -> dict[str, Any]:
         "schema_version": "rsi_split_v1",
         "campaign_id": cfg.campaign_id,
         "config_digest": cfg.digest(),
+        "frozen_sources": _freeze_sources(),
         "manifests": {
             d: {
                 "manifest_id": m.manifest_id,
@@ -90,6 +138,7 @@ def prepare_data(cfg: CampaignConfig) -> dict[str, Any]:
         },
     }
     split_path.write_text(json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False), "utf-8")
+    out["frozen_sources"] = payload["frozen_sources"]
     out["ok"] = True
     return out
 

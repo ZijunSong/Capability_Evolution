@@ -98,12 +98,14 @@ def joint_update(
     spec: MethodSpec,
     lambda_opd: float = 0.01,
     world_size: int = 1,
+    normalizers: GlobalNormalizers | None = None,
 ) -> JointStepReport:
     """One joint optimizer step over one batch.
 
     Both gradients accumulate before a single ``optimizer_step``
     (``test_joint_step_count``).  Empty OPD is a zero contribution plus a
-    recorded reason, never a dummy target.
+    recorded reason, never a dummy target.  ``normalizers`` may be pre-computed
+    globally (distributed runs all-reduce them once per batch).
     """
     if spec.method == "aligned_teacher_sft":
         raise NotImplementedCapability(
@@ -115,7 +117,8 @@ def joint_update(
             f"backend {getattr(backend, 'name', '?')!r} does not consume OPD; "
             "refusing to silently degrade to RL-only"
         )
-    normalizers = GlobalNormalizers.from_rows(rl_rows, opd_rows, world_size=world_size)
+    if normalizers is None:
+        normalizers = GlobalNormalizers.from_rows(rl_rows, opd_rows, world_size=world_size)
     backend.zero_grad()
     rl_metrics: dict[str, float] = {}
     opd_metrics: dict[str, float] = {}

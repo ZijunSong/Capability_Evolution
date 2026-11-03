@@ -40,7 +40,7 @@ class Finish:
 
 Action = Union[ToolCall, Finish]
 
-ACTION_SCHEMA_ID = "rsi_action_v1"
+ACTION_SCHEMA_ID = "rsi_action_v2"
 
 # Canonical textual form used by the H0 action parser.  The model emits one
 # JSON object per decision; the parser is strict and versioned.
@@ -49,6 +49,79 @@ _ACTION_RE = re.compile(r"^\s*(\{.*\})\s*$", re.DOTALL)
 
 class ActionParseError(ValueError):
     """Model output is not a legal action encoding."""
+
+
+_THINK_RE = re.compile("\u003cthink\u003e.*?\u003c/think\u003e", re.DOTALL)
+_TOOL_RE = re.compile("\u003ctool\u003e.*?\u003c/tool\u003e", re.DOTALL)
+_FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
+
+
+def _strip_wrappers(text: str) -> str:
+    """Remove thinking/tool-call/markdown wrappers real models emit around the
+    action JSON (Qwen thinking blocks, `` tool_calls`` function-call
+    style, fenced code)."""
+    out = _THINK_RE.sub(" ", text)
+    out = _TOOL_RE.sub(" ", out)
+    out = out.replace("```json", "```")
+    return out
+
+
+def extract_json_object(text: str) -> dict:
+    """Find the single action JSON object inside model output.
+
+    Accepts: bare JSON (canonical), JSON after a thinking block, JSON inside a
+    markdown fence.  Raises :class:`ActionParseError` when none is found — the
+    protocol still requires exactly one action object.
+    """
+    cleaned = _strip_wrappers(text)
+    m = _FENCE_RE.search(text)
+    if m is not None:
+        cleaned = _strip_wrappers(text[: m.start()] + " " + m.group(1))
+        candidates = [m.group(1)]
+    else:
+        candidates = []
+    # candidate: the full cleaned text
+    candidates.append(cleaned.strip())
+    # candidate: last balanced {...} region (model may add prose)
+    brace_start = cleaned.find("{")
+    while brace_start != -1:
+        candidates.append(cleaned[brace_start:])
+        brace_start = cleaned.find("{", brace_start + 1)
+    for cand in candidates:
+        c = cand.strip()
+        if not c.startswith("{"):
+            continue
+        # trim trailing junk after the balanced object
+        depth = 0
+        end = None
+        in_str = False
+        esc = False
+        for i, ch in enumerate(c):
+            if in_str:
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+                continue
+            if ch == '"':
+                in_str = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    end = i + 1
+                    break
+        if end is not None:
+            try:
+                obj = json.loads(c[:end])
+            except json.JSONDecodeError:
+                continue
+            if isinstance(obj, dict):
+                return obj
+    raise ActionParseError("no action JSON object found in model output")
 
 
 def encode_action(action: Action) -> str:
@@ -62,13 +135,7 @@ def parse_action(text: str) -> Action:
     Raises :class:`ActionParseError` on any malformed output; the runtime turns
     that into a visible error observation that consumes action budget.
     """
-    m = _ACTION_RE.match(text)
-    if not m:
-        raise ActionParseError("action must be a single JSON object")
-    try:
-        obj = json.loads(m.group(1))
-    except json.JSONDecodeError as e:
-        raise ActionParseError(f"invalid JSON in action: {e}") from e
+    obj = extract_json_object(text)
     return action_from_json(obj)
 
 

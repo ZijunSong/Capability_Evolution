@@ -64,36 +64,127 @@ class EnvironmentRegistry:
             )
         return bundle.adapter_factory(), bundle.task_provider_factory(), bundle.scorer_factory()
 
+    def probe_executable(self, domain: str) -> tuple[bool, str]:
+        """Can this domain actually execute + score right now?
+
+        Tries the real constructors (scorer/adapter/provider).  Used to skip a
+        domain loudly at panel level — same skip for baseline and every
+        candidate keeps comparisons valid; the reason is recorded verbatim.
+        """
+        bundle = self.get(domain)
+        ok, missing = self.check_deps(domain)
+        if not ok:
+            return False, f"missing optional deps: {list(missing)}"
+        try:
+            scorer = bundle.scorer_factory()
+            adapter = bundle.adapter_factory()
+            provider = bundle.task_provider_factory()
+            probe_tasks = provider.public_tasks("work_train")
+            for who, obj in (("adapter", adapter), ("scorer", scorer)):
+                check_ready = getattr(obj, "check_ready", None)
+                if callable(check_ready):
+                    ready, why = check_ready()
+                    if not ready:
+                        try:
+                            adapter.close()
+                        except Exception:  # noqa: BLE001
+                            pass
+                        return False, f"{who} not ready: {why}"
+        except NotImplementedCapability as e:
+            return False, str(e)
+        except Exception as e:  # noqa: BLE001
+            return False, f"constructibility check failed: {e!r}"
+        finally:
+            try:
+                adapter.close()
+            except Exception:  # noqa: BLE001
+                pass
+        if not probe_tasks:
+            return False, "no work_train tasks in provider"
+        return True, "ok"
+
 
 _GLOBAL = EnvironmentRegistry()
 
 
 def global_registry() -> EnvironmentRegistry:
-    # Import side-effect registrations for toy domains.
+    # Import side-effect registrations for toy domains (unit-test fixtures only;
+    # toy domains are never experiment targets — see docs/runbook.md).
     from rsi.environments import toy_registry  # noqa: F401
 
-    # Real benchmark domains: registered here with lazy factories so that the
-    # modules can be imported without their optional dependencies present.
-    from rsi.environments.appworld_env import AppWorldAdapter
-    from rsi.environments.spreadsheetbench_env import SpreadsheetBenchAdapter
-    from rsi.environments.swebench_env import SWEBenchAdapter
+    if "appworld" not in _GLOBAL._bundles:
+        from rsi.environments.appworld_env import AppWorldAdapter, AppWorldScorer
+        from rsi.environments.task_providers import AppWorldTaskProvider
 
-    for domain, adapter_cls, deps in (
-        ("appworld", AppWorldAdapter, ("appworld",)),
-        ("spreadsheetbench", SpreadsheetBenchAdapter, ("openpyxl", "pandas")),
-        ("swebench", SWEBenchAdapter, ("docker", "swebench")),
-    ):
-        if domain not in _GLOBAL._bundles:
-            _GLOBAL.register(
-                EnvironmentBundle(
-                    domain=domain,
-                    adapter_factory=lambda c=adapter_cls: c(),  # type: ignore[call-arg]
-                    task_provider_factory=lambda d=domain: _missing_provider(d),
-                    scorer_factory=lambda d=domain: _missing_scorer(d),
-                    optional_deps=deps,
-                    synthetic=False,
-                )
+        _GLOBAL.register(
+            EnvironmentBundle(
+                domain="appworld",
+                adapter_factory=lambda: AppWorldAdapter(),
+                task_provider_factory=lambda: AppWorldTaskProvider(),
+                scorer_factory=lambda: AppWorldScorer(),
+                optional_deps=("appworld",),
+                synthetic=False,
             )
+        )
+    if "spreadsheetbench" not in _GLOBAL._bundles:
+        from rsi.environments.spreadsheetbench_env import (
+            SpreadsheetBenchAdapter,
+            SpreadsheetBenchScorer,
+        )
+        from rsi.environments.task_providers import SpreadsheetBenchTaskProvider
+
+        _GLOBAL.register(
+            EnvironmentBundle(
+                domain="spreadsheetbench",
+                adapter_factory=lambda: SpreadsheetBenchAdapter(),
+                task_provider_factory=lambda: SpreadsheetBenchTaskProvider(),
+                scorer_factory=lambda: SpreadsheetBenchScorer(),
+                optional_deps=("openpyxl", "pandas"),
+                synthetic=False,
+            )
+        )
+    if "swebench" not in _GLOBAL._bundles:
+        from rsi.environments.swebench_env import SWEBenchAdapter, SWEBenchScorer
+        from rsi.environments.task_providers import SWEBenchTaskProvider
+
+        _GLOBAL.register(
+            EnvironmentBundle(
+                domain="swebench",
+                adapter_factory=lambda: SWEBenchAdapter(),
+                task_provider_factory=lambda: SWEBenchTaskProvider(),
+                scorer_factory=lambda: SWEBenchScorer(),
+                optional_deps=("docker", "swebench"),
+                synthetic=False,
+            )
+        )
+    if "webshop" not in _GLOBAL._bundles:
+        from rsi.environments.task_providers import WebShopTaskProvider
+        from rsi.environments.webshop_env import WebShopAdapter, WebShopScorer
+
+        _GLOBAL.register(
+            EnvironmentBundle(
+                domain="webshop",
+                adapter_factory=lambda: WebShopAdapter(),
+                task_provider_factory=lambda: WebShopTaskProvider(),
+                scorer_factory=lambda: WebShopScorer(),
+                optional_deps=("bs4", "thefuzz", "spacy", "pyserini"),
+                synthetic=False,
+            )
+        )
+    if "alfworld" not in _GLOBAL._bundles:
+        from rsi.environments.alfworld_env import AlfWorldAdapter, AlfWorldScorer
+        from rsi.environments.task_providers import AlfWorldTaskProvider
+
+        _GLOBAL.register(
+            EnvironmentBundle(
+                domain="alfworld",
+                adapter_factory=lambda: AlfWorldAdapter(),
+                task_provider_factory=lambda: AlfWorldTaskProvider(),
+                scorer_factory=lambda: AlfWorldScorer(),
+                optional_deps=("textworld",),
+                synthetic=False,
+            )
+        )
     return _GLOBAL
 
 

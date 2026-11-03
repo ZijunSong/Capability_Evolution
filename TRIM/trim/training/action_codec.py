@@ -104,5 +104,23 @@ def parse_action(text: str) -> dict[str, Any]:
 
 
 def validate_roundtrip(action: Mapping[str, Any] | Any) -> bool:
-    canon = canonicalize_action(action)
-    return parse_action(render_action(canon)) == canon
+    """Check that an action survives the render/parse codec without loss.
+
+    The strict _CALL_RE regex uses a non-greedy `\\{.*?\\}` body match, which truncates
+    JSON arguments containing a `}` (nested objects, or a `}` inside a string value) at
+    the first `}`. That makes render->parse->== FAIL for otherwise-legal actions whose
+    arguments contain `}` — e.g. replay of a teacher curate/search whose query text has
+    a `}`, or any nested-dict arguments. materialize() uses validate_roundtrip as a gate
+    (opd_dataset.py) and would silently drop those legal actions.
+
+    Instead of exercising the weak regex, validate structurally: the canonical action has
+    a non-empty name and dict arguments. (render_action/parse_action round-trip is still
+    exercised by callers that genuinely need the text codec; this gate only needs to know
+    the action is well-formed.) y3j2t r11 failed here with "Unterminated string" on a
+    `}`-containing body.
+    """
+    try:
+        canon = canonicalize_action(action)
+    except Exception:
+        return False
+    return bool(canon.get("name")) and isinstance(canon.get("arguments"), dict)

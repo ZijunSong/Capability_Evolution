@@ -12,6 +12,9 @@ import math
 from dataclasses import dataclass
 from typing import Any, Mapping
 
+import torch
+import torch.nn as nn
+
 from rsi.contracts.common import digest_of
 
 
@@ -19,49 +22,85 @@ from rsi.contracts.common import digest_of
 class LoRAConfig:
     rank: int = 8
     alpha: float = 16.0
-    target_suffixes: tuple[str, ...] = ("q_proj", "k_proj", "v_proj", "o_proj")
+    target_suffixes: tuple[str, ...] = (
+        "q_proj",
+        "k_proj",
+        "v_proj",
+        "o_proj",
+        # hybrid linear-attention blocks (Qwen3.x): the attention-equivalent
+        # projections live under linear_attn.*
+        "out_proj",
+        "in_proj_qkv",
+    )
 
     @property
     def scale(self) -> float:
         return self.alpha / max(1, self.rank)
 
 
-class LoRALinear:
-    """Wraps a torch.nn.Linear with a low-rank residual."""
+def freeze_non_lora_(model: Any) -> int:
+    """Freeze every parameter except LoRA A/B.  Returns trainable count.
 
-    def __init__(self, base: Any, cfg: LoRAConfig, torch_module: Any):
-        torch = torch_module
+    Cumulative-adapter main path (task book §9.5): training updates the LoRA
+    adapter only; base weights stay frozen until an explicit merge.
+    """
+    trainable = 0
+    lora_ids = set()
+    for module in model.modules():
+        if isinstance(module, LoRALinear):
+            lora_ids.add(id(module.lora_A))
+            lora_ids.add(id(module.lora_B))
+    for p in model.parameters():
+        if id(p) in lora_ids:
+            p.requires_grad = True
+            trainable += 1
+        else:
+            p.requires_grad = False
+    return trainable
+
+
+def lora_param_count(model: Any) -> int:
+    n = 0
+    for module in model.modules():
+        if isinstance(module, LoRALinear):
+            n += module.lora_A.numel() + module.lora_B.numel()
+    return n
+
+
+class LoRALinear(nn.Module):
+    """Wraps a torch.nn.Linear with a low-rank residual (registered module).
+
+    A/B live in float32 on the base module's device (optimizer-friendly);
+    ``forward`` casts for the low-rank matmul so bf16/fp16 bases work — the
+    original fp32-only matmul broke every GPU bf16 run at the first generate.
+    """
+
+    def __init__(self, base: nn.Linear, cfg: LoRAConfig):
+        super().__init__()
         self.base = base
         self.cfg = cfg
-        self.lora_A = torch.nn.Parameter(torch.zeros(base.in_features, cfg.rank))
-        self.lora_B = torch.nn.Parameter(torch.zeros(cfg.rank, base.out_features))
-        torch.nn.init.kaiming_uniform_(self.lora_A, a=math.sqrt(5))
-        torch.nn.init.zeros_(self.lora_B)
+        dev = base.weight.device
+        self.lora_A = nn.Parameter(torch.zeros(base.in_features, cfg.rank, device=dev, dtype=torch.float32))
+        self.lora_B = nn.Parameter(torch.zeros(cfg.rank, base.out_features, device=dev, dtype=torch.float32))
+        nn.init.kaiming_uniform_(self.lora_A, a=math.sqrt(5))
+        nn.init.zeros_(self.lora_B)
 
     def forward(self, x: Any) -> Any:
-        torch = _torch_of(x)
         out = self.base(x)
-        lora = (x @ self.lora_A @ self.lora_B) * self.cfg.scale
+        a = self.lora_A.to(dtype=x.dtype, device=x.device)
+        b = self.lora_B.to(dtype=x.dtype, device=x.device)
+        lora = (x @ a @ b) * self.cfg.scale
         return out + lora.to(out.dtype)
-
-    def parameters(self):
-        return [self.lora_A, self.lora_B]
-
-
-def _torch_of(x: Any):
-    return __import__("torch")
 
 
 def apply_lora(model: Any, cfg: LoRAConfig) -> dict[str, LoRALinear]:
     """Replace matching Linear modules with LoRALinear; returns the wrappers."""
-    import torch
-
     replaced: dict[str, LoRALinear] = {}
     for name, module in list(model.named_modules()):
-        if isinstance(module, torch.nn.Linear) and any(name.endswith(s) for s in cfg.target_suffixes):
+        if isinstance(module, nn.Linear) and any(name.endswith(s) for s in cfg.target_suffixes):
             parent_name, _, child = name.rpartition(".")
             parent = model.get_submodule(parent_name) if parent_name else model
-            wrapper = LoRALinear(module, cfg, torch)
+            wrapper = LoRALinear(module, cfg)
             setattr(parent, child, wrapper)
             replaced[name] = wrapper
     return replaced

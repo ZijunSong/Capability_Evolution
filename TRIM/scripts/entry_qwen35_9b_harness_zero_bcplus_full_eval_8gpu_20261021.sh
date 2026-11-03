@@ -42,7 +42,7 @@ case "${BENCHMARK}" in bcplus_full|longsealqa|frames|hotpotqa) ;; *) echo "FATAL
 
 # 按 EVAL_MODE 选 wrapper（zero 用新建 thin lib-sourcing wrapper 获 4-bench 路由；all 用已就绪 wrapper）。
 if [ "${EVAL_MODE}" = "all" ]; then
-  EVAL_SCRIPT="${TRIM_ROOT}/scripts/run_bcplus_w_harness1_qwen35_9b_zero_nothink_gpu8_eval.sh"
+  EVAL_SCRIPT="${TRIM_ROOT}/scripts/run_bcplus_w_harness1_qwen35_9b_all_nothink_gpu8_eval.sh"
 else
   EVAL_SCRIPT="${TRIM_ROOT}/scripts/run_bcplus_w_harness1_qwen35_9b_zero_nothink_gpu8_eval.sh"
 fi

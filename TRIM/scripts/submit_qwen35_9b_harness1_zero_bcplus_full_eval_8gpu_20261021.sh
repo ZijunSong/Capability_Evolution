@@ -53,7 +53,7 @@ cml custom_train submit \
   --job_name "$JOB_NAME" --description "$DESC" \
   --access_type PRIVATE --tag MemQA-General-V5 \
   --image_url micr.cloud.mioffice.cn/songzijun/songzijun-cto:3050749-songzijun-cto \
-  --framework pytorch --queue_id 2334 --priority 8 --preemptible=false \
+  --framework pytorch --queue_id 2334 --priority 5 --preemptible=false \
   --juicefs_mount_configs '[{"volume":"songzijun","juiceFsCluster":"bj9-cloudml","subPath":"/","mountPath":"/mnt/songzijun","readOnly":false}]' \
   --resource_configs '[{"nodeRole":"worker","nodeNumber":1,"perNodeResourceSpec":{"resourcePriority":"GUARANTEED_PUBLIC","resourceName":"cloudml.ng1gm402-8-8.20-224","resourceNumber":8},"elastic":false,"preemptible":false}]' \
   --env PYTHONUNBUFFERED=1 \

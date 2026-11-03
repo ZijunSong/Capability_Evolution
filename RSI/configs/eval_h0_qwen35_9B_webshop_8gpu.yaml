@@ -1,0 +1,89 @@
+schema_version: rsi_campaign_v1
+tier: pilot
+campaign_id: eval_h0_webshop_qwen35_9b_bench
+seed: 17
+max_rounds: 1
+
+# RSI H0 基线完整测评 — Qwen3.5-9B，WebShop 官方口径（frozen_goals 12087 全冻结）。
+# rsi.cli eval --harness minimal（空 bank，测模型本体）；官方 get_reward [0,1] +
+# harsh success(reward==1) 逐 task 评分。final_test = frozen_goals[0:500]（官方
+# human test 面板，与 baseline_models/test.py range(500) 一致）；transfer/dev 按
+# asin 组哈希切分 + 面板反泄漏（WebShopTaskProvider）。输出
+# runs/eval_h0_webshop_qwen35_9b_bench/eval/，每 role 一份 eval_<role>_minimal_*.json。
+# ⚠️ flavor=all 需 224GB 大内存节点 + RSI_WEBSHOP_FULL_ALLOW=1（runbook）。
+# ⚠️ adapter 已带共享 SimServer 缓存（每进程一次构建，跨 task 会话隔离）。
+
+policy:
+  initial_artifact: null
+  provider: hf_path
+  model_path: /mnt/songzijun/models/Qwen3.5-9B
+  trainable: false            # 第一阶段只演化 harness，不更新权重
+  teacher_sync: batch_snapshot
+  adapter_mode: cumulative
+  cross_round_optimizer: reset
+
+runtime:
+  contract: configs/h0_contract.json
+  harness: minimal
+  context_policy: deterministic_window_v1
+  max_actions: 24
+  max_extra_llm_calls: 2
+  max_chars: 8000
+  max_new_tokens: 512
+  temperature: 1.0
+
+suite:
+  registry: configs/environments.yaml
+  domains: [webshop]
+  split_manifest: data/splits/eval_h0_webshop_qwen35_9b.json
+  aggregate: equal_domain_macro
+  shared_model: true
+  shared_bank: true
+  statistics_mode: pilot_reused_dev
+  selection_role: harness_select
+
+evolution:
+  seed_mode: empty_each_round
+  proposer_mode: self
+  proposer_policy: current
+  proposer_max_new_tokens: 4096
+  proposer_max_retries: 2
+  algorithm: archive_code_search
+  max_generations: 8
+  candidates_per_generation: 2
+  max_candidate_evaluations: 16
+  plateau_patience: 3
+  editable_scope: bank_only
+  dev_panel_per_domain: 0  # 0 = 全量 role 任务（不加抽样）
+  frozen_thresholds: false
+
+opd:
+  routes: [explicit_map, native_anchor]
+  max_shadow_events: 4
+
+training:
+  backend: hf_reference
+  batch_episodes: 2
+  budget: configs/train_budget.json
+  learning_rate: 0.001
+  max_optimizer_steps_per_round: 2
+  method: harness_opd_rl
+  reward: task_outcome
+  rollout_refresh: each_batch
+
+promotion:
+  allow_partial_internalization: true
+  policy: configs/promotion_policy.json
+
+evaluation:
+  compare_cells: [old_min, old_full, new_min, new_full]
+  confirm_panel_per_domain: 4
+  final_test_access: after_campaign_freeze
+  statistics_mode: pilot_reused_dev
+
+execution:
+  mode: execute
+  candidate_isolation: subprocess
+  job_backend: local
+  runs_root: runs
+  panel_workers: 8

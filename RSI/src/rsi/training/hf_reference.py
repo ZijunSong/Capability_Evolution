@@ -48,15 +48,26 @@ class HFReferenceBackend:
     device: str = "cpu"
     _optimizer: Any = field(default=None, repr=False)
     step_count: int = 0
+    # distributed hook called right before optimizer.step() (grad all_reduce)
+    grad_sync_hook: Any = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         from rsi.providers.tiny_hf import tune_torch_threads
 
         tune_torch_threads()
-        if not torch.cuda.is_available():
-            self.device = "cpu"
+        import os
+
+        if self.device == "cpu" and torch.cuda.is_available():
+            # default to GPU when available; multi-GPU layouts pin via env
+            self.device = os.environ.get("RSI_TRAIN_DEVICE", "cuda")
         self.model.to(self.device)
-        self._optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.lr)
+        # LoRA / partial training: optimize only requires_grad params (full
+        # params when nothing is frozen — e.g. the tiny reference model).
+        trainable = [p for p in self.model.parameters() if p.requires_grad] or list(
+            self.model.parameters()
+        )
+        self._optimizer = torch.optim.AdamW(trainable, lr=self.lr)
+        self.n_trainable_params = sum(p.numel() for p in trainable)
 
     # -- logprob helper ----------------------------------------------------
     def _token_logprobs(self, prompt_ids: Sequence[int], target_ids: Sequence[int]) -> torch.Tensor:
@@ -121,6 +132,8 @@ class HFReferenceBackend:
     def backward_opd(
         self, rows: Sequence[OPDRow], normalizers: GlobalNormalizers, *, lambda_opd: float | None = None
     ) -> dict[str, float]:
+        from rsi.opd.losses import gated_action_gap_weighted_sum, scale_projected_gap_loss
+
         lam = self.lambda_opd if lambda_opd is None else float(lambda_opd)
         if not rows:
             return {"opd_loss": 0.0, "n_opd_rows": 0.0}
@@ -137,15 +150,22 @@ class HFReferenceBackend:
                 dtype=torch.float32,
                 device=self.device,
             )
-            gap = gated_projected_gap_loss(
+            # §9.1 global-weight form: Σ w m g (sg[lT] − lS) / Σ_global w m.
+            # Manual SUM grad all-reduce across ranks (world_size=1 scaling here)
+            # then yields the exact full-batch OPD gradient.
+            numer = gated_action_gap_weighted_sum(
                 student_lp,
                 teacher_lp,
-                mask,
-                weight,
+                weight * mask,
                 gate_beta=self.gate_beta,
                 gate_mode=self.gate_mode,
             )
-            total = total + lam * gap
+            total = total + scale_projected_gap_loss(
+                numer,
+                lambda_opd=lam,
+                z_gap=normalizers.global_opd_weight,
+                world_size=1,
+            )
             n_tokens += int(mask.sum().item())
         if n_tokens == 0:
             return {"opd_loss": 0.0, "n_opd_rows": float(len(rows)), "skipped_no_tokens": 1.0}
@@ -166,7 +186,11 @@ class HFReferenceBackend:
         return total ** 0.5
 
     def optimizer_step(self) -> dict[str, float]:
-        norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
+        if self.grad_sync_hook is not None:
+            self.grad_sync_hook()  # e.g. all_reduce(SUM) across ranks
+        norm = torch.nn.utils.clip_grad_norm_(
+            [p for p in self.model.parameters() if p.requires_grad], self.max_grad_norm
+        )
         self._optimizer.step()
         self.step_count += 1
         return {"grad_norm": float(norm), "optimizer_steps": float(self.step_count)}

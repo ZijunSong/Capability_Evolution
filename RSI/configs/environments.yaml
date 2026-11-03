@@ -24,3 +24,15 @@ environments:
     metric: "official resolved rate"
     optional_deps: [docker, swebench]
     dataset_revision: "PIN_AT_PREPARE_TIME"
+  webshop:
+    synthetic: false
+    official: "https://github.com/princeton-nlp/WebShop"
+    metric: "official get_reward score [0,1] + harsh success (reward == 1)"
+    optional_deps: [bs4, thefuzz, spacy, pyserini]
+    dataset_revision: "PIN_AT_PREPARE_TIME"
+  alfworld:
+    synthetic: false
+    official: "https://github.com/alfworld/alfworld"
+    metric: "official task success (engine won) / success rate"
+    optional_deps: [textworld]
+    dataset_revision: "PIN_AT_PREPARE_TIME"

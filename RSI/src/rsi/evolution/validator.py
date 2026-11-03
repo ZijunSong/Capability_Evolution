@@ -92,6 +92,24 @@ def _check_imports_and_structure(source: str, filename: str, problems: list[str]
     except SyntaxError as e:
         problems.append(f"{filename}: syntax error: {e}")
         return
+    from rsi.harness.loader import HOOK_ARITY
+
+    for node in ast.walk(tree):
+        # hook arity (candidate_invalid at validation time, not at panel runtime)
+        if isinstance(node, ast.ClassDef):
+            for item in node.body:
+                if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and item.name in HOOK_ARITY:
+                    n_required = HOOK_ARITY[item.name]
+                    args = item.args
+                    n_pos = len(args.posonlyargs) + len(args.args)
+                    has_varargs = args.vararg is not None
+                    # bound method: first arg is self
+                    n_after_self = n_pos - 1 if n_pos else 0
+                    if not has_varargs and n_after_self < n_required:
+                        problems.append(
+                            f"{filename}: {node.name}.{item.name} accepts {n_after_self} "
+                            f"positional args after self, protocol requires {n_required}"
+                        )
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
@@ -114,6 +132,41 @@ def _check_imports_and_structure(source: str, filename: str, problems: list[str]
     max_bytes = int(resource_caps.get("max_source_bytes", 200_000))
     if len(source.encode("utf-8")) > max_bytes:
         problems.append(f"{filename}: source exceeds resource cap ({max_bytes} bytes)")
+
+
+def _entrypoint_class_problem(files: Mapping[str, str], entrypoint: str) -> str | None:
+    """The entrypoint class must literally exist in the entrypoint module.
+
+    A manifest pointing at ``components.mod:Foo`` while the source defines
+    ``class Bar`` used to surface only at load time ("entrypoint class not
+    found"); catch it at validation with an exact fix hint.
+    """
+    mod, _, cls_name = entrypoint.partition(":")
+    mod_file = mod.replace(".", "/") + ".py"
+    source = None
+    for path, content in files.items():
+        if path.replace("\\", "/") == mod_file or path.endswith(mod_file):
+            source = content
+            break
+    if source is None:
+        return f"entrypoint module {mod_file!r} not among candidate files"
+    if not cls_name:
+        return f"entrypoint {entrypoint!r} has no class name"
+    try:
+        tree = ast.parse(source)
+    except SyntaxError as e:
+        return f"entrypoint module {mod_file} has a syntax error: {e}"
+    classes = {
+        n.name
+        for n in ast.walk(tree)
+        if isinstance(n, ast.ClassDef)
+    }
+    if cls_name not in classes:
+        return (
+            f"entrypoint class {cls_name!r} not defined in {mod_file} "
+            f"(found classes: {sorted(classes) or 'none'}) — fix manifest_patch.entrypoint"
+        )
+    return None
 
 
 def validate_candidate_files(
@@ -141,9 +194,9 @@ def validate_candidate_files(
     # entrypoint resolution sanity for single-component patches
     entry = manifest_patch.get("entrypoint") if isinstance(manifest_patch, dict) else None
     if isinstance(entry, str) and ":" in entry:
-        mod = entry.split(":", 1)[0].replace(".", "/") + ".py"
-        if mod not in files and not any(f.endswith(mod) for f in files):
-            problems.append(f"manifest entrypoint module {mod!r} not in candidate files")
+        problem = _entrypoint_class_problem(files, entry)
+        if problem:
+            problems.append(f"manifest entrypoint: {problem}")
     return ValidationReport(ok=not problems, problems=problems, checks={"n_files": len(files)})
 
 
@@ -165,6 +218,11 @@ def validate_materialized(bank_dir: Path, *, known_task_ids: Sequence[str] = ())
                 problems.append(f"missing component file {rel}")
             else:
                 files[rel] = p.read_text("utf-8")
+        entry = comp.get("entrypoint", "")
+        if isinstance(entry, str) and ":" in entry:
+            problem = _entrypoint_class_problem(files, entry)
+            if problem:
+                problems.append(f"component {comp.get('id')}: {problem}")
     report = validate_candidate_files(
         files=files,
         manifest_patch={},

@@ -23,7 +23,7 @@ runtime:
 
 suite:
   registry: configs/environments.yaml
-  domains: [appworld, spreadsheetbench, swebench]
+  domains: [appworld, spreadsheetbench, swebench, webshop, alfworld]
   split_manifest: data/splits/pilot.json
   aggregate: equal_domain_macro
   shared_model: true

@@ -55,6 +55,9 @@ class CandidateScore:
     cost: CostVector
     protocol_ok: bool = True
     budget_ok: bool = True
+    # Fraction of panel episodes where a component raised (runtime errors are
+    # NOT protocol failures — task book §6.2 keeps the classes distinct).
+    error_rate: float = 0.0
 
     def to_json(self) -> dict[str, JSONValue]:
         return {
@@ -90,8 +93,14 @@ def select_champion(
     tolerance: float = 0.01,
     max_domain_regression: float = 0.05,
 ) -> SelectionResult:
-    legal = [c for c in candidates if c.protocol_ok and c.budget_ok]
-    dropped = [c.candidate_id for c in candidates if not (c.protocol_ok and c.budget_ok)]
+    # Hard drops: structural protocol failures or a mechanism that never
+    # worked (errored on every episode).  Partial runtime errors are a
+    # reliability penalty, not a disqualification.
+    def droppable(c: CandidateScore) -> bool:
+        return (not c.protocol_ok) or (not c.budget_ok) or c.error_rate >= 1.0
+
+    legal = [c for c in candidates if not droppable(c)]
+    dropped = [c.candidate_id for c in candidates if droppable(c)]
     if not legal:
         return SelectionResult(
             champion_id=baseline.candidate_id if baseline else None,
@@ -115,7 +124,7 @@ def select_champion(
             legal = kept
     best = max(c.macro_score for c in legal)
     contenders = [c for c in legal if c.macro_score >= best - tolerance]
-    contenders.sort(key=lambda c: (c.cost.scalar_cost(), -c.macro_score, c.candidate_id))
+    contenders.sort(key=lambda c: (c.error_rate, c.cost.scalar_cost(), -c.macro_score, c.candidate_id))
     ordered = tuple(c.candidate_id for c in sorted(legal, key=lambda c: (-c.macro_score, c.cost.scalar_cost())))
     winner = contenders[0]
     reason = (

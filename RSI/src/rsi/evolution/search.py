@@ -69,6 +69,9 @@ class EvolveResult:
     stopped_reason: str
     archive_root: str
     evaluated_candidates: int
+    # 候选被拒/panel 报错的原始记录。9fhn3 复盘：这些只进了内存 _history，
+    # 从未落盘，导致 18 次提议全废却查不到一个拒绝原因。必须持久化。
+    history: tuple[dict[str, JSONValue], ...] = ()
 
     def to_json(self) -> dict[str, JSONValue]:
         return {
@@ -87,6 +90,7 @@ class EvolveResult:
             "stopped_reason": self.stopped_reason,
             "archive_root": self.archive_root,
             "evaluated_candidates": self.evaluated_candidates,
+            "history": [h for h in self.history],
         }
 
 
@@ -243,7 +247,11 @@ class EvolutionSearch:
                     champion_bank_digest=champion.bank_digest if champion else None,
                 )
             )
-            if improved and winner is not None and self.seed_mode != "empty_each_round":
+            if improved and winner is not None:
+                # Within-run generations COMPOSE on the champion so banks grow
+                # into multi-component harnesses (task book §7.2 parent
+                # selection: keep the champion as parent).  ``empty_each_round``
+                # governs ROUND starts, not generation starts.
                 parent = load_bank(winner.bank_dir)
             if stale >= self.budgets.plateau_patience:
                 stopped_reason = "PLATEAU"
@@ -255,16 +263,21 @@ class EvolutionSearch:
             stopped_reason=stopped_reason,
             archive_root=str(self.archive.root),
             evaluated_candidates=self._evaluated,
+            history=tuple(self._history),
         )
 
     # ------------------------------------------------------------------
     def _propose_materialize(self, packet: EvolutionPacket, parent: LoadedBank) -> MaterializedCandidate | None:
         last_err: BaseException | None = None
+        retry_notes: list[str] = []
         for _repair in range(self.budgets.max_candidate_repairs + 1):
             try:
-                patch: CandidatePatch = self.proposer.propose(packet)
+                patch: CandidatePatch = self.proposer.propose(packet, retry_notes=tuple(retry_notes))
             except CandidateInvalid as e:
                 last_err = e
+                retry_notes.append(f"proposer output rejected: {e}")
+                # 实时落 stdout：否则拒绝原因只活在内存里，跑完查无可查（9fhn3 教训）
+                print(f"[proposer] gen{packet.generation} attempt{_repair} rejected: {e}", flush=True)
                 continue
             try:
                 mat = materialize_candidate(
@@ -275,21 +288,51 @@ class EvolutionSearch:
                 )
             except CandidateInvalid as e:
                 last_err = e
+                retry_notes.append(f"candidate rejected at materialize/load: {e}")
+                print(f"[proposer] gen{packet.generation} attempt{_repair} materialize rejected: {e}", flush=True)
                 continue
             report = validate_materialized(mat.bank_dir, known_task_ids=self.known_task_ids)
             if not report.ok:
                 last_err = CandidateInvalid(f"validation failed: {report.problems}")
+                retry_notes.append("validation failed: " + "; ".join(report.problems[:8]))
+                print(f"[proposer] gen{packet.generation} attempt{_repair} validation rejected: "
+                      f"{str(report.problems[:4])}", flush=True)
                 continue
+            print(f"[proposer] gen{packet.generation} ACCEPTED candidate {mat.candidate_id}", flush=True)
             return mat
         self._history.append(
             {"error": f"candidate failed after repairs: {last_err!r}", "generation": packet.generation}
         )
+        print(f"[proposer] gen{packet.generation} gave up after repairs: {last_err!r}", flush=True)
         return None
 
     def _score_candidate(self, mat: MaterializedCandidate) -> CandidateScore:
         bank = load_bank(mat.bank_dir)
-        result = self.panel_runner(bank)
+        try:
+            result = self.panel_runner(bank)
+        except Exception as e:  # noqa: BLE001 - a broken candidate must not kill the search
+            self._history.append(
+                {"candidate_id": mat.candidate_id, "error": f"panel failed: {e!r}"}
+            )
+            self._evaluated += 1
+            return CandidateScore(
+                candidate_id=mat.candidate_id,
+                macro_score=0.0,
+                per_domain={},
+                cost=CostVector(active_components=len(bank.components)),
+                protocol_ok=False,
+                budget_ok=True,
+            )
         self._evaluated += 1
+        comp_errors = dict(result.get("component_errors") or {})
+        if comp_errors or not result.get("protocol_ok", True):
+            self._history.append(
+                {
+                    "candidate_id": mat.candidate_id,
+                    "generation_error": "candidate marked protocol-failed: "
+                    + (str(comp_errors)[:400] if comp_errors else "protocol_ok=false"),
+                }
+            )
         scores = {d: dict(t) for d, t in dict(result["scores"]).items()}
         per_domain_means = {
             d: (sum(t.values()) / len(t) if t else 0.0) for d, t in scores.items()
@@ -310,6 +353,7 @@ class EvolutionSearch:
             cost=cost,
             protocol_ok=bool(result.get("protocol_ok", True)),
             budget_ok=bool(result.get("budget_ok", True)),
+            error_rate=float(result.get("error_rate", 0.0)),
         )
 
     def _as_candidate_score(self, bank: LoadedBank, result: Mapping[str, Any]) -> CandidateScore:

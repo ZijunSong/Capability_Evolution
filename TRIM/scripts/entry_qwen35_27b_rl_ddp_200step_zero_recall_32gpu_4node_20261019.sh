@@ -193,9 +193,9 @@ export LD_LIBRARY_PATH=$(dirname "${JVM_PATH}"):${LD_LIBRARY_PATH:-}
 
 # --- Install four-pack + harness import chain deps (internal Xiaomi PyPI) ---
 python3 -m pip install --no-cache-dir --ignore-installed --upgrade-strategy only-if-needed \
-  "torch==2.10.0" "transformers==4.57.6" "accelerate==1.13.0" "datasets==4.8.4" \
+  "torch==2.10.0" "transformers==5.17.0" "accelerate==1.13.0" "datasets==4.8.4" \
   "hydra-core==1.3.2" "omegaconf==2.3.0" "vllm==0.19.1" peft structlog chromadb \
-  tqdm regex sympy latex2sympy2 word2number sentencepiece pyserini openai tenacity anthropic
+  tqdm regex sympy latex2sympy2 word2number sentencepiece "pyserini==2.0.0" openai tenacity anthropic
 
 # --- ANSERINI_CLASSPATH for PyJNI/Lucene ---
 PYSERINI_ROOT=$(python3 -c 'import pathlib, pyserini; print(pathlib.Path(pyserini.__file__).resolve().parent)')
@@ -241,7 +241,7 @@ versions = {
 print("PREFLIGHT", versions, flush=True)
 assert versions["torch"].startswith("2.10.0"), f"torch={versions['torch']} != 2.10.0"
 assert versions["vllm"] == "0.19.1", f"vllm={versions['vllm']} != 0.19.1"
-assert versions["transformers"] == "4.57.6", f"transformers={versions['transformers']} != 4.57.6"
+assert versions["transformers"] == "5.17.0", f"transformers={versions['transformers']} != 5.17.0"
 assert versions["pyserini"] == "2.0.0", f"pyserini={versions['pyserini']} != 2.0.0"
 # Per-node: each pod must see 8 GPUs (pinned 1-per-rank later by pin_local_cuda_device).
 assert versions["gpu_count"] == 8, f"per-node gpu_count={versions['gpu_count']} != 8"
@@ -290,6 +290,17 @@ except Exception as exc:
     print("ARCH_PROBE_ERROR", {"arch": arch, "error": str(exc)}, flush=True)
     raise
 
+# HF-side arch probe: tf 4.57.6 raised KeyError 'qwen3_5' at step0 actor init
+# (72rhl 2026-10-23) — vLLM had the arch but Transformers did not. 5.17.0
+# registers it in MODEL_FOR_CAUSAL_LM_MAPPING. Fail fast here if that regresses.
+from transformers import AutoConfig
+hf_cfg = AutoConfig.from_pretrained("/mnt/songzijun/models/Qwen3.5-27B", trust_remote_code=True)
+from transformers.models.auto.modeling_auto import MODEL_FOR_CAUSAL_LM_MAPPING
+_ok = hf_cfg.__class__ in MODEL_FOR_CAUSAL_LM_MAPPING
+if not _ok and getattr(hf_cfg, "text_config", None) is not None:
+    _ok = hf_cfg.text_config.__class__ in MODEL_FOR_CAUSAL_LM_MAPPING
+assert _ok, f"{hf_cfg.__class__.__name__} not in MODEL_FOR_CAUSAL_LM_MAPPING"
+print("HF_ARCH_OK", {"config": hf_cfg.__class__.__name__}, flush=True)
 from pyserini.search.lucene import LuceneSearcher
 s = LuceneSearcher("/mnt/songzijun/Capability_Evolution/TRIM/data/harness-1-sec-corpus/indexes/bm25")
 n_docs = s.num_docs if not callable(s.num_docs) else s.num_docs()

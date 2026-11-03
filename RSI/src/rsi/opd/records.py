@@ -51,6 +51,21 @@ class RLRow:
             "behavior_policy_version": self.behavior_policy_version,
         }
 
+    @staticmethod
+    def from_json(obj: Mapping[str, Any]) -> "RLRow":
+        return RLRow(
+            row_id=str(obj["row_id"]),
+            episode_id=str(obj["episode_id"]),
+            decision_index=int(obj["decision_index"]),
+            prompt_token_ids=tuple(int(x) for x in obj["prompt_token_ids"]),
+            action_token_ids=tuple(int(x) for x in obj["action_token_ids"]),
+            old_logprobs=tuple(float(x) for x in obj["old_logprobs"]),
+            action_mask=tuple(int(x) for x in obj["action_mask"]),
+            advantage=float(obj["advantage"]),
+            reward_ref=str(obj["reward_ref"]),
+            behavior_policy_version=str(obj["behavior_policy_version"]),
+        )
+
 
 @dataclass(frozen=True)
 class OPDRow:
@@ -91,6 +106,30 @@ class OPDRow:
             "student_logprobs": list(self.student_logprobs),
             "teacher_logprobs": list(self.teacher_logprobs),
         }
+
+    @staticmethod
+    def from_json(obj: Mapping[str, Any]) -> "OPDRow":
+        from rsi.contracts.action import action_from_json
+
+        raw_action = obj.get("target_action")
+        return OPDRow(
+            row_id=str(obj["row_id"]),
+            episode_id=str(obj["episode_id"]),
+            decision_index=int(obj["decision_index"]),
+            student_prompt_token_ids=tuple(int(x) for x in obj["student_prompt_token_ids"]),
+            teacher_prompt_token_ids=tuple(int(x) for x in obj["teacher_prompt_token_ids"]),
+            target_token_ids=tuple(int(x) for x in obj["target_token_ids"]),
+            target_mask=tuple(int(x) for x in obj["target_mask"]),
+            target_action=action_from_json(raw_action) if raw_action else None,
+            target_kind=str(obj["target_kind"]),
+            alignment_route=str(obj["alignment_route"]),
+            source_event_ids=tuple(str(x) for x in obj["source_event_ids"]),
+            realizability_json=dict(obj.get("realizability") or {}),
+            provenance_json=dict(obj.get("provenance") or {}),
+            token_weight=tuple(float(x) for x in (obj.get("token_weight") or ())),
+            student_logprobs=tuple(float(x) for x in (obj.get("student_logprobs") or ())),
+            teacher_logprobs=tuple(float(x) for x in (obj.get("teacher_logprobs") or ())),
+        )
 
 
 def build_rl_row(decision: DecisionRecord, *, advantage: float, reward_ref: str) -> RLRow:

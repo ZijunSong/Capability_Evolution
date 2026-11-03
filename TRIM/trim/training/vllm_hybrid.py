@@ -638,14 +638,37 @@ class VLLMGenerateClient:
 
         from trim.training.dist_runtime import atomic_write_text
 
-        job_id = uuid.uuid4().hex
-        payload = {"cmd": "generate", "job_id": job_id, "requests": prompt_rows}
-        atomic_write_text(self.session_dir / "job.json", json.dumps(payload) + "\n")
-        result_flag = self.session_dir / "RESULT"
-        if result_flag.exists():
-            result_flag.unlink()
-        (self.session_dir / "JOB").write_text("1\n", encoding="utf-8")
-        self._wait_flag("RESULT", self.generate_timeout_s, what="vLLM generate")
+        # [TRIM_VLLM_GENERATE_RETRIES] engine-wedge recovery (env-gated, default 0=off):
+        # a generate that exhausts generate_timeout_s means the rank's vLLM engine is
+        # wedged (9B teacher ablation vmwc6@step7, mlmro@step14 — both 3600s timeout
+        # after a silent engine stall). Rather than crash the job, recycle the whole
+        # worker process group (close() group-kills worker + EngineCore grandchild,
+        # releasing the TCPStore port) and re-issue this batch. Pure recovery path:
+        # identical prompts/seeds are re-submitted, so training math is unchanged.
+        max_retries = int(os.environ.get("TRIM_VLLM_GENERATE_RETRIES", "0") or "0")
+        attempt = 0
+        while True:
+            job_id = uuid.uuid4().hex
+            payload = {"cmd": "generate", "job_id": job_id, "requests": prompt_rows}
+            atomic_write_text(self.session_dir / "job.json", json.dumps(payload) + "\n")
+            result_flag = self.session_dir / "RESULT"
+            if result_flag.exists():
+                result_flag.unlink()
+            (self.session_dir / "JOB").write_text("1\n", encoding="utf-8")
+            try:
+                self._wait_flag("RESULT", self.generate_timeout_s, what="vLLM generate")
+            except TimeoutError:
+                attempt += 1
+                if attempt > max_retries:
+                    raise
+                print(
+                    f"VLLM_GENERATE_TIMEOUT_RETRY attempt={attempt}/{max_retries} "
+                    f"session={self.session_dir}",
+                    flush=True,
+                )
+                self._recycle_engine()
+                continue
+            break
         blob = json.loads((self.session_dir / "result.json").read_text(encoding="utf-8"))
         if blob.get("job_id") not in {None, "", job_id}:
             raise RuntimeError(
@@ -676,6 +699,76 @@ class VLLMGenerateClient:
             enc = load_model_encoding(self.model_path)
             self._model_enc = enc
         return enc
+
+    def _sweep_session_leftovers(self) -> list[int]:
+        # [TRIM_VLLM_GENERATE_RETRIES] A wedged EngineCore grandchild can survive
+        # the close() process-group SIGKILL (it may setsid()/re-parent) and keep
+        # its ~71GiB CUDA allocation forever — 3 recycle attempts then all fail
+        # with "Free memory 5.34/79.18 < desired 71.26" at the exact same number
+        # (9B ccso rwlse@step33, 2026-11-02). Sweep /proc for any leftover whose
+        # cmdline references THIS session_dir (each rank has a unique one, so we
+        # cannot touch sibling ranks' healthy engines) and SIGKILL it.
+        me = os.getpid()
+        killed: list[int] = []
+        needle = str(self.session_dir)
+        try:
+            entries = os.listdir("/proc")
+        except OSError:
+            return killed
+        for entry in entries:
+            if not entry.isdigit():
+                continue
+            pid = int(entry)
+            if pid == me:
+                continue
+            try:
+                with open(f"/proc/{pid}/cmdline", "rb") as fh:
+                    cmd = fh.read().decode("utf-8", "replace")
+            except OSError:
+                continue
+            if needle not in cmd:
+                continue
+            for sig in (signal.SIGTERM, signal.SIGKILL):
+                try:
+                    os.kill(pid, sig)
+                except OSError:
+                    break
+                time.sleep(2.0)
+            killed.append(pid)
+        if killed:
+            print(f"VLLM_SESSION_LEFTOVER_KILLED pids={killed} session={needle}", flush=True)
+        return killed
+
+    def _recycle_engine(self, *, attempts: int = 3) -> None:
+        # [TRIM_VLLM_GENERATE_RETRIES] close()+start() with GPU-memory-release wait.
+        # A wedged EngineCore releases its CUDA memory asynchronously after the
+        # process-group kill; starting the replacement immediately hits
+        # "Free memory on device cuda:0 (5.49/79.18 GiB) ... less than desired"
+        # and the job dies anyway (9B ccso blyuz@step7, 2026-10-31). Sleep with
+        # backoff before each start() attempt, and sweep any session leftover
+        # process holding GPU memory (rwlse@step33: identical 5.34 GiB free across
+        # 3 attempts = group-kill missed a re-parented EngineCore grandchild).
+        last_exc: Exception | None = None
+        for i in range(attempts):
+            self.close()
+            self._sweep_session_leftovers()
+            time.sleep(30.0 * (i + 1))
+            try:
+                self.start()
+                print(
+                    f"VLLM_ENGINE_RECYCLED attempt={i + 1}/{attempts} session={self.session_dir}",
+                    flush=True,
+                )
+                return
+            except Exception as exc:  # noqa: BLE001 - retry any start() failure
+                last_exc = exc
+                print(
+                    f"VLLM_ENGINE_RECYCLE_RETRY attempt={i + 1}/{attempts} error={exc!r}",
+                    flush=True,
+                )
+        raise RuntimeError(
+            f"vLLM engine recycle failed after {attempts} attempts: {last_exc!r}"
+        ) from last_exc
 
     def close(self) -> None:
         proc = self.process

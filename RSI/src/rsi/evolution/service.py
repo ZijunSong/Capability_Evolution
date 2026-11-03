@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -49,18 +50,38 @@ def run_evolve(cfg: CampaignConfig, *, initial_bank_ref: str | None = None) -> d
     run_dir.mkdir(parents=True, exist_ok=True)
     archive = Archive(run_dir / "evolve" / "archive")
 
-    policy = build_policy(cfg)
+    policy = build_policy(cfg, device=os.environ.get("RSI_PROPOSER_DEVICE") or None)
     max_per_domain = evo.get("dev_panel_per_domain")
+    selection_role = str(cfg.section("suite").get("selection_role", "harness_select"))
+    # Panel parallelism: env override > execution.panel_workers > 1.
+    panel_workers = int(
+        os.environ.get("RSI_PANEL_WORKERS")
+        or cfg.section("execution").get("panel_workers", 1)
+        or 1
+    )
 
     def panel_runner(bank):
-        result = run_panel(
-            cfg,
-            policy=policy,
-            bank=bank,
-            role=str(cfg.section("suite").get("selection_role", "harness_select")),
-            seed=cfg.seed,
-            max_per_domain=int(max_per_domain) if max_per_domain else None,
-        )
+        if panel_workers >= 2:
+            from rsi.evaluation.parallel import run_panel_mp
+
+            result = run_panel_mp(
+                cfg,
+                bank_ref=str(bank.root),
+                role=selection_role,
+                seed=cfg.seed,
+                max_per_domain=int(max_per_domain) if max_per_domain else None,
+                workers=panel_workers,
+                require_gpu=True,
+            )
+        else:
+            result = run_panel(
+                cfg,
+                policy=policy,
+                bank=bank,
+                role=selection_role,
+                seed=cfg.seed,
+                max_per_domain=int(max_per_domain) if max_per_domain else None,
+            )
         scores: dict[str, dict[str, float]] = {}
         for rec in result.records:
             scores.setdefault(rec.domain, {})[rec.task_id] = rec.value
@@ -72,13 +93,23 @@ def run_evolve(cfg: CampaignConfig, *, initial_bank_ref: str | None = None) -> d
             }
             for tid, meta in result.per_task.items()
         }
+        digests = {meta["policy_digest"] for meta in result.per_task.values()}
+        component_errors = {
+            tid: meta.get("component_errors")
+            for tid, meta in result.per_task.items()
+            if meta.get("component_errors")
+        }
         return {
             "scores": scores,
             "per_task": per_task,
             "cost": result.costs.to_json(),
             "protocol_ok": result.costs.infra_failures == 0,
             "budget_ok": True,
-            "policy_digest": policy.policy_artifact.policy_id,
+            "component_errors": component_errors,
+            "error_rate": (len(component_errors) / max(1, len(result.per_task))) if component_errors else 0.0,
+            "policy_digest": (
+                next(iter(digests)) if len(digests) == 1 else policy.policy_artifact.policy_id
+            ),
         }
 
     # Collect known task ids for the anti-task-id-constant audit.

@@ -14,7 +14,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Sequence
 
-from rsi.contracts.action import Action, ActionParseError, Finish, ToolCall, parse_action
+from rsi.contracts.action import ACTION_SCHEMA_ID, Action, ActionParseError, Finish, ToolCall, parse_action
 from rsi.contracts.common import digest_of
 from rsi.contracts.errors import (
     BudgetExceeded,
@@ -42,6 +42,9 @@ class EpisodeResult:
     env_state_digest: str = ""
     budget_snapshot: dict[str, int] = field(default_factory=dict)
     component_triggers: dict[str, int] = field(default_factory=dict)
+    # component_id -> error string; non-empty means the bank misbehaved
+    # (component_runtime_error) and evaluation must flag protocol failure.
+    component_errors: dict[str, str] = field(default_factory=dict)
 
 
 class MinimalLoop:
@@ -93,6 +96,13 @@ class MinimalLoop:
             tool_catalog=catalog,
             rng_seed=seed,
             extra_llm_call_budget=self.budgets.max_extra_llm_calls,
+            config={
+                "max_actions": self.budgets.max_actions,
+                "max_tool_calls": self.budgets.max_tool_calls,
+                "max_extra_llm_calls": self.budgets.max_extra_llm_calls,
+                "max_wall_ms": self.budgets.max_wall_ms,
+                "rng_seed": seed,
+            },
         )
         composition.initialize_all(ctx)
 
@@ -346,6 +356,7 @@ class MinimalLoop:
             env_state_digest=self.env.state_digest(),
             budget_snapshot=ledger.snapshot(),
             component_triggers=dict(composition.trigger_report()),
+            component_errors=dict(composition.state.errors),
         )
 
     # ------------------------------------------------------------------
@@ -423,7 +434,7 @@ def build_runtime_contract(*, env: Any, bank: LoadedBank, budgets: BudgetSpec, p
     return RuntimeContract(
         h0_source_hash=digest_of({"loop": "MinimalLoop", "version": "h0_v1"}),
         base_prompt_hash=prompt_hash(),
-        parser_id="rsi_action_v1",
+        parser_id=ACTION_SCHEMA_ID,
         context_policy_id=CONTEXT_POLICY_ID,
         base_tool_schema_hash=tool_catalog_digest(catalog),
         visibility_protocol="student_visible_history_v1",

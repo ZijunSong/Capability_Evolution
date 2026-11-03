@@ -61,6 +61,7 @@ def collect_rollouts(
     seed: int = 0,
     campaign_id: str = "train",
     batch_index: int = 0,
+    center_advantage: bool = True,
 ) -> RolloutBatch:
     """Run Student rollouts (H0), score outcomes, build RL rows, align OPD."""
     from rsi.opd.teacher import TeacherForkRunner
@@ -141,8 +142,9 @@ def collect_rollouts(
         env.close()
 
     # Batch-centered advantage (REINFORCE-style baseline); per-row reward kept
-    # in reward_ref for audit.
-    if rl_rows:
+    # in reward_ref for audit.  Distributed callers center later with the
+    # GLOBAL mean reward (center_advantage=False).
+    if rl_rows and center_advantage:
         mean_r = sum(rewards) / max(1, len(rewards))
         rl_rows = [
             RLRow(

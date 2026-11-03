@@ -356,7 +356,7 @@ class LiveZeroEnv:
         self.acts.append((action, obs))
         self._exec_count = int(getattr(self, "_exec_count", 0)) + 1
         if self._exec_count <= 3:
-            print(f"REPLAY_EXECUTE n={self._exec_count} qid={self.query_id} action_name={action.get('name')} ok={ok} acts_len={len(self.acts)}", flush=True)
+            print(f"REPLAY_EXECUTE n={self._exec_count} qid={self.row.get('query_id')} action_name={action.get('name')} ok={ok} acts_len={len(self.acts)}", flush=True)
         self.ended = bool(state.get("ended")) or str(action.get("name")) == "end_search"
         post = self.decision().snapshot
         return ExecuteResult(ok=True, post_state_hash=post.content_hash(), snapshot=post, ended=self.ended)
