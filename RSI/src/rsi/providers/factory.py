@@ -51,6 +51,13 @@ def build_policy(
         from rsi.providers.scripted import ScriptedPolicy
 
         return ScriptedPolicy()
+    if provider == "noop":
+        # E0 phase A (audit §4.6/§15): reset then immediately finish — the
+        # no-op control that measures the initial-state partial credit.
+        from rsi.contracts.action import Finish
+        from rsi.providers.scripted import FixedActionPolicy
+
+        return FixedActionPolicy([], base_model_id="e0_noop")
     if provider in ("tiny_hf", "hf_path"):
         from rsi.providers.tiny_hf import HFPolicy, tune_torch_threads
 

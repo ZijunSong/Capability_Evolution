@@ -59,6 +59,7 @@ def cmd_eval(args: argparse.Namespace) -> int:
         bank_ref=args.bank,
         split=args.split,
         seed=args.seed,
+        provider_override=args.provider,
     )
     print(json.dumps(result, indent=2, sort_keys=True, ensure_ascii=False))
     return 0 if result.get("ok") else 1
@@ -172,6 +173,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--bank", default=None, help="bank manifest/ref (required for --harness bank)")
     p.add_argument("--split", default="harness_select")
     p.add_argument("--seed", type=int, default=None)
+    p.add_argument("--provider", default=None, help="override policy provider (e.g. noop for E0 phase A)")
     p.set_defaults(func=cmd_eval)
 
     p = sub.add_parser("confirm-harness", help="paired Teacher-vs-Student ΔH on the fresh confirm_h panel")

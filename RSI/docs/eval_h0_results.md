@@ -1,5 +1,20 @@
 # RSI H0 基线评测结果（formal）
 
+> ⚠️ **2026-11-03 测量审计更正（`measurement_status: LEGACY_REQUIRES_REAUDIT`）**
+> 外部审查（`Capability_Evolution_RSI_代码改进与实验路线_20261103.md` §2）识别出本文件三处
+> 测量风险，本文全部数字降级为 historical development snapshot，`usable_for_method_claim: false`：
+> 1. **clock_freeze**：旧 runtime 用 `perf_counter` 计时，AppWorld 的 freezegun 全局 patch 会把
+>    墙钟测成任务模拟日期——"100% budget_wall、n_decisions 全 0"更可能是**模型从未被调用**，
+>    而非本文所称"记录层缺口"。`runtime/clock.py` 的解释与本文件冲突，以 clock.py 为准。
+> 2. **metric_semantics**：旧 `value = pass_percentage/100` 是**连续测试通过比例**，不是官方
+>    TGC（官方 TGC = `tracker.success` 全通过均值）。"TGC 23.51%"应读作 partial 均值 23.51%，
+>    strict success 为 0。
+> 3. **artifact_scoring_path**：旧 scorer 对同名 experiment 重新构造 AppWorld 并 initialize
+>    （close_all + preamble + save_state 重跑）——318 对任务分数逐位相同的头号嫌疑是
+>    **评分读到了重置后的状态**而非"H0/Hk 轨迹同分"。已修（commit e918f67，官方
+>    `evaluate_task` 离线评分），但旧数字不能因此自动恢复有效。
+> 重跑口径见 v2 config（`configs/appworld_self_evolve_v2_9b.yaml`）与 E0/E1 实验计划。
+
 ## Qwen3.5-9B · 完整 AppWorld · minimal harness · official TGC（2026-11-02）
 
 - **job**：`t-20261102144730-dhlol`（rsi-eval-h0-appworld-qwen35-9b-8gpu-20261102-r2），succeed，runTime≈106min，8×M402 单节点

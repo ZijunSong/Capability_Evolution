@@ -116,6 +116,10 @@ class DecisionRecord:
     sampled_action_token_ids: tuple[int, ...]
     old_logprobs: tuple[float, ...]
     action_mask: tuple[int, ...]
+    # PR-4 (audit §9.2): the action a component REWROTE before execution, when
+    # that happened.  OPD/RL must never assume executed == sampled tokens; the
+    # executed action text is kept here for alignment and audit.
+    executed_action_text: str | None = None
     # OPD target side (present iff an alignment produced supervision).
     teacher_prompt_token_ids: tuple[int, ...] = ()
     target_action: Action | None = None

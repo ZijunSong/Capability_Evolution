@@ -21,6 +21,7 @@ from rsi.contracts.common import JSONValue
 from rsi.contracts.errors import CandidateInvalid
 from rsi.evolution.archive import Archive, DistillationEntry, RuntimeEntry  # noqa: F401
 from rsi.evolution.diagnosis import GenerationDiagnosis, diagnose_traces
+from rsi.evolution.dedup import DedupCache, ast_digest
 from rsi.evolution.materializer import MaterializedCandidate, materialize_candidate
 from rsi.evolution.packet import EvolutionPacket, TraceFragment, build_packet
 from rsi.evolution.proposer import Proposer
@@ -127,6 +128,7 @@ class EvolutionSearch:
         self._baseline_scores = {d: dict(t) for d, t in (baseline_scores or {}).items()}
         self._history: list[dict[str, JSONValue]] = []
         self._evaluated = 0
+        self._dedup_cache = DedupCache()
 
     def run(self) -> EvolveResult:
         generations: list[GenerationRecord] = []
@@ -171,6 +173,12 @@ class EvolutionSearch:
                 baseline_scores=self._baseline_scores or parent_scores,
                 parent_scores=parent_scores,
                 diagnosis=diagnosis,
+                failure_fragments=self._fragments_from_per_task(
+                    parent_result.get("per_task") or {}, failure=True
+                ),
+                success_summaries=self._fragments_from_per_task(
+                    parent_result.get("per_task") or {}, failure=False
+                ),
                 candidate_history=tuple(self._history),
                 budgets={
                     "max_generations": self.budgets.max_generations,
@@ -256,6 +264,15 @@ class EvolutionSearch:
                     champion = winner
 
             stale = 0 if improved else stale + 1
+            # PR-7 (audit §8.2): repeated equivalent proposals are a DISTINCT
+            # stop condition from "no quality gain" — the proposer is stalled
+            # on the same idea, not the search space being exhausted.  Track
+            # dup streaks and name them honestly.
+            dup_ids = [h for h in self._history[-len(candidate_ids or ()) :] if h.get("dedup")]
+            if candidate_ids and len(dup_ids) == len(candidate_ids):
+                self._dup_streak = getattr(self, "_dup_streak", 0) + 1
+            else:
+                self._dup_streak = 0
             generations.append(
                 GenerationRecord(
                     generation=gen,
@@ -273,6 +290,9 @@ class EvolutionSearch:
                 # selection: keep the champion as parent).  ``empty_each_round``
                 # governs ROUND starts, not generation starts.
                 parent = load_bank(winner.bank_dir)
+            if self._dup_streak >= self.budgets.plateau_patience:
+                stopped_reason = "PROPOSAL_STALLED"
+                break
             if stale >= self.budgets.plateau_patience:
                 stopped_reason = "PLATEAU"
                 break
@@ -287,6 +307,43 @@ class EvolutionSearch:
         )
 
     # ------------------------------------------------------------------
+    @staticmethod
+    def _fragments_from_per_task(
+        per_task: Mapping[str, Any], *, failure: bool, limit: int = 6, max_chars: int = 400
+    ) -> tuple[TraceFragment, ...]:
+        """PR-4 (audit §5.1): the packet's failure_fragments/success_summaries
+        were never filled — the proposer saw only labels.  Build bounded text
+        fragments from the real per-task telemetry (decisions, wall, metric,
+        component errors) so hypotheses can quote concrete evidence."""
+        fragments: list[TraceFragment] = []
+        for tid in sorted(per_task):
+            meta = dict(per_task[tid] or {})
+            value = meta.get("value")
+            failed = meta.get("component_errors") or (
+                value is not None and float(value) < 1e-9
+            )
+            if failure != bool(failed):
+                continue
+            comp = meta.get("component_errors") or {}
+            text = (
+                f"value={value} terminated={meta.get('terminated_reason')} "
+                f"n_decisions={meta.get('n_decisions', 0)} wall_ms={meta.get('wall_ms', 0):.0f} "
+                f"metric={meta.get('metric_name')}"
+                + (f" component_errors={comp}" if comp else "")
+            )[:max_chars]
+            fragments.append(
+                TraceFragment(
+                    task_id=tid,
+                    outcome="fail" if failure else "success",
+                    events_text=text,
+                    decisions=int(meta.get("n_decisions", 0) or 0),
+                    error_kind=(next(iter(comp), None) if comp else None),
+                )
+            )
+            if len(fragments) >= limit:
+                break
+        return tuple(fragments)
+
     def _propose_materialize(self, packet: EvolutionPacket, parent: LoadedBank) -> MaterializedCandidate | None:
         last_err: BaseException | None = None
         retry_notes: list[str] = []
@@ -328,6 +385,37 @@ class EvolutionSearch:
 
     def _score_candidate(self, mat: MaterializedCandidate) -> CandidateScore:
         bank = load_bank(mat.bank_dir)
+        # PR-7 (audit §8.2): content-addressed dedup BEFORE the expensive
+        # panel.  gen1/2/3 re-proposals of the same component used to consume
+        # one full panel each; exact duplicates now reuse the prior result
+        # and AST near-duplicates are flagged in the history.
+        bank_digest = bank.bank_digest
+        prior = self._dedup_cache.lookup_exact(bank_digest)
+        if prior is not None:
+            self._history.append(
+                {
+                    "candidate_id": mat.candidate_id,
+                    "generation": mat.__dict__.get("generation"),
+                    "dedup": "exact_dup",
+                    "of": prior.get("candidate_id", bank_digest[:12]),
+                    "macro_score": prior.get("macro_score"),
+                }
+            )
+            return CandidateScore(
+                candidate_id=mat.candidate_id,
+                macro_score=float(prior.get("macro_score", 0.0)),
+                per_domain={d: dict(t) for d, t in (prior.get("per_domain") or {}).items()},
+                cost=CostVector(
+                    active_components=len(bank.components),
+                    extra_prompt_tokens=float((prior.get("cost") or {}).get("aux_input_tokens", 0)),
+                    extra_llm_calls=float((prior.get("cost") or {}).get("extra_llm_calls", 0)),
+                    extra_tool_calls=float((prior.get("cost") or {}).get("extra_tool_calls", 0)),
+                    latency_ms=float((prior.get("cost") or {}).get("wall_ms_total", 0)),
+                ),
+                protocol_ok=bool(prior.get("protocol_ok", True)),
+                budget_ok=bool(prior.get("budget_ok", True)),
+                error_rate=float(prior.get("error_rate", 0.0)),
+            )
         try:
             result = self.panel_runner(bank)
         except Exception as e:  # noqa: BLE001 - a broken candidate must not kill the search
@@ -358,6 +446,28 @@ class EvolutionSearch:
             d: (sum(t.values()) / len(t) if t else 0.0) for d, t in scores.items()
         }
         macro = sum(per_domain_means.values()) / len(per_domain_means) if per_domain_means else 0.0
+        # record for future dedup (content + AST fingerprints); a near-dup
+        # hit is surfaced in history so the proposer feedback can name the
+        # earlier equivalent candidate (PROPOSAL_STALLED evidence).
+        ast_digests = {}
+        for comp in bank.components:
+            if comp.manifest.files:
+                fp = Path(bank.root) / comp.manifest.files[0]
+                if fp.is_file():
+                    ast_digests[comp.manifest.id] = ast_digest(fp.read_text("utf-8"))
+        near_of = self._dedup_cache.record(
+            bank_digest=bank_digest,
+            ast_digests=ast_digests,
+            result={"macro_score": 0.0},
+        )
+        if near_of:
+            self._history.append(
+                {
+                    "candidate_id": mat.candidate_id,
+                    "dedup": "near_dup",
+                    "of": near_of,
+                }
+            )
         cost_raw = dict(result.get("cost") or {})
         cost = CostVector(
             active_components=len(bank.components),

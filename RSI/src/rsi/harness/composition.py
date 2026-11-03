@@ -27,13 +27,69 @@ from rsi.harness.loader import LoadedBank, LoadedComponent
 
 
 @dataclass
+class ComponentEffectRecord:
+    """PR-4 effect telemetry (audit doc §7.2): a hook being CALLED is not a
+    hook having an EFFECT.  Three levels are recorded separately so coverage
+    metrics count only real interventions: invoked (hook ran), changed_view
+    (before_model returned a patch that altered the rendered view), and
+    changed_action (after_proposal rewrote or vetoed the action)."""
+
+    component_id: str
+    hook: str
+    decision_index: int = -1
+    invoked: bool = True
+    changed_view: bool = False
+    changed_action: bool = False
+    errored: bool = False
+    notes: dict = field(default_factory=dict)
+
+    def to_json(self) -> dict:
+        return {
+            "component_id": self.component_id,
+            "hook": self.hook,
+            "decision_index": self.decision_index,
+            "invoked": self.invoked,
+            "changed_view": self.changed_view,
+            "changed_action": self.changed_action,
+            "errored": self.errored,
+            **({"notes": dict(self.notes)} if self.notes else {}),
+        }
+
+
+@dataclass
 class CompositionState:
     active: dict[str, bool] = field(default_factory=dict)
     errors: dict[str, str] = field(default_factory=dict)
     trigger_counts: dict[str, int] = field(default_factory=dict)
+    # Current decision index (set by the loop each decision) for effect records.
+    decision_counter: int = -1
+    # PR-4: per-hook effect records, append-only; summary helpers derive
+    # invoked-vs-changed coverage from these.
+    effects: list = field(default_factory=list)
 
     def record_trigger(self, component_id: str) -> None:
         self.trigger_counts[component_id] = self.trigger_counts.get(component_id, 0) + 1
+
+    def record_effect(self, effect) -> None:
+        self.effects.append(effect)
+
+    def effect_summary(self) -> dict:
+        """component_id -> {invoked, changed_view, changed_action, errored}."""
+        out: dict[str, dict[str, int]] = {}
+        for e in self.effects:
+            bucket = out.setdefault(
+                e.component_id,
+                {"invoked": 0, "changed_view": 0, "changed_action": 0, "errored": 0},
+            )
+            if e.invoked:
+                bucket["invoked"] += 1
+            if e.changed_view:
+                bucket["changed_view"] += 1
+            if e.changed_action:
+                bucket["changed_action"] += 1
+            if e.errored:
+                bucket["errored"] += 1
+        return out
 
 
 class HarnessComposition:
@@ -78,11 +134,26 @@ class HarnessComposition:
         instructions: list[str] = []
         keep: set[int] | None = None
         extra: dict[str, JSONValue] = {}
+        decision_index = getattr(self.state, "decision_counter", -1)
         for comp in self._components:
             patch = self._guard(
                 comp,
                 "before_model",
                 lambda c=comp: c.instance.before_model(view, self.api),
+            )
+            invoked = patch is not None
+            changed = bool(
+                invoked
+                and (patch.append_instructions or patch.history_filter is not None or patch.extra)
+            )
+            self.state.record_effect(
+                ComponentEffectRecord(
+                    component_id=comp.manifest.id,
+                    hook="before_model",
+                    decision_index=decision_index,
+                    invoked=invoked,
+                    changed_view=changed,
+                )
             )
             if patch is None:
                 continue
@@ -114,11 +185,23 @@ class HarnessComposition:
         veto = False
         veto_reason: str | None = None
         notes: dict[str, JSONValue] = {}
+        decision_index = getattr(self.state, "decision_counter", -1)
         for comp in self._components:
             eff = self._guard(
                 comp,
                 "after_proposal",
                 lambda c=comp, a=current: c.instance.after_proposal(a, view, self.api),
+            )
+            invoked = eff is not None
+            changed = bool(invoked and (eff.action is not None or eff.veto))
+            self.state.record_effect(
+                ComponentEffectRecord(
+                    component_id=comp.manifest.id,
+                    hook="after_proposal",
+                    decision_index=decision_index,
+                    invoked=invoked,
+                    changed_action=changed,
+                )
             )
             if eff is None:
                 continue
@@ -137,6 +220,14 @@ class HarnessComposition:
                 "after_observation",
                 lambda c=comp: c.instance.after_observation(event, self.api),
             )
+            self.state.record_effect(
+                ComponentEffectRecord(
+                    component_id=comp.manifest.id,
+                    hook="after_observation",
+                    invoked=patch is not None,
+                    changed_view=bool(patch is not None and patch.set),
+                )
+            )
             if patch is None:
                 continue
             if patch.set:
@@ -148,11 +239,22 @@ class HarnessComposition:
         block = False
         reason: str | None = None
         new_action: Finish | None = None
+        decision_index = getattr(self.state, "decision_counter", -1)
         for comp in self._components:
             eff = self._guard(
                 comp,
                 "before_finish",
                 lambda c=comp: c.instance.before_finish(action, view, self.api),
+            )
+            invoked = eff is not None
+            self.state.record_effect(
+                ComponentEffectRecord(
+                    component_id=comp.manifest.id,
+                    hook="before_finish",
+                    decision_index=decision_index,
+                    invoked=invoked,
+                    changed_action=bool(invoked and (eff.block or eff.action is not None)),
+                )
             )
             if eff is None:
                 continue
@@ -168,3 +270,13 @@ class HarnessComposition:
 
     def trigger_report(self) -> Mapping[str, int]:
         return dict(self.state.trigger_counts)
+
+    def effect_report(self) -> dict:
+        """PR-4: per-component invoked/changed counts — coverage metrics must
+        count only hooks that actually altered the view/action/state."""
+        return self.state.effect_summary()
+
+    def set_decision_index(self, index: int) -> None:
+        """Loop calls this before each decision so effect records carry the
+        decision index they intervened at."""
+        self.state.decision_counter = int(index)

@@ -48,6 +48,12 @@ class PrivateTaskRef:
 # mode of the whole suite, not a per-task role.
 DATA_ROLES = (
     "work_train",
+    # audit doc §10.3: evolution_train is the evolver's analysis/propose pool,
+    # disjoint by scenario from opd_train (the old work_train doubles as
+    # opd_train until a dedicated pool is carved).
+    "evolution_train",
+    "opd_train",
+    "e0_probe",  # measurement-rebuild controls only; never a method panel
     "harness_select",
     "weight_dev",
     "confirm_h",

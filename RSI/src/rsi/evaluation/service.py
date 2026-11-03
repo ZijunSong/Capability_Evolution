@@ -180,6 +180,7 @@ def run_eval(
     max_per_domain: int | None = None,
     write: bool = True,
     workers: int | None = None,
+    provider_override: str | None = None,
 ) -> dict[str, Any]:
     bank = resolve_bank(harness, bank_ref)
     run_seed = cfg.seed if seed is None else seed
@@ -196,6 +197,11 @@ def run_eval(
         from rsi.providers.factory import policy_identity_digest
 
         bank_ref_for_worker = bank_ref if harness == "bank" else None
+        if provider_override:
+            raise ProtocolViolation(
+                "--provider override requires the serial path (workers=1); "
+                "parallel workers rebuild policies from config only"
+            )
         result = run_panel_mp(
             cfg,
             bank_ref=bank_ref_for_worker,
@@ -207,7 +213,7 @@ def run_eval(
         )
         pol_policy_digest = policy_identity_digest(cfg)
     else:
-        pol = policy if policy is not None else build_policy(cfg)
+        pol = policy if policy is not None else build_policy(cfg, provider_override=provider_override)
         pol_policy_digest = pol.policy_artifact.policy_id
         result = run_panel(
             cfg,

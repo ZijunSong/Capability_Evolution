@@ -14,7 +14,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Sequence
 
-from rsi.contracts.action import ACTION_SCHEMA_ID, Action, ActionParseError, Finish, ToolCall, parse_action
+from rsi.contracts.action import ACTION_SCHEMA_ID, Action, ActionParseError, Finish, ToolCall, encode_action, parse_action
 from rsi.contracts.common import digest_of
 from rsi.contracts.errors import (
     BudgetExceeded,
@@ -43,6 +43,9 @@ class EpisodeResult:
     env_state_digest: str = ""
     budget_snapshot: dict[str, int] = field(default_factory=dict)
     component_triggers: dict[str, int] = field(default_factory=dict)
+    # PR-4: component_id -> {invoked, changed_view, changed_action, errored};
+    # coverage = changed counts, NOT trigger counts (no-op hooks inflate those).
+    component_effects: dict[str, dict[str, int]] = field(default_factory=dict)
     # component_id -> error string; non-empty means the bank misbehaved
     # (component_runtime_error) and evaluation must flag protocol failure.
     component_errors: dict[str, str] = field(default_factory=dict)
@@ -156,6 +159,7 @@ class MinimalLoop:
                 history=tuple(events),
                 remaining_action_budget=ledger.remaining_actions(),
             )
+            composition.set_decision_index(len(decisions))
             view = composition.apply_before_model(view)
             v_digest = view_digest(view)
             snap = self.env.snapshot()
@@ -222,9 +226,28 @@ class MinimalLoop:
                         visibility=self.visibility,
                     )
                 )
+                # PR-4 (audit §9.2): a vetoed decision still consumed a model
+                # call and action budget — record it, or OPD/RL silently loses
+                # the gradient datum and the cost ledger undercounts.
+                self._record_decision(
+                    decisions,
+                    task=task,
+                    episode_id=ctx.episode_id,
+                    decision_index=len(decisions),
+                    snapshot_ref=snap.ref_id,
+                    v_digest=v_digest,
+                    prompt_ids=prompt_ids,
+                    action_token_ids=action_token_ids,
+                    old_logprobs=old_logprobs,
+                )
                 continue
+            executed_text = None
             if eff.action is not None:
                 action = eff.action
+                # PR-4: executed action differs from the sampled tokens —
+                # record the executed text so alignment never assumes
+                # executed == sampled.
+                executed_text = encode_action(action)
 
             ledger.charge_action(1)
 
@@ -291,6 +314,7 @@ class MinimalLoop:
                     prompt_ids=prompt_ids,
                     action_token_ids=action_token_ids,
                     old_logprobs=old_logprobs,
+                    executed_action_text=executed_text,
                 )
                 done = True
                 terminated_reason = "finish"
@@ -329,6 +353,7 @@ class MinimalLoop:
                 prompt_ids=prompt_ids,
                 action_token_ids=action_token_ids,
                 old_logprobs=old_logprobs,
+                executed_action_text=executed_text,
             )
             if result.done:
                 done = True
@@ -360,6 +385,7 @@ class MinimalLoop:
             env_state_digest=self.env.state_digest(),
             budget_snapshot=ledger.snapshot(),
             component_triggers=dict(composition.trigger_report()),
+            component_effects=dict(composition.effect_report()),
             component_errors=dict(composition.state.errors),
         )
 
@@ -391,6 +417,7 @@ class MinimalLoop:
         prompt_ids: Sequence[int],
         action_token_ids: Sequence[int],
         old_logprobs: Sequence[float],
+        executed_action_text: str | None = None,
     ) -> None:
         decisions.append(
             DecisionRecord(
@@ -410,6 +437,7 @@ class MinimalLoop:
                 sampled_action_token_ids=tuple(int(i) for i in action_token_ids),
                 old_logprobs=tuple(float(x) for x in old_logprobs),
                 action_mask=tuple(1 for _ in action_token_ids),
+                executed_action_text=executed_action_text,
                 behavior_policy_version=self.policy.policy_artifact.policy_id,
                 sampling_parameters={
                     "temperature": self.sampling.temperature,

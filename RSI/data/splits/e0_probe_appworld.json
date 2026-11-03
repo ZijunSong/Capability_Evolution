@@ -1,0 +1,37 @@
+{
+  "schema_version": "rsi_split_v1",
+  "campaign_id": "e0_probe",
+  "manifests": {
+    "appworld": {
+      "manifest_id": "e0_probe:appworld",
+      "domain": "appworld",
+      "assignments": [
+        {
+          "role": "e0_probe",
+          "task_ids": [
+            "appworld:302c169_1",
+            "appworld:0d8a4ee_1",
+            "appworld:82e2fac_1",
+            "appworld:530b157_1"
+          ],
+          "round_index": null
+        }
+      ],
+      "groups": {
+        "appworld:302c169": [
+          "appworld:302c169_1"
+        ],
+        "appworld:0d8a4ee": [
+          "appworld:0d8a4ee_1"
+        ],
+        "appworld:82e2fac": [
+          "appworld:82e2fac_1"
+        ],
+        "appworld:530b157": [
+          "appworld:530b157_1"
+        ]
+      },
+      "digest": "29a252bb9db557ba6365c97e14ecc1899772e3bfbc61dc1493ab71f325343903"
+    }
+  }
+}

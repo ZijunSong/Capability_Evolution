@@ -263,13 +263,42 @@ class AppWorldAdapter:
                     f"({snapshot.digest[:12]} != {actual[:12]})"
                 )
         child._started = True
+        # PR-6 (audit §9.4): fork correctness requires the BASE to still work
+        # after the child exists — the official constructor/initialize path
+        # calls close_all() process-globally, so the child's construction can
+        # invalidate the base's live handles even without an explicit
+        # load_state.  Prove the base survived by executing one legal no-op
+        # action on it; a failure here is a hard error, not a silent poison.
+        try:
+            probe = self._env.execute("pass")
+            del probe
+        except Exception as e:  # noqa: BLE001
+            raise EnvironmentError_(
+                f"fork broke the base environment (probe execute failed): {e!r}"
+            ) from e
         return child
 
     def state_digest(self) -> str:
         if not self._started:
             return digest_of({"unstarted": True})
+        # PR-6 (audit §9.4): the digest must describe the BUSINESS state, not
+        # the bookkeeping identity.  Including the experiment name (which
+        # embeds run/arm/task naming and fork counters) made semantically
+        # identical states hash differently across arms — breaking snapshot
+        # comparisons.  Hash the replay prefix (the deterministic execution
+        # history that defines the state) plus a checkpoint-files digest.
+        ckpt_digest = ""
+        try:
+            latest = self._env.save_state("digestcheck")
+            ckpt_digest = self._checkpoint_digest(str(latest))
+        except Exception:  # noqa: BLE001 - digest is best-effort telemetry
+            ckpt_digest = ""
         return digest_of(
-            {"task": self._task_id, "exp": self._experiment, "replay": digest_of(self._replay_code)}
+            {
+                "task": self._task_id,
+                "replay": digest_of(self._replay_code),
+                "checkpoint": ckpt_digest,
+            }
         )
 
     def close(self) -> None:
