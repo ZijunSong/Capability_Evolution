@@ -85,11 +85,23 @@ def run_evolve(cfg: CampaignConfig, *, initial_bank_ref: str | None = None) -> d
         scores: dict[str, dict[str, float]] = {}
         for rec in result.records:
             scores.setdefault(rec.domain, {})[rec.task_id] = rec.value
+        # PR-5 (audit §5.1): the packet previously received only value/termin-
+        # ation with trigger_stats stubbed to {} — the proposer's "evidence"
+        # was just a failure label plus a canned hint.  Pass the real per-task
+        # telemetry through: decisions, wall time, scorer metric identity,
+        # partial credit and component errors, so diagnose/build_packet can
+        # quote concrete fragments instead of inventing mechanisms.
         per_task = {
             tid: {
                 "value": meta["value"],
+                "metric_name": meta.get("metric_name"),
+                "success": meta.get("success"),
+                "partial_test_pass_rate": (meta.get("details") or {}).get("partial_test_pass_rate"),
+                "measurement_status": (meta.get("details") or {}).get("measurement_status"),
                 "terminated_reason": meta["terminated_reason"],
-                "trigger_stats": {},
+                "n_decisions": meta.get("n_decisions", 0),
+                "wall_ms": meta.get("wall_ms", 0.0),
+                "component_errors": meta.get("component_errors") or {},
             }
             for tid, meta in result.per_task.items()
         }

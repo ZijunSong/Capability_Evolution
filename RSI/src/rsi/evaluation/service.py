@@ -8,7 +8,6 @@ are flagged; report merge refuses to fold them into formal results.
 from __future__ import annotations
 
 import json
-import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -22,6 +21,8 @@ from rsi.evaluation.costs import CostLedger
 from rsi.environments.registry import global_registry
 from rsi.harness.loader import LoadedBank, load_bank_ref, load_empty_bank
 from rsi.providers.factory import build_policy
+from rsi.runtime.clock import monotonic_ms
+from rsi.evaluation.task_resolver import TaskResolver, install_materialize_task_id
 from rsi.runtime.budgets import BudgetSpec
 from rsi.runtime.loop import MinimalLoop
 
@@ -78,16 +79,11 @@ def run_panel(
     suite_cfg = cfg.section("suite")
     runtime_cfg = cfg.section("runtime")
     domains = list(suite_cfg.get("domains") or [])
-    budgets = BudgetSpec(
-        max_actions=int(runtime_cfg.get("max_actions", 20)),
-        max_extra_llm_calls=int(runtime_cfg.get("max_extra_llm_calls", 2)),
-    )
-    from rsi.contracts.policy import SamplingParams
+    resolver = TaskResolver(cfg)
+    from rsi.runtime.factory import build_runtime_parts
 
-    sampling = SamplingParams(
-        max_new_tokens=int(runtime_cfg.get("max_new_tokens", 256)),
-        temperature=float(runtime_cfg.get("temperature", 1.0)),
-    )
+    parts = build_runtime_parts(runtime_cfg)
+    budgets, sampling, context_policy = parts.budgets, parts.sampling, parts.context_policy
     registry = global_registry()
     records: list[ScoreRecord] = []
     costs = CostLedger()
@@ -105,7 +101,17 @@ def run_panel(
         bundle = registry.get(domain)
         provider = bundle.task_provider_factory()
         scorer = bundle.scorer_factory()
-        tasks = provider.public_tasks(role, round_index=round_index)
+        # PR-3 (audit §10.5): when the config declares a frozen split manifest,
+        # it — not a fresh directory enumeration — decides the task set.
+        if resolver.authoritative:
+            tasks = resolver.resolve(
+                install_materialize_task_id(provider),
+                domain=domain,
+                role=role,
+                round_index=round_index,
+            )
+        else:
+            tasks = provider.public_tasks(role, round_index=round_index)
         if max_per_domain is not None:
             tasks = tasks[:max_per_domain]
         for i, task in enumerate(tasks):
@@ -116,11 +122,12 @@ def run_panel(
                 bank=bank,
                 budgets=budgets,
                 sampling=sampling,
+                context_policy=context_policy,
                 campaign_id=campaign,
             )
-            t0 = time.perf_counter()
+            t0 = monotonic_ms()
             result = loop.run_episode(task, seed=seed + i)
-            wall_ms = (time.perf_counter() - t0) * 1000.0
+            wall_ms = monotonic_ms() - t0
             artifact = result.final_artifact
             if artifact is None:
                 from rsi.contracts.observation import ArtifactRef
@@ -139,6 +146,9 @@ def run_panel(
             per_task[task.task_id] = {
                 "domain": domain,
                 "value": record.value,
+                "metric_name": record.metric_name,
+                "success": record.success,
+                "details": dict(record.details) if isinstance(record.details, dict) else {},
                 "terminated_reason": result.trace.terminated_reason,
                 "n_decisions": len(result.trace.decisions),
                 "wall_ms": wall_ms,

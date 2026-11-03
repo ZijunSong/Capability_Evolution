@@ -31,6 +31,7 @@ from rsi.harness.component import EpisodeContext, PublicView
 from rsi.harness.loader import LoadedBank
 from rsi.runtime.api import MeteredAPI
 from rsi.runtime.budgets import BudgetLedger, BudgetSpec
+from rsi.runtime.clock import monotonic_ms
 from rsi.runtime.context import CONTEXT_POLICY_ID, ContextPolicy, prompt_hash, view_digest
 from rsi.contracts.observation import tool_catalog_digest
 
@@ -133,7 +134,10 @@ class MinimalLoop:
         done = False
         final_answer: str | None = None
         terminated_reason = "max_actions"
-        t_start = time.perf_counter()
+        # Real monotonic clock: freezegun patches perf_counter process-globally
+        # during AppWorld episodes, which would time the simulated date (see
+        # runtime/clock.py docstring).
+        t_start = monotonic_ms()
 
         while not done:
             try:
@@ -330,7 +334,7 @@ class MinimalLoop:
                 done = True
                 terminated_reason = "env_done"
 
-        wall_ms = (time.perf_counter() - t_start) * 1000.0
+        wall_ms = monotonic_ms() - t_start
         trace = EpisodeTrace(
             episode_id=ctx.episode_id,
             task_id=task.task_id,

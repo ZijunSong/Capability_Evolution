@@ -112,11 +112,42 @@ def diagnose_traces(
 
 
 def _mechanism_hint(kind: str) -> str:
+    # PR-5 (audit §5.3): a termination label is NOT a mechanism.  budget_wall
+    # previously auto-mapped to "compress context / finish earlier", which fed
+    # the proposer a fixed strategy and yielded a family of cosmetic
+    # end-of-episode guidance components (the Hk ContextCompressor outcome).
+    # Hints now describe the OBSERVATION and demand trace evidence before any
+    # mechanism claim; when the label is ambiguous the honest answer is
+    # UNKNOWN_NEEDS_TRACE.
     return {
-        "model_invalid_action": "model emits unparsable/illegal actions; consider a proposal validator or format guidance component",
-        "tool_error": "tool misuse or bad arguments; consider argument checking/retry components",
-        "budget_wall": "episodes run out of budget; consider context compression or earlier finishing policy",
-        "max_actions": "too many actions before finishing; consider progress summarization or termination heuristic",
-        "finish_blocked": "finish gating active; verify the gating component",
-        "wrong_result": "task executed but produced wrong artifact; consider verification-before-finish components",
+        "model_invalid_action": (
+            "model emits unparsable/illegal actions; inspect trace fragments for "
+            "whether the schema is unclear, the format differs, or the model is "
+            "truncating — the mechanism differs in each case"
+        ),
+        "tool_error": (
+            "tool misuse or bad arguments; inspect traces for missing parameters, "
+            "wrong API choice, or unverifiable arguments before proposing a fix"
+        ),
+        "budget_wall": (
+            "UNKNOWN_NEEDS_TRACE: episodes hit the budget wall — this label alone "
+            "cannot distinguish a clock/measurement error, slow inference, an "
+            "invalid-action loop, redundant re-reading, or a genuinely long task; "
+            "a compression or early-finish component is NOT justified by this "
+            "label without trace evidence of wasted decisions"
+        ),
+        "max_actions": (
+            "UNKNOWN_NEEDS_TRACE: action budget exhausted — determine whether the "
+            "decisions were productive (long task) or repetitive (loop/missing "
+            "state tracking) before proposing a mechanism"
+        ),
+        "finish_blocked": (
+            "finish gating active; verify which component blocks finishing and "
+            "whether its evidence requirement is satisfiable"
+        ),
+        "wrong_result": (
+            "task executed but produced a wrong artifact; inspect traces for the "
+            "first divergent decision and whether a verification step would have "
+            "caught it"
+        ),
     }.get(kind, "inspect example traces for the mechanism")

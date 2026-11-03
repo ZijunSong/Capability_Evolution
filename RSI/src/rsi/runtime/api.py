@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import time
 from typing import Any, Mapping
 
 from rsi.contracts.action import Action, ToolCall
@@ -11,6 +10,7 @@ from rsi.contracts.errors import BudgetExceeded
 from rsi.contracts.events import CostRecord
 from rsi.contracts.observation import Observation
 from rsi.runtime.budgets import BudgetLedger
+from rsi.runtime.clock import monotonic_ms
 
 
 class MeteredAPI:
@@ -41,7 +41,7 @@ class MeteredAPI:
     # -- RuntimeAPI ------------------------------------------------------
     def call_tool(self, call: ToolCall) -> Observation:
         self._ledger.charge_tool_call(1)
-        t0 = time.perf_counter()
+        t0 = monotonic_ms()
         obs = self._tool_runner(call)
         self._cost = CostRecord(
             actor_input_tokens=self._cost.actor_input_tokens,
@@ -50,13 +50,13 @@ class MeteredAPI:
             aux_output_tokens=self._cost.aux_output_tokens,
             tool_calls=self._cost.tool_calls + 1,
             extra_llm_calls=self._cost.extra_llm_calls,
-            wall_ms=self._cost.wall_ms + (time.perf_counter() - t0) * 1000.0,
+            wall_ms=self._cost.wall_ms + (monotonic_ms() - t0),
         )
         return obs
 
     def call_model(self, prompt: str, *, max_new_tokens: int = 256) -> str:
         self._ledger.charge_extra_llm(1)
-        t0 = time.perf_counter()
+        t0 = monotonic_ms()
         out = self._model_caller(prompt, max_new_tokens)
         self._cost = CostRecord(
             actor_input_tokens=self._cost.actor_input_tokens,
@@ -65,7 +65,7 @@ class MeteredAPI:
             aux_output_tokens=self._cost.aux_output_tokens + max(1, len(out) // 4),
             tool_calls=self._cost.tool_calls,
             extra_llm_calls=self._cost.extra_llm_calls + 1,
-            wall_ms=self._cost.wall_ms + (time.perf_counter() - t0) * 1000.0,
+            wall_ms=self._cost.wall_ms + (monotonic_ms() - t0),
         )
         return out
 

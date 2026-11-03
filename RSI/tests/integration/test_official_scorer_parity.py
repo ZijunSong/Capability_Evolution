@@ -81,14 +81,34 @@ def test_toy_kv_fixed_answer_parity():
 def test_real_benchmark_official_parity_when_available(domain):
     """Adapter vs pinned official evaluator on a fixed action/fixture.
 
-    Requires the optional dependency AND the frozen dataset revision; skipped
-    (with reason) otherwise — no fallback environment is ever substituted.
+    PR-2 (audit §4.6/§14): a deps-present skip used to hide the entire real-
+    benchmark parity gap.  Now:
+      - deps absent -> explicit skip (no fallback environment is substituted);
+      - appworld deps PRESENT -> the real no-op / known-correct / wrong-state
+        controls in test_appworld_scorer_parity_controls.py run in this suite
+        and FAIL on measurement bugs; a deps-present skip here is not allowed.
     """
     registry = global_registry()
     ok, missing = registry.check_deps(domain)
     if not ok:
         pytest.skip(f"{domain} optional deps missing: {list(missing)}; no fallback used")
+    if domain == "appworld":
+        # deps present: the real controls must run — re-execute them here so a
+        # runner collecting only this file still gets the coverage.
+        import importlib.util
+
+        ctl_path = Path(__file__).parent / "test_appworld_scorer_parity_controls.py"
+        spec = importlib.util.spec_from_file_location("appworld_parity_controls", ctl_path)
+        controls = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(controls)
+        controls.test_appworld_noop_control_initial_state(None)
+        controls.test_appworld_scorer_does_not_initialize_a_new_world(None)
+        controls.test_appworld_scorer_reads_actual_output_db(None)
+        return
+    # Other domains: importable deps but no wired controls yet.  This CI skip
+    # is an explicit BLOCKED marker (audit §14) — the formal preflight gate
+    # (rsi.cli doctor / formal runner) treats BLOCKED domains as non-formal.
     pytest.skip(
-        f"{domain} deps present but the frozen dataset revision wiring "
-        "(data prepare) is completed per docs/runbook.md blocking list"
+        f"BLOCKED: {domain} deps present but real parity controls not wired yet "
+        "(audit doc §13 PR-2 scope); formal preflight must treat as non-formal"
     )

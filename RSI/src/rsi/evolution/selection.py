@@ -101,14 +101,17 @@ def select_champion(
 
     legal = [c for c in candidates if not droppable(c)]
     dropped = [c.candidate_id for c in candidates if droppable(c)]
-    if not legal:
-        return SelectionResult(
-            champion_id=baseline.candidate_id if baseline else None,
-            reason="NO_LEGAL_CANDIDATES" + (f"; dropped={dropped}" if dropped else ""),
-            ordered=(),
-            tolerance=tolerance,
-        )
-    # Domain regression filter vs baseline
+    # PR-5 (audit §8.1): the incumbent (H0/parent) is a first-class pool member.
+    # It competes under the same hard filters it can satisfy by construction
+    # (a measured baseline is protocol-valid and budget-valid), and it must
+    # NEVER be dropped by the domain-regression filter — the previous code let
+    # the filtered candidate list go empty and then crowned a candidate the
+    # filter had already condemned (isolated repro: H0=0.8, candidate=0.1 with
+    # allowed regression 0.05 still won).
+    pool: list[CandidateScore] = []
+    if baseline is not None and not droppable(baseline):
+        pool.append(baseline)
+    # Domain regression filter vs baseline — candidates only, never the baseline.
     if baseline is not None:
         kept = []
         for c in legal:
@@ -120,17 +123,36 @@ def select_champion(
                     break
             if not regressed:
                 kept.append(c)
-        if kept:
-            legal = kept
-    best = max(c.macro_score for c in legal)
-    contenders = [c for c in legal if c.macro_score >= best - tolerance]
+        pool.extend(kept)
+    else:
+        pool.extend(legal)
+    if not pool:
+        # Every candidate was dropped or regressed: keep the incumbent rather
+        # than silently reverting to the unfiltered (condemned) list.
+        return SelectionResult(
+            champion_id=baseline.candidate_id if baseline else None,
+            reason="NO_SUPPORTED_IMPROVEMENT"
+            + (f"; dropped={dropped}" if dropped else ""),
+            ordered=(),
+            tolerance=tolerance,
+        )
+    best = max(c.macro_score for c in pool)
+    contenders = [c for c in pool if c.macro_score >= best - tolerance]
     contenders.sort(key=lambda c: (c.error_rate, c.cost.scalar_cost(), -c.macro_score, c.candidate_id))
-    ordered = tuple(c.candidate_id for c in sorted(legal, key=lambda c: (-c.macro_score, c.cost.scalar_cost())))
+    ordered = tuple(c.candidate_id for c in sorted(pool, key=lambda c: (-c.macro_score, c.cost.scalar_cost())))
     winner = contenders[0]
-    reason = (
-        f"best_within_tolerance={tolerance}; winner cost={winner.cost.scalar_cost():.3f} "
-        f"macro={winner.macro_score:.4f}"
-    )
+    if baseline is not None and winner.candidate_id == baseline.candidate_id:
+        reason = (
+            f"NO_SUPPORTED_IMPROVEMENT: incumbent retained "
+            f"(best candidate within tolerance={tolerance} did not beat it on "
+            f"quality+cost); dropped={dropped}" if dropped else
+            f"NO_SUPPORTED_IMPROVEMENT: incumbent retained (tolerance={tolerance})"
+        )
+    else:
+        reason = (
+            f"best_within_tolerance={tolerance}; winner cost={winner.cost.scalar_cost():.3f} "
+            f"macro={winner.macro_score:.4f}"
+        )
     return SelectionResult(
         champion_id=winner.candidate_id,
         reason=reason,

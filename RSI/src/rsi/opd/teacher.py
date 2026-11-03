@@ -27,6 +27,7 @@ from rsi.harness.loader import LoadedBank
 from rsi.runtime.api import MeteredAPI
 from rsi.runtime.budgets import BudgetLedger, BudgetSpec
 from rsi.runtime.context import ContextPolicy
+from rsi.runtime.clock import monotonic_ms
 
 
 @dataclass
@@ -94,7 +95,7 @@ class TeacherForkRunner:
 
         events: list[Event] = []
         order = 0
-        t0 = time.perf_counter()
+        t0 = monotonic_ms()
         terminated = "max_shadow_events"
         view = PublicView(
             task=task,
@@ -190,7 +191,7 @@ class TeacherForkRunner:
             raise RuntimeError(
                 f"teacher branch mutated the base environment: {pre_digest} -> {post_digest}"
             )
-        wall_ms = (time.perf_counter() - t0) * 1000.0
+        wall_ms = monotonic_ms() - t0
         cost = CostRecord(
             actor_output_tokens=sum(e.cost.actor_output_tokens for e in events),
             tool_calls=sum(e.cost.tool_calls for e in events),

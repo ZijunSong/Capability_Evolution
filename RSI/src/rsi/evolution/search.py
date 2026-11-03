@@ -138,7 +138,20 @@ class EvolutionSearch:
             parent = load_bank(self.parent_bank_root)
 
         champion: MaterializedCandidate | None = None
+        # PR-5 (audit §8.1): best_macro starts at the PARENT's measured macro,
+        # not None — the first executable candidate must not auto-become the
+        # champion merely by existing.  The parent result is re-measured each
+        # generation under the same panel; gen-0's initial value comes from
+        # the pre-run baseline scores when available, else it is established
+        # by gen-0's own parent measurement below.
         best_macro: float | None = None
+        if self._baseline_scores:
+            per_domain_means = {
+                d: (sum(t.values()) / len(t) if t else 0.0)
+                for d, t in self._baseline_scores.items()
+            }
+            if per_domain_means:
+                best_macro = sum(per_domain_means.values()) / len(per_domain_means)
         stale = 0
         stopped_reason = "MAX_GENERATIONS"
 
@@ -230,7 +243,14 @@ class EvolutionSearch:
             improved = False
             if winner is not None:
                 win_score = next(s for m, s in gen_candidates if m.candidate_id == winner.candidate_id)
-                if best_macro is None or win_score.macro_score > best_macro + 1e-9:
+                # PR-5: the parent's own measured macro is the bar the winner
+                # must clear; a first-generation candidate equal to the parent
+                # within noise is NOT an improvement (the old `best_macro is
+                # None` branch crowned it unconditionally).
+                if best_macro is None:
+                    baseline_score_macro = baseline_score.macro_score
+                    best_macro = baseline_score_macro
+                if win_score.macro_score > best_macro + 1e-9:
                     best_macro = win_score.macro_score
                     improved = True
                     champion = winner
@@ -342,9 +362,12 @@ class EvolutionSearch:
         cost = CostVector(
             active_components=len(bank.components),
             extra_prompt_tokens=float(cost_raw.get("aux_input_tokens", 0)),
+            # CostLedger emits wall_ms_total (and no extra_llm_calls counter);
+            # read the canonical keys and fall back to the legacy alias so a
+            # partially-wired ledger cannot silently score latency as zero.
             extra_llm_calls=float(cost_raw.get("extra_llm_calls", 0)),
             extra_tool_calls=float(cost_raw.get("extra_tool_calls", 0)),
-            latency_ms=float(cost_raw.get("wall_ms", 0)),
+            latency_ms=float(cost_raw.get("wall_ms_total", cost_raw.get("wall_ms", 0))),
         )
         return CandidateScore(
             candidate_id=mat.candidate_id,

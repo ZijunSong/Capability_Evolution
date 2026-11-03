@@ -15,6 +15,7 @@ class CostLedger:
     n_tasks: int = 0
     base_tool_calls: int = 0
     extra_tool_calls: int = 0
+    extra_llm_calls: int = 0
     actor_input_tokens: int = 0
     actor_output_tokens: int = 0
     aux_input_tokens: int = 0
@@ -43,6 +44,8 @@ class CostLedger:
         self.protocol_valid += int(protocol_valid)
         self.completed += int(completed)
         self.base_tool_calls += cost.tool_calls
+        self.extra_tool_calls += max(0, int(getattr(cost, "extra_tool_calls", 0) or 0))
+        self.extra_llm_calls += cost.extra_llm_calls
         self.actor_input_tokens += cost.actor_input_tokens
         self.actor_output_tokens += cost.actor_output_tokens
         self.aux_input_tokens += cost.aux_input_tokens
@@ -59,6 +62,7 @@ class CostLedger:
             "completed": self.completed,
             "base_tool_calls": self.base_tool_calls,
             "extra_tool_calls": self.extra_tool_calls,
+            "extra_llm_calls": self.extra_llm_calls,
             "actor_input_tokens": self.actor_input_tokens,
             "actor_output_tokens": self.actor_output_tokens,
             "aux_input_tokens": self.aux_input_tokens,

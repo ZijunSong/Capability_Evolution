@@ -200,9 +200,16 @@ def test_repair_retries_carry_feedback(tmp_path):
     proposer = RecordingProposer()
 
     def panel_runner(bank):
+        # PR-5 semantics: the parent (empty bank) is measured too, and a
+        # candidate only becomes champion when it EXCEEDS the parent's macro.
+        # The good patch outperforms the parent 1.0 vs 0.5 here.
+        if bank.bank_digest == empty.bank_digest:
+            value = 0.5
+        else:
+            value = 1.0
         return {
-            "scores": {"toy_file": {"t1": 1.0}},
-            "per_task": {"t1": {"value": 1.0, "terminated_reason": "finish", "trigger_stats": {}}},
+            "scores": {"toy_file": {"t1": value}},
+            "per_task": {"t1": {"value": value, "terminated_reason": "finish", "trigger_stats": {}}},
             "cost": {},
             "protocol_ok": True,
             "budget_ok": True,

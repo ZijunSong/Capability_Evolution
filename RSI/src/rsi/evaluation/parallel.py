@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
 from rsi.contracts.errors import InfraError, ProtocolViolation
+from rsi.runtime.clock import monotonic_ms
 from rsi.contracts.events import CostRecord
 from rsi.contracts.observation import ScoreRecord
 from rsi.evaluation.aggregation import aggregate_scores
@@ -85,15 +86,35 @@ def _build_assignments(
     round_index: int | None,
     max_per_domain: int | None,
     gpu_ids: Sequence[int | None],
+    cfg: Any | None = None,
 ) -> list[TaskAssignment]:
+    """Enumerate (domain, task_id) assignments.
+
+    PR-3 (audit §10.5): when ``cfg`` declares a frozen authoritative split
+    manifest, the manifest — not a fresh directory enumeration — decides the
+    task list; providers only materialize the exact frozen ids.
+    """
     from rsi.environments.registry import global_registry
 
+    resolver = None
+    if cfg is not None:
+        from rsi.evaluation.task_resolver import TaskResolver, install_materialize_task_id
+
+        resolver = TaskResolver(cfg)
     registry = global_registry()
     assignments: list[TaskAssignment] = []
     k = 0
     for domain in domains:
         provider = registry.get(domain).task_provider_factory()
-        tasks = provider.public_tasks(role, round_index=round_index)
+        if resolver is not None and resolver.authoritative:
+            tasks = resolver.resolve(
+                install_materialize_task_id(provider),
+                domain=domain,
+                role=role,
+                round_index=round_index,
+            )
+        else:
+            tasks = provider.public_tasks(role, round_index=round_index)
         if max_per_domain is not None:
             tasks = tasks[:max_per_domain]
         for i, task in enumerate(tasks):
@@ -114,6 +135,9 @@ def _build_assignments(
 # ---------------------------------------------------------------------------
 
 
+_role_tasks_cache: dict[tuple[str, str, Any], tuple] = {}
+
+
 def _panel_worker(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
     gpu_id = payload["gpu_id"]
     if gpu_id is not None:
@@ -123,24 +147,17 @@ def _panel_worker(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
 
     from rsi.config import load_config
     from rsi.contracts.observation import ArtifactRef
-    from rsi.contracts.policy import SamplingParams
     from rsi.environments.registry import global_registry
     from rsi.evaluation.service import resolve_bank
     from rsi.harness.loader import load_bank_ref
     from rsi.providers.factory import build_policy
-    from rsi.runtime.budgets import BudgetSpec
+    from rsi.runtime.factory import build_runtime_parts
     from rsi.runtime.loop import MinimalLoop
 
     cfg = load_config(payload["config_path"])
-    runtime_cfg = cfg.section("runtime")
-    budgets = BudgetSpec(
-        max_actions=int(runtime_cfg.get("max_actions", 20)),
-        max_extra_llm_calls=int(runtime_cfg.get("max_extra_llm_calls", 2)),
-    )
-    sampling = SamplingParams(
-        max_new_tokens=int(runtime_cfg.get("max_new_tokens", 256)),
-        temperature=float(runtime_cfg.get("temperature", 1.0)),
-    )
+    parts = build_runtime_parts(cfg.section("runtime"))
+    budgets, sampling = parts.budgets, parts.sampling
+    context_policy = parts.context_policy
     # Bank/policy construction failures are candidate-caused (e.g. a candidate
     # whose component fails protocol validation): report every assignment as an
     # error record instead of killing the whole pool (which used to abort the
@@ -212,7 +229,28 @@ def _panel_worker(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
             bundle = registry.get(spec["domain"])
             provider = bundle.task_provider_factory()
             scorer = bundle.scorer_factory()
-            tasks = provider.public_tasks(payload["role"], round_index=payload["round_index"])
+            # Resolve the domain's task list once (cache across this worker's
+            # assignments); PR-3 keeps the frozen manifest authoritative here
+            # exactly as in the parent-side enumeration.
+            rkey = (spec["domain"], payload["role"], payload["round_index"])
+            if rkey not in _role_tasks_cache:
+                if payload.get("manifest_authoritative"):
+                    from rsi.evaluation.task_resolver import (
+                        TaskResolver,
+                        install_materialize_task_id,
+                    )
+
+                    _role_tasks_cache[rkey] = TaskResolver(cfg).resolve(
+                        install_materialize_task_id(provider),
+                        domain=spec["domain"],
+                        role=payload["role"],
+                        round_index=payload["round_index"],
+                    )
+                else:
+                    _role_tasks_cache[rkey] = provider.public_tasks(
+                        payload["role"], round_index=payload["round_index"]
+                    )
+            tasks = _role_tasks_cache[rkey]
             if payload["max_per_domain"] is not None:
                 tasks = tasks[: payload["max_per_domain"]]
             task = next(t for t in tasks if t.task_id == spec["task_id"])
@@ -223,11 +261,12 @@ def _panel_worker(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
                 bank=bank,
                 budgets=budgets,
                 sampling=sampling,
+                context_policy=context_policy,
                 campaign_id=payload["campaign_id"],
             )
-            t0 = time.perf_counter()
+            t0 = monotonic_ms()
             result = loop.run_episode(task, seed=payload["seed"] + spec["task_index"])
-            wall_ms = (time.perf_counter() - t0) * 1000.0
+            wall_ms = monotonic_ms() - t0
             artifact = result.final_artifact or ArtifactRef(ref_id=task.task_id, kind="answer")
             record = scorer.evaluate(artifact, provider.private_ref(task.task_id))
             from rsi.contracts.events import total_cost
@@ -322,6 +361,7 @@ def run_panel_mp(
         round_index=round_index,
         max_per_domain=max_per_domain,
         gpu_ids=gpu_plan,
+        cfg=cfg,
     )
     if not assignments:
         suite = aggregate_scores([], aggregate=str(suite_cfg.get("aggregate", "equal_domain_macro")))
@@ -343,6 +383,9 @@ def run_panel_mp(
             "round_index": round_index,
             "max_per_domain": max_per_domain,
             "campaign_id": campaign_id or cfg.campaign_id,
+            "manifest_authoritative": bool(
+                (cfg.section("suite") or {}).get("manifest_is_authoritative", False)
+            ),
             "gpu_id": chunk_gpu[w],
             "assignments": chunks[w],
         }
@@ -394,6 +437,9 @@ def run_panel_mp(
             per_task[record.task_id] = {
                 "domain": record.domain,
                 "value": record.value,
+                "metric_name": record.metric_name,
+                "success": record.success,
+                "details": dict(record.details),
                 "terminated_reason": item["terminated_reason"],
                 "n_decisions": item["n_decisions"],
                 "wall_ms": item["wall_ms"],

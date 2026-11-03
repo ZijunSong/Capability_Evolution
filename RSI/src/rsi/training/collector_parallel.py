@@ -38,19 +38,13 @@ def _train_rollout_worker(payload: Mapping[str, Any]) -> dict[str, Any]:
     from rsi.opd.pipeline import collect_opd_rows
     from rsi.opd.records import build_rl_row
     from rsi.providers.factory import build_policy
-    from rsi.runtime.budgets import BudgetSpec
+    from rsi.runtime.factory import build_runtime_parts
     from rsi.runtime.loop import MinimalLoop
 
     cfg = load_config(payload["config_path"])
-    runtime_cfg = cfg.section("runtime")
-    budgets = BudgetSpec(
-        max_actions=int(runtime_cfg.get("max_actions", 20)),
-        max_extra_llm_calls=int(runtime_cfg.get("max_extra_llm_calls", 2)),
-    )
-    sampling = SamplingParams(
-        max_new_tokens=int(runtime_cfg.get("max_new_tokens", 256)),
-        temperature=float(runtime_cfg.get("temperature", 1.0)),
-    )
+    parts = build_runtime_parts(cfg.section("runtime"))
+    budgets, sampling = parts.budgets, parts.sampling
+    context_policy = parts.context_policy
     device = "cuda:0" if gpu_id is not None else "cpu"
     try:
         policy = build_policy(cfg, device=device, provider_override=payload.get("provider"))
@@ -93,6 +87,7 @@ def _train_rollout_worker(payload: Mapping[str, Any]) -> dict[str, Any]:
                 bank=student_bank,
                 budgets=budgets,
                 sampling=sampling,
+                context_policy=context_policy,
                 campaign_id=payload["campaign_id"],
                 batch_index=payload["batch_index"],
             )
