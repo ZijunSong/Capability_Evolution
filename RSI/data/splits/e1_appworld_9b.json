@@ -1,0 +1,124 @@
+{
+  "schema_version": "rsi_split_v1",
+  "campaign_id": "e1_appworld_9b",
+  "official_split_source": "appworld-data-0.2.0 datasets/*.txt",
+  "manifests": {
+    "appworld": {
+      "manifest_id": "e1_appworld:appworld",
+      "domain": "appworld",
+      "assignments": [
+        {
+          "role": "work_train",
+          "task_ids": [
+            "appworld:07b42fd_1",
+            "appworld:229360a_1",
+            "appworld:22cc237_1",
+            "appworld:27e1026_1",
+            "appworld:287e338_1",
+            "appworld:29caf6f_1",
+            "appworld:2a163ab_1",
+            "appworld:302c169_1",
+            "appworld:34d9492_1",
+            "appworld:3c13f5a_1",
+            "appworld:60d0b5b_1",
+            "appworld:6104387_1"
+          ],
+          "round_index": null
+        },
+        {
+          "role": "harness_select",
+          "task_ids": [
+            "appworld:0d8a4ee_1",
+            "appworld:23cf851_1",
+            "appworld:37a8675_1",
+            "appworld:383cbac_1",
+            "appworld:396c5a2_1",
+            "appworld:3ab5b8b_1",
+            "appworld:4ec8de5_1",
+            "appworld:4fab96f_1",
+            "appworld:50e1ac9_1",
+            "appworld:530b157_1",
+            "appworld:57c3486_1",
+            "appworld:6171bbc_1"
+          ],
+          "round_index": null
+        }
+      ],
+      "groups": {
+        "appworld:07b42fd": [
+          "appworld:07b42fd_1"
+        ],
+        "appworld:229360a": [
+          "appworld:229360a_1"
+        ],
+        "appworld:22cc237": [
+          "appworld:22cc237_1"
+        ],
+        "appworld:27e1026": [
+          "appworld:27e1026_1"
+        ],
+        "appworld:287e338": [
+          "appworld:287e338_1"
+        ],
+        "appworld:29caf6f": [
+          "appworld:29caf6f_1"
+        ],
+        "appworld:2a163ab": [
+          "appworld:2a163ab_1"
+        ],
+        "appworld:302c169": [
+          "appworld:302c169_1"
+        ],
+        "appworld:34d9492": [
+          "appworld:34d9492_1"
+        ],
+        "appworld:3c13f5a": [
+          "appworld:3c13f5a_1"
+        ],
+        "appworld:60d0b5b": [
+          "appworld:60d0b5b_1"
+        ],
+        "appworld:6104387": [
+          "appworld:6104387_1"
+        ],
+        "appworld:0d8a4ee": [
+          "appworld:0d8a4ee_1"
+        ],
+        "appworld:23cf851": [
+          "appworld:23cf851_1"
+        ],
+        "appworld:37a8675": [
+          "appworld:37a8675_1"
+        ],
+        "appworld:383cbac": [
+          "appworld:383cbac_1"
+        ],
+        "appworld:396c5a2": [
+          "appworld:396c5a2_1"
+        ],
+        "appworld:3ab5b8b": [
+          "appworld:3ab5b8b_1"
+        ],
+        "appworld:4ec8de5": [
+          "appworld:4ec8de5_1"
+        ],
+        "appworld:4fab96f": [
+          "appworld:4fab96f_1"
+        ],
+        "appworld:50e1ac9": [
+          "appworld:50e1ac9_1"
+        ],
+        "appworld:530b157": [
+          "appworld:530b157_1"
+        ],
+        "appworld:57c3486": [
+          "appworld:57c3486_1"
+        ],
+        "appworld:6171bbc": [
+          "appworld:6171bbc_1"
+        ]
+      },
+      "digest": "3b5eca637ded0bc9e10949a04a2d43a223d8d4082bd62c647226b0eca37d82a3"
+    }
+  }
+}

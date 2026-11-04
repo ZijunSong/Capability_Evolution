@@ -1,0 +1,124 @@
+{
+  "schema_version": "rsi_split_v1",
+  "campaign_id": "e1_alfworld_9b",
+  "official_split_source": "alfworld frozen_manifest tree_digest=68e042bdfb0b80e6",
+  "manifests": {
+    "alfworld": {
+      "manifest_id": "e1_alfworld:alfworld",
+      "domain": "alfworld",
+      "assignments": [
+        {
+          "role": "work_train",
+          "task_ids": [
+            "alfworld:train/json_2.1.1/train/look_at_obj_in_light-Bowl-None-DeskLamp-316/trial_T20190908_230635_560113",
+            "alfworld:train/json_2.1.1/train/look_at_obj_in_light-Box-None-DeskLamp-205/trial_T20190907_074438_715192",
+            "alfworld:train/json_2.1.1/train/look_at_obj_in_light-Laptop-None-DeskLamp-328/trial_T20190908_201601_178214",
+            "alfworld:train/json_2.1.1/train/pick_and_place_simple-AlarmClock-None-SideTable-329/trial_T20190909_013608_170798",
+            "alfworld:train/json_2.1.1/train/pick_and_place_simple-Candle-None-Toilet-427/trial_T20190909_030439_155103",
+            "alfworld:train/json_2.1.1/train/pick_and_place_simple-CreditCard-None-ArmChair-206/trial_T20190909_023729_905485",
+            "alfworld:train/json_2.1.1/train/pick_and_place_simple-CreditCard-None-Sofa-216/trial_T20190909_110532_392327",
+            "alfworld:train/json_2.1.1/train/pick_and_place_simple-KeyChain-None-SideTable-309/trial_T20190908_214938_408925",
+            "alfworld:train/json_2.1.1/train/pick_and_place_simple-Pen-None-SideTable-329/trial_T20190907_133455_179363",
+            "alfworld:train/json_2.1.1/train/pick_and_place_simple-Pillow-None-Sofa-221/trial_T20190908_175303_977893",
+            "alfworld:train/json_2.1.1/train/pick_clean_then_place_in_recep-Fork-None-CounterTop-23/trial_T20190909_011702_864408",
+            "alfworld:train/json_2.1.1/train/pick_clean_then_place_in_recep-SoapBar-None-Toilet-428/trial_T20190907_041404_517664"
+          ],
+          "round_index": null
+        },
+        {
+          "role": "harness_select",
+          "task_ids": [
+            "alfworld:train/json_2.1.1/train/look_at_obj_in_light-Book-None-DeskLamp-302/trial_T20190909_085155_106731",
+            "alfworld:train/json_2.1.1/train/look_at_obj_in_light-Bowl-None-DeskLamp-305/trial_T20190908_233020_632529",
+            "alfworld:train/json_2.1.1/train/pick_and_place_simple-Candle-None-Toilet-405/trial_T20190908_131501_794150",
+            "alfworld:train/json_2.1.1/train/pick_and_place_simple-CellPhone-None-Bed-321/trial_T20190908_231504_321117",
+            "alfworld:train/json_2.1.1/train/pick_and_place_simple-CellPhone-None-Bed-324/trial_T20190907_233803_611728",
+            "alfworld:train/json_2.1.1/train/pick_and_place_simple-Knife-None-SideTable-3/trial_T20190906_214318_430974",
+            "alfworld:train/json_2.1.1/train/pick_and_place_simple-Mug-None-SideTable-329/trial_T20190909_032329_497305",
+            "alfworld:train/json_2.1.1/train/pick_and_place_simple-Tomato-None-Microwave-13/trial_T20190908_125158_098734",
+            "alfworld:train/json_2.1.1/train/pick_clean_then_place_in_recep-Cloth-None-Drawer-426/trial_T20190909_100612_910742",
+            "alfworld:train/json_2.1.1/train/pick_clean_then_place_in_recep-Cloth-None-Dresser-413/trial_T20190906_194709_189668",
+            "alfworld:train/json_2.1.1/train/pick_clean_then_place_in_recep-Kettle-None-Shelf-7/trial_T20190907_200522_086856",
+            "alfworld:train/json_2.1.1/train/pick_clean_then_place_in_recep-Mug-None-CoffeeMachine-26/trial_T20190907_233121_306180"
+          ],
+          "round_index": null
+        }
+      ],
+      "groups": {
+        "alfworld:train/look_at_obj_in_light-Bowl-None-DeskLamp-316": [
+          "alfworld:train/json_2.1.1/train/look_at_obj_in_light-Bowl-None-DeskLamp-316/trial_T20190908_230635_560113"
+        ],
+        "alfworld:train/look_at_obj_in_light-Box-None-DeskLamp-205": [
+          "alfworld:train/json_2.1.1/train/look_at_obj_in_light-Box-None-DeskLamp-205/trial_T20190907_074438_715192"
+        ],
+        "alfworld:train/look_at_obj_in_light-Laptop-None-DeskLamp-328": [
+          "alfworld:train/json_2.1.1/train/look_at_obj_in_light-Laptop-None-DeskLamp-328/trial_T20190908_201601_178214"
+        ],
+        "alfworld:train/pick_and_place_simple-AlarmClock-None-SideTable-329": [
+          "alfworld:train/json_2.1.1/train/pick_and_place_simple-AlarmClock-None-SideTable-329/trial_T20190909_013608_170798"
+        ],
+        "alfworld:train/pick_and_place_simple-Candle-None-Toilet-427": [
+          "alfworld:train/json_2.1.1/train/pick_and_place_simple-Candle-None-Toilet-427/trial_T20190909_030439_155103"
+        ],
+        "alfworld:train/pick_and_place_simple-CreditCard-None-ArmChair-206": [
+          "alfworld:train/json_2.1.1/train/pick_and_place_simple-CreditCard-None-ArmChair-206/trial_T20190909_023729_905485"
+        ],
+        "alfworld:train/pick_and_place_simple-CreditCard-None-Sofa-216": [
+          "alfworld:train/json_2.1.1/train/pick_and_place_simple-CreditCard-None-Sofa-216/trial_T20190909_110532_392327"
+        ],
+        "alfworld:train/pick_and_place_simple-KeyChain-None-SideTable-309": [
+          "alfworld:train/json_2.1.1/train/pick_and_place_simple-KeyChain-None-SideTable-309/trial_T20190908_214938_408925"
+        ],
+        "alfworld:train/pick_and_place_simple-Pen-None-SideTable-329": [
+          "alfworld:train/json_2.1.1/train/pick_and_place_simple-Pen-None-SideTable-329/trial_T20190907_133455_179363"
+        ],
+        "alfworld:train/pick_and_place_simple-Pillow-None-Sofa-221": [
+          "alfworld:train/json_2.1.1/train/pick_and_place_simple-Pillow-None-Sofa-221/trial_T20190908_175303_977893"
+        ],
+        "alfworld:train/pick_clean_then_place_in_recep-Fork-None-CounterTop-23": [
+          "alfworld:train/json_2.1.1/train/pick_clean_then_place_in_recep-Fork-None-CounterTop-23/trial_T20190909_011702_864408"
+        ],
+        "alfworld:train/pick_clean_then_place_in_recep-SoapBar-None-Toilet-428": [
+          "alfworld:train/json_2.1.1/train/pick_clean_then_place_in_recep-SoapBar-None-Toilet-428/trial_T20190907_041404_517664"
+        ],
+        "alfworld:train/look_at_obj_in_light-Book-None-DeskLamp-302": [
+          "alfworld:train/json_2.1.1/train/look_at_obj_in_light-Book-None-DeskLamp-302/trial_T20190909_085155_106731"
+        ],
+        "alfworld:train/look_at_obj_in_light-Bowl-None-DeskLamp-305": [
+          "alfworld:train/json_2.1.1/train/look_at_obj_in_light-Bowl-None-DeskLamp-305/trial_T20190908_233020_632529"
+        ],
+        "alfworld:train/pick_and_place_simple-Candle-None-Toilet-405": [
+          "alfworld:train/json_2.1.1/train/pick_and_place_simple-Candle-None-Toilet-405/trial_T20190908_131501_794150"
+        ],
+        "alfworld:train/pick_and_place_simple-CellPhone-None-Bed-321": [
+          "alfworld:train/json_2.1.1/train/pick_and_place_simple-CellPhone-None-Bed-321/trial_T20190908_231504_321117"
+        ],
+        "alfworld:train/pick_and_place_simple-CellPhone-None-Bed-324": [
+          "alfworld:train/json_2.1.1/train/pick_and_place_simple-CellPhone-None-Bed-324/trial_T20190907_233803_611728"
+        ],
+        "alfworld:train/pick_and_place_simple-Knife-None-SideTable-3": [
+          "alfworld:train/json_2.1.1/train/pick_and_place_simple-Knife-None-SideTable-3/trial_T20190906_214318_430974"
+        ],
+        "alfworld:train/pick_and_place_simple-Mug-None-SideTable-329": [
+          "alfworld:train/json_2.1.1/train/pick_and_place_simple-Mug-None-SideTable-329/trial_T20190909_032329_497305"
+        ],
+        "alfworld:train/pick_and_place_simple-Tomato-None-Microwave-13": [
+          "alfworld:train/json_2.1.1/train/pick_and_place_simple-Tomato-None-Microwave-13/trial_T20190908_125158_098734"
+        ],
+        "alfworld:train/pick_clean_then_place_in_recep-Cloth-None-Drawer-426": [
+          "alfworld:train/json_2.1.1/train/pick_clean_then_place_in_recep-Cloth-None-Drawer-426/trial_T20190909_100612_910742"
+        ],
+        "alfworld:train/pick_clean_then_place_in_recep-Cloth-None-Dresser-413": [
+          "alfworld:train/json_2.1.1/train/pick_clean_then_place_in_recep-Cloth-None-Dresser-413/trial_T20190906_194709_189668"
+        ],
+        "alfworld:train/pick_clean_then_place_in_recep-Kettle-None-Shelf-7": [
+          "alfworld:train/json_2.1.1/train/pick_clean_then_place_in_recep-Kettle-None-Shelf-7/trial_T20190907_200522_086856"
+        ],
+        "alfworld:train/pick_clean_then_place_in_recep-Mug-None-CoffeeMachine-26": [
+          "alfworld:train/json_2.1.1/train/pick_clean_then_place_in_recep-Mug-None-CoffeeMachine-26/trial_T20190907_233121_306180"
+        ]
+      },
+      "digest": "0a13f125192b972fb1c93e8ab8ea2deb9bb3d226c47a93d48916ba9f12a74e22"
+    }
+  }
+}

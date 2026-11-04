@@ -500,11 +500,11 @@ class CampaignController:
                     "n_decisions": m.get("n_decisions", 0),
                     "wall_ms": m.get("wall_ms", 0.0),
                     "component_errors": m.get("component_errors") or {},
+                    "steps": m.get("steps") or [],
                 }
                 for tid, m in result.per_task.items()
             },
             "cost": result.costs.to_json(),
-            "protocol_ok": result.costs.infra_failures == 0,
             "budget_ok": True,
             "policy_digest": policy.policy_artifact.policy_id,
         }

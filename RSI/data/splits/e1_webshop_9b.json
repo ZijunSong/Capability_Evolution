@@ -1,0 +1,124 @@
+{
+  "schema_version": "rsi_split_v1",
+  "campaign_id": "e1_webshop_9b",
+  "official_split_source": "webshop frozen_goals.json (official human goals, asin-grouped)",
+  "manifests": {
+    "webshop": {
+      "manifest_id": "e1_webshop:webshop",
+      "domain": "webshop",
+      "assignments": [
+        {
+          "role": "work_train",
+          "task_ids": [
+            "webshop:g05912",
+            "webshop:g07602",
+            "webshop:g04388",
+            "webshop:g07025",
+            "webshop:g11198",
+            "webshop:g08732",
+            "webshop:g09324",
+            "webshop:g09755",
+            "webshop:g11271",
+            "webshop:g01653",
+            "webshop:g10067",
+            "webshop:g06651"
+          ],
+          "round_index": null
+        },
+        {
+          "role": "harness_select",
+          "task_ids": [
+            "webshop:g02742",
+            "webshop:g07863",
+            "webshop:g07507",
+            "webshop:g05013",
+            "webshop:g09442",
+            "webshop:g00821",
+            "webshop:g05234",
+            "webshop:g00870",
+            "webshop:g07359",
+            "webshop:g08140",
+            "webshop:g09904",
+            "webshop:g04025"
+          ],
+          "round_index": null
+        }
+      ],
+      "groups": {
+        "webshop:B0000645C9": [
+          "webshop:g05912"
+        ],
+        "webshop:B0000X0W1O": [
+          "webshop:g07602"
+        ],
+        "webshop:B00083HDGS": [
+          "webshop:g04388"
+        ],
+        "webshop:B000E0QFSC": [
+          "webshop:g07025"
+        ],
+        "webshop:B000ER1RCY": [
+          "webshop:g11198"
+        ],
+        "webshop:B000FZU0N2": [
+          "webshop:g08732"
+        ],
+        "webshop:B000GCQ04C": [
+          "webshop:g09324"
+        ],
+        "webshop:B000GW67G8": [
+          "webshop:g09755"
+        ],
+        "webshop:B000QSOC4Q": [
+          "webshop:g11271"
+        ],
+        "webshop:B000R9X6LO": [
+          "webshop:g01653"
+        ],
+        "webshop:B000SATGXE": [
+          "webshop:g10067"
+        ],
+        "webshop:B000SKP2B4": [
+          "webshop:g06651"
+        ],
+        "webshop:B0000533G9": [
+          "webshop:g02742"
+        ],
+        "webshop:B00028OT8Y": [
+          "webshop:g07863"
+        ],
+        "webshop:B0006NXZ7G": [
+          "webshop:g07507"
+        ],
+        "webshop:B0006V7Y8Y": [
+          "webshop:g05013"
+        ],
+        "webshop:B000774DQI": [
+          "webshop:g09442"
+        ],
+        "webshop:B0009NZQRU": [
+          "webshop:g00821"
+        ],
+        "webshop:B0009XNWVC": [
+          "webshop:g05234"
+        ],
+        "webshop:B000A33KQ8": [
+          "webshop:g00870"
+        ],
+        "webshop:B000C20ZSS": [
+          "webshop:g07359"
+        ],
+        "webshop:B000GG0BPW": [
+          "webshop:g08140"
+        ],
+        "webshop:B000HTKOMS": [
+          "webshop:g09904"
+        ],
+        "webshop:B000IDV3UA": [
+          "webshop:g04025"
+        ]
+      },
+      "digest": "4a46047dac35ce46152d4bdf142c9d626162ae39fb779ac33c911305f844219e"
+    }
+  }
+}

@@ -55,6 +55,32 @@ class EvalRunResult:
         }
 
 
+def _bounded_steps(trace, *, max_steps: int = 30, max_chars: int = 400) -> list[dict]:
+    """Bounded per-step evidence from the episode trace: action text +
+    observation head/tail.  Caps keep one panel's json manageable (30 steps x
+    400 chars ≈ 12KB/task worst case)."""
+    steps: list[dict] = []
+    for ev in list(trace.events)[:max_steps]:
+        entry: dict = {"order": ev.order, "kind": ev.event_kind.value}
+        if ev.action is not None:
+            from rsi.contracts.action import encode_action
+
+            try:
+                entry["action"] = encode_action(ev.action)[:max_chars]
+            except Exception:  # noqa: BLE001 - encode is best-effort
+                entry["action"] = None
+        if ev.observation is not None:
+            content = str(ev.observation.content or "")
+            entry["obs_head"] = content[: max_chars // 2]
+            if len(content) > max_chars // 2:
+                entry["obs_tail"] = content[-(max_chars // 4):]
+            entry["obs_len"] = len(content)
+            if getattr(ev.observation, "ok", True) is False:
+                entry["obs_ok"] = False
+        steps.append(entry)
+    return steps
+
+
 def resolve_bank(harness: str, bank_ref: str | None) -> LoadedBank:
     if harness == "minimal":
         return load_empty_bank()
@@ -156,6 +182,11 @@ def run_panel(
                 "policy_digest": policy.policy_artifact.policy_id,
                 "synthetic": record.synthetic,
                 "component_errors": dict(result.component_errors),
+                # E1-pre (guide §9): bounded real-step evidence — the actual
+                # actions and observations (truncated) so the evolver can see
+                # WHAT failed, not just that it failed.  Persisted per task in
+                # the eval json; EvidenceStore reads these directly.
+                "steps": _bounded_steps(result.trace),
             }
             env.close()
 

@@ -271,6 +271,8 @@ def _panel_worker(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
             record = scorer.evaluate(artifact, provider.private_ref(task.task_id))
             from rsi.contracts.events import total_cost
 
+            from rsi.evaluation.service import _bounded_steps
+
             out.append(
                 {
                     "record": {
@@ -287,6 +289,7 @@ def _panel_worker(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
                     "wall_ms": wall_ms,
                     "terminated_reason": result.trace.terminated_reason,
                     "n_decisions": len(result.trace.decisions),
+                    "steps": _bounded_steps(result.trace),
                     "bank_digest": bank.bank_digest,
                     "policy_digest": policy.policy_artifact.policy_id,
                     "component_errors": dict(result.component_errors),
@@ -440,6 +443,7 @@ def run_panel_mp(
                 "metric_name": record.metric_name,
                 "success": record.success,
                 "details": dict(record.details),
+                "steps": item.get("steps") or [],
                 "terminated_reason": item["terminated_reason"],
                 "n_decisions": item["n_decisions"],
                 "wall_ms": item["wall_ms"],

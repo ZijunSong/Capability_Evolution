@@ -82,16 +82,23 @@ def run_evolve(cfg: CampaignConfig, *, initial_bank_ref: str | None = None) -> d
         success_cases: list[dict[str, Any]] = []
         for tid, m in result.per_task.items():
             failed = bool(m.get("component_errors")) or float(m.get("value") or 0.0) < 1e-9
+            # Real steps first (guide §9): the proposer must see the actual
+            # actions/observations, telemetry only as context.
+            step_lines = []
+            for s in (m.get("steps") or [])[:8]:
+                act = s.get("action") or ""
+                obs = s.get("obs_head") or ""
+                err = "" if s.get("obs_ok", True) else " [OBS_ERROR]"
+                step_lines.append(f"step{s['order']}: {act[:160]} -> {obs[:160]}{err}")
             fragment = (
-                f"terminated={m.get('terminated_reason')} "
-                f"n_decisions={m.get('n_decisions', 0)} "
-                f"wall_ms={m.get('wall_ms', 0):.0f} "
-                f"value={m.get('value')} "
-                f"component_effects={result_component_effects(m)}"
+                f"terminated={m.get('terminated_reason')} value={m.get('value')} "
+                f"n_decisions={m.get('n_decisions', 0)} :: "
+                + " | ".join(step_lines)
+                + f" :: component_effects={result_component_effects(m)}"
             )
             case = {
                 "task_id": tid,
-                "fragment": fragment,
+                "fragment": fragment[:1400],
                 "n_decisions": m.get("n_decisions", 0),
                 "error_kind": next(iter(m.get("component_errors") or {}), None),
             }
@@ -148,6 +155,7 @@ def run_evolve(cfg: CampaignConfig, *, initial_bank_ref: str | None = None) -> d
                 "n_decisions": meta.get("n_decisions", 0),
                 "wall_ms": meta.get("wall_ms", 0.0),
                 "component_errors": meta.get("component_errors") or {},
+                "steps": meta.get("steps") or [],
             }
             for tid, meta in result.per_task.items()
         }
