@@ -43,3 +43,12 @@
 2. **job 内验证 webshop scorer 链路**：no-op panel 一次。
 3. **panel_runner 结果持久化**（parent per_task 落盘）。
 4. 修完后统一重提失败的域。
+
+---
+
+## 补充（2026-11-04 晚：appworld-9b r3 收官）
+
+- **appworld-9b r3**（3gwab，8.6h）：11 个合法候选 **全部 macro 0.0**，PLATEAU 无 champion。判定为**真零分**而非打分链路断裂：E0 同链路 G1-G4 全 PASS 且 0/16 状态变更；webshop 同管线能打出 0.45。
+- **候选主题多样性坍塌**：11 个组件全是 format/action guard 家族（format_guard×3、action_sanitizer×2、safety_guard×2、action_guard、format_validator、completion_gate、action_formatter、action_validator）——与 webshop-27b 的"6/6 同名 error_tracker"同款。proposer 在 analysis 片段全是 parse/格式错误时只会提出"格式修复"组件，而 E0 已证明瓶颈在 API 使用（认证/读改链），格式守卫不改变 goal 完成度。
+- **配置语义澄清**：`dev_panel_per_domain: 0` 在 evolve 路径（`if max_per_domain`）本就等于全量面板，v3 注释"0 = 全量"在 evolve 路径是对的；webshop r9 champion 0.45 与该值无冲突。已把 v3 appworld 配置改为 `null` 并注明语义差异（eval/campaign 路径的 int 0 才有空切片问题）。
+- **修复方向升级**：仅修 proposer 格式不够——需要让 analysis 片段区分"格式错误"vs"API 使用失败"（认证错误/找不到实体/只读不写），否则进化器永远在格式守卫家族里打转。E0 的 0 状态变更 + env doc 的 api_docs 发现命令应成为 packet 的显式上下文。

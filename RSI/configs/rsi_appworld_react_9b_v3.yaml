@@ -65,7 +65,7 @@ evolution:
   max_candidate_evaluations: 16
   plateau_patience: 3
   editable_scope: bank_only
-  dev_panel_per_domain: 0
+  dev_panel_per_domain: null  # 0 was an int -> empty slice -> empty panel (0.0 artifact); null = full manifest panel
   frozen_thresholds: false
   exact_cache: true
   ast_near_duplicate_check: true
