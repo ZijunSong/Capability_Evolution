@@ -1,0 +1,14 @@
+{
+ "baseline_minimal": {
+  "macro": 0.05555555555555555,
+  "tasks": 12,
+  "steps": 68,
+  "path": "/mnt/songzijun/Capability_Evolution/RSI/docs/trace_samples/traces_baseline_minimal.json"
+ },
+ "champion_bank": {
+  "macro": 0.4527777777777778,
+  "tasks": 12,
+  "steps": 143,
+  "path": "/mnt/songzijun/Capability_Evolution/RSI/docs/trace_samples/traces_champion_bank.json"
+ }
+}

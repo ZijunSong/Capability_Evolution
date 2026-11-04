@@ -157,3 +157,63 @@ def test_prune_semantics(tmp_path):
     res_bare = _run(ScriptedPolicy(reader_only_plan), load_empty_bank(), task)
     assert res_pruned.final_artifact.digest != digest_of(expected)  # no synthesis
     assert res_pruned.final_artifact.digest == res_bare.final_artifact.digest
+
+
+# --- evimr fix (2026-11-04): flat-file envelope entrypoint derivation ---
+
+_PARENT = "deadbeef" * 8
+
+
+def test_flat_envelope_without_entrypoint_derives_module_class():
+    """27B 自提议实证：吐 {path, content} 无 entrypoint。源码有 class 时
+    机械推导 components.<mod>:<Class>，不再拒成 no-op。"""
+    from rsi.evolution.proposer import parse_candidate_patch
+    import json as _json
+
+    src = (
+        "from rsi.harness.component import Component\n\n"
+        "class RetryGuard(Component):\n"
+        "    def initialize(self, ctx):\n"
+        "        pass\n"
+    )
+    text = _json.dumps({"path": "components/retry_guard.py", "content": src})
+    patch = parse_candidate_patch(text, parent_bank_digest=_PARENT)
+    assert patch.operation == "add"
+    assert patch.manifest_patch["entrypoint"] == "components.retry_guard:RetryGuard"
+    assert patch.manifest_patch["id"] == "retry_guard"
+    assert patch.files[0].path == "components/retry_guard.py"
+
+
+def test_flat_envelope_bare_classname_entrypoint_normalized():
+    """模型给了 entrypoint 但是裸类名时保持原样通过（loader 的 module:Class
+    校验仍会拦错误格式；这里只验证 coerce 不吞掉已有 entrypoint）。"""
+    from rsi.evolution.proposer import parse_candidate_patch
+    import json as _json
+
+    src = "class Foo(Component):\n    pass\n"
+    text = _json.dumps({"path": "components/x.py", "content": src, "entrypoint": "Foo"})
+    patch = parse_candidate_patch(text, parent_bank_digest=_PARENT)
+    assert patch.manifest_patch["entrypoint"] == "Foo"
+
+
+def test_flat_envelope_without_class_still_rejected():
+    """源码里没有顶层 class = 无法注册，维持 fh46b no-op 防线。"""
+    from rsi.evolution.proposer import parse_candidate_patch
+    from rsi.evolution.proposer import CandidateInvalid
+    import json as _json
+    import pytest
+
+    text = _json.dumps({"path": "components/plain.py", "content": "x = 1\n"})
+    with pytest.raises(CandidateInvalid, match="missing entrypoint"):
+        parse_candidate_patch(text, parent_bank_digest=_PARENT)
+
+
+def test_derive_entrypoint_rejects_bad_paths():
+    from rsi.evolution.proposer import _derive_entrypoint
+
+    assert _derive_entrypoint("components/plain.txt", "class A: pass") is None
+    assert _derive_entrypoint("components/with space.py", "class A: pass") is None
+    # 缩进体内的 class 不算入口
+    assert _derive_entrypoint("components/nested.py", "def f():\n    class Inner: pass\n") is None
+    # 顶层 class 正常
+    assert _derive_entrypoint("a/b.py", "import os\n\nclass Top(Cls):\n    pass\n") == "a.b:Top"

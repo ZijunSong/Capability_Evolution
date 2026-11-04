@@ -4,8 +4,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENTRY="${SCRIPT_DIR}/entry_e1_evolve_webshop_9B_8gpu_20261104_r1.sh"
 test -f "${ENTRY}"
 cml custom_train submit \
-  --job_name rsi-e1-evolve-webshop-9b-8gpu-20261104-r1 \
-  --description "E1 9B appworld evolution (guide §12): 8 gens x 2 candidates, frozen 12+12 official-gated manifest, H0-ReAct base (E0 G1-G4 passed). Real action/observation steps flow into the evolution packet (E1-pre steps persistence); dedup + PROPOSAL_STALLED; baseline retained. 7 panel workers + proposer on GPU7. OUT runs/e0_e1_appworld_9b_r2." \
+  --job_name rsi-e1-evolve-webshop-9b-8gpu-20261104-r8 \
+  --description "E1 9B webshop evolution (guide §12): 8 gens x 2 candidates, frozen 12+12 official-gated manifest, H0-ReAct base (E0 G1-G4 passed). r8: +data symlink alongside search_engine (n2bxo r7: load_products opens <SP>/data/items_ins_v2+items_human_ins via BASE_DIR too -> bare FileNotFoundError persisted). All BASE_DIR-external paths now symlinked; verified locally. OUT runs/e1_webshop_9b_r9." \
   --access_type PRIVATE --tag MemQA-General-V5 \
   --image_url micr.cloud.mioffice.cn/songzijun/songzijun-cto:3050749-songzijun-cto \
   --framework pytorch --queue_id 2334 --priority 8 --preemptible=false \

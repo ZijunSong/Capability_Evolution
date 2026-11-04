@@ -1,0 +1,446 @@
+{
+  "archive_root": "/mnt/songzijun/Capability_Evolution/RSI/runs/e1_webshop_9b_r9/evolve/archive",
+  "champion": {
+    "bank_digest": "ae6f28f51b0f9dcd722ebd4e22d76f883f3c3f9d646ed08f4c6944f1241379ed",
+    "bank_dir": "/mnt/songzijun/Capability_Evolution/RSI/runs/e1_webshop_9b_r9/candidates/accbce6a59b49753182a073637721a77fba66055c3d7f914627c981c34e94aef/bank",
+    "candidate_id": "accbce6a59b49753182a073637721a77fba66055c3d7f914627c981c34e94aef",
+    "hypothesis": ""
+  },
+  "command": "evolve",
+  "config_digest": "831ecadabf26e4bfca05176442ce824979ba97e0f2e9e6dfedd33da5951a2927",
+  "evaluated_candidates": 11,
+  "generations": [
+    {
+      "candidate_ids": [
+        "acb0dbe5dd99a1f318d5bf8aec80f247f485b92775de346f5b876e6ef6fa3c6d"
+      ],
+      "champion_bank_digest": "d60e3b6cd4b2597e466198524e4093a2424f82d62262b2210aa9d15dd3146889",
+      "champion_id": "acb0dbe5dd99a1f318d5bf8aec80f247f485b92775de346f5b876e6ef6fa3c6d",
+      "diagnosis": {
+        "cost_stats": {},
+        "failure_categories": [
+          {
+            "count": 12,
+            "example_task_ids": [
+              "webshop:g00821",
+              "webshop:g00870",
+              "webshop:g02742"
+            ],
+            "kind": "finish",
+            "mechanism_summary": "inspect example traces for the mechanism"
+          }
+        ],
+        "generation": 0,
+        "notes": "",
+        "regression_task_ids": [],
+        "success_sample_task_ids": [],
+        "trigger_stats": {}
+      },
+      "generation": 0,
+      "parent_bank_digest": "1beba6d6d709b9b5f6918923d151604cf5c997709a4ce63f5dd49dda9e4f6130",
+      "selection": {
+        "champion_id": "acb0dbe5dd99a1f318d5bf8aec80f247f485b92775de346f5b876e6ef6fa3c6d",
+        "ordered": [
+          "acb0dbe5dd99a1f318d5bf8aec80f247f485b92775de346f5b876e6ef6fa3c6d",
+          "baseline:1beba6d6d709"
+        ],
+        "reason": "best_within_tolerance=0.01; winner cost=681.026 macro=0.0278",
+        "tolerance": 0.01
+      },
+      "stopped_reason": null
+    },
+    {
+      "candidate_ids": [
+        "b9434dffdcba64560af07db2574222b02579400fda8595c64eff593eb8f17569",
+        "d3b6fbe3ad7cb1ea327f11f4283c08858eb3eac27bbfd9c68a55c10b8cff9d4a"
+      ],
+      "champion_bank_digest": "d60e3b6cd4b2597e466198524e4093a2424f82d62262b2210aa9d15dd3146889",
+      "champion_id": "acb0dbe5dd99a1f318d5bf8aec80f247f485b92775de346f5b876e6ef6fa3c6d",
+      "diagnosis": {
+        "cost_stats": {},
+        "failure_categories": [
+          {
+            "count": 9,
+            "example_task_ids": [
+              "webshop:g00821",
+              "webshop:g00870",
+              "webshop:g04025"
+            ],
+            "kind": "finish",
+            "mechanism_summary": "inspect example traces for the mechanism"
+          },
+          {
+            "count": 3,
+            "example_task_ids": [
+              "webshop:g02742",
+              "webshop:g07863",
+              "webshop:g08140"
+            ],
+            "kind": "env_done",
+            "mechanism_summary": "inspect example traces for the mechanism"
+          }
+        ],
+        "generation": 1,
+        "notes": "",
+        "regression_task_ids": [],
+        "success_sample_task_ids": [],
+        "trigger_stats": {}
+      },
+      "generation": 1,
+      "parent_bank_digest": "d60e3b6cd4b2597e466198524e4093a2424f82d62262b2210aa9d15dd3146889",
+      "selection": {
+        "champion_id": "baseline:d60e3b6cd4b2",
+        "ordered": [
+          "baseline:d60e3b6cd4b2"
+        ],
+        "reason": "NO_SUPPORTED_IMPROVEMENT: incumbent retained (best candidate within tolerance=0.01 did not beat it on quality+cost); dropped=['b9434dffdcba64560af07db2574222b02579400fda8595c64eff593eb8f17569', 'd3b6fbe3ad7cb1ea327f11f4283c08858eb3eac27bbfd9c68a55c10b8cff9d4a']",
+        "tolerance": 0.01
+      },
+      "stopped_reason": null
+    },
+    {
+      "candidate_ids": [
+        "accbce6a59b49753182a073637721a77fba66055c3d7f914627c981c34e94aef",
+        "e5d5b2b5c8b7790ece103ca100dbcb1d4a5e49b01945518e1dd2443be8cd3bdb"
+      ],
+      "champion_bank_digest": "ae6f28f51b0f9dcd722ebd4e22d76f883f3c3f9d646ed08f4c6944f1241379ed",
+      "champion_id": "accbce6a59b49753182a073637721a77fba66055c3d7f914627c981c34e94aef",
+      "diagnosis": {
+        "cost_stats": {},
+        "failure_categories": [
+          {
+            "count": 10,
+            "example_task_ids": [
+              "webshop:g00821",
+              "webshop:g00870",
+              "webshop:g02742"
+            ],
+            "kind": "finish",
+            "mechanism_summary": "inspect example traces for the mechanism"
+          },
+          {
+            "count": 2,
+            "example_task_ids": [
+              "webshop:g07359",
+              "webshop:g07863"
+            ],
+            "kind": "env_done",
+            "mechanism_summary": "inspect example traces for the mechanism"
+          }
+        ],
+        "generation": 2,
+        "notes": "",
+        "regression_task_ids": [],
+        "success_sample_task_ids": [],
+        "trigger_stats": {}
+      },
+      "generation": 2,
+      "parent_bank_digest": "d60e3b6cd4b2597e466198524e4093a2424f82d62262b2210aa9d15dd3146889",
+      "selection": {
+        "champion_id": "accbce6a59b49753182a073637721a77fba66055c3d7f914627c981c34e94aef",
+        "ordered": [
+          "accbce6a59b49753182a073637721a77fba66055c3d7f914627c981c34e94aef",
+          "baseline:d60e3b6cd4b2"
+        ],
+        "reason": "best_within_tolerance=0.01; winner cost=962.201 macro=0.4500",
+        "tolerance": 0.01
+      },
+      "stopped_reason": null
+    },
+    {
+      "candidate_ids": [
+        "bd8ecc8aa64c6ca0ca5932d55febf45e10316400a1d1a4da9ae3e6513e73980a",
+        "d249dee763bf2f46da932dfdfa0e0533fec606210d6a51b8c018adeece6088ce"
+      ],
+      "champion_bank_digest": "ae6f28f51b0f9dcd722ebd4e22d76f883f3c3f9d646ed08f4c6944f1241379ed",
+      "champion_id": "accbce6a59b49753182a073637721a77fba66055c3d7f914627c981c34e94aef",
+      "diagnosis": {
+        "cost_stats": {},
+        "failure_categories": [
+          {
+            "count": 8,
+            "example_task_ids": [
+              "webshop:g00870",
+              "webshop:g02742",
+              "webshop:g04025"
+            ],
+            "kind": "env_done",
+            "mechanism_summary": "inspect example traces for the mechanism"
+          },
+          {
+            "count": 1,
+            "example_task_ids": [
+              "webshop:g07359"
+            ],
+            "kind": "max_actions",
+            "mechanism_summary": "UNKNOWN_NEEDS_TRACE: action budget exhausted — determine whether the decisions were productive (long task) or repetitive (loop/missing state tracking) before proposing a mechanism"
+          }
+        ],
+        "generation": 3,
+        "notes": "",
+        "regression_task_ids": [],
+        "success_sample_task_ids": [
+          "webshop:g00821",
+          "webshop:g05234",
+          "webshop:g09442"
+        ],
+        "trigger_stats": {}
+      },
+      "generation": 3,
+      "parent_bank_digest": "ae6f28f51b0f9dcd722ebd4e22d76f883f3c3f9d646ed08f4c6944f1241379ed",
+      "selection": {
+        "champion_id": "baseline:ae6f28f51b0f",
+        "ordered": [
+          "baseline:ae6f28f51b0f",
+          "bd8ecc8aa64c6ca0ca5932d55febf45e10316400a1d1a4da9ae3e6513e73980a"
+        ],
+        "reason": "NO_SUPPORTED_IMPROVEMENT: incumbent retained (best candidate within tolerance=0.01 did not beat it on quality+cost); dropped=['d249dee763bf2f46da932dfdfa0e0533fec606210d6a51b8c018adeece6088ce']",
+        "tolerance": 0.01
+      },
+      "stopped_reason": null
+    },
+    {
+      "candidate_ids": [
+        "055ed42e6055467fea506387fd298d4047d3957d70b1a57e5ed1faed4d435e3e",
+        "6b07e1c82f4fff109bcfc74f7525677dd65d29f5592b54b16b4ec6c4bd5b009a"
+      ],
+      "champion_bank_digest": "ae6f28f51b0f9dcd722ebd4e22d76f883f3c3f9d646ed08f4c6944f1241379ed",
+      "champion_id": "accbce6a59b49753182a073637721a77fba66055c3d7f914627c981c34e94aef",
+      "diagnosis": {
+        "cost_stats": {},
+        "failure_categories": [
+          {
+            "count": 8,
+            "example_task_ids": [
+              "webshop:g00821",
+              "webshop:g00870",
+              "webshop:g02742"
+            ],
+            "kind": "env_done",
+            "mechanism_summary": "inspect example traces for the mechanism"
+          },
+          {
+            "count": 2,
+            "example_task_ids": [
+              "webshop:g08140",
+              "webshop:g09442"
+            ],
+            "kind": "max_actions",
+            "mechanism_summary": "UNKNOWN_NEEDS_TRACE: action budget exhausted — determine whether the decisions were productive (long task) or repetitive (loop/missing state tracking) before proposing a mechanism"
+          }
+        ],
+        "generation": 4,
+        "notes": "",
+        "regression_task_ids": [],
+        "success_sample_task_ids": [
+          "webshop:g07359",
+          "webshop:g09904"
+        ],
+        "trigger_stats": {}
+      },
+      "generation": 4,
+      "parent_bank_digest": "ae6f28f51b0f9dcd722ebd4e22d76f883f3c3f9d646ed08f4c6944f1241379ed",
+      "selection": {
+        "champion_id": "baseline:ae6f28f51b0f",
+        "ordered": [
+          "baseline:ae6f28f51b0f"
+        ],
+        "reason": "NO_SUPPORTED_IMPROVEMENT: incumbent retained (best candidate within tolerance=0.01 did not beat it on quality+cost); dropped=['055ed42e6055467fea506387fd298d4047d3957d70b1a57e5ed1faed4d435e3e']",
+        "tolerance": 0.01
+      },
+      "stopped_reason": null
+    },
+    {
+      "candidate_ids": [
+        "eab1ac91c3316400d3b979f40eb6a63f008d64dd52ff4fd62dda43ac23691d11",
+        "f303b027b4024a8656b811182b03f68ab43c1d2277738510f74275b0d27419a0"
+      ],
+      "champion_bank_digest": "ae6f28f51b0f9dcd722ebd4e22d76f883f3c3f9d646ed08f4c6944f1241379ed",
+      "champion_id": "accbce6a59b49753182a073637721a77fba66055c3d7f914627c981c34e94aef",
+      "diagnosis": {
+        "cost_stats": {},
+        "failure_categories": [
+          {
+            "count": 7,
+            "example_task_ids": [
+              "webshop:g00821",
+              "webshop:g00870",
+              "webshop:g04025"
+            ],
+            "kind": "env_done",
+            "mechanism_summary": "inspect example traces for the mechanism"
+          },
+          {
+            "count": 2,
+            "example_task_ids": [
+              "webshop:g02742",
+              "webshop:g08140"
+            ],
+            "kind": "max_actions",
+            "mechanism_summary": "UNKNOWN_NEEDS_TRACE: action budget exhausted — determine whether the decisions were productive (long task) or repetitive (loop/missing state tracking) before proposing a mechanism"
+          }
+        ],
+        "generation": 5,
+        "notes": "",
+        "regression_task_ids": [],
+        "success_sample_task_ids": [
+          "webshop:g07359",
+          "webshop:g09442",
+          "webshop:g09904"
+        ],
+        "trigger_stats": {}
+      },
+      "generation": 5,
+      "parent_bank_digest": "ae6f28f51b0f9dcd722ebd4e22d76f883f3c3f9d646ed08f4c6944f1241379ed",
+      "selection": {
+        "champion_id": "baseline:ae6f28f51b0f",
+        "ordered": [
+          "baseline:ae6f28f51b0f"
+        ],
+        "reason": "NO_SUPPORTED_IMPROVEMENT: incumbent retained (tolerance=0.01)",
+        "tolerance": 0.01
+      },
+      "stopped_reason": null
+    }
+  ],
+  "history": [
+    {
+      "error": "candidate failed after repairs: CandidateInvalid('component completion_gate: import failed: ImportError(\"cannot import name \\'NoneType\\' from \\'rsi.contracts.action\\' (/mnt/songzijun/Capability_Evolution/RSI/src/rsi/contracts/action.py)\")')",
+      "generation": 0
+    },
+    {
+      "candidate_id": "acb0dbe5dd99a1f318d5bf8aec80f247f485b92775de346f5b876e6ef6fa3c6d",
+      "generation": 0,
+      "hypothesis": "",
+      "macro_score": 0.027777777777777776
+    },
+    {
+      "candidate_id": "b9434dffdcba64560af07db2574222b02579400fda8595c64eff593eb8f17569",
+      "generation_error": "candidate marked protocol-failed: {'webshop:g02742': {'completion_verifier': 'after_proposal: AttributeError(\"\\'tuple\\' object has no attribute \\'order\\'\")'}, 'webshop:g00870': {'completion_verifier': 'after_proposal: AttributeError(\"\\'tuple\\' object has no attribute \\'order\\'\")'}, 'webshop:g07863': {'completion_verifier': 'after_proposal: AttributeError(\"\\'tuple\\' object has no attribute \\'order\\'\")'}, 'webshop:g07359': {'complet"
+    },
+    {
+      "candidate_id": "b9434dffdcba64560af07db2574222b02579400fda8595c64eff593eb8f17569",
+      "dedup": "near_dup",
+      "of": "d60e3b6cd4b2597e466198524e4093a2424f82d62262b2210aa9d15dd3146889"
+    },
+    {
+      "candidate_id": "b9434dffdcba64560af07db2574222b02579400fda8595c64eff593eb8f17569",
+      "generation": 1,
+      "hypothesis": "",
+      "macro_score": 0.19444444444444442
+    },
+    {
+      "candidate_id": "d3b6fbe3ad7cb1ea327f11f4283c08858eb3eac27bbfd9c68a55c10b8cff9d4a",
+      "generation_error": "candidate marked protocol-failed: {'webshop:g02742': {'action_validator': 'after_proposal: AttributeError(\"\\'ToolSpec\\' object has no attribute \\'schema\\'\")'}, 'webshop:g00870': {'action_validator': 'after_proposal: AttributeError(\"\\'ToolSpec\\' object has no attribute \\'schema\\'\")'}, 'webshop:g07863': {'action_validator': 'after_proposal: AttributeError(\"\\'ToolSpec\\' object has no attribute \\'schema\\'\")'}, 'webshop:g07359': {'acti"
+    },
+    {
+      "candidate_id": "d3b6fbe3ad7cb1ea327f11f4283c08858eb3eac27bbfd9c68a55c10b8cff9d4a",
+      "dedup": "near_dup",
+      "of": "d60e3b6cd4b2597e466198524e4093a2424f82d62262b2210aa9d15dd3146889"
+    },
+    {
+      "candidate_id": "d3b6fbe3ad7cb1ea327f11f4283c08858eb3eac27bbfd9c68a55c10b8cff9d4a",
+      "generation": 1,
+      "hypothesis": "",
+      "macro_score": 0.005555555555555556
+    },
+    {
+      "candidate_id": "accbce6a59b49753182a073637721a77fba66055c3d7f914627c981c34e94aef",
+      "dedup": "near_dup",
+      "of": "d60e3b6cd4b2597e466198524e4093a2424f82d62262b2210aa9d15dd3146889"
+    },
+    {
+      "candidate_id": "accbce6a59b49753182a073637721a77fba66055c3d7f914627c981c34e94aef",
+      "generation": 2,
+      "hypothesis": "",
+      "macro_score": 0.44999999999999996
+    },
+    {
+      "candidate_id": "e5d5b2b5c8b7790ece103ca100dbcb1d4a5e49b01945518e1dd2443be8cd3bdb",
+      "dedup": "near_dup",
+      "of": "d60e3b6cd4b2597e466198524e4093a2424f82d62262b2210aa9d15dd3146889"
+    },
+    {
+      "candidate_id": "e5d5b2b5c8b7790ece103ca100dbcb1d4a5e49b01945518e1dd2443be8cd3bdb",
+      "generation": 2,
+      "hypothesis": "",
+      "macro_score": 0.020833333333333332
+    },
+    {
+      "candidate_id": "bd8ecc8aa64c6ca0ca5932d55febf45e10316400a1d1a4da9ae3e6513e73980a",
+      "dedup": "near_dup",
+      "of": "d60e3b6cd4b2597e466198524e4093a2424f82d62262b2210aa9d15dd3146889"
+    },
+    {
+      "candidate_id": "bd8ecc8aa64c6ca0ca5932d55febf45e10316400a1d1a4da9ae3e6513e73980a",
+      "generation": 3,
+      "hypothesis": "",
+      "macro_score": 0.5888888888888889
+    },
+    {
+      "candidate_id": "d249dee763bf2f46da932dfdfa0e0533fec606210d6a51b8c018adeece6088ce",
+      "generation_error": "candidate marked protocol-failed: {'webshop:g02742': {'plan_validator': 'before_model: AttributeError(\"\\'PlanValidator\\' object has no attribute \\'_has_success_signal\\'\")'}, 'webshop:g00870': {'plan_validator': 'before_model: AttributeError(\"\\'PlanValidator\\' object has no attribute \\'_has_success_signal\\'\")'}, 'webshop:g07863': {'plan_validator': 'before_model: AttributeError(\"\\'PlanValidator\\' object has no attribute \\'_has_succ"
+    },
+    {
+      "candidate_id": "d249dee763bf2f46da932dfdfa0e0533fec606210d6a51b8c018adeece6088ce",
+      "dedup": "near_dup",
+      "of": "d60e3b6cd4b2597e466198524e4093a2424f82d62262b2210aa9d15dd3146889"
+    },
+    {
+      "candidate_id": "d249dee763bf2f46da932dfdfa0e0533fec606210d6a51b8c018adeece6088ce",
+      "generation": 3,
+      "hypothesis": "",
+      "macro_score": 0.4222222222222222
+    },
+    {
+      "candidate_id": "055ed42e6055467fea506387fd298d4047d3957d70b1a57e5ed1faed4d435e3e",
+      "generation_error": "candidate marked protocol-failed: {'webshop:g02742': {'proposal_converter': 'after_proposal: AttributeError(\"\\'ToolCall\\' object has no attribute \\'type\\'\")'}, 'webshop:g00870': {'proposal_converter': 'after_proposal: AttributeError(\"\\'ToolCall\\' object has no attribute \\'type\\'\")'}, 'webshop:g07863': {'proposal_converter': 'after_proposal: AttributeError(\"\\'ToolCall\\' object has no attribute \\'type\\'\")'}, 'webshop:g07359': {'prop"
+    },
+    {
+      "candidate_id": "055ed42e6055467fea506387fd298d4047d3957d70b1a57e5ed1faed4d435e3e",
+      "dedup": "near_dup",
+      "of": "d60e3b6cd4b2597e466198524e4093a2424f82d62262b2210aa9d15dd3146889"
+    },
+    {
+      "candidate_id": "055ed42e6055467fea506387fd298d4047d3957d70b1a57e5ed1faed4d435e3e",
+      "generation": 4,
+      "hypothesis": "",
+      "macro_score": 0.33888888888888885
+    },
+    {
+      "candidate_id": "6b07e1c82f4fff109bcfc74f7525677dd65d29f5592b54b16b4ec6c4bd5b009a",
+      "dedup": "near_dup",
+      "of": "d60e3b6cd4b2597e466198524e4093a2424f82d62262b2210aa9d15dd3146889"
+    },
+    {
+      "candidate_id": "6b07e1c82f4fff109bcfc74f7525677dd65d29f5592b54b16b4ec6c4bd5b009a",
+      "generation": 4,
+      "hypothesis": "",
+      "macro_score": 0.49583333333333335
+    },
+    {
+      "candidate_id": "eab1ac91c3316400d3b979f40eb6a63f008d64dd52ff4fd62dda43ac23691d11",
+      "dedup": "near_dup",
+      "of": "d60e3b6cd4b2597e466198524e4093a2424f82d62262b2210aa9d15dd3146889"
+    },
+    {
+      "candidate_id": "eab1ac91c3316400d3b979f40eb6a63f008d64dd52ff4fd62dda43ac23691d11",
+      "generation": 5,
+      "hypothesis": "",
+      "macro_score": 0.33888888888888885
+    },
+    {
+      "candidate_id": "f303b027b4024a8656b811182b03f68ab43c1d2277738510f74275b0d27419a0",
+      "dedup": "near_dup",
+      "of": "d60e3b6cd4b2597e466198524e4093a2424f82d62262b2210aa9d15dd3146889"
+    },
+    {
+      "candidate_id": "f303b027b4024a8656b811182b03f68ab43c1d2277738510f74275b0d27419a0",
+      "generation": 5,
+      "hypothesis": "",
+      "macro_score": 0.3111111111111111
+    }
+  ],
+  "ok": true,
+  "stopped_reason": "PLATEAU"
+}

@@ -1,0 +1,682 @@
+{
+ "meta": {
+  "arm": "baseline_minimal",
+  "harness": "minimal",
+  "bank_digest": "1beba6d6d709b9b5f6918923d151604cf5c997709a4ce63f5dd49dda9e4f6130",
+  "policy_digest": "63eea503707c6dc017bacc037614c5b50dd82a6cbacf98c44ee6167336ddfa06",
+  "config_digest": "7ce264695b110c141380cbf3e47d3940dce1fa2ba7ab143b26ce760001bcfa63",
+  "split": "harness_select (frozen 12 tasks, seed 17)",
+  "campaign": "e1_webshop_9b_r9_pair"
+ },
+ "suite": {
+  "aggregate": "equal_domain_macro",
+  "domains": [
+   {
+    "domain": "webshop",
+    "metric_name": "task_reward",
+    "n": 12,
+    "per_task": {
+     "webshop:g00821": 0.0,
+     "webshop:g00870": 0.0,
+     "webshop:g02742": 0.0,
+     "webshop:g04025": 0.0,
+     "webshop:g05013": 0.6666666666666666,
+     "webshop:g05234": 0.0,
+     "webshop:g07359": 0.0,
+     "webshop:g07507": 0.0,
+     "webshop:g07863": 0.0,
+     "webshop:g08140": 0.0,
+     "webshop:g09442": 0.0,
+     "webshop:g09904": 0.0
+    },
+    "score": 0.05555555555555555,
+    "success_rate": 0,
+    "synthetic": false,
+    "task_ids": [
+     "webshop:g00821",
+     "webshop:g00870",
+     "webshop:g02742",
+     "webshop:g04025",
+     "webshop:g05013",
+     "webshop:g05234",
+     "webshop:g07359",
+     "webshop:g07507",
+     "webshop:g07863",
+     "webshop:g08140",
+     "webshop:g09442",
+     "webshop:g09904"
+    ]
+   }
+  ],
+  "macro_score": 0.05555555555555555,
+  "synthetic": false
+ },
+ "tasks": {
+  "webshop:g00821": {
+   "value": 0.0,
+   "success": false,
+   "terminated_reason": "finish",
+   "n_decisions": 3,
+   "wall_ms": 140884.2890920639,
+   "component_errors": {},
+   "steps": [
+    {
+     "kind": "episode_boundary",
+     "obs_head": "Task: i'm looking for a bench style farmhouse in white color, and price lower than 110.00 dollars\n\nWebShop [SEP] Instruction: [SEP] i'm looking for a bench style farmhouse in white color, and price lo",
+     "obs_len": 236,
+     "obs_tail": "looking for a bench style farmhouse in white color, and price lower than 110.00 dollars [SEP] Search",
+     "order": 0
+    },
+    {
+     "action": "{\"arguments\": {\"query\": \"bench style farmhouse white\"}, \"name\": \"search\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i'm looking for a bench style farmhouse in white color, and price lower than 110.00 dollars [SEP] Back to Search [SEP] Page 1 (Total results: 50) [SEP] Next > [SEP] B07ZVFDJ1Q [SEP]",
+     "obs_len": 1503,
+     "obs_tail": " Bench Seat for Mudroom, Front Door Hallway, Foyer and Indoor Window, Farmhouse, Wooden [SEP] $91.95",
+     "order": 1
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"Jolene 4-Drawer Storage Bench - Antique White\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i'm looking for a bench style farmhouse in white color, and price lower than 110.00 dollars [SEP] Back to Search [SEP] Page 1 (Total results: 50) [SEP] Next > [SEP] B07ZVFDJ1Q [SEP]",
+     "obs_len": 1503,
+     "obs_tail": " Bench Seat for Mudroom, Front Door Hallway, Foyer and Indoor Window, Farmhouse, Wooden [SEP] $91.95",
+     "order": 2
+    },
+    {
+     "action": "{\"answer\": \"null\", \"artifact_refs\": [], \"type\": \"finish\"}",
+     "kind": "finish",
+     "obs_head": "finished",
+     "obs_len": 8,
+     "order": 3
+    }
+   ]
+  },
+  "webshop:g00870": {
+   "value": 0.0,
+   "success": false,
+   "terminated_reason": "finish",
+   "n_decisions": 14,
+   "wall_ms": 41730.43582820892,
+   "component_errors": {},
+   "steps": [
+    {
+     "kind": "episode_boundary",
+     "obs_head": "Task: i am looking for medium sized women knee high over calf, and price lower than 50.00 dollars\n\nWebShop [SEP] Instruction: [SEP] i am looking for medium sized women knee high over calf, and price l",
+     "obs_len": 236,
+     "obs_tail": " looking for medium sized women knee high over calf, and price lower than 50.00 dollars [SEP] Search",
+     "order": 0
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type None; respond with one JSON object",
+     "obs_len": 77,
+     "obs_ok": false,
+     "order": 1
+    },
+    {
+     "action": "{\"arguments\": {\"query\": \"women knee high over calf medium\"}, \"name\": \"search\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i am looking for medium sized women knee high over calf, and price lower than 50.00 dollars [SEP] Back to Search [SEP] Page 1 (Total results: 50) [SEP] Next > [SEP] B09HRLS96L [SEP]",
+     "obs_len": 1899,
+     "obs_tail": "h,Mid Calf Boots Retro Knee Middle Tube Boots Low Heel Combat Round Toe Shoes [SEP] $15.99 to $26.24",
+     "order": 2
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"Gibobby Boots for Women Knee High,Mid Calf Boots Retro Knee Middle Tube Boots Low Heel Combat Round Toe Shoes\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i am looking for medium sized women knee high over calf, and price lower than 50.00 dollars [SEP] Back to Search [SEP] Page 1 (Total results: 50) [SEP] Next > [SEP] B09HRLS96L [SEP]",
+     "obs_len": 1899,
+     "obs_tail": "h,Mid Calf Boots Retro Knee Middle Tube Boots Low Heel Combat Round Toe Shoes [SEP] $15.99 to $26.24",
+     "order": 3
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type None; respond with one JSON object",
+     "obs_len": 77,
+     "obs_ok": false,
+     "order": 4
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"Gibobby Boots for Women Knee High,Mid Calf Boots Retro Knee Middle Tube Boots Low Heel Combat Round Toe Shoes\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i am looking for medium sized women knee high over calf, and price lower than 50.00 dollars [SEP] Back to Search [SEP] Page 1 (Total results: 50) [SEP] Next > [SEP] B09HRLS96L [SEP]",
+     "obs_len": 1899,
+     "obs_tail": "h,Mid Calf Boots Retro Knee Middle Tube Boots Low Heel Combat Round Toe Shoes [SEP] $15.99 to $26.24",
+     "order": 5
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"Gibobby Boots for Women Knee High,Mid Calf Boots Retro Knee Middle Tube Boots Low Heel Combat Round Toe Shoes\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i am looking for medium sized women knee high over calf, and price lower than 50.00 dollars [SEP] Back to Search [SEP] Page 1 (Total results: 50) [SEP] Next > [SEP] B09HRLS96L [SEP]",
+     "obs_len": 1899,
+     "obs_tail": "h,Mid Calf Boots Retro Knee Middle Tube Boots Low Heel Combat Round Toe Shoes [SEP] $15.99 to $26.24",
+     "order": 6
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"Gibobby Boots for Women Knee High,Mid Calf Boots Retro Knee Middle Tube Boots Low Heel Combat Round Toe Shoes\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i am looking for medium sized women knee high over calf, and price lower than 50.00 dollars [SEP] Back to Search [SEP] Page 1 (Total results: 50) [SEP] Next > [SEP] B09HRLS96L [SEP]",
+     "obs_len": 1899,
+     "obs_tail": "h,Mid Calf Boots Retro Knee Middle Tube Boots Low Heel Combat Round Toe Shoes [SEP] $15.99 to $26.24",
+     "order": 7
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"Gibobby Boots for Women Knee High,Mid Calf Boots Retro Knee Middle Tube Boots Low Heel Combat Round Toe Shoes\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i am looking for medium sized women knee high over calf, and price lower than 50.00 dollars [SEP] Back to Search [SEP] Page 1 (Total results: 50) [SEP] Next > [SEP] B09HRLS96L [SEP]",
+     "obs_len": 1899,
+     "obs_tail": "h,Mid Calf Boots Retro Knee Middle Tube Boots Low Heel Combat Round Toe Shoes [SEP] $15.99 to $26.24",
+     "order": 8
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type 'click'; respond with one JSON object",
+     "obs_len": 80,
+     "obs_ok": false,
+     "order": 9
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"Gibobby Boots for Women Knee High,Mid Calf Boots Retro Knee Middle Tube Boots Low Heel Combat Round Toe Shoes\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i am looking for medium sized women knee high over calf, and price lower than 50.00 dollars [SEP] Back to Search [SEP] Page 1 (Total results: 50) [SEP] Next > [SEP] B09HRLS96L [SEP]",
+     "obs_len": 1899,
+     "obs_tail": "h,Mid Calf Boots Retro Knee Middle Tube Boots Low Heel Combat Round Toe Shoes [SEP] $15.99 to $26.24",
+     "order": 10
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type None; respond with one JSON object",
+     "obs_len": 77,
+     "obs_ok": false,
+     "order": 11
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type 'search'; respond with one JSON object",
+     "obs_len": 81,
+     "obs_ok": false,
+     "order": 12
+    },
+    {
+     "action": "{\"arguments\": {\"query\": \"women knee high over calf boots medium\"}, \"name\": \"search\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i am looking for medium sized women knee high over calf, and price lower than 50.00 dollars [SEP] Back to Search [SEP] Page 1 (Total results: 50) [SEP] Next > [SEP] B09HRLS96L [SEP]",
+     "obs_len": 1898,
+     "obs_tail": "xfords Brogue Wingtip Lace-up Dress Shoes Chunky High Heels Pumps Comfy Waterpoof Shoes [SEP] $100.0",
+     "order": 13
+    },
+    {
+     "action": "{\"answer\": \"Found a suitable product: 'Boots for Women Low Heel Floral Embroidered Cowboy Boots for Women Pointed Toe Stitched Cowgirl Boots Western National Style Knee High Boots' (B098QKZ41N) priced at $0.99 to $14.02, which meets the criteria of being medium sized (implied by lack of size filters or small sizes), women, knee high over calf, and lower than $50.00. The search results also include",
+     "kind": "finish",
+     "obs_head": "finished",
+     "obs_len": 8,
+     "order": 14
+    }
+   ]
+  },
+  "webshop:g02742": {
+   "value": 0.0,
+   "success": false,
+   "terminated_reason": "finish",
+   "n_decisions": 3,
+   "wall_ms": 151871.14801311493,
+   "component_errors": {},
+   "steps": [
+    {
+     "kind": "episode_boundary",
+     "obs_head": "Task: i need a cruelty free hand wash that is 8 ounces, and price lower than 40.00 dollars\n\nWebShop [SEP] Instruction: [SEP] i need a cruelty free hand wash that is 8 ounces, and price lower than 40.0",
+     "obs_len": 222,
+     "obs_tail": "P] i need a cruelty free hand wash that is 8 ounces, and price lower than 40.00 dollars [SEP] Search",
+     "order": 0
+    },
+    {
+     "action": "{\"arguments\": {\"query\": \"cruelty free hand wash 8 ounces\"}, \"name\": \"search\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i need a cruelty free hand wash that is 8 ounces, and price lower than 40.00 dollars [SEP] Back to Search [SEP] Page 1 (Total results: 50) [SEP] Next > [SEP] B00MHGYTYI [SEP] Cuccio",
+     "obs_len": 2096,
+     "obs_tail": "lty Free Skin Care Made with Fair Trade Shea Butter, Pink Himalayan Salt, Sage, 13 Ounce [SEP] $8.99",
+     "order": 1
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"Cuccio Naturalé Butter Blend White Limetta & Aloe Vera - Non-Greasy Lotion for Hand, Body & Feet - Refreshing/Soothing - Paraben/Cruelty Free, w/ Natural Ingredients/Plant Based Preservatives - 8 oz.\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i need a cruelty free hand wash that is 8 ounces, and price lower than 40.00 dollars [SEP] Back to Search [SEP] Page 1 (Total results: 50) [SEP] Next > [SEP] B00MHGYTYI [SEP] Cuccio",
+     "obs_len": 2096,
+     "obs_tail": "lty Free Skin Care Made with Fair Trade Shea Butter, Pink Himalayan Salt, Sage, 13 Ounce [SEP] $8.99",
+     "order": 2
+    },
+    {
+     "action": "{\"answer\": \"Cuccio Naturalé Butter Blend White Limetta & Aloe Vera - Non-Greasy Lotion for Hand, Body & Feet - Refreshing/Soothing - Paraben/Cruelty Free, w/ Natural Ingredients/Plant Based Preservatives - 8 oz. is cruelty free, 8 oz, and costs $11.67 (less than $40.00).\", \"artifact_refs\": [], \"type\": \"finish\"}",
+     "kind": "finish",
+     "obs_head": "finished",
+     "obs_len": 8,
+     "order": 3
+    }
+   ]
+  },
+  "webshop:g04025": {
+   "value": 0.0,
+   "success": false,
+   "terminated_reason": "finish",
+   "n_decisions": 6,
+   "wall_ms": 16982.320569992065,
+   "component_errors": {},
+   "steps": [
+    {
+     "kind": "episode_boundary",
+     "obs_head": "Task: i am looking for a nickel finished one light wall sconce, and price lower than 310.00 dollars\n\nWebShop [SEP] Instruction: [SEP] i am looking for a nickel finished one light wall sconce, and pric",
+     "obs_len": 240,
+     "obs_tail": "ooking for a nickel finished one light wall sconce, and price lower than 310.00 dollars [SEP] Search",
+     "order": 0
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type None; respond with one JSON object",
+     "obs_len": 77,
+     "obs_ok": false,
+     "order": 1
+    },
+    {
+     "action": "{\"arguments\": {\"keywords\": \"nickel finished one light wall sconce\"}, \"name\": \"search\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "query must be a non-empty string",
+     "obs_len": 32,
+     "obs_ok": false,
+     "order": 2
+    },
+    {
+     "action": "{\"arguments\": {\"keywords\": \"nickel finished one light wall sconce\"}, \"name\": \"search\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "query must be a non-empty string",
+     "obs_len": 32,
+     "obs_ok": false,
+     "order": 3
+    },
+    {
+     "action": "{\"arguments\": {\"keywords\": \"nickel finished one light wall sconce\"}, \"name\": \"search\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "query must be a non-empty string",
+     "obs_len": 32,
+     "obs_ok": false,
+     "order": 4
+    },
+    {
+     "action": "{\"arguments\": {\"query\": \"nickel finished one light wall sconce\"}, \"name\": \"search\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i am looking for a nickel finished one light wall sconce, and price lower than 310.00 dollars [SEP] Back to Search [SEP] Page 1 (Total results: 50) [SEP] Next > [SEP] B07SK4D2HN [SE",
+     "obs_len": 1633,
+     "obs_tail": "EP] B089ZMJJ9B [SEP] Syosset 1-Light Wall Sconce - Polished Nickel Finish - Black Shade [SEP] $440.0",
+     "order": 5
+    },
+    {
+     "action": "{\"answer\": \"Found multiple nickel finished one light wall sconces under $310.00. Examples include: Westinghouse Lighting 6369500 ($38.01), Sea Gull Lighting 4140401-962 ($64.94), Z-Lite 815-1S-PN ($132.0), and others.\", \"artifact_refs\": [], \"type\": \"finish\"}",
+     "kind": "finish",
+     "obs_head": "finished",
+     "obs_len": 8,
+     "order": 6
+    }
+   ]
+  },
+  "webshop:g05013": {
+   "value": 0.6666666666666666,
+   "success": false,
+   "terminated_reason": "env_done",
+   "n_decisions": 6,
+   "wall_ms": 147594.42330741882,
+   "component_errors": {},
+   "steps": [
+    {
+     "kind": "episode_boundary",
+     "obs_head": "Task: i am looking for 1 pack of 1.7 ounce ,anti-perspirant stick for women, and price lower than 140.00 dollars\n\nWebShop [SEP] Instruction: [SEP] i am looking for 1 pack of 1.7 ounce ,anti-perspirant",
+     "obs_len": 266,
+     "obs_tail": "pack of 1.7 ounce ,anti-perspirant stick for women, and price lower than 140.00 dollars [SEP] Search",
+     "order": 0
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type None; respond with one JSON object",
+     "obs_len": 77,
+     "obs_ok": false,
+     "order": 1
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type None; respond with one JSON object",
+     "obs_len": 77,
+     "obs_ok": false,
+     "order": 2
+    },
+    {
+     "action": "{\"arguments\": {\"query\": \"1.7 ounce anti-perspirant stick for women\"}, \"name\": \"search\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i am looking for 1 pack of 1.7 ounce ,anti-perspirant stick for women, and price lower than 140.00 dollars [SEP] Back to Search [SEP] Page 1 (Total results: 50) [SEP] Next > [SEP] B",
+     "obs_len": 1362,
+     "obs_tail": "00LM65ZQ [SEP] Lady Power Anti-Perspirant Deodorant, Power Fresh Scent, 2.8-Ounce Sticks [SEP] $15.0",
+     "order": 3
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"B0006V7Y8Y\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i am looking for 1 pack of 1.7 ounce ,anti-perspirant stick for women, and price lower than 140.00 dollars [SEP] Back to Search [SEP] < Prev [SEP] size [SEP] 1.7 ounce (pack of 1) [",
+     "obs_len": 410,
+     "obs_tail": " [SEP] Price: $100.0 [SEP] Rating: N.A. [SEP] Description [SEP] Features [SEP] Reviews [SEP] Buy Now",
+     "order": 4
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type None; respond with one JSON object",
+     "obs_len": 77,
+     "obs_ok": false,
+     "order": 5
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"Buy Now\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Thank you for shopping with us! [SEP] Your code: [SEP] None [SEP] (Paste it in your MTurk interface.) [SEP] Purchased [SEP] asin [SEP] B0006V7Y8Y [SEP] options [SEP] {} [SEP] attrs [SEP] None [SEP] ca",
+     "obs_len": 542,
+     "obs_tail": " Reward [SEP] Your score (min 0.0, max 1.0) [SEP] 0.6666666666666666 [SEP] Reward Details [SEP] None",
+     "order": 6
+    }
+   ]
+  },
+  "webshop:g05234": {
+   "value": 0.0,
+   "success": false,
+   "terminated_reason": "finish",
+   "n_decisions": 3,
+   "wall_ms": 136869.2295770645,
+   "component_errors": {},
+   "steps": [
+    {
+     "kind": "episode_boundary",
+     "obs_head": "Task: i am looking for a paraben free lip gloss with vitamin e and aloe. choose the pink pearl one, and price lower than 40.00 dollars\n\nWebShop [SEP] Instruction: [SEP] i am looking for a paraben free",
+     "obs_len": 310,
+     "obs_tail": " with vitamin e and aloe. choose the pink pearl one, and price lower than 40.00 dollars [SEP] Search",
+     "order": 0
+    },
+    {
+     "action": "{\"arguments\": {\"query\": \"paraben free lip gloss vitamin e aloe pink pearl\"}, \"name\": \"search\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i am looking for a paraben free lip gloss with vitamin e and aloe. choose the pink pearl one, and price lower than 40.00 dollars [SEP] Back to Search [SEP] Page 1 (Total results: 50",
+     "obs_len": 1693,
+     "obs_tail": "Balm Pink Camo [SEP] $6.77 [SEP] B0711FK3J3 [SEP] Kelley Baker Cali Girl Lip Gloss 5.5g [SEP] $18.95",
+     "order": 1
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"B0009XNWVC\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i am looking for a paraben free lip gloss with vitamin e and aloe. choose the pink pearl one, and price lower than 40.00 dollars [SEP] Back to Search [SEP] < Prev [SEP] color [SEP] ",
+     "obs_len": 744,
+     "obs_tail": "h [SEP] Price: $6.99 [SEP] Rating: N.A. [SEP] Description [SEP] Features [SEP] Reviews [SEP] Buy Now",
+     "order": 2
+    },
+    {
+     "action": "{\"answer\": null, \"artifact_refs\": [], \"type\": \"finish\"}",
+     "kind": "finish",
+     "obs_head": "finished",
+     "obs_len": 8,
+     "order": 3
+    }
+   ]
+  },
+  "webshop:g07359": {
+   "value": 0.0,
+   "success": false,
+   "terminated_reason": "finish",
+   "n_decisions": 4,
+   "wall_ms": 13281.691427230835,
+   "component_errors": {},
+   "steps": [
+    {
+     "kind": "episode_boundary",
+     "obs_head": "Task: i want a high quality bvlgari blv by bvlgari for women perfume, and price lower than 470.00 dollars\n\nWebShop [SEP] Instruction: [SEP] i want a high quality bvlgari blv by bvlgari for women perfu",
+     "obs_len": 252,
+     "obs_tail": "h quality bvlgari blv by bvlgari for women perfume, and price lower than 470.00 dollars [SEP] Search",
+     "order": 0
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type None; respond with one JSON object",
+     "obs_len": 77,
+     "obs_ok": false,
+     "order": 1
+    },
+    {
+     "action": "{\"arguments\": {\"query\": \"bvlgari blv by bvlgari women perfume\"}, \"name\": \"search\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i want a high quality bvlgari blv by bvlgari for women perfume, and price lower than 470.00 dollars [SEP] Back to Search [SEP] Page 1 (Total results: 50) [SEP] Next > [SEP] B00SXXC2",
+     "obs_len": 1250,
+     "obs_tail": "4 [SEP] B0146KSJM0 [SEP] Bvlgari Goldea by Bvlgari for Women 3.04 oz Eau de Parfum Spray [SEP] $87.7",
+     "order": 2
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"Bvlgari Blv By Bvlgari For Women. Eau De Parfum Spray 2.5 Ounces\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i want a high quality bvlgari blv by bvlgari for women perfume, and price lower than 470.00 dollars [SEP] Back to Search [SEP] Page 1 (Total results: 50) [SEP] Next > [SEP] B00SXXC2",
+     "obs_len": 1250,
+     "obs_tail": "4 [SEP] B0146KSJM0 [SEP] Bvlgari Goldea by Bvlgari for Women 3.04 oz Eau de Parfum Spray [SEP] $87.7",
+     "order": 3
+    },
+    {
+     "action": "{\"answer\": null, \"artifact_refs\": [], \"type\": \"finish\"}",
+     "kind": "finish",
+     "obs_head": "finished",
+     "obs_len": 8,
+     "order": 4
+    }
+   ]
+  },
+  "webshop:g07507": {
+   "value": 0.0,
+   "success": false,
+   "terminated_reason": "finish",
+   "n_decisions": 3,
+   "wall_ms": 144126.001039505,
+   "component_errors": {},
+   "steps": [
+    {
+     "kind": "episode_boundary",
+     "obs_head": "Task: i would like to buy jojoba oil which is non toxic, and comes in a size of 128 fl oz, and pack of 1, and price lower than 50.00 dollars\n\nWebShop [SEP] Instruction: [SEP] i would like to buy jojob",
+     "obs_len": 322,
+     "obs_tail": "ic, and comes in a size of 128 fl oz, and pack of 1, and price lower than 50.00 dollars [SEP] Search",
+     "order": 0
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type None; respond with one JSON object",
+     "obs_len": 77,
+     "obs_ok": false,
+     "order": 1
+    },
+    {
+     "action": "{\"arguments\": {\"query\": \"jojoba oil non toxic 128 fl oz\"}, \"name\": \"search\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i would like to buy jojoba oil which is non toxic, and comes in a size of 128 fl oz, and pack of 1, and price lower than 50.00 dollars [SEP] Back to Search [SEP] Page 1 (Total resul",
+     "obs_len": 2042,
+     "obs_tail": "ressed Unrefined Hexane Free Oil for Hair & Face | Base Carrier Oil - Certified Organic [SEP] $24.99",
+     "order": 2
+    },
+    {
+     "action": "{\"answer\": null, \"artifact_refs\": [], \"type\": \"finish\"}",
+     "kind": "finish",
+     "obs_head": "finished",
+     "obs_len": 8,
+     "order": 3
+    }
+   ]
+  },
+  "webshop:g07863": {
+   "value": 0.0,
+   "success": false,
+   "terminated_reason": "finish",
+   "n_decisions": 2,
+   "wall_ms": 147284.9076538086,
+   "component_errors": {},
+   "steps": [
+    {
+     "kind": "episode_boundary",
+     "obs_head": "Task: i would like a extra light beige foundation made from natural ingredients, and price lower than 50.00 dollars\n\nWebShop [SEP] Instruction: [SEP] i would like a extra light beige foundation made f",
+     "obs_len": 272,
+     "obs_tail": "ight beige foundation made from natural ingredients, and price lower than 50.00 dollars [SEP] Search",
+     "order": 0
+    },
+    {
+     "action": "{\"arguments\": {\"query\": \"extra light beige foundation natural ingredients\"}, \"name\": \"search\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i would like a extra light beige foundation made from natural ingredients, and price lower than 50.00 dollars [SEP] Back to Search [SEP] Page 1 (Total results: 50) [SEP] Next > [SEP",
+     "obs_len": 2097,
+     "obs_tail": " [SEP] $65.0 [SEP] B000US07WI [SEP] Ecco Bella Liquid Foundation Makeup (Mocha) 1 Ounce [SEP] $22.05",
+     "order": 1
+    },
+    {
+     "action": "{\"answer\": null, \"artifact_refs\": [], \"type\": \"finish\"}",
+     "kind": "finish",
+     "obs_head": "finished",
+     "obs_len": 8,
+     "order": 2
+    }
+   ]
+  },
+  "webshop:g08140": {
+   "value": 0.0,
+   "success": false,
+   "terminated_reason": "finish",
+   "n_decisions": 4,
+   "wall_ms": 18183.976789474487,
+   "component_errors": {},
+   "steps": [
+    {
+     "kind": "episode_boundary",
+     "obs_head": "Task: i want six boxes of earl grey decaf with 20 individually wrapper bags, and price lower than 60.00 dollars\n\nWebShop [SEP] Instruction: [SEP] i want six boxes of earl grey decaf with 20 individual",
+     "obs_len": 264,
+     "obs_tail": "f earl grey decaf with 20 individually wrapper bags, and price lower than 60.00 dollars [SEP] Search",
+     "order": 0
+    },
+    {
+     "action": "{\"arguments\": {\"query\": \"earl grey decaf 20 individually wrapper bags\"}, \"name\": \"search\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i want six boxes of earl grey decaf with 20 individually wrapper bags, and price lower than 60.00 dollars [SEP] Back to Search [SEP] Page 1 (Total results: 50) [SEP] Next > [SEP] B0",
+     "obs_len": 1521,
+     "obs_tail": "$6.99 [SEP] B07MFT22SM [SEP] Tazo Turmeric Bliss Tea Bags, Herbal, 20 Count (Pack of 6) [SEP] $19.68",
+     "order": 1
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"Bigelow Decaffeinated Earl Grey Black Tea Bags 20-Count Boxes (Pack of 6), 120 Tea Bags Total\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i want six boxes of earl grey decaf with 20 individually wrapper bags, and price lower than 60.00 dollars [SEP] Back to Search [SEP] Page 1 (Total results: 50) [SEP] Next > [SEP] B0",
+     "obs_len": 1521,
+     "obs_tail": "$6.99 [SEP] B07MFT22SM [SEP] Tazo Turmeric Bliss Tea Bags, Herbal, 20 Count (Pack of 6) [SEP] $19.68",
+     "order": 2
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type 'click'; respond with one JSON object",
+     "obs_len": 80,
+     "obs_ok": false,
+     "order": 3
+    },
+    {
+     "action": "{\"answer\": \"The task could not be completed because the previous 'click' action failed due to an invalid action format. The available tools are 'search' and 'click' (with specific parameter names 'query' and 'text' respectively), but the current error suggests the system is unable to process the click action as defined. Without a successful product discovery and purchase flow, the purchase of 'six",
+     "kind": "finish",
+     "obs_head": "finished",
+     "obs_len": 8,
+     "order": 4
+    }
+   ]
+  },
+  "webshop:g09442": {
+   "value": 0.0,
+   "success": false,
+   "terminated_reason": "finish",
+   "n_decisions": 4,
+   "wall_ms": 142023.55538749695,
+   "component_errors": {},
+   "steps": [
+    {
+     "kind": "episode_boundary",
+     "obs_head": "Task: i want fluoride free ayurvedic herbal toothpaste, and price lower than 20.00 dollars\n\nWebShop [SEP] Instruction: [SEP] i want fluoride free ayurvedic herbal toothpaste, and price lower than 20.0",
+     "obs_len": 222,
+     "obs_tail": "P] i want fluoride free ayurvedic herbal toothpaste, and price lower than 20.00 dollars [SEP] Search",
+     "order": 0
+    },
+    {
+     "action": "{\"arguments\": {\"query\": \"fluoride free ayurvedic herbal toothpaste\"}, \"name\": \"search\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i want fluoride free ayurvedic herbal toothpaste, and price lower than 20.00 dollars [SEP] Back to Search [SEP] Page 1 (Total results: 50) [SEP] Next > [SEP] B08NTG84WD [SEP] Isha 1",
+     "obs_len": 1842,
+     "obs_tail": "egan, Natural, Non GMO, Flouride Free, Gluten Free, with Neem & Peelu (4.16 oz), 2 Pack [SEP] $20.99",
+     "order": 1
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"B08NTG84WD\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i want fluoride free ayurvedic herbal toothpaste, and price lower than 20.00 dollars [SEP] Back to Search [SEP] < Prev [SEP] Isha 100% Natural Ayurvedic Herbal Toothpaste - SLS and ",
+     "obs_len": 328,
+     "obs_tail": "ck [SEP] Price: $4.0 [SEP] Rating: N.A. [SEP] Description [SEP] Features [SEP] Reviews [SEP] Buy Now",
+     "order": 2
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type None; respond with one JSON object",
+     "obs_len": 77,
+     "obs_ok": false,
+     "order": 3
+    },
+    {
+     "action": "{\"answer\": \"B08NTG84WD\", \"artifact_refs\": [], \"type\": \"finish\"}",
+     "kind": "finish",
+     "obs_head": "finished",
+     "obs_len": 8,
+     "order": 4
+    }
+   ]
+  },
+  "webshop:g09904": {
+   "value": 0.0,
+   "success": false,
+   "terminated_reason": "finish",
+   "n_decisions": 4,
+   "wall_ms": 14340.258439064026,
+   "component_errors": {},
+   "steps": [
+    {
+     "kind": "episode_boundary",
+     "obs_head": "Task: i am looking for big and tall levi's men's 505 regular fit jeans that are machine washable, and price lower than 70.00 dollars\n\nWebShop [SEP] Instruction: [SEP] i am looking for big and tall lev",
+     "obs_len": 306,
+     "obs_tail": "n's 505 regular fit jeans that are machine washable, and price lower than 70.00 dollars [SEP] Search",
+     "order": 0
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type None; respond with one JSON object",
+     "obs_len": 77,
+     "obs_ok": false,
+     "order": 1
+    },
+    {
+     "action": "{\"arguments\": {\"query\": \"big and tall levi's men's 505 regular fit jeans machine washable\"}, \"name\": \"search\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i am looking for big and tall levi's men's 505 regular fit jeans that are machine washable, and price lower than 70.00 dollars [SEP] Back to Search [SEP] Page 1 (Total results: 50) ",
+     "obs_len": 1231,
+     "obs_tail": "eaker [SEP] $34.99 to $51.0 [SEP] B01ETP2O6Y [SEP] Levi's Men's Trucker Jacket [SEP] $40.7 to $99.99",
+     "order": 2
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type None; respond with one JSON object",
+     "obs_len": 77,
+     "obs_ok": false,
+     "order": 3
+    },
+    {
+     "action": "{\"answer\": null, \"artifact_refs\": [], \"type\": \"finish\"}",
+     "kind": "finish",
+     "obs_head": "finished",
+     "obs_len": 8,
+     "order": 4
+    }
+   ]
+  }
+ }
+}

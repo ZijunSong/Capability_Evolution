@@ -41,12 +41,14 @@ evidence_refs, expected_cost_change, self_checks.
 Write real Python code in files[].content. Do not reference dataset task ids in code.
 
 EXACT importable API surface (from rsi.harness.component ONLY; no submodules,
-never invent types like ActionLog/ToolResult):
+never invent types like ActionLog/ToolResult or a "Component" base class —
+the component protocol is HarnessComponent, which you do NOT need to import;
+a component is any class defining the five hooks):
   EpisodeContext(episode_id, task, tool_catalog, private_state, rng_seed,
                  extra_llm_call_budget, config), PublicView(task, tool_catalog,
                  history, remaining_action_budget, extra), RuntimeAPI(call_tool,
                  call_model, get_state, set_state, budget, log), ViewPatch,
-                 ProposalEffect, StatePatch, FinishEffect
+                 ProposalEffect, StatePatch, FinishEffect, HarnessComponent
   from rsi.contracts.action import ToolCall, Finish; from rsi.contracts.events import Event
   Event fields (attr access, NOT dict): event_id, order, component_id,
   event_kind, pre_state_digest, post_state_digest, action, observation
@@ -93,6 +95,9 @@ def render_proposer_prompt(
         "\n\n=== OUTPUT ENVELOPE (RESTATE: this is what you MUST emit) ===\n"
         "Top-level keys MUST be exactly these (this is a patch envelope, NOT a bare "
         "file object — do NOT emit only {\"path\",\"content\",\"entrypoint\"}):\n"
+        "manifest_patch.entrypoint format is STRICTLY \"module:Class\" "
+        "(e.g. \"components.my_component:MyComponent\") — never a bare class name.\n"
+        "Emit PLAIN JSON only (no comments, no trailing commas).\n"
         "{\n"
         '  "parent_bank_digest": "<verbatim from packet>",\n'
         '  "operation": "add",\n'
@@ -103,7 +108,7 @@ def render_proposer_prompt(
         '    "id": "my_component",\n'
         '    "version": "1",\n'
         '    "files": ["components/my_component.py"],\n'
-        '    "entrypoint": "MyComponent",\n'
+        '    "entrypoint": "components.my_component:MyComponent",\n'
         '    "depends_on": [], "conflicts_with": [], "hook_order": 100,\n'
         '    "required_capabilities": [], "state_schema": {}, "resource_caps": {},\n'
         '    "provenance": {}, "alignment_hints": {}, "kind": "other"\n'
@@ -120,6 +125,29 @@ def render_proposer_prompt(
         + json.dumps(payload, indent=2, ensure_ascii=False, default=str)
         + skeleton
     )
+
+
+def _derive_entrypoint(path: str, content: str) -> str | None:
+    """从 flat 文件对象确定性推导 ``module:Class`` entrypoint。
+
+    module 由 path 推导（``components/xxx.py`` -> ``components.xxx``），
+    class 取源码里第一个顶层 ``class`` 定义。两者缺一返回 None（维持拒绝）。
+    注意 ``entrypoint module must be in files list``（loader.py:69）——files
+    只有这一个文件，所以模块名必须落在该文件本身，不猜别的落点。
+    """
+    if not isinstance(path, str) or not path.endswith(".py"):
+        return None
+    mod = path[:-3].replace("/", ".").replace("\\", ".").strip(".")
+    if not mod or " " in mod:
+        return None
+    for line in content.splitlines():
+        s = line.strip()
+        # 只认顶层 class（非缩进行）；缩进体内的 class 不是入口
+        if line.startswith("class ") and ":" in s:
+            name = s[len("class "):].split("(", 1)[0].split(":", 1)[0].strip()
+            if name.isidentifier():
+                return f"{mod}:{name}"
+    return None
 
 
 def _coerce_flat_file_envelope(obj: dict[str, Any]) -> dict[str, Any]:
@@ -157,13 +185,21 @@ def _coerce_flat_file_envelope(obj: dict[str, Any]) -> dict[str, Any]:
         "expected_cost_change": obj.get("expected_cost_change") or {},
         "self_checks": obj.get("self_checks") or [],
     }
-    if isinstance(obj.get("entrypoint"), str) and obj["entrypoint"]:
+    entrypoint = obj.get("entrypoint")
+    if not (isinstance(entrypoint, str) and entrypoint):
+        # evimr 实证（2026-11-04）：27B 自提议稳定吐 {path, content} 且不带
+        # entrypoint —— 18 次提议全拒。源码里有真实 class 时，机械提取类名
+        # 不是造内容：组件会被真实注册执行（fh46b 的 no-op 防线针对的是
+        # "落盘文件不进 manifest"，这里文件进 manifest 且可加载，防线语义保住）。
+        # 源码里没有 class 才维持拒绝（真正无法注册的 no-op）。
+        entrypoint = _derive_entrypoint(path, content)
+    if isinstance(entrypoint, str) and entrypoint:
         stem = Path(path).stem
         out["manifest_patch"] = {
             "id": obj.get("id") or stem,
             "version": str(obj.get("version", "1")),
             "files": [path],
-            "entrypoint": obj["entrypoint"],
+            "entrypoint": entrypoint,
             "depends_on": [],
             "conflicts_with": [],
             "hook_order": int(obj.get("hook_order", 100)),

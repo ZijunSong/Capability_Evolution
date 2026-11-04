@@ -9,6 +9,13 @@ set -euo pipefail
 RSI_ROOT=/mnt/songzijun/Capability_Evolution/RSI
 MODEL_SRC=/mnt/songzijun/models/Qwen3.5-27B
 MODEL_LOCAL=/tmp/rsi_models/Qwen3.5-27B
+# r3 fix: the runtime config MUST live under $RSI_ROOT/configs/ —
+# CampaignConfig.resolve_path() resolves relative paths (data/splits,
+# configs/promotion_policy.json …) against the project root derived from
+# config_dir. A config in /tmp resolves them under /tmp (r2's
+# FileNotFoundError) and loses the configs/ fallback the campaign
+# controller needs during evolve.
+RUNTIME_CFG=$RSI_ROOT/configs/runtime_e1_appworld_27b_r3.yaml
 export PYTHONPATH="$RSI_ROOT/src:${PYTHONPATH:-}"
 export PYTHONUNBUFFERED=1
 cd "$RSI_ROOT"
@@ -42,11 +49,12 @@ if not (torch.cuda.is_available() and n >= MIN_GPUS):
     sys.exit("[FATAL] CUDA unusable")
 from transformers.models import qwen3_5  # noqa: F401
 pip("flash-linear-attention==0.6.0", limit=600)
-_r = pip("causal-conv1d", limit=600)
-if _r != 0:
-    # sdist build needs setuptools+nvcc; the reference fallback is slower but
-    # correct (E0 passed G1-G4 on it) — log and continue.
-    print("[WARN] causal-conv1d unavailable — slow reference fallback (correct)", flush=True)
+pip("accelerate", limit=300)  # tiny_hf low_cpu_mem_usage streaming loader
+# r3: causal-conv1d install attempt REMOVED — its sdist build pulls torch
+# 2.15+cu132 into the isolated build env and times out fetching a prebuilt
+# wheel from GitHub (~3.5 min wasted); even a successful build would be an
+# ABI mismatch against runtime torch 2.10. The transformers reference
+# fallback is slower but correct (E0 passed G1-G4 on it).
 from transformers.utils import is_flash_linear_attention_available
 if not is_flash_linear_attention_available():
     sys.exit("[FATAL] fla unavailable")
@@ -90,25 +98,27 @@ du -sh "$MODEL_LOCAL"
 
 echo "== runtime config =="
 python - <<PY
-import yaml, os, shutil
+import yaml
 cfg = yaml.safe_load(open("$RSI_ROOT/configs/rsi_appworld_react_9b_v3.yaml"))
 cfg["policy"]["model_path"] = "$MODEL_LOCAL"
-cfg["campaign_id"] = "e1_appworld_27b_r2"
+cfg["campaign_id"] = "e1_appworld_27b_r3"
 cfg["execution"]["runs_root"] = "$RSI_ROOT/runs"
 cfg["suite"]["split_manifest"] = "data/splits/e1_appworld_9b.json"
-yaml.safe_dump(cfg, open("/tmp/e1_appworld_cfg.yaml", "w"), sort_keys=False, allow_unicode=True)
-shutil.copy("$RSI_ROOT/data/splits/e1_appworld_9b.json", "/tmp/data/splits/e1_appworld_9b.json")
-print("cfg ready:", cfg["campaign_id"], "profile:", cfg["runtime"]["profile"])
+# Written INTO configs/ so config_dir=configs and every relative path
+# (data/splits/…, configs/…) resolves against the RSI project root — no
+# /tmp copies needed (split manifest is read in place, frozen+digest-verified).
+yaml.safe_dump(cfg, open("$RUNTIME_CFG", "w"), sort_keys=False, allow_unicode=True)
+print("cfg ready:", cfg["campaign_id"], "profile:", cfg["runtime"]["profile"], "->", "$RUNTIME_CFG")
 PY
 
 echo "== data prepare / validate =="
-python -m rsi.cli data prepare --config /tmp/e1_appworld_cfg.yaml | python -c "import json,sys; d=json.load(sys.stdin); assert d.get('ok') and d.get('frozen'), d; print('  prepare frozen:', d['domains']['appworld'])"
-python -m rsi.cli data validate --config /tmp/e1_appworld_cfg.yaml | python -c "import json,sys; d=json.load(sys.stdin); assert d.get('ok'), d; print('  validate ok')"
+python -m rsi.cli data prepare --config "$RUNTIME_CFG" | python -c "import json,sys; d=json.load(sys.stdin); assert d.get('ok') and d.get('frozen'), d; print('  prepare frozen:', d['domains']['appworld'])"
+python -m rsi.cli data validate --config "$RUNTIME_CFG" | python -c "import json,sys; d=json.load(sys.stdin); assert d.get('ok'), d; print('  validate ok')"
 
 echo "== E1 evolution: 8 gens x 2 candidates, real-trace analysis =="
 export RSI_PANEL_WORKERS=7
 export RSI_PROPOSER_DEVICE=cuda:7
-python -m rsi.cli evolve --config /tmp/e1_appworld_cfg.yaml 2>&1 | tee /tmp/e1_evolve_stream.log | python -u -c "
+python -m rsi.cli evolve --config "$RUNTIME_CFG" 2>&1 | tee /tmp/e1_evolve_stream.log | python -u -c "
 import sys
 for line in sys.stdin:
     if any(k in line for k in ('generation', 'champion', 'stopped', 'candidate', 'error', 'Error')):
@@ -116,5 +126,5 @@ for line in sys.stdin:
         sys.stdout.flush()
 "
 echo "== E1 evolve done =="
-ls -la "$RSI_ROOT/runs/e1_appworld_27b_r2/evolve/" || true
+ls -la "$RSI_ROOT/runs/e1_appworld_27b_r3/evolve/" || true
 exit 0

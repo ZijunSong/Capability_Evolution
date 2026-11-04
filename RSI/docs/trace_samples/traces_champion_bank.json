@@ -1,0 +1,1252 @@
+{
+ "meta": {
+  "arm": "champion_bank",
+  "harness": "bank",
+  "bank_digest": "ae6f28f51b0f9dcd722ebd4e22d76f883f3c3f9d646ed08f4c6944f1241379ed",
+  "policy_digest": "63eea503707c6dc017bacc037614c5b50dd82a6cbacf98c44ee6167336ddfa06",
+  "config_digest": "7ce264695b110c141380cbf3e47d3940dce1fa2ba7ab143b26ce760001bcfa63",
+  "split": "harness_select (frozen 12 tasks, seed 17)",
+  "campaign": "e1_webshop_9b_r9_pair"
+ },
+ "suite": {
+  "aggregate": "equal_domain_macro",
+  "domains": [
+   {
+    "domain": "webshop",
+    "metric_name": "task_reward",
+    "n": 12,
+    "per_task": {
+     "webshop:g00821": 0.5,
+     "webshop:g00870": 0.6666666666666666,
+     "webshop:g02742": 0.1,
+     "webshop:g04025": 0.6666666666666666,
+     "webshop:g05013": 0.6666666666666666,
+     "webshop:g05234": 0.6666666666666666,
+     "webshop:g07359": 0.0,
+     "webshop:g07507": 0.0,
+     "webshop:g07863": 0.6666666666666666,
+     "webshop:g08140": 0.5,
+     "webshop:g09442": 1.0,
+     "webshop:g09904": 0.0
+    },
+    "score": 0.4527777777777778,
+    "success_rate": 0.08333333333333333,
+    "synthetic": false,
+    "task_ids": [
+     "webshop:g00821",
+     "webshop:g00870",
+     "webshop:g02742",
+     "webshop:g04025",
+     "webshop:g05013",
+     "webshop:g05234",
+     "webshop:g07359",
+     "webshop:g07507",
+     "webshop:g07863",
+     "webshop:g08140",
+     "webshop:g09442",
+     "webshop:g09904"
+    ]
+   }
+  ],
+  "macro_score": 0.4527777777777778,
+  "synthetic": false
+ },
+ "tasks": {
+  "webshop:g00821": {
+   "value": 0.5,
+   "success": false,
+   "terminated_reason": "env_done",
+   "n_decisions": 9,
+   "wall_ms": 92257.01212596893,
+   "component_errors": {},
+   "steps": [
+    {
+     "kind": "episode_boundary",
+     "obs_head": "Task: i'm looking for a bench style farmhouse in white color, and price lower than 110.00 dollars\n\nWebShop [SEP] Instruction: [SEP] i'm looking for a bench style farmhouse in white color, and price lo",
+     "obs_len": 236,
+     "obs_tail": "looking for a bench style farmhouse in white color, and price lower than 110.00 dollars [SEP] Search",
+     "order": 0
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type None; respond with one JSON object",
+     "obs_len": 77,
+     "obs_ok": false,
+     "order": 1
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type None; respond with one JSON object",
+     "obs_len": 77,
+     "obs_ok": false,
+     "order": 2
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type None; respond with one JSON object",
+     "obs_len": 77,
+     "obs_ok": false,
+     "order": 3
+    },
+    {
+     "action": "{\"arguments\": {\"query\": \"white bench style farmhouse under 110\"}, \"name\": \"search\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i'm looking for a bench style farmhouse in white color, and price lower than 110.00 dollars [SEP] Back to Search [SEP] Page 1 (Total results: 50) [SEP] Next > [SEP] B09Q92Y3QN [SEP]",
+     "obs_len": 1816,
+     "obs_tail": "9T88DYP [SEP] Bush Furniture Fairview Hall Tree with Shoe Storage Bench, Cape Cod Gray [SEP] $218.76",
+     "order": 4
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"Next >\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i'm looking for a bench style farmhouse in white color, and price lower than 110.00 dollars [SEP] Back to Search [SEP] Page 2 (Total results: 50) [SEP] < Prev [SEP] Next > [SEP] B09",
+     "obs_len": 1658,
+     "obs_tail": "fa Table with Drawers and Bottom Shelf for Entryway, Living Room, Easy Assembly (White) [SEP] $169.0",
+     "order": 5
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"B09KVCQ6PR\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i'm looking for a bench style farmhouse in white color, and price lower than 110.00 dollars [SEP] Back to Search [SEP] < Prev [SEP] Pemberly Row 28\" Farmhouse Wood Accent Bench with",
+     "obs_len": 324,
+     "obs_tail": " [SEP] Price: $100.0 [SEP] Rating: N.A. [SEP] Description [SEP] Features [SEP] Reviews [SEP] Buy Now",
+     "order": 6
+    },
+    {
+     "kind": "error",
+     "obs_head": "proposal vetoed: Action proposal type <class 'rsi.contracts.action.Finish'> is not a ToolCall. Please propose a ToolCall or Finish action.",
+     "obs_len": 138,
+     "obs_ok": false,
+     "order": 7
+    },
+    {
+     "kind": "error",
+     "obs_head": "proposal vetoed: Action proposal type <class 'rsi.contracts.action.Finish'> is not a ToolCall. Please propose a ToolCall or Finish action.",
+     "obs_len": 138,
+     "obs_ok": false,
+     "order": 8
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"Buy Now\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Thank you for shopping with us! [SEP] Your code: [SEP] None [SEP] (Paste it in your MTurk interface.) [SEP] Purchased [SEP] asin [SEP] B09KVCQ6PR [SEP] options [SEP] {} [SEP] attrs [SEP] None [SEP] ca",
+     "obs_len": 527,
+     "obs_tail": "SEP] None [SEP] Reward [SEP] Your score (min 0.0, max 1.0) [SEP] 0.5 [SEP] Reward Details [SEP] None",
+     "order": 9
+    }
+   ]
+  },
+  "webshop:g00870": {
+   "value": 0.6666666666666666,
+   "success": false,
+   "terminated_reason": "env_done",
+   "n_decisions": 6,
+   "wall_ms": 12547.878016471863,
+   "component_errors": {},
+   "steps": [
+    {
+     "kind": "episode_boundary",
+     "obs_head": "Task: i am looking for medium sized women knee high over calf, and price lower than 50.00 dollars\n\nWebShop [SEP] Instruction: [SEP] i am looking for medium sized women knee high over calf, and price l",
+     "obs_len": 236,
+     "obs_tail": " looking for medium sized women knee high over calf, and price lower than 50.00 dollars [SEP] Search",
+     "order": 0
+    },
+    {
+     "action": "{\"arguments\": {\"query\": \"women knee high over calf medium\"}, \"name\": \"search\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i am looking for medium sized women knee high over calf, and price lower than 50.00 dollars [SEP] Back to Search [SEP] Page 1 (Total results: 50) [SEP] Next > [SEP] B09HRLS96L [SEP]",
+     "obs_len": 1899,
+     "obs_tail": "h,Mid Calf Boots Retro Knee Middle Tube Boots Low Heel Combat Round Toe Shoes [SEP] $15.99 to $26.24",
+     "order": 1
+    },
+    {
+     "kind": "error",
+     "obs_head": "proposal vetoed: Action proposal type <class 'rsi.contracts.action.Finish'> is not a ToolCall. Please propose a ToolCall or Finish action.",
+     "obs_len": 138,
+     "obs_ok": false,
+     "order": 2
+    },
+    {
+     "kind": "error",
+     "obs_head": "proposal vetoed: Action proposal type <class 'rsi.contracts.action.Finish'> is not a ToolCall. Please propose a ToolCall or Finish action.",
+     "obs_len": 138,
+     "obs_ok": false,
+     "order": 3
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"B09NZQJGZY\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i am looking for medium sized women knee high over calf, and price lower than 50.00 dollars [SEP] Back to Search [SEP] < Prev [SEP] size [SEP] 5.5 [SEP] 6 [SEP] 7 [SEP] 7.5 [SEP] 8 ",
+     "obs_len": 602,
+     "obs_tail": " [SEP] Price: $39.63 [SEP] Rating: N.A. [SEP] Description [SEP] Features [SEP] Reviews [SEP] Buy Now",
+     "order": 4
+    },
+    {
+     "kind": "error",
+     "obs_head": "proposal vetoed: Action proposal type <class 'rsi.contracts.action.Finish'> is not a ToolCall. Please propose a ToolCall or Finish action.",
+     "obs_len": 138,
+     "obs_ok": false,
+     "order": 5
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"Buy Now\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Thank you for shopping with us! [SEP] Your code: [SEP] None [SEP] (Paste it in your MTurk interface.) [SEP] Purchased [SEP] asin [SEP] B09NZQJGZY [SEP] options [SEP] {} [SEP] attrs [SEP] None [SEP] ca",
+     "obs_len": 542,
+     "obs_tail": " Reward [SEP] Your score (min 0.0, max 1.0) [SEP] 0.6666666666666666 [SEP] Reward Details [SEP] None",
+     "order": 6
+    }
+   ]
+  },
+  "webshop:g02742": {
+   "value": 0.1,
+   "success": false,
+   "terminated_reason": "env_done",
+   "n_decisions": 6,
+   "wall_ms": 89435.23386478424,
+   "component_errors": {},
+   "steps": [
+    {
+     "kind": "episode_boundary",
+     "obs_head": "Task: i need a cruelty free hand wash that is 8 ounces, and price lower than 40.00 dollars\n\nWebShop [SEP] Instruction: [SEP] i need a cruelty free hand wash that is 8 ounces, and price lower than 40.0",
+     "obs_len": 222,
+     "obs_tail": "P] i need a cruelty free hand wash that is 8 ounces, and price lower than 40.00 dollars [SEP] Search",
+     "order": 0
+    },
+    {
+     "action": "{\"arguments\": {\"query\": \"cruelty free hand wash 8 ounces\"}, \"name\": \"search\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i need a cruelty free hand wash that is 8 ounces, and price lower than 40.00 dollars [SEP] Back to Search [SEP] Page 1 (Total results: 50) [SEP] Next > [SEP] B00MHGYTYI [SEP] Cuccio",
+     "obs_len": 2096,
+     "obs_tail": "lty Free Skin Care Made with Fair Trade Shea Butter, Pink Himalayan Salt, Sage, 13 Ounce [SEP] $8.99",
+     "order": 1
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"B00MHGYTYI\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i need a cruelty free hand wash that is 8 ounces, and price lower than 40.00 dollars [SEP] Back to Search [SEP] < Prev [SEP] scent [SEP] bronze shimmer [SEP] coconut & white ginger ",
+     "obs_len": 1005,
+     "obs_tail": " [SEP] Price: $11.67 [SEP] Rating: N.A. [SEP] Description [SEP] Features [SEP] Reviews [SEP] Buy Now",
+     "order": 2
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type None; respond with one JSON object",
+     "obs_len": 77,
+     "obs_ok": false,
+     "order": 3
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"8 ounce (pack of 1)\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i need a cruelty free hand wash that is 8 ounces, and price lower than 40.00 dollars [SEP] Back to Search [SEP] < Prev [SEP] scent [SEP] bronze shimmer [SEP] coconut & white ginger ",
+     "obs_len": 1005,
+     "obs_tail": " [SEP] Price: $11.67 [SEP] Rating: N.A. [SEP] Description [SEP] Features [SEP] Reviews [SEP] Buy Now",
+     "order": 4
+    },
+    {
+     "kind": "error",
+     "obs_head": "proposal vetoed: Action proposal type <class 'rsi.contracts.action.Finish'> is not a ToolCall. Please propose a ToolCall or Finish action.",
+     "obs_len": 138,
+     "obs_ok": false,
+     "order": 5
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"Buy Now\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Thank you for shopping with us! [SEP] Your code: [SEP] None [SEP] (Paste it in your MTurk interface.) [SEP] Purchased [SEP] asin [SEP] B00MHGYTYI [SEP] options [SEP] {\"size\": \"8 ounce (pack of 1)\"} [S",
+     "obs_len": 556,
+     "obs_tail": "SEP] None [SEP] Reward [SEP] Your score (min 0.0, max 1.0) [SEP] 0.1 [SEP] Reward Details [SEP] None",
+     "order": 6
+    }
+   ]
+  },
+  "webshop:g04025": {
+   "value": 0.6666666666666666,
+   "success": false,
+   "terminated_reason": "env_done",
+   "n_decisions": 6,
+   "wall_ms": 16547.26722049713,
+   "component_errors": {},
+   "steps": [
+    {
+     "kind": "episode_boundary",
+     "obs_head": "Task: i am looking for a nickel finished one light wall sconce, and price lower than 310.00 dollars\n\nWebShop [SEP] Instruction: [SEP] i am looking for a nickel finished one light wall sconce, and pric",
+     "obs_len": 240,
+     "obs_tail": "ooking for a nickel finished one light wall sconce, and price lower than 310.00 dollars [SEP] Search",
+     "order": 0
+    },
+    {
+     "action": "{\"arguments\": {\"query\": \"nickel finished one light wall sconce\"}, \"name\": \"search\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i am looking for a nickel finished one light wall sconce, and price lower than 310.00 dollars [SEP] Back to Search [SEP] Page 1 (Total results: 50) [SEP] Next > [SEP] B07SK4D2HN [SE",
+     "obs_len": 1633,
+     "obs_tail": "EP] B089ZMJJ9B [SEP] Syosset 1-Light Wall Sconce - Polished Nickel Finish - Black Shade [SEP] $440.0",
+     "order": 1
+    },
+    {
+     "kind": "error",
+     "obs_head": "proposal vetoed: Action proposal type <class 'rsi.contracts.action.Finish'> is not a ToolCall. Please propose a ToolCall or Finish action.",
+     "obs_len": 138,
+     "obs_ok": false,
+     "order": 2
+    },
+    {
+     "kind": "error",
+     "obs_head": "proposal vetoed: Action proposal type <class 'rsi.contracts.action.Finish'> is not a ToolCall. Please propose a ToolCall or Finish action.",
+     "obs_len": 138,
+     "obs_ok": false,
+     "order": 3
+    },
+    {
+     "kind": "error",
+     "obs_head": "proposal vetoed: Action proposal type <class 'rsi.contracts.action.Finish'> is not a ToolCall. Please propose a ToolCall or Finish action.",
+     "obs_len": 138,
+     "obs_ok": false,
+     "order": 4
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"B07SK4D2HN\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i am looking for a nickel finished one light wall sconce, and price lower than 310.00 dollars [SEP] Back to Search [SEP] < Prev [SEP] style [SEP] one light wall (brushed nickel) [SE",
+     "obs_len": 555,
+     "obs_tail": " [SEP] Price: $38.01 [SEP] Rating: N.A. [SEP] Description [SEP] Features [SEP] Reviews [SEP] Buy Now",
+     "order": 5
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"Buy Now\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Thank you for shopping with us! [SEP] Your code: [SEP] None [SEP] (Paste it in your MTurk interface.) [SEP] Purchased [SEP] asin [SEP] B07SK4D2HN [SEP] options [SEP] {} [SEP] attrs [SEP] None [SEP] ca",
+     "obs_len": 542,
+     "obs_tail": " Reward [SEP] Your score (min 0.0, max 1.0) [SEP] 0.6666666666666666 [SEP] Reward Details [SEP] None",
+     "order": 6
+    }
+   ]
+  },
+  "webshop:g05013": {
+   "value": 0.6666666666666666,
+   "success": false,
+   "terminated_reason": "env_done",
+   "n_decisions": 13,
+   "wall_ms": 97343.6109380722,
+   "component_errors": {},
+   "steps": [
+    {
+     "kind": "episode_boundary",
+     "obs_head": "Task: i am looking for 1 pack of 1.7 ounce ,anti-perspirant stick for women, and price lower than 140.00 dollars\n\nWebShop [SEP] Instruction: [SEP] i am looking for 1 pack of 1.7 ounce ,anti-perspirant",
+     "obs_len": 266,
+     "obs_tail": "pack of 1.7 ounce ,anti-perspirant stick for women, and price lower than 140.00 dollars [SEP] Search",
+     "order": 0
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type None; respond with one JSON object",
+     "obs_len": 77,
+     "obs_ok": false,
+     "order": 1
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type None; respond with one JSON object",
+     "obs_len": 77,
+     "obs_ok": false,
+     "order": 2
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type None; respond with one JSON object",
+     "obs_len": 77,
+     "obs_ok": false,
+     "order": 3
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type None; respond with one JSON object",
+     "obs_len": 77,
+     "obs_ok": false,
+     "order": 4
+    },
+    {
+     "action": "{\"arguments\": {\"keywords\": \"1 pack 1.7 ounce anti-perspirant stick for women\"}, \"name\": \"search\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "query must be a non-empty string",
+     "obs_len": 32,
+     "obs_ok": false,
+     "order": 5
+    },
+    {
+     "action": "{\"arguments\": {\"keywords\": \"anti-perspirant stick for women\"}, \"name\": \"search\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "query must be a non-empty string",
+     "obs_len": 32,
+     "obs_ok": false,
+     "order": 6
+    },
+    {
+     "action": "{\"arguments\": {\"keywords\": \"anti-perspirant stick for women\"}, \"name\": \"search\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "query must be a non-empty string",
+     "obs_len": 32,
+     "obs_ok": false,
+     "order": 7
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type None; respond with one JSON object",
+     "obs_len": 77,
+     "obs_ok": false,
+     "order": 8
+    },
+    {
+     "kind": "error",
+     "obs_head": "proposal vetoed: Action proposal type <class 'rsi.contracts.action.Finish'> is not a ToolCall. Please propose a ToolCall or Finish action.",
+     "obs_len": 138,
+     "obs_ok": false,
+     "order": 9
+    },
+    {
+     "action": "{\"arguments\": {\"keywords\": \"1.7 ounce anti-perspirant stick for women\"}, \"name\": \"search\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "query must be a non-empty string",
+     "obs_len": 32,
+     "obs_ok": false,
+     "order": 10
+    },
+    {
+     "action": "{\"arguments\": {\"query\": \"anti-perspirant stick women 1.7 oz\"}, \"name\": \"search\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i am looking for 1 pack of 1.7 ounce ,anti-perspirant stick for women, and price lower than 140.00 dollars [SEP] Back to Search [SEP] Page 1 (Total results: 50) [SEP] Next > [SEP] B",
+     "obs_len": 1302,
+     "obs_tail": "P] $3.0 [SEP] B007F4V00S [SEP] Set of 2 Avon Sweet Honesty Roll-On Anti-Perspirant Rolls [SEP] $8.88",
+     "order": 11
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"B00OYPSBVW\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i am looking for 1 pack of 1.7 ounce ,anti-perspirant stick for women, and price lower than 140.00 dollars [SEP] Back to Search [SEP] < Prev [SEP] Cashmere Mist Anti-PERSPIRANT Deod",
+     "obs_len": 348,
+     "obs_tail": " [SEP] Price: $100.0 [SEP] Rating: N.A. [SEP] Description [SEP] Features [SEP] Reviews [SEP] Buy Now",
+     "order": 12
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"Buy Now\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Thank you for shopping with us! [SEP] Your code: [SEP] None [SEP] (Paste it in your MTurk interface.) [SEP] Purchased [SEP] asin [SEP] B00OYPSBVW [SEP] options [SEP] {} [SEP] attrs [SEP] None [SEP] ca",
+     "obs_len": 542,
+     "obs_tail": " Reward [SEP] Your score (min 0.0, max 1.0) [SEP] 0.6666666666666666 [SEP] Reward Details [SEP] None",
+     "order": 13
+    }
+   ]
+  },
+  "webshop:g05234": {
+   "value": 0.6666666666666666,
+   "success": false,
+   "terminated_reason": "env_done",
+   "n_decisions": 11,
+   "wall_ms": 94880.3586435318,
+   "component_errors": {},
+   "steps": [
+    {
+     "kind": "episode_boundary",
+     "obs_head": "Task: i am looking for a paraben free lip gloss with vitamin e and aloe. choose the pink pearl one, and price lower than 40.00 dollars\n\nWebShop [SEP] Instruction: [SEP] i am looking for a paraben free",
+     "obs_len": 310,
+     "obs_tail": " with vitamin e and aloe. choose the pink pearl one, and price lower than 40.00 dollars [SEP] Search",
+     "order": 0
+    },
+    {
+     "action": "{\"arguments\": {\"keywords\": \"paraben free lip gloss vitamin e aloe pink pearl\"}, \"name\": \"search\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "query must be a non-empty string",
+     "obs_len": 32,
+     "obs_ok": false,
+     "order": 1
+    },
+    {
+     "action": "{\"arguments\": {\"query\": \"paraben free lip gloss vitamin e aloe pink pearl\"}, \"name\": \"search\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i am looking for a paraben free lip gloss with vitamin e and aloe. choose the pink pearl one, and price lower than 40.00 dollars [SEP] Back to Search [SEP] Page 1 (Total results: 50",
+     "obs_len": 1693,
+     "obs_tail": "Balm Pink Camo [SEP] $6.77 [SEP] B0711FK3J3 [SEP] Kelley Baker Cali Girl Lip Gloss 5.5g [SEP] $18.95",
+     "order": 2
+    },
+    {
+     "action": "{\"arguments\": {\"query\": \"lip gloss pink pearl\"}, \"name\": \"search\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i am looking for a paraben free lip gloss with vitamin e and aloe. choose the pink pearl one, and price lower than 40.00 dollars [SEP] Back to Search [SEP] Page 1 (Total results: 50",
+     "obs_len": 2270,
+     "obs_tail": "h Applicator/Organic Shea Butter/Sweet Almond/Essential Oils/Cruelty Free/MADE IN NY USA [SEP] $16.0",
+     "order": 3
+    },
+    {
+     "kind": "error",
+     "obs_head": "proposal vetoed: Action proposal type <class 'rsi.contracts.action.Finish'> is not a ToolCall. Please propose a ToolCall or Finish action.",
+     "obs_len": 138,
+     "obs_ok": false,
+     "order": 4
+    },
+    {
+     "kind": "error",
+     "obs_head": "proposal vetoed: Tool 'finish' is not available in the tool catalog. Available tools: click, search.",
+     "obs_len": 100,
+     "obs_ok": false,
+     "order": 5
+    },
+    {
+     "action": "{\"arguments\": {\"query\": \"pink pearl lip gloss\"}, \"name\": \"search\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i am looking for a paraben free lip gloss with vitamin e and aloe. choose the pink pearl one, and price lower than 40.00 dollars [SEP] Back to Search [SEP] Page 1 (Total results: 50",
+     "obs_len": 2270,
+     "obs_tail": "h Applicator/Organic Shea Butter/Sweet Almond/Essential Oils/Cruelty Free/MADE IN NY USA [SEP] $16.0",
+     "order": 6
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"B079954TY6\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i am looking for a paraben free lip gloss with vitamin e and aloe. choose the pink pearl one, and price lower than 40.00 dollars [SEP] Back to Search [SEP] < Prev [SEP] Jouer High P",
+     "obs_len": 457,
+     "obs_tail": " [SEP] Price: $21.99 [SEP] Rating: N.A. [SEP] Description [SEP] Features [SEP] Reviews [SEP] Buy Now",
+     "order": 7
+    },
+    {
+     "kind": "error",
+     "obs_head": "proposal vetoed: Action proposal type <class 'rsi.contracts.action.Finish'> is not a ToolCall. Please propose a ToolCall or Finish action.",
+     "obs_len": 138,
+     "obs_ok": false,
+     "order": 8
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type 'click'; respond with one JSON object",
+     "obs_len": 80,
+     "obs_ok": false,
+     "order": 9
+    },
+    {
+     "kind": "error",
+     "obs_head": "proposal vetoed: Action proposal type <class 'rsi.contracts.action.Finish'> is not a ToolCall. Please propose a ToolCall or Finish action.",
+     "obs_len": 138,
+     "obs_ok": false,
+     "order": 10
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"Buy Now\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Thank you for shopping with us! [SEP] Your code: [SEP] None [SEP] (Paste it in your MTurk interface.) [SEP] Purchased [SEP] asin [SEP] B079954TY6 [SEP] options [SEP] {} [SEP] attrs [SEP] None [SEP] ca",
+     "obs_len": 542,
+     "obs_tail": " Reward [SEP] Your score (min 0.0, max 1.0) [SEP] 0.6666666666666666 [SEP] Reward Details [SEP] None",
+     "order": 11
+    }
+   ]
+  },
+  "webshop:g07359": {
+   "value": 0.0,
+   "success": false,
+   "terminated_reason": "max_actions",
+   "n_decisions": 30,
+   "wall_ms": 57668.77444934845,
+   "component_errors": {},
+   "steps": [
+    {
+     "kind": "episode_boundary",
+     "obs_head": "Task: i want a high quality bvlgari blv by bvlgari for women perfume, and price lower than 470.00 dollars\n\nWebShop [SEP] Instruction: [SEP] i want a high quality bvlgari blv by bvlgari for women perfu",
+     "obs_len": 252,
+     "obs_tail": "h quality bvlgari blv by bvlgari for women perfume, and price lower than 470.00 dollars [SEP] Search",
+     "order": 0
+    },
+    {
+     "action": "{\"arguments\": {\"query\": \"bvlgari blv women perfume\"}, \"name\": \"search\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i want a high quality bvlgari blv by bvlgari for women perfume, and price lower than 470.00 dollars [SEP] Back to Search [SEP] Page 1 (Total results: 50) [SEP] Next > [SEP] B00SXXC2",
+     "obs_len": 1231,
+     "obs_tail": "Ounces [SEP] $439.92 [SEP] B0038K13ZA [SEP] BVLGARI Blv II Eau De Parfum Spray 30ml/1oz [SEP] $100.0",
+     "order": 1
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"Bvlgari Blv By Bvlgari For Women. Eau De Parfum Spray 2.5 Ounces\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i want a high quality bvlgari blv by bvlgari for women perfume, and price lower than 470.00 dollars [SEP] Back to Search [SEP] Page 1 (Total results: 50) [SEP] Next > [SEP] B00SXXC2",
+     "obs_len": 1231,
+     "obs_tail": "Ounces [SEP] $439.92 [SEP] B0038K13ZA [SEP] BVLGARI Blv II Eau De Parfum Spray 30ml/1oz [SEP] $100.0",
+     "order": 2
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"Bvlgari Blv By Bvlgari For Women. Eau De Parfum Spray 2.5 Ounces\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i want a high quality bvlgari blv by bvlgari for women perfume, and price lower than 470.00 dollars [SEP] Back to Search [SEP] Page 1 (Total results: 50) [SEP] Next > [SEP] B00SXXC2",
+     "obs_len": 1231,
+     "obs_tail": "Ounces [SEP] $439.92 [SEP] B0038K13ZA [SEP] BVLGARI Blv II Eau De Parfum Spray 30ml/1oz [SEP] $100.0",
+     "order": 3
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type 'click'; respond with one JSON object",
+     "obs_len": 80,
+     "obs_ok": false,
+     "order": 4
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"Bvlgari Blv By Bvlgari For Women. Eau De Parfum Spray 2.5 Ounces\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i want a high quality bvlgari blv by bvlgari for women perfume, and price lower than 470.00 dollars [SEP] Back to Search [SEP] Page 1 (Total results: 50) [SEP] Next > [SEP] B00SXXC2",
+     "obs_len": 1231,
+     "obs_tail": "Ounces [SEP] $439.92 [SEP] B0038K13ZA [SEP] BVLGARI Blv II Eau De Parfum Spray 30ml/1oz [SEP] $100.0",
+     "order": 5
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"Bvlgari Blv By Bvlgari For Women. Eau De Parfum Spray 2.5 Ounces\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i want a high quality bvlgari blv by bvlgari for women perfume, and price lower than 470.00 dollars [SEP] Back to Search [SEP] Page 1 (Total results: 50) [SEP] Next > [SEP] B00SXXC2",
+     "obs_len": 1231,
+     "obs_tail": "Ounces [SEP] $439.92 [SEP] B0038K13ZA [SEP] BVLGARI Blv II Eau De Parfum Spray 30ml/1oz [SEP] $100.0",
+     "order": 6
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type 'click'; respond with one JSON object",
+     "obs_len": 80,
+     "obs_ok": false,
+     "order": 7
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"Bvlgari Blv By Bvlgari For Women. Eau De Parfum Spray 2.5 Ounces\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i want a high quality bvlgari blv by bvlgari for women perfume, and price lower than 470.00 dollars [SEP] Back to Search [SEP] Page 1 (Total results: 50) [SEP] Next > [SEP] B00SXXC2",
+     "obs_len": 1231,
+     "obs_tail": "Ounces [SEP] $439.92 [SEP] B0038K13ZA [SEP] BVLGARI Blv II Eau De Parfum Spray 30ml/1oz [SEP] $100.0",
+     "order": 8
+    },
+    {
+     "kind": "error",
+     "obs_head": "proposal vetoed: Action proposal type <class 'rsi.contracts.action.Finish'> is not a ToolCall. Please propose a ToolCall or Finish action.",
+     "obs_len": 138,
+     "obs_ok": false,
+     "order": 9
+    },
+    {
+     "kind": "error",
+     "obs_head": "proposal vetoed: Action proposal type <class 'rsi.contracts.action.Finish'> is not a ToolCall. Please propose a ToolCall or Finish action.",
+     "obs_len": 138,
+     "obs_ok": false,
+     "order": 10
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"Bvlgari Blv By Bvlgari For Women. Eau De Parfum Spray 2.5 Ounces\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i want a high quality bvlgari blv by bvlgari for women perfume, and price lower than 470.00 dollars [SEP] Back to Search [SEP] Page 1 (Total results: 50) [SEP] Next > [SEP] B00SXXC2",
+     "obs_len": 1231,
+     "obs_tail": "Ounces [SEP] $439.92 [SEP] B0038K13ZA [SEP] BVLGARI Blv II Eau De Parfum Spray 30ml/1oz [SEP] $100.0",
+     "order": 11
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"Bvlgari Blv By Bvlgari For Women. Eau De Parfum Spray 2.5 Ounces\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i want a high quality bvlgari blv by bvlgari for women perfume, and price lower than 470.00 dollars [SEP] Back to Search [SEP] Page 1 (Total results: 50) [SEP] Next > [SEP] B00SXXC2",
+     "obs_len": 1231,
+     "obs_tail": "Ounces [SEP] $439.92 [SEP] B0038K13ZA [SEP] BVLGARI Blv II Eau De Parfum Spray 30ml/1oz [SEP] $100.0",
+     "order": 12
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"Bvlgari Blv By Bvlgari For Women. Eau De Parfum Spray 2.5 Ounces\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i want a high quality bvlgari blv by bvlgari for women perfume, and price lower than 470.00 dollars [SEP] Back to Search [SEP] Page 1 (Total results: 50) [SEP] Next > [SEP] B00SXXC2",
+     "obs_len": 1231,
+     "obs_tail": "Ounces [SEP] $439.92 [SEP] B0038K13ZA [SEP] BVLGARI Blv II Eau De Parfum Spray 30ml/1oz [SEP] $100.0",
+     "order": 13
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"Bvlgari Blv By Bvlgari For Women. Eau De Parfum Spray 2.5 Ounces\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i want a high quality bvlgari blv by bvlgari for women perfume, and price lower than 470.00 dollars [SEP] Back to Search [SEP] Page 1 (Total results: 50) [SEP] Next > [SEP] B00SXXC2",
+     "obs_len": 1231,
+     "obs_tail": "Ounces [SEP] $439.92 [SEP] B0038K13ZA [SEP] BVLGARI Blv II Eau De Parfum Spray 30ml/1oz [SEP] $100.0",
+     "order": 14
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"$439.92\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i want a high quality bvlgari blv by bvlgari for women perfume, and price lower than 470.00 dollars [SEP] Back to Search [SEP] Page 1 (Total results: 50) [SEP] Next > [SEP] B00SXXC2",
+     "obs_len": 1231,
+     "obs_tail": "Ounces [SEP] $439.92 [SEP] B0038K13ZA [SEP] BVLGARI Blv II Eau De Parfum Spray 30ml/1oz [SEP] $100.0",
+     "order": 15
+    },
+    {
+     "kind": "error",
+     "obs_head": "proposal vetoed: Action proposal type <class 'rsi.contracts.action.Finish'> is not a ToolCall. Please propose a ToolCall or Finish action.",
+     "obs_len": 138,
+     "obs_ok": false,
+     "order": 16
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"Bvlgari Blv By Bvlgari For Women. Eau De Parfum Spray 2.5 Ounces\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i want a high quality bvlgari blv by bvlgari for women perfume, and price lower than 470.00 dollars [SEP] Back to Search [SEP] Page 1 (Total results: 50) [SEP] Next > [SEP] B00SXXC2",
+     "obs_len": 1231,
+     "obs_tail": "Ounces [SEP] $439.92 [SEP] B0038K13ZA [SEP] BVLGARI Blv II Eau De Parfum Spray 30ml/1oz [SEP] $100.0",
+     "order": 17
+    },
+    {
+     "kind": "error",
+     "obs_head": "proposal vetoed: Action proposal type <class 'rsi.contracts.action.Finish'> is not a ToolCall. Please propose a ToolCall or Finish action.",
+     "obs_len": 138,
+     "obs_ok": false,
+     "order": 18
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type None; respond with one JSON object",
+     "obs_len": 77,
+     "obs_ok": false,
+     "order": 19
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"Bvlgari Blv By Bvlgari For Women. Eau De Parfum Spray 2.5 Ounces\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i want a high quality bvlgari blv by bvlgari for women perfume, and price lower than 470.00 dollars [SEP] Back to Search [SEP] Page 1 (Total results: 50) [SEP] Next > [SEP] B00SXXC2",
+     "obs_len": 1231,
+     "obs_tail": "Ounces [SEP] $439.92 [SEP] B0038K13ZA [SEP] BVLGARI Blv II Eau De Parfum Spray 30ml/1oz [SEP] $100.0",
+     "order": 20
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"Bvlgari Blv By Bvlgari For Women. Eau De Parfum Spray 2.5 Ounces\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i want a high quality bvlgari blv by bvlgari for women perfume, and price lower than 470.00 dollars [SEP] Back to Search [SEP] Page 1 (Total results: 50) [SEP] Next > [SEP] B00SXXC2",
+     "obs_len": 1231,
+     "obs_tail": "Ounces [SEP] $439.92 [SEP] B0038K13ZA [SEP] BVLGARI Blv II Eau De Parfum Spray 30ml/1oz [SEP] $100.0",
+     "order": 21
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type None; respond with one JSON object",
+     "obs_len": 77,
+     "obs_ok": false,
+     "order": 22
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"Bvlgari Blv By Bvlgari For Women. Eau De Parfum Spray 2.5 Ounces\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i want a high quality bvlgari blv by bvlgari for women perfume, and price lower than 470.00 dollars [SEP] Back to Search [SEP] Page 1 (Total results: 50) [SEP] Next > [SEP] B00SXXC2",
+     "obs_len": 1231,
+     "obs_tail": "Ounces [SEP] $439.92 [SEP] B0038K13ZA [SEP] BVLGARI Blv II Eau De Parfum Spray 30ml/1oz [SEP] $100.0",
+     "order": 23
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"Bvlgari Blv By Bvlgari For Women. Eau De Parfum Spray 2.5 Ounces\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i want a high quality bvlgari blv by bvlgari for women perfume, and price lower than 470.00 dollars [SEP] Back to Search [SEP] Page 1 (Total results: 50) [SEP] Next > [SEP] B00SXXC2",
+     "obs_len": 1231,
+     "obs_tail": "Ounces [SEP] $439.92 [SEP] B0038K13ZA [SEP] BVLGARI Blv II Eau De Parfum Spray 30ml/1oz [SEP] $100.0",
+     "order": 24
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"Bvlgari Blv By Bvlgari For Women. Eau De Parfum Spray 2.5 Ounces\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i want a high quality bvlgari blv by bvlgari for women perfume, and price lower than 470.00 dollars [SEP] Back to Search [SEP] Page 1 (Total results: 50) [SEP] Next > [SEP] B00SXXC2",
+     "obs_len": 1231,
+     "obs_tail": "Ounces [SEP] $439.92 [SEP] B0038K13ZA [SEP] BVLGARI Blv II Eau De Parfum Spray 30ml/1oz [SEP] $100.0",
+     "order": 25
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"Bvlgari Blv By Bvlgari For Women. Eau De Parfum Spray 2.5 Ounces\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i want a high quality bvlgari blv by bvlgari for women perfume, and price lower than 470.00 dollars [SEP] Back to Search [SEP] Page 1 (Total results: 50) [SEP] Next > [SEP] B00SXXC2",
+     "obs_len": 1231,
+     "obs_tail": "Ounces [SEP] $439.92 [SEP] B0038K13ZA [SEP] BVLGARI Blv II Eau De Parfum Spray 30ml/1oz [SEP] $100.0",
+     "order": 26
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"Bvlgari Blv By Bvlgari For Women. Eau De Parfum Spray 2.5 Ounces\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i want a high quality bvlgari blv by bvlgari for women perfume, and price lower than 470.00 dollars [SEP] Back to Search [SEP] Page 1 (Total results: 50) [SEP] Next > [SEP] B00SXXC2",
+     "obs_len": 1231,
+     "obs_tail": "Ounces [SEP] $439.92 [SEP] B0038K13ZA [SEP] BVLGARI Blv II Eau De Parfum Spray 30ml/1oz [SEP] $100.0",
+     "order": 27
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type 'click'; respond with one JSON object",
+     "obs_len": 80,
+     "obs_ok": false,
+     "order": 28
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"Bvlgari Blv By Bvlgari For Women. Eau De Parfum Spray 2.5 Ounces\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i want a high quality bvlgari blv by bvlgari for women perfume, and price lower than 470.00 dollars [SEP] Back to Search [SEP] Page 1 (Total results: 50) [SEP] Next > [SEP] B00SXXC2",
+     "obs_len": 1231,
+     "obs_tail": "Ounces [SEP] $439.92 [SEP] B0038K13ZA [SEP] BVLGARI Blv II Eau De Parfum Spray 30ml/1oz [SEP] $100.0",
+     "order": 29
+    }
+   ]
+  },
+  "webshop:g07507": {
+   "value": 0.0,
+   "success": false,
+   "terminated_reason": "env_done",
+   "n_decisions": 5,
+   "wall_ms": 91018.00520324707,
+   "component_errors": {},
+   "steps": [
+    {
+     "kind": "episode_boundary",
+     "obs_head": "Task: i would like to buy jojoba oil which is non toxic, and comes in a size of 128 fl oz, and pack of 1, and price lower than 50.00 dollars\n\nWebShop [SEP] Instruction: [SEP] i would like to buy jojob",
+     "obs_len": 322,
+     "obs_tail": "ic, and comes in a size of 128 fl oz, and pack of 1, and price lower than 50.00 dollars [SEP] Search",
+     "order": 0
+    },
+    {
+     "action": "{\"arguments\": {\"query\": \"jojoba oil\"}, \"name\": \"search\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i would like to buy jojoba oil which is non toxic, and comes in a size of 128 fl oz, and pack of 1, and price lower than 50.00 dollars [SEP] Back to Search [SEP] Page 1 (Total resul",
+     "obs_len": 2175,
+     "obs_tail": "l for Skin, Face and Hair – Deeply Moisturizing Anti Aging Jojoba Oil for Men and Women [SEP] $18.95",
+     "order": 1
+    },
+    {
+     "action": "{\"arguments\": {\"query\": \"jojoba oil 128 fl oz\"}, \"name\": \"search\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i would like to buy jojoba oil which is non toxic, and comes in a size of 128 fl oz, and pack of 1, and price lower than 50.00 dollars [SEP] Back to Search [SEP] Page 1 (Total resul",
+     "obs_len": 2042,
+     "obs_tail": "ressed Unrefined Hexane Free Oil for Hair & Face | Base Carrier Oil - Certified Organic [SEP] $24.99",
+     "order": 2
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"B07PR7J175\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i would like to buy jojoba oil which is non toxic, and comes in a size of 128 fl oz, and pack of 1, and price lower than 50.00 dollars [SEP] Back to Search [SEP] < Prev [SEP] size [",
+     "obs_len": 459,
+     "obs_tail": "[SEP] Price: $139.99 [SEP] Rating: N.A. [SEP] Description [SEP] Features [SEP] Reviews [SEP] Buy Now",
+     "order": 3
+    },
+    {
+     "kind": "error",
+     "obs_head": "proposal vetoed: Action proposal type <class 'rsi.contracts.action.Finish'> is not a ToolCall. Please propose a ToolCall or Finish action.",
+     "obs_len": 138,
+     "obs_ok": false,
+     "order": 4
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"buy now\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Thank you for shopping with us! [SEP] Your code: [SEP] None [SEP] (Paste it in your MTurk interface.) [SEP] Purchased [SEP] asin [SEP] B07PR7J175 [SEP] options [SEP] {} [SEP] attrs [SEP] None [SEP] ca",
+     "obs_len": 527,
+     "obs_tail": "SEP] None [SEP] Reward [SEP] Your score (min 0.0, max 1.0) [SEP] 0.0 [SEP] Reward Details [SEP] None",
+     "order": 5
+    }
+   ]
+  },
+  "webshop:g07863": {
+   "value": 0.6666666666666666,
+   "success": false,
+   "terminated_reason": "env_done",
+   "n_decisions": 7,
+   "wall_ms": 89417.26356220245,
+   "component_errors": {},
+   "steps": [
+    {
+     "kind": "episode_boundary",
+     "obs_head": "Task: i would like a extra light beige foundation made from natural ingredients, and price lower than 50.00 dollars\n\nWebShop [SEP] Instruction: [SEP] i would like a extra light beige foundation made f",
+     "obs_len": 272,
+     "obs_tail": "ight beige foundation made from natural ingredients, and price lower than 50.00 dollars [SEP] Search",
+     "order": 0
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type None; respond with one JSON object",
+     "obs_len": 77,
+     "obs_ok": false,
+     "order": 1
+    },
+    {
+     "action": "{\"arguments\": {\"query\": \"extra light beige foundation natural ingredients\"}, \"name\": \"search\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i would like a extra light beige foundation made from natural ingredients, and price lower than 50.00 dollars [SEP] Back to Search [SEP] Page 1 (Total results: 50) [SEP] Next > [SEP",
+     "obs_len": 2097,
+     "obs_tail": " [SEP] $65.0 [SEP] B000US07WI [SEP] Ecco Bella Liquid Foundation Makeup (Mocha) 1 Ounce [SEP] $22.05",
+     "order": 2
+    },
+    {
+     "kind": "error",
+     "obs_head": "proposal vetoed: Action proposal type <class 'rsi.contracts.action.Finish'> is not a ToolCall. Please propose a ToolCall or Finish action.",
+     "obs_len": 138,
+     "obs_ok": false,
+     "order": 3
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type None; respond with one JSON object",
+     "obs_len": 77,
+     "obs_ok": false,
+     "order": 4
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"B00028OT8Y\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i would like a extra light beige foundation made from natural ingredients, and price lower than 50.00 dollars [SEP] Back to Search [SEP] < Prev [SEP] color [SEP] deep beige [SEP] ex",
+     "obs_len": 607,
+     "obs_tail": " [SEP] Price: $24.49 [SEP] Rating: N.A. [SEP] Description [SEP] Features [SEP] Reviews [SEP] Buy Now",
+     "order": 5
+    },
+    {
+     "kind": "error",
+     "obs_head": "proposal vetoed: Action proposal type <class 'rsi.contracts.action.Finish'> is not a ToolCall. Please propose a ToolCall or Finish action.",
+     "obs_len": 138,
+     "obs_ok": false,
+     "order": 6
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"Buy Now\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Thank you for shopping with us! [SEP] Your code: [SEP] None [SEP] (Paste it in your MTurk interface.) [SEP] Purchased [SEP] asin [SEP] B00028OT8Y [SEP] options [SEP] {} [SEP] attrs [SEP] None [SEP] ca",
+     "obs_len": 542,
+     "obs_tail": " Reward [SEP] Your score (min 0.0, max 1.0) [SEP] 0.6666666666666666 [SEP] Reward Details [SEP] None",
+     "order": 7
+    }
+   ]
+  },
+  "webshop:g08140": {
+   "value": 0.5,
+   "success": false,
+   "terminated_reason": "env_done",
+   "n_decisions": 3,
+   "wall_ms": 8020.9456396102905,
+   "component_errors": {},
+   "steps": [
+    {
+     "kind": "episode_boundary",
+     "obs_head": "Task: i want six boxes of earl grey decaf with 20 individually wrapper bags, and price lower than 60.00 dollars\n\nWebShop [SEP] Instruction: [SEP] i want six boxes of earl grey decaf with 20 individual",
+     "obs_len": 264,
+     "obs_tail": "f earl grey decaf with 20 individually wrapper bags, and price lower than 60.00 dollars [SEP] Search",
+     "order": 0
+    },
+    {
+     "action": "{\"arguments\": {\"query\": \"earl grey decaf 20 individually wrapper bags\"}, \"name\": \"search\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i want six boxes of earl grey decaf with 20 individually wrapper bags, and price lower than 60.00 dollars [SEP] Back to Search [SEP] Page 1 (Total results: 50) [SEP] Next > [SEP] B0",
+     "obs_len": 1521,
+     "obs_tail": "$6.99 [SEP] B07MFT22SM [SEP] Tazo Turmeric Bliss Tea Bags, Herbal, 20 Count (Pack of 6) [SEP] $19.68",
+     "order": 1
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"B000GG1OB2\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i want six boxes of earl grey decaf with 20 individually wrapper bags, and price lower than 60.00 dollars [SEP] Back to Search [SEP] < Prev [SEP] flavor name [SEP] constant comment ",
+     "obs_len": 829,
+     "obs_tail": " [SEP] Price: $16.02 [SEP] Rating: N.A. [SEP] Description [SEP] Features [SEP] Reviews [SEP] Buy Now",
+     "order": 2
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"Buy Now\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Thank you for shopping with us! [SEP] Your code: [SEP] None [SEP] (Paste it in your MTurk interface.) [SEP] Purchased [SEP] asin [SEP] B000GG1OB2 [SEP] options [SEP] {} [SEP] attrs [SEP] None [SEP] ca",
+     "obs_len": 527,
+     "obs_tail": "SEP] None [SEP] Reward [SEP] Your score (min 0.0, max 1.0) [SEP] 0.5 [SEP] Reward Details [SEP] None",
+     "order": 3
+    }
+   ]
+  },
+  "webshop:g09442": {
+   "value": 1.0,
+   "success": true,
+   "terminated_reason": "env_done",
+   "n_decisions": 7,
+   "wall_ms": 93784.51236629486,
+   "component_errors": {},
+   "steps": [
+    {
+     "kind": "episode_boundary",
+     "obs_head": "Task: i want fluoride free ayurvedic herbal toothpaste, and price lower than 20.00 dollars\n\nWebShop [SEP] Instruction: [SEP] i want fluoride free ayurvedic herbal toothpaste, and price lower than 20.0",
+     "obs_len": 222,
+     "obs_tail": "P] i want fluoride free ayurvedic herbal toothpaste, and price lower than 20.00 dollars [SEP] Search",
+     "order": 0
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type None; respond with one JSON object",
+     "obs_len": 77,
+     "obs_ok": false,
+     "order": 1
+    },
+    {
+     "kind": "error",
+     "obs_head": "proposal vetoed: Action proposal type <class 'rsi.contracts.action.Finish'> is not a ToolCall. Please propose a ToolCall or Finish action.",
+     "obs_len": 138,
+     "obs_ok": false,
+     "order": 2
+    },
+    {
+     "action": "{\"arguments\": {\"query\": \"fluoride free ayurvedic herbal toothpaste\"}, \"name\": \"search\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i want fluoride free ayurvedic herbal toothpaste, and price lower than 20.00 dollars [SEP] Back to Search [SEP] Page 1 (Total results: 50) [SEP] Next > [SEP] B08NTG84WD [SEP] Isha 1",
+     "obs_len": 1842,
+     "obs_tail": "egan, Natural, Non GMO, Flouride Free, Gluten Free, with Neem & Peelu (4.16 oz), 2 Pack [SEP] $20.99",
+     "order": 3
+    },
+    {
+     "kind": "error",
+     "obs_head": "proposal vetoed: Action proposal type <class 'rsi.contracts.action.Finish'> is not a ToolCall. Please propose a ToolCall or Finish action.",
+     "obs_len": 138,
+     "obs_ok": false,
+     "order": 4
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type 'click'; respond with one JSON object",
+     "obs_len": 80,
+     "obs_ok": false,
+     "order": 5
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"B08NTG84WD\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i want fluoride free ayurvedic herbal toothpaste, and price lower than 20.00 dollars [SEP] Back to Search [SEP] < Prev [SEP] Isha 100% Natural Ayurvedic Herbal Toothpaste - SLS and ",
+     "obs_len": 328,
+     "obs_tail": "ck [SEP] Price: $4.0 [SEP] Rating: N.A. [SEP] Description [SEP] Features [SEP] Reviews [SEP] Buy Now",
+     "order": 6
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"Buy Now\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Thank you for shopping with us! [SEP] Your code: [SEP] None [SEP] (Paste it in your MTurk interface.) [SEP] Purchased [SEP] asin [SEP] B08NTG84WD [SEP] options [SEP] {} [SEP] attrs [SEP] None [SEP] ca",
+     "obs_len": 527,
+     "obs_tail": "SEP] None [SEP] Reward [SEP] Your score (min 0.0, max 1.0) [SEP] 1.0 [SEP] Reward Details [SEP] None",
+     "order": 7
+    }
+   ]
+  },
+  "webshop:g09904": {
+   "value": 0.0,
+   "success": false,
+   "terminated_reason": "max_actions",
+   "n_decisions": 30,
+   "wall_ms": 40941.79513549805,
+   "component_errors": {},
+   "steps": [
+    {
+     "kind": "episode_boundary",
+     "obs_head": "Task: i am looking for big and tall levi's men's 505 regular fit jeans that are machine washable, and price lower than 70.00 dollars\n\nWebShop [SEP] Instruction: [SEP] i am looking for big and tall lev",
+     "obs_len": 306,
+     "obs_tail": "n's 505 regular fit jeans that are machine washable, and price lower than 70.00 dollars [SEP] Search",
+     "order": 0
+    },
+    {
+     "action": "{\"arguments\": {\"query\": \"big and tall levi's men's 505 regular fit jeans\"}, \"name\": \"search\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i am looking for big and tall levi's men's 505 regular fit jeans that are machine washable, and price lower than 70.00 dollars [SEP] Back to Search [SEP] Page 1 (Total results: 50) ",
+     "obs_len": 1248,
+     "obs_tail": "hermal Warm Windpoof Windbreaker Big & Tall Slim Fit Autumn Thin Coat Outwear [SEP] $14.39 to $25.39",
+     "order": 1
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type None; respond with one JSON object",
+     "obs_len": 77,
+     "obs_ok": false,
+     "order": 2
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type 'click'; respond with one JSON object",
+     "obs_len": 80,
+     "obs_ok": false,
+     "order": 3
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"B000HTKOMS\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i am looking for big and tall levi's men's 505 regular fit jeans that are machine washable, and price lower than 70.00 dollars [SEP] Back to Search [SEP] < Prev [SEP] fit type [SEP]",
+     "obs_len": 3220,
+     "obs_tail": "ice: $22.24 to $69.5 [SEP] Rating: N.A. [SEP] Description [SEP] Features [SEP] Reviews [SEP] Buy Now",
+     "order": 4
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"44w x 32l big tall\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i am looking for big and tall levi's men's 505 regular fit jeans that are machine washable, and price lower than 70.00 dollars [SEP] Back to Search [SEP] < Prev [SEP] fit type [SEP]",
+     "obs_len": 3220,
+     "obs_tail": "ice: $22.24 to $69.5 [SEP] Rating: N.A. [SEP] Description [SEP] Features [SEP] Reviews [SEP] Buy Now",
+     "order": 5
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"Levi's Men's 505 Regular Fit Jeans\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i am looking for big and tall levi's men's 505 regular fit jeans that are machine washable, and price lower than 70.00 dollars [SEP] Back to Search [SEP] < Prev [SEP] fit type [SEP]",
+     "obs_len": 3220,
+     "obs_tail": "ice: $22.24 to $69.5 [SEP] Rating: N.A. [SEP] Description [SEP] Features [SEP] Reviews [SEP] Buy Now",
+     "order": 6
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"big & tall\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i am looking for big and tall levi's men's 505 regular fit jeans that are machine washable, and price lower than 70.00 dollars [SEP] Back to Search [SEP] < Prev [SEP] fit type [SEP]",
+     "obs_len": 3220,
+     "obs_tail": "ice: $22.24 to $69.5 [SEP] Rating: N.A. [SEP] Description [SEP] Features [SEP] Reviews [SEP] Buy Now",
+     "order": 7
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"Levi's Men's 505 Regular Fit Jeans\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i am looking for big and tall levi's men's 505 regular fit jeans that are machine washable, and price lower than 70.00 dollars [SEP] Back to Search [SEP] < Prev [SEP] fit type [SEP]",
+     "obs_len": 3220,
+     "obs_tail": "ice: $22.24 to $69.5 [SEP] Rating: N.A. [SEP] Description [SEP] Features [SEP] Reviews [SEP] Buy Now",
+     "order": 8
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"big & tall\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i am looking for big and tall levi's men's 505 regular fit jeans that are machine washable, and price lower than 70.00 dollars [SEP] Back to Search [SEP] < Prev [SEP] fit type [SEP]",
+     "obs_len": 3220,
+     "obs_tail": "ice: $22.24 to $69.5 [SEP] Rating: N.A. [SEP] Description [SEP] Features [SEP] Reviews [SEP] Buy Now",
+     "order": 9
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"Levi's Men's 505 Regular Fit Jeans\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i am looking for big and tall levi's men's 505 regular fit jeans that are machine washable, and price lower than 70.00 dollars [SEP] Back to Search [SEP] < Prev [SEP] fit type [SEP]",
+     "obs_len": 3220,
+     "obs_tail": "ice: $22.24 to $69.5 [SEP] Rating: N.A. [SEP] Description [SEP] Features [SEP] Reviews [SEP] Buy Now",
+     "order": 10
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type None; respond with one JSON object",
+     "obs_len": 77,
+     "obs_ok": false,
+     "order": 11
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"44w x 32l big tall\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i am looking for big and tall levi's men's 505 regular fit jeans that are machine washable, and price lower than 70.00 dollars [SEP] Back to Search [SEP] < Prev [SEP] fit type [SEP]",
+     "obs_len": 3220,
+     "obs_tail": "ice: $22.24 to $69.5 [SEP] Rating: N.A. [SEP] Description [SEP] Features [SEP] Reviews [SEP] Buy Now",
+     "order": 12
+    },
+    {
+     "action": "{\"arguments\": {\"query\": \"levi's men's 505 regular fit jeans big tall machine washable\"}, \"name\": \"search\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i am looking for big and tall levi's men's 505 regular fit jeans that are machine washable, and price lower than 70.00 dollars [SEP] Back to Search [SEP] Page 1 (Total results: 50) ",
+     "obs_len": 1231,
+     "obs_tail": "eaker [SEP] $34.99 to $51.0 [SEP] B01ETP2O6Y [SEP] Levi's Men's Trucker Jacket [SEP] $40.7 to $99.99",
+     "order": 13
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"Levi's Men's Big and Tall 550 Relaxed Fit Jean, Clif - Stretch, 42W x 36L\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i am looking for big and tall levi's men's 505 regular fit jeans that are machine washable, and price lower than 70.00 dollars [SEP] Back to Search [SEP] Page 1 (Total results: 50) ",
+     "obs_len": 1231,
+     "obs_tail": "eaker [SEP] $34.99 to $51.0 [SEP] B01ETP2O6Y [SEP] Levi's Men's Trucker Jacket [SEP] $40.7 to $99.99",
+     "order": 14
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"Levi's Men's Big and Tall 550 Relaxed Fit Jean, Clif - Stretch, 48W x 32L\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i am looking for big and tall levi's men's 505 regular fit jeans that are machine washable, and price lower than 70.00 dollars [SEP] Back to Search [SEP] Page 1 (Total results: 50) ",
+     "obs_len": 1231,
+     "obs_tail": "eaker [SEP] $34.99 to $51.0 [SEP] B01ETP2O6Y [SEP] Levi's Men's Trucker Jacket [SEP] $40.7 to $99.99",
+     "order": 15
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"Levi's Men's 505 Regular Fit Jeans\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i am looking for big and tall levi's men's 505 regular fit jeans that are machine washable, and price lower than 70.00 dollars [SEP] Back to Search [SEP] Page 1 (Total results: 50) ",
+     "obs_len": 1231,
+     "obs_tail": "eaker [SEP] $34.99 to $51.0 [SEP] B01ETP2O6Y [SEP] Levi's Men's Trucker Jacket [SEP] $40.7 to $99.99",
+     "order": 16
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type None; respond with one JSON object",
+     "obs_len": 77,
+     "obs_ok": false,
+     "order": 17
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type 'click'; respond with one JSON object",
+     "obs_len": 80,
+     "obs_ok": false,
+     "order": 18
+    },
+    {
+     "kind": "error",
+     "obs_head": "proposal vetoed: Action proposal type <class 'rsi.contracts.action.Finish'> is not a ToolCall. Please propose a ToolCall or Finish action.",
+     "obs_len": 138,
+     "obs_ok": false,
+     "order": 19
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type 'click'; respond with one JSON object",
+     "obs_len": 80,
+     "obs_ok": false,
+     "order": 20
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type 'click'; respond with one JSON object",
+     "obs_len": 80,
+     "obs_ok": false,
+     "order": 21
+    },
+    {
+     "kind": "error",
+     "obs_head": "proposal vetoed: Action proposal type <class 'rsi.contracts.action.Finish'> is not a ToolCall. Please propose a ToolCall or Finish action.",
+     "obs_len": 138,
+     "obs_ok": false,
+     "order": 22
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type 'click'; respond with one JSON object",
+     "obs_len": 80,
+     "obs_ok": false,
+     "order": 23
+    },
+    {
+     "kind": "error",
+     "obs_head": "proposal vetoed: Action proposal type <class 'rsi.contracts.action.Finish'> is not a ToolCall. Please propose a ToolCall or Finish action.",
+     "obs_len": 138,
+     "obs_ok": false,
+     "order": 24
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type None; respond with one JSON object",
+     "obs_len": 77,
+     "obs_ok": false,
+     "order": 25
+    },
+    {
+     "action": "{\"arguments\": {\"query\": \"Levi's Men's Big and Tall 505 Regular Fit Jeans machine washable price under 70\"}, \"name\": \"search\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i am looking for big and tall levi's men's 505 regular fit jeans that are machine washable, and price lower than 70.00 dollars [SEP] Back to Search [SEP] Page 1 (Total results: 50) ",
+     "obs_len": 1189,
+     "obs_tail": "] $49.99 [SEP] B09HPPYPSQ [SEP] Levi's Women's 70s Flare Faux Leather Jeans [SEP] $106.95 to $107.05",
+     "order": 26
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type None; respond with one JSON object",
+     "obs_len": 77,
+     "obs_ok": false,
+     "order": 27
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type 'finial'; respond with one JSON object",
+     "obs_len": 81,
+     "obs_ok": false,
+     "order": 28
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"Levi's Men's Big and Tall 505 Regular Fit Jeans\"}, \"name\": \"click\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Instruction: [SEP] i am looking for big and tall levi's men's 505 regular fit jeans that are machine washable, and price lower than 70.00 dollars [SEP] Back to Search [SEP] Page 1 (Total results: 50) ",
+     "obs_len": 1189,
+     "obs_tail": "] $49.99 [SEP] B09HPPYPSQ [SEP] Levi's Women's 70s Flare Faux Leather Jeans [SEP] $106.95 to $107.05",
+     "order": 29
+    }
+   ]
+  }
+ }
+}
