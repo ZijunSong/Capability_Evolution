@@ -164,3 +164,9 @@
 ## E0-ReAct 测量验收（2026-11-04，正式通过）
 
 AppWorld 16 任务官方门槛 manifest，H0-ReAct vs H0-Act 配对（9B）。**G1-G4 四门全 PASS**：全任务 VALID（官方 evaluate_task）、scorer 零 DB 污染、双臂真实调用（n_dec 12.3/17.4）、官方 split 在场。**核心发现：0/16 任务产生状态变更**——双臂 partial 与 no-op 初始状态逐任务相同（16/16），9B zero-shot 在 JSON 动作协议下没有完成一次认证→读→改链路；旧"23.5% TGC"中的初始状态噪声实锤（no-op 即得 26.2% 均值）。详见 `docs/e0_react_results.md`。
+
+---
+
+## E1-WebShop 首个真实 champion（2026-11-04，待独立 confirm）
+
+webshop-9b r9：11 候选全 ACCEPTED（0.006~0.589），champion=GoalCompletionGuard+ActionRecoveryGuard 双组件（gen2 当选 0.45，组合复测 ≥0.589），baseline<0.028。PR-5 保留语义与 dedup 实锤生效。**panel 方差大（同 bank 相邻代差 >30pp），未做独立 confirm 前不声称增益**。详见 `docs/e1_webshop_results.md`。

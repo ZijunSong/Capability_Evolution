@@ -25,3 +25,5 @@ e0_react,Qwen3.5-9B,base model,E0验收 H0-ReAct(react_zero_shot_v1),Turn Mean,1
 e0_react,Qwen3.5-9B,base model,E0验收 H0-Act(act_only_v1 对照),Success Rate,0.00%,N/A,N/A,N/A,0.00%,对照臂;同manifest同seed
 e0_react,Qwen3.5-9B,base model,E0验收 H0-Act(act_only_v1 对照),Goal Score (partial),26.2%,N/A,N/A,N/A,26.2%,与react臂逐任务相同partial;0/16状态变更
 e0_react,Qwen3.5-9B,base model,E0验收 H0-Act(act_only_v1 对照),Turn Mean,17.4,N/A,N/A,N/A,17.4,10/16 finish;6 max_actions;tokens+69% vs react
+e1_evolve,Qwen3.5-9B,base model,E1自进化 champion(GoalCompletionGuard+ActionRecoveryGuard),Success Rate,待confirm,N/A,N/A,N/A,待confirm,webshop panel 0.45(gen2当选)/champion组合复测≥0.589;baseline<0.028;11候选全ACCEPTED;方差大待独立confirm;t=2026-11-04 r9
+e1_evolve,Qwen3.5-9B,base model,E1自进化 baseline(H0-ReAct空bank),Goal Score (partial),<0.028,N/A,N/A,N/A,<0.028,webshop 12任务panel;候选全legal零组件错误;PLATEAU收官
