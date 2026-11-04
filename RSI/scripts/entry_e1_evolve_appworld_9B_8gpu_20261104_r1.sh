@@ -44,14 +44,32 @@ from transformers.models import qwen3_5  # noqa: F401
 pip("flash-linear-attention==0.6.0", limit=600)
 _r = pip("causal-conv1d", limit=600)
 if _r != 0:
-    pip("--no-build-isolation", "causal-conv1d", limit=900)
+    # sdist build needs setuptools+nvcc; the reference fallback is slower but
+    # correct (E0 passed G1-G4 on it) — log and continue.
+    print("[WARN] causal-conv1d unavailable — slow reference fallback (correct)", flush=True)
 from transformers.utils import is_flash_linear_attention_available
 if not is_flash_linear_attention_available():
     sys.exit("[FATAL] fla unavailable")
+# Fresh nodes start WITHOUT appworld: the E0 lesson was that image state does
+# not persist across jobs — always run the full vendored-repo install block.
 try:
     import appworld
+    print("appworld importable", flush=True)
 except ImportError:
-    sys.exit("[FATAL] appworld missing — E1 uses the same image as E0; preflight must not rebuild it")
+    pip("pydantic==2.12.0", "sqlalchemy==2.0.36", "sqlmodel==0.0.22", "sqlalchemy-utils==0.41.1", limit=300)
+    pip("fastapi==0.115.6", "fastapi-login==1.10.3", "freezegun==1.5.1", limit=300)
+    pip("--no-deps", "starlette==0.48.0", limit=300)
+    pip("urllib3>=2.0.0", "requests>=2.28.0", limit=300)
+    pip("uvicorn>=0.27", "uvloop>=0.21.0", "httpx2>=2.0.0", "pytest-xdist>=3.1.0", limit=300)
+    pip("--no-deps", "/mnt/songzijun/datasets/appworld_src", limit=300)
+    pip("pendulum>=3.0.0", "typer>=0.16.0", "text2num>=0.3.0", "orjson>=3.10.12",
+        "pydantic-extra-types[pendulum]>=2.8.0", "inflection>=0.5.1", "email-validator>=2.0.0",
+        "polyfactory>=2.15.0", "faker>=18.0.0", "xxhash>=3.0.0", "munch>=4.0.0",
+        "rich>=13.0.0", "python-dotenv>=1.0.1", "python-multipart>=0.0.5",
+        "httpx>=0.20.0", "libcst>=1.2.0", "jsonref>=1.1.0", "filelock>=3.1.0",
+        "psutil>=5.9.0", "cryptography>=47.0.0", limit=600)
+    import appworld as _aw
+    print("appworld installed from vendored repo", flush=True)
 import subprocess as _sp
 _sp.run([sys.executable, "-m", "appworld.cli", "install"], check=False, timeout=300)
 import appworld.apps.admin  # noqa: F401
