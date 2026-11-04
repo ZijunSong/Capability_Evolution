@@ -1,0 +1,45 @@
+# E1 中期发现（AppWorld/WebShop/ALFWorld 9B+27B 进化，2026-11-04）
+
+> 状态：进行中（6 路迭代，部分 r3/r4/r5）。本文档记录跨域稳定模式，供修复方向定位。
+
+## 发现 1（主导失败）：self-proposer 发不出合法 patch 封套
+
+**证据**：
+- alfworld-27b r3：0 个候选被评估，6 次提议全部 `CandidateInvalid('flat-file patch missing entrypoint / operation')`
+- webshop-9b r2：0 评估，全废
+- appworld-27b（待 r3 数据）
+
+**已到位的防线**：proposer prompt 末尾的 OUTPUT ENVELOPE 重述（近因效应修复，9fhn3/3b1bb 复盘）+ repair 反馈循环 + PR-5 baseline 保留（没有加冕废候选）+ PROPOSAL_STALLED 命名。
+
+**待修方向**：repair 反馈只在下次 prompt 里贴错误文本；模型仍无法从错误文本恢复 schema。需要把"上次被拒的原始输出 + 期望 schema 的最小 diff 对比"放进 retry notes，或在 proposer 侧做确定性 schema 修复（entrypoint 缺失时从 files[0] 推导——`_derive_entrypoint` 已存在，检查它为何没兜住）。
+
+## 发现 2（webshop 打分链路）：合法候选全部 0.0 分
+
+**证据**：webshop-9b r3（4 候选）与 r4（6 候选）全部 `status=legal、component_errors={}` 但 `macro=0.0`；gen0 起就 `NO_SUPPORTED_IMPROVEMENT`。
+
+**初步定位**：webshop scorer 需要私有 goal（`private_record` 正常提供 instruction/asin/price_upper），但 panel 全零 + 基线分数不可见（evolve json 不存 parent per_task），且本地无法复现（webshop SimServer 需大内存，本机 OOM）。**待 job 内验证**：no-op episode 的 webshop value 是否也为 0——若 no-op=0 且任何合法动作也=0，则 scorer 读取链路断了（E0 链的"no private goal"同族问题）。
+
+**附带缺口**：evolve 的 `parent_result`（含 per_task/steps）不落盘——父代分数不可追溯，修复方向是 panel_runner 结果持久化到 run_dir。
+
+## 发现 3：改进信号可见
+
+- PR-5 baseline 保留在两域生效：webshop r3/r4 的 gen1-2 都是 `NO_SUPPORTED_IMPROVEMENT: incumbent retained`——没有加冕废候选。
+- 轨迹持久化（steps）已进入 candidate 评估记录，待第一个非零候选验证可用性。
+
+## 当前 job 状态（12:40 快照）
+
+| job | 状态 |
+|---|---|
+| appworld-9b r3（vb3b5 + 3gwab 双份） | running / enqueued |
+| webshop-9b r4（d6iup） | running |
+| webshop-27b r3（apdns） | running |
+| alfworld-27b r3 | 完成：CANDIDATES_REPEATEDLY_INVALID（0 评估） |
+| alfworld-9b | r3 完成 PLATEAU，待重提 |
+| webshop-9b r3 | 完成 PLATEAU（4×0.0） |
+
+## 下一步（按优先级）
+
+1. **修 proposer schema 恢复**：retry 时给"原始输出 vs schema" diff（或确定性 fallback 推导 entrypoint/operation）。
+2. **job 内验证 webshop scorer 链路**：no-op panel 一次。
+3. **panel_runner 结果持久化**（parent per_task 落盘）。
+4. 修完后统一重提失败的域。
