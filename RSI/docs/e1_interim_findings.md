@@ -52,3 +52,12 @@
 - **候选主题多样性坍塌**：11 个组件全是 format/action guard 家族（format_guard×3、action_sanitizer×2、safety_guard×2、action_guard、format_validator、completion_gate、action_formatter、action_validator）——与 webshop-27b 的"6/6 同名 error_tracker"同款。proposer 在 analysis 片段全是 parse/格式错误时只会提出"格式修复"组件，而 E0 已证明瓶颈在 API 使用（认证/读改链），格式守卫不改变 goal 完成度。
 - **配置语义澄清**：`dev_panel_per_domain: 0` 在 evolve 路径（`if max_per_domain`）本就等于全量面板，v3 注释"0 = 全量"在 evolve 路径是对的；webshop r9 champion 0.45 与该值无冲突。已把 v3 appworld 配置改为 `null` 并注明语义差异（eval/campaign 路径的 int 0 才有空切片问题）。
 - **修复方向升级**：仅修 proposer 格式不够——需要让 analysis 片段区分"格式错误"vs"API 使用失败"（认证错误/找不到实体/只读不写），否则进化器永远在格式守卫家族里打转。E0 的 0 状态变更 + env doc 的 api_docs 发现命令应成为 packet 的显式上下文。
+
+---
+
+## 补充二（2026-11-04 夜：alfworld-9b r4 收官 + webshop-27b env 修复）
+
+- **alfworld-9b r4**（8hk1b succeed）：**第二个真实 champion** `3bb04695…`（单组件 `CompletionGuard`：veto 非法工具名 + 防提前 finish），gen0 当选 macro **0.25**（gen1-3 incumbent retained）。候选分数 0~0.25 分布——alfworld 打分链路正常（对比 r3 时代全 0）。
+- **webshop-27b r4/r4b 全 0.0 根因修复**：27B entry 漏 `RSI_WEBSHOP_FULL_ALLOW=1`（9B entry 169 行有），probe 门把整个 panel domain-skip。已补 env 并提交 **r5=4gurh**（运行中）。
+- **三域对照更新**：WebShop 9B champion 0.45 ✅ / ALFWorld 9B champion 0.25 ✅ / AppWorld 9B 真 0 分（瓶颈在 API 使用层，guard 家族不解决）。
+- 两个 champion 均为**收尾/守卫类组件**（finish 门控），与 E0 发现一致——进化器从"termination 校验"起步是合理路径，但真正的能力增益要看 confirm 时 strict success 是否被这些守卫解锁。
