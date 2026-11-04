@@ -61,3 +61,12 @@
 - **webshop-27b r4/r4b 全 0.0 根因修复**：27B entry 漏 `RSI_WEBSHOP_FULL_ALLOW=1`（9B entry 169 行有），probe 门把整个 panel domain-skip。已补 env 并提交 **r5=4gurh**（运行中）。
 - **三域对照更新**：WebShop 9B champion 0.45 ✅ / ALFWorld 9B champion 0.25 ✅ / AppWorld 9B 真 0 分（瓶颈在 API 使用层，guard 家族不解决）。
 - 两个 champion 均为**收尾/守卫类组件**（finish 门控），与 E0 发现一致——进化器从"termination 校验"起步是合理路径，但真正的能力增益要看 confirm 时 strict success 是否被这些守卫解锁。
+
+---
+
+## 补充三（2026-11-05 凌晨：webshop-27B r5 收官 = 27B 线打通）
+
+- **webshop-27b r5**（spzne succeed，~2.5h）：**16 候选全 ACCEPTED 全非零**（0.16~0.617），**MAX_GENERATIONS 跑满 8 代**——27B 线端到端打通。
+- **champion `88606c24`** macro **0.589** = **四组件组合 bank**（completion_gate + loop_detector + search_progress_tracker + search_stall_breaker），进化链 gen0(0.389)→gen3(0.500)→gen4(0.561)→gen6(0.589)——**bank 组合式生长首次完整呈现**（guide §7.2 的 within-run composition 设计意图）。
+- 27B vs 9B：27B champion 0.589 > 9B 0.45；27B 组件更丰富（4 vs 2）；27B 的 gen1/2/5/7 保留 incumbent 也符合 baseline 保留语义（同 bank 复测方差仍在）。
+- **未完成**：27B champion 与 9B champion 的独立 confirm 都未做；appworld-27b 的 proposer 层问题（rqdza evaluated=0）仍未解——堵点在 packet/proposer 层非 entry 层。

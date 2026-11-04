@@ -28,3 +28,4 @@ e0_react,Qwen3.5-9B,base model,E0验收 H0-Act(act_only_v1 对照),Turn Mean,17.
 e1_evolve,Qwen3.5-9B,base model,E1自进化 champion(GoalCompletionGuard+ActionRecoveryGuard),Success Rate,待confirm,N/A,N/A,N/A,待confirm,webshop panel 0.45(gen2当选)/champion组合复测≥0.589;baseline<0.028;11候选全ACCEPTED;方差大待独立confirm;t=2026-11-04 r9
 e1_evolve,Qwen3.5-9B,base model,E1自进化 baseline(H0-ReAct空bank),Goal Score (partial),<0.028,N/A,N/A,N/A,<0.028,webshop 12任务panel;候选全legal零组件错误;PLATEAU收官
 e1_evolve,Qwen3.5-9B,base model,E1自进化 champion(CompletionGuard),Success Rate,待confirm,N/A,N/A,待confirm,待confirm,alfworld panel 0.25(gen0当选);candidates 0~0.25 分布;链路正常;待独立confirm;t=2026-11-04 8hk1b/r4
+e1_evolve,Qwen3.5-27B,base model,E1自进化 champion(4组件:completion_gate+loop_detector+progress_tracker+stall_breaker),Success Rate,待confirm,N/A,N/A,N/A,待confirm,webshop panel 0.589(gen6当选);16候选全ACCEPTED全非零(0.16~0.617);8代跑满组合式生长;t=2026-11-05 spzne/r5
