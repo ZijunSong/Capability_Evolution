@@ -19,3 +19,9 @@ exp_opd_hk,Qwen3.5-9B,HarnessOPD 内化,自进化harness H_k,Success Rate,N/A,N/
 exp_opd_hk,Qwen3.5-9B,HarnessOPD 内化,自进化harness H_k,Goal Score (TGC),N/A,N/A,N/A,N/A,N/A,预留
 exp_opd_hk,Qwen3.5-9B,HarnessOPD 内化,自进化harness H_k,Turn Mean,N/A,N/A,N/A,N/A,N/A,预留
 exp_opd_hk,Qwen3.5-9B,HarnessOPD 内化,自进化harness H_k,Wall Time (s/task),N/A,N/A,N/A,N/A,N/A,预留
+e0_react,Qwen3.5-9B,base model,E0验收 H0-ReAct(react_zero_shot_v1),Success Rate,0.00%,N/A,N/A,N/A,0.00%,官方TGC strict;16任务官方门槛manifest(8 train+8 dev);t=2026-11-04 hf4ax
+e0_react,Qwen3.5-9B,base model,E0验收 H0-ReAct(react_zero_shot_v1),Goal Score (partial),26.2%,N/A,N/A,N/A,26.2%,partial均值;与no-op初始状态partial逐任务相同(16/16)=0状态变更;G1-G4四门全PASS
+e0_react,Qwen3.5-9B,base model,E0验收 H0-ReAct(react_zero_shot_v1),Turn Mean,12.3,N/A,N/A,N/A,12.3,记录层完整;13/16 finish;0 budget_wall
+e0_react,Qwen3.5-9B,base model,E0验收 H0-Act(act_only_v1 对照),Success Rate,0.00%,N/A,N/A,N/A,0.00%,对照臂;同manifest同seed
+e0_react,Qwen3.5-9B,base model,E0验收 H0-Act(act_only_v1 对照),Goal Score (partial),26.2%,N/A,N/A,N/A,26.2%,与react臂逐任务相同partial;0/16状态变更
+e0_react,Qwen3.5-9B,base model,E0验收 H0-Act(act_only_v1 对照),Turn Mean,17.4,N/A,N/A,N/A,17.4,10/16 finish;6 max_actions;tokens+69% vs react

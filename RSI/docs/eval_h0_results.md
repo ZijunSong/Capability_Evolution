@@ -123,3 +123,44 @@
 3. **transfer(2.14%) > final(0.00%)**：valid_seen（transfer）显著高于 valid_unseen（final）——分布外泛化为零，134 个 unseen 场景一个都没赢。dev 五池 0.5-1.4% 与 confirm 池相当。
 4. **满分 task 类型**：watch/light 类（look_at_obj_in_light）与 pick_and_place_simple 为主——单目标短链任务可成，multi-step（heat/cool_then_place）近乎全灭。
 5. 对 harness 进化实验的意义：confirm_w（1.13%）/harness_select（1.36%）区分度低（天花板效应不在，是地板效应），后续 Hk 对比要用同 pool paired delta 而非绝对值。
+
+---
+
+## WebShop H0 基线（2026-11-03）
+
+> **formal artifact**：`t-20261103105220-69q7w`（rsi-eval-h0-webshop-qwen35-9b-8gpu-20261102-r4），succeed，runTime≈9.2h，8×M402 224GB 单节点。
+> **口径**：Qwen3.5-9B（policy_digest 63eea503…，与 AppWorld H0 完全一致）× minimal harness（空 bank）× 官方 `get_reward` [0,1] + harsh success(reward==1)。frozen_goals 12087 冻结口径；`final_test` = frozen_goals[0:500]（官方 human test 面板，`baseline_models/test.py range(500)` 同款）。
+> **产物**：`runs/eval_h0_webshop_qwen35_9b_bench/eval/`（7 文件 `eval_<role>_minimal_1beba6d6_17.json`），11783/11783 全部 valid，0 infra error。
+> **历程**：r1-r12 十二连败修复链（pip 超时 / _deps sitepkg.tgz 误当 wheel / editable 不跨容器 / PEP660 .pth 同进程假阴 / config 漏四节 / spawn 守卫双坑 / pyserini OpenAI 无 key / adapter done-kwarg / scorer private 懒加载）——全部沉淀至 [[rsi-webshop-h0-eval-r9mla-20261102]]。
+
+### 官方 reward 逐池均值
+
+| pool | n | valid | err | **reward mean%** | harsh succ(reward==1) |
+|---|---|---|---|---|---|
+| work_train | 2271 | 2271 | 0 | 3.54% | 0 |
+| harness_select | 2181 | 2181 | 0 | 3.38% | 19 |
+| weight_dev | 2153 | 2153 | 0 | 3.48% | 15 |
+| confirm_h | 2214 | 2214 | 0 | 3.62% | 22 |
+| confirm_w | 2214 | 2214 | 0 | 3.78% | 20 |
+| **final_test** | **500** | **500** | **0** | **3.09%** | **6** |
+| transfer_test | 250 | 250 | 0 | 2.69% | 2 |
+| **ALL** | **11783** | **11783** | **0** | **3.52%** | **84** |
+
+### 终止形态与分数分布
+
+- **termination census**：finish 11052（93.9%，主动收敛）+ env_done 725（6.2%，买到商品自然结束）+ max_actions 6。与 AppWorld 100% budget_wall 完全相反——WebShop 的 search/click 表面形式对模型极其友好，几乎不会耗尽预算。
+- **score 分布**：0.0 分 11087（94.1%）｜非零 696 集（5.9%）：0.67×186、0.5×118、1.0×99、0.75×67、0.33×61、其余长尾。满分 84 例（0.7%）。
+- **价值解读**：finish 高但 score≈0 → 模型会"自信地买错"（大多数 episode 模型主动 click[buy now] 结束，但买的商品与 goal 属性/价格不匹配）。
+
+### 分析（初判）
+
+1. **zero-shot 9B WebShop reward 3.52%（harsh 0.7%）**——任务极难：1.18M 商品库中凭属性约束定位并买对，对无检索规划的 minimal harness 是 hard exploration。
+2. **final_test(3.09%) 略低于 dev 池（3.4-3.8%）、transfer 最低（2.69%）**——分布外迁移弱，与 AppWorld/ALFWorld 的 transfer 崩塌方向一致。
+3. **harness 进化空间**（对照 ALFWorld「终止语法引导」）：WebShop 的瓶颈不在收敛（finish 94%）而在**搜索质量与商品匹配**——预期 harness 组件（如属性约束检查、价格过滤提示、结果页摘要）比终止类组件更有增益空间。
+4. **工作池 work_train harsh=0 vs confirm 池 19-22**：hash 切分的 asin 组难度差异明显，dev 池非均匀——后续 A/B 对照优先用 confirm_w/harness_select（对 harness 最敏感）。
+
+---
+
+## E0-ReAct 测量验收（2026-11-04，正式通过）
+
+AppWorld 16 任务官方门槛 manifest，H0-ReAct vs H0-Act 配对（9B）。**G1-G4 四门全 PASS**：全任务 VALID（官方 evaluate_task）、scorer 零 DB 污染、双臂真实调用（n_dec 12.3/17.4）、官方 split 在场。**核心发现：0/16 任务产生状态变更**——双臂 partial 与 no-op 初始状态逐任务相同（16/16），9B zero-shot 在 JSON 动作协议下没有完成一次认证→读→改链路；旧"23.5% TGC"中的初始状态噪声实锤（no-op 即得 26.2% 均值）。详见 `docs/e0_react_results.md`。
