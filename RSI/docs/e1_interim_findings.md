@@ -104,3 +104,10 @@
 
 - **webshop-9b r10**（afe1d succeed）：6 候选 0.089~0.562，champion `b0ad1c7d` 0.5625（gen1 当选）——H0_v2 口径下 webshop 线复现 champion（与 r9 的 0.45 同量级）。
 - 并发会话夜间重启：appworld-9b r5（7fgip）、appworld-27b r5（zdbip）、webshop-9b r10——v3hvt r4 被 stop 取代。
+
+---
+
+## 补充七（2026-11-06：AppWorld 首个非零候选）
+
+- **appworld-9b r5**（7fgip）gen0 首个候选 **macro 0.289 非零**——answer 断链修复 + H0_v2 口径下 AppWorld 进化线首次产生真实信号（断链时代 11 候选全 0.0）。gen0 两候选 ACCEPTED，进化推进中。
+- appworld-27b r5（zdbip）仍在首代 panel。
