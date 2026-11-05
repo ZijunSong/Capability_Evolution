@@ -166,22 +166,26 @@ class AppWorldAdapter:
             import json as _json
 
             # complete_task stores json.dumps(answer); the evaluator does
-            # json.loads on it. Serialize with json.dumps so numbers /
-            # null / strings round-trip exactly (repr would break None).
+            # json.loads on it. The submitted code must decode to the SAME
+            # typed value: inline the JSON literal directly (json.loads('null')
+            # → None) instead of double-encoding, which turned None into the
+            # string 'null' (r3 lesson: json.loads('"null"') is not None).
             try:
-                payload = _json.dumps(answer)
+                literal = _json.dumps(answer)
             except (TypeError, ValueError):
-                payload = _json.dumps(str(answer))
+                literal = _json.dumps(str(answer))
             try:
-                submit_code = (
-                    f"import json; apis.supervisor.complete_task(answer=json.loads({_json.dumps(payload)!r}))"
-                )
+                submit_code = f"apis.supervisor.complete_task(answer=json.loads({literal!r}))"
                 result = self._env.execute(submit_code)
+                text = str(result)
+                # r3 lesson: AppWorld's safety_guard returns "Execution failed.
+                # Traceback: …" instead of raising — string-match it too.
+                failed = ("EXEC_ERROR" in text) or ("Execution failed" in text) or ("Traceback" in text)
                 # Record in the replay log so forks reproduce the answer
                 # submission (same contract as python_exec actions).
                 self._replay_code.append(submit_code)
-                submitted = "EXEC_ERROR" not in str(result)
-                submit_note = f" answer_submitted={payload}" if submitted else f" answer_submit_failed: {result}"
+                submitted = not failed
+                submit_note = f" answer_submitted={literal}" if submitted else f" answer_submit_failed: {text}"
             except Exception as e:  # noqa: BLE001 - submit failure must not mask the finish
                 submit_note = f" answer_submit_error: {e!r}"
             completed = bool(self._env.task_completed())
