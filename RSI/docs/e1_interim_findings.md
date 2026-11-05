@@ -97,3 +97,10 @@
 
 - **alfworld-27b r5**（gth6z）：8 候选 0.500~0.833，**champion `83ae9fdf`**（gen0 当选）PLATEAU。27B 把 alfworld 带推到 **0.833 最高单候选**（vs 9B r5 champion 0.75）。
 - appworld-9b r4 / appworld-27b r4 仍在跑（gen0 已 ACCEPTED，panel 评估中）。
+
+---
+
+## 补充六（2026-11-05：webshop-9B r10 + 新口径三路启动）
+
+- **webshop-9b r10**（afe1d succeed）：6 候选 0.089~0.562，champion `b0ad1c7d` 0.5625（gen1 当选）——H0_v2 口径下 webshop 线复现 champion（与 r9 的 0.45 同量级）。
+- 并发会话夜间重启：appworld-9b r5（7fgip）、appworld-27b r5（zdbip）、webshop-9b r10——v3hvt r4 被 stop 取代。
