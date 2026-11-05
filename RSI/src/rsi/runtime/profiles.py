@@ -104,4 +104,25 @@ def profile_from_runtime_config(runtime_cfg: dict) -> H0Profile:
             "would silently pick the old base and corrupt protocol identity"
         )
     env_doc = str(runtime_cfg.get("environment_doc", "") or "")
+    if env_doc and env_doc.endswith(".md") and not "\n" in env_doc:
+        # The config declares a PATH (configs/env_docs/<domain>_v1.md), not
+        # inline text. Before the fix the path string itself went into the
+        # header — the doc content never reached the model (E0/E1 latent
+        # defect: appworld had a 1.9KB doc "present" as one filename line).
+        # Repo-relative paths resolve against CWD (entries cd to RSI_ROOT);
+        # absolute paths pass through. A missing file is a hard error.
+        from pathlib import Path as _Path
+
+        _p = _Path(env_doc)
+        if not _p.is_file():
+            raise ProtocolViolation(
+                f"runtime.environment_doc points to a missing file: {env_doc}"
+            )
+        env_doc = _p.read_text("utf-8")
+    elif env_doc and "\n" not in env_doc and not env_doc.endswith(".md"):
+        raise ProtocolViolation(
+            f"runtime.environment_doc is a bare string that is neither a .md "
+            f"path nor multi-line text: {env_doc[:60]!r} — refusing to render "
+            "a likely-path-as-text into the header"
+        )
     return load_profile(str(profile_id), environment_doc_text=env_doc)
