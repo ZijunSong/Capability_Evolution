@@ -40,3 +40,10 @@ whose account to act on. Do not invent credentials.
 - The supervisor is the user you are helping; act on the account named in the
   task, verify entity identity before mutating, and confirm effects after
   mutating.
+- **Answering the supervisor**: if the task asks a question (e.g. "How many…?",
+  "What is the total…?"), compute the answer and submit it with
+  `apis.supervisor.complete_task(answer=<answer>)` BEFORE finishing — the
+  answer must be concise (a number, yes/no, or a specific entity). If the task
+  is not a question (e.g. "Start my music player"), finish without an answer.
+  After mutating, verify the change took effect (re-read the record / check
+  the affected row count) before concluding it succeeded.

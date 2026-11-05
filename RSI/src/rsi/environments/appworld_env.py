@@ -149,10 +149,45 @@ class AppWorldAdapter:
     def step(self, action: Action) -> StepResult:
         self._require_started()
         if isinstance(action, Finish):
+            # PR (2026-11-05 bad-case audit): the official evaluator reads the
+            # predicted answer from the supervisor Task.answer field, which is
+            # only written by ``apis.supervisor.complete_task(answer=...)``.
+            # This branch used to ignore ``Finish.answer`` entirely, so every
+            # scored task read the initial "<<NOT_GIVEN>>" placeholder and the
+            # answer assertion failed 53/53 regardless of the model's work.
+            # Submit the actor's answer on its behalf (answer=None is a valid
+            # submission — the GT for action-less tasks is JSON null).
+            submit_note = ""
+            answer = getattr(action, "answer", None)
+            submitted = False
+            # Always submit on finish: answer=None is a meaningful submission
+            # ("task asks no answer" — the API default marks the task success
+            # with JSON null), matching GT tasks whose answer.json is null.
+            import json as _json
+
+            # complete_task stores json.dumps(answer); the evaluator does
+            # json.loads on it. Serialize with json.dumps so numbers /
+            # null / strings round-trip exactly (repr would break None).
+            try:
+                payload = _json.dumps(answer)
+            except (TypeError, ValueError):
+                payload = _json.dumps(str(answer))
+            try:
+                submit_code = (
+                    f"import json; apis.supervisor.complete_task(answer=json.loads({_json.dumps(payload)!r}))"
+                )
+                result = self._env.execute(submit_code)
+                # Record in the replay log so forks reproduce the answer
+                # submission (same contract as python_exec actions).
+                self._replay_code.append(submit_code)
+                submitted = "EXEC_ERROR" not in str(result)
+                submit_note = f" answer_submitted={payload}" if submitted else f" answer_submit_failed: {result}"
+            except Exception as e:  # noqa: BLE001 - submit failure must not mask the finish
+                submit_note = f" answer_submit_error: {e!r}"
             completed = bool(self._env.task_completed())
             return StepResult(
                 observation=Observation(
-                    content=f"finished (task_completed={completed})",
+                    content=f"finished (task_completed={completed}{submit_note})",
                     provenance=ObservationProvenance(source_tool="finish", source_ref=self._task_id),
                 ),
                 done=True,

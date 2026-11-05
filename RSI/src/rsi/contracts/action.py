@@ -27,7 +27,9 @@ class ToolCall:
 
 @dataclass(frozen=True)
 class Finish:
-    answer: str | None = None
+    # AppWorld AnswerType-compatible scalars (None | str | int | float); the
+    # adapter submits it verbatim via apis.supervisor.complete_task.
+    answer: "str | int | float | None" = None
     artifact_refs: tuple[str, ...] = ()
 
     def to_json(self) -> dict[str, JSONValue]:
@@ -153,8 +155,13 @@ def action_from_json(obj: Any) -> Action:
         return ToolCall(name=name, arguments=dict(args))
     if typ == "finish":
         answer = obj.get("answer")
-        if answer is not None and not isinstance(answer, str):
-            raise ActionParseError("finish.answer must be a string or null")
+        # PR (2026-11-05): AppWorld's AnswerType is None | float | int | str
+        # and its GT answer.json stores raw JSON scalars (e.g. 368, null).
+        # Rejecting numeric answers forced models to stringify ("368"), which
+        # only survives because the official answer_to_text normalizes both
+        # sides — accept the numeric scalars natively instead.
+        if answer is not None and not isinstance(answer, (str, int, float)):
+            raise ActionParseError("finish.answer must be a string, number, or null")
         refs = obj.get("artifact_refs", [])
         if not isinstance(refs, list) or not all(isinstance(r, str) for r in refs):
             raise ActionParseError("finish.artifact_refs must be a list of strings")
