@@ -50,3 +50,19 @@
 - trace 持久化（`run_panel` 不存 events）——E0 唯一硬件缺口。
 - 27B H0-ReAct/Act 配对未跑（E3 复验阶段做）。
 - AppWorld H0-ReAct 底座是否冻结：**先修 trace，看一轮失败分类后再冻结**。
+
+---
+
+## E0-v2 重跑（answer 断链修复后，2026-11-05）：+8.5pp 实锤修复生效
+
+**job**：`t-20261105112109-8wuvv`（e0_react r3 + e0_act r3 双臂，56min，succeed）。
+
+| 指标 | H0-ReAct v2 | H0-ReAct v1 | H0-Act v2 |
+|---|---|---|---|
+| partial 均值 | **34.74%** | 26.20% | 32.14% |
+| strict success | 0/16 | 0/16 | — |
+| n_dec 均值 | 13.5 | 12.3 | — |
+
+**修复效果实锤**：8/16 任务 partial 上升（全部为答题类任务，+0.125~+0.25/题），mean **+8.54pp**——`Finish.answer → apis.supervisor.complete_task` 断链修复把模型已算出的答案真正送进了评分器。strict 仍 0/16：状态变更类任务不受影响（与 53 题审计"49/53 有真实 DB 操作但未完成变更链"一致）。
+
+**新基线口径（H0_v2）**：AppWorld 9B H0-ReAct partial **34.74%**、strict 0。E1-AppWorld 后续轮次以此为准；webshop/alfworld 的 champion 数字不受此修复影响（不同域）。
