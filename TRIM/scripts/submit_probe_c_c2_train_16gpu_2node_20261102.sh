@@ -18,10 +18,10 @@ test -f "${ENTRY}"
 ENTRY_BYTES=$(wc -c < "${ENTRY}")
 [ "${ENTRY_BYTES}" -le 22000 ] || { echo "FATAL: entry ${ENTRY_BYTES}B >22000" >&2; exit 1; }
 
-JOB_NAME="probe-c-c2-9b-${COND}-8step-16gpu-2node-20261102-r2"
-OUT="/mnt/songzijun/outputs/probe-c-c2-9b-${COND}-8step-16gpu_20261102_r2"
+JOB_NAME="probe-c-c2-9b-${COND}-8step-16gpu-2node-20261104-r3"
+OUT="${C2_TRAIN_OUT:-/mnt/songzijun/outputs/probe-c-c2-9b-${COND}-8step-16gpu_20261104_r6}"
 STATES_OUT="/mnt/songzijun/outputs/probe-c-qwen35-9b-coalitions-8gpu_20261101_r3"
-PRIORITY="${PRIORITY:-8}"
+PRIORITY="${PRIORITY:-5}"
 DESCRIPTION="Probe C2 online confirmation ${COND}: Qwen3.5-9B 8-step 2node16gpu torch_ddp_lora, formal HarnessOPD semantics (rollout refresh/old logp/CISPO/projected-gap). From theta0; train queries exclude C_select/C_audit. harnessopd_m=trim+trieve teacher; rl_only=rl; same_view=zero-placebo. final-answer-recall."
 
 DESC_LEN=$(printf '%s' "${DESCRIPTION}" | wc -c)

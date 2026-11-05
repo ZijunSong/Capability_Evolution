@@ -72,14 +72,16 @@ METHOD="trim"
 COMP="all"
 case "${COND}" in
   harnessopd_m)
-    export TRIM_TEACHER_COMPONENTS="auto_populate_first_search,chunk_neighbors"
+    # R1/R2 收敛：仅 auto_populate_first_search 有 READY 监督通道（C0/C1 铁证），
+    # chunk_neighbors 未注册不伪造；teacher=单成员精确联盟。
+    export TRIM_TEACHER_COMPONENTS="auto_populate_first_search"
     python3 -c "
 import os
 from trim.training.four_cell_runtime import teacher_mask_for, student_mask_for
 t = teacher_mask_for('all'); s = student_mask_for('all')
-assert sorted(k for k, v in t.items() if v) == ['auto_populate_first_search', 'chunk_neighbors'], t
+assert sorted(k for k, v in t.items() if v) == ['auto_populate_first_search'], t
 assert not any(s.values()), s
-print('TEACHER_MASK_OK')
+print('TEACHER_MASK_OK single-member')
 "
     ;;
   rl_only)      METHOD="rl" ;;
@@ -107,26 +109,35 @@ echo "MODEL_CP_DONE $(date -Is)"
 
 python3 -m py_compile /mnt/songzijun/Capability_Evolution/TRIM/scripts/run_train_multinode.py
 cd /mnt/songzijun/Capability_Evolution
-exec python3 /mnt/songzijun/Capability_Evolution/TRIM/scripts/run_train_multinode.py \
+
+# 训练成功后写 READY_MANIFEST（eval entry 的就绪判定依据；guide §12.4：
+# manifest 含 checksum 与 checkpoint_committed=true，等待方不用 find 非空推断）。
+cat > /tmp/c2_train_wrapper.sh <<'WRAPPER'
+#!/usr/bin/env bash
+set -euxo pipefail
+# HOST 变量经环境传递（heredoc 为引号形式，不展开）：C2_* 由 entry export。
+: "${C2_NODE_RANK:?}"; : "${C2_MASTER_ADDR:?}"; : "${C2_MASTER_PORT:?}"
+: "${C2_OUT:?}"; : "${C2_COND:?}"; : "${C2_METHOD:?}"; : "${C2_COMP:?}"; : "${C2_MODEL_LOCAL:?}"
+python3 /mnt/songzijun/Capability_Evolution/TRIM/scripts/run_train_multinode.py \
   --nnodes 2 \
   --nproc-per-node 8 \
-  --node-rank "${NODE_RANK}" \
-  --master-addr "${MASTER_ADDR}" \
-  --master-port "${MASTER_PORT}" \
+  --node-rank "${C2_NODE_RANK}" \
+  --master-addr "${C2_MASTER_ADDR}" \
+  --master-port "${C2_MASTER_PORT}" \
   --dist-backend nccl \
   --rdzv-backend static \
-  --rdzv-id "probe-c-c2-9b-${COND}-8step-16" \
+  --rdzv-id "probe-c-c2-9b-${C2_COND}-8step-16" \
   --training-backend torch_ddp_lora \
   --harness Harness-1 \
   --benchmark bcplus_full \
-  --model_name "${MODEL_LOCAL}" \
-  --train_method "${METHOD}" \
-  --component "${COMP}" \
+  --model_name "${C2_MODEL_LOCAL}" \
+  --train_method "${C2_METHOD}" \
+  --component "${C2_COMP}" \
   --train-env local_legacy \
   --train-data sec \
   --rl-data /mnt/songzijun/Capability_Evolution/TRIM/data/harness-1-rl-data \
   --sec-corpus-root /mnt/songzijun/Capability_Evolution/TRIM/data/harness-1-sec-corpus \
-  --train-query-ids "${OUT}/train_ids.txt" \
+  --train-query-ids "${C2_OUT}/train_ids.txt" \
   --rl-reward final-answer-recall \
   --train-steps 8 \
   --train-groups-per-step 32 \
@@ -137,4 +148,40 @@ exec python3 /mnt/songzijun/Capability_Evolution/TRIM/scripts/run_train_multinod
   --max-model-len 8192 \
   --gpu-memory-utilization 0.90 \
   --seed 42 \
-  --out "${OUT}"
+  --out "${C2_OUT}"
+TRAIN_RC=$?
+if [ "${TRAIN_RC}" = "0" ]; then
+  ADAPTER=$( { find "${C2_OUT}"/checkpoints -maxdepth 5 -type d -name adapter -path "*step_00008*" 2>/dev/null || true; } | sort | tail -1)
+  test -n "${ADAPTER}"
+  test -f "${ADAPTER}/adapter_config.json"
+  python3 - <<PY
+import json, hashlib, pathlib
+ad = pathlib.Path("${ADAPTER}")
+files = sorted(p.name for p in ad.iterdir())
+blob = json.dumps(files, sort_keys=True).encode()
+meta = {
+    "condition": "${C2_COND}",
+    "method": "${C2_METHOD}",
+    "component": "${C2_COMP}",
+    "adapter_dir": str(ad),
+    "adapter_files": files,
+    "files_hash": hashlib.sha256(blob).hexdigest(),
+    "checkpoint_committed": True,
+    "written_at": __import__("time").strftime("%F %T"),
+}
+out = pathlib.Path("${C2_OUT}") / "READY_MANIFEST.json"
+tmp = out.with_suffix(".json.tmp")
+tmp.write_text(json.dumps(meta, indent=2, ensure_ascii=False, sort_keys=True))
+tmp.replace(out)
+print("READY_MANIFEST_OK", meta["adapter_dir"])
+PY
+else
+  echo "TRAIN_FAILED rc=${TRAIN_RC}" >&2
+fi
+exit ${TRAIN_RC}
+WRAPPER
+export C2_NODE_RANK="${NODE_RANK}" C2_MASTER_ADDR="${MASTER_ADDR}" C2_MASTER_PORT="${MASTER_PORT}"
+export C2_OUT="${OUT}" C2_COND="${COND}" C2_METHOD="${METHOD}" C2_COMP="${COMP}" C2_MODEL_LOCAL="${MODEL_LOCAL}"
+chmod +x /tmp/c2_train_wrapper.sh
+# heredoc 内嵌脚本回读可能撞 JuiceFS 抖动：cp 到 /tmp 已天然满足（脚本就在 /tmp）。
+exec bash /tmp/c2_train_wrapper.sh
