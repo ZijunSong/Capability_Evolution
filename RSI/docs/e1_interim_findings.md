@@ -82,3 +82,11 @@
 - E0 的"0/16 状态变更"部分保留（真实 DB 操作 49/53 有发生），但 strict=0 的主因是 answer 断链。
 - 修复方向（并发会话 P0）：adapter 代 respond + 重跑 E0 对照 → appworld 基线和进化候选都要在新口径下重建。
 - **教训（与 E0 审计同族）**：harness 断链类 bug 的症状（全零分数）与"能力为零"不可区分，除非逐题对 artifact 审计。这也是文档 §4.6 no-op/已知正确/错误状态三对照必须先跑的原因——no-op 对照只能证明初始状态，"已知正确动作"对照才能证明 answer 链路。
+
+---
+
+## 补充四（2026-11-05：H0_v2 口径下 alfworld-9B r5 收官）
+
+- **alfworld-9b r5**（zhfrd succeed）：14 候选评估（0.33~0.75），**champion `622625ded4` macro 0.75**（gen3 当选）= `completion_gate + alfworld_checker` 双组件；进化链 gen0 0.583 → gen3 0.750。**vs r4（渲染修复前）champion 0.25 → r5 0.75**：structured 渲染修复（合法命令可见）把 alfworld 打分整体抬升约 +50pp——这是 harness 修复解锁能力的直接证据。
+- 27B 两路（appworld r4 brurd / alfworld r5 gth6z）running；appworld-9b r4（v3hvt）running。
+- webshop-27b r5 (0.589) 仍是当前全场景最高 champion。
