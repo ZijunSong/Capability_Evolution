@@ -9,10 +9,11 @@ rendered window shrinks.  No LLM summarization may stand in for H0.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from rsi.contracts.action import encode_action
-from rsi.contracts.common import digest_of_text
+from rsi.contracts.common import JSONValue, digest_of_text
 from rsi.contracts.errors import ProtocolViolation
 from rsi.contracts.events import Event
 from rsi.contracts.observation import ToolSpec
@@ -37,13 +38,40 @@ def render_tool_catalog(catalog: tuple[ToolSpec, ...]) -> str:
     return "\n".join(lines)
 
 
+def _render_structured(structured: Mapping[str, JSONValue]) -> str:
+    """Render the observation's structured payload (guide §5.4: structured
+    facts the environment attaches — e.g. ALFWorld's ``admissible_commands``
+    — are part of the interface contract and must reach the model; dropping
+    them forced blind command syntax guessing, the dominant 8hk1b bad-case
+    mode).  Bounded: the list is capped so a huge payload cannot eat the
+    whole window; ``truncate_head_tail`` at the event level still applies."""
+    if not structured:
+        return ""
+    admissible = structured.get("admissible_commands")
+    if not admissible:
+        return ""
+    cmds = [str(c) for c in admissible]
+    if len(cmds) > _MAX_ADMISSIBLE:
+        shown = cmds[:_MAX_ADMISSIBLE]
+        shown.append(f"... (+{len(cmds) - _MAX_ADMISSIBLE} more)")
+    else:
+        shown = cmds
+    return "\n[admissible_commands] " + " | ".join(shown)
+
+
+_MAX_ADMISSIBLE = 40
+
+
 def render_event(event: Event) -> str:
-    if event.action is not None and event.observation is not None:
-        return f"[{event.order}] action: {encode_action(event.action)}\n[{event.order}] observation: {event.observation.content}"
-    if event.action is not None:
-        return f"[{event.order}] action: {encode_action(event.action)}"
+    structured_tail = ""
     if event.observation is not None:
-        return f"[{event.order}] observation: {event.observation.content}"
+        structured_tail = _render_structured(event.observation.structured)
+    if event.action is not None and event.observation is not None:
+        return f"[{event.order}] action: {encode_action(event.action)}\n[{event.order}] observation: {event.observation.content}{structured_tail}"
+    if event.action is not None:
+        return f"[{event.order}] action: {encode_action(event.action)}{structured_tail}"
+    if event.observation is not None:
+        return f"[{event.order}] observation: {event.observation.content}{structured_tail}"
     return f"[{event.order}] {event.event_kind.value}: {json.dumps(dict(event.data), sort_keys=True)}"
 
 

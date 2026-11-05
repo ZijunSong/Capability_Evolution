@@ -61,6 +61,15 @@ STATUSES = (
     STATUS_READY,
 )
 
+# v4 funnel schema (measurement_v4): attempted vs passed are explicit, so a
+# row that *reaches* the DIRECT check and fails there is never counted as a
+# DIRECT pass (the legacy ``stage_reached >= idx`` semantics conflated them).
+FUNNEL_SCHEMA_VERSION_V4 = "probe_c_funnel_v4"
+
+# New-stage name for supervision rows: cache-valid non-empty does not imply a
+# real nonzero gradient; the trainer records that separately.
+STAGE_SUPERVISION_ROW = "supervision_row_ready"
+
 
 class InfraFailure(RuntimeError):
     """Network/resource-class failure. Never auto-falls back to a fake path."""
@@ -85,6 +94,87 @@ class FunnelRow:
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
+    def to_v4(self) -> "FunnelRowV4":
+        """Legacy row → v4: ``stage_reached`` marks the furthest *attempted*
+        stage (the furthest check the row entered), not a pass."""
+        idx = FUNNEL_STAGES.index(self.stage_reached) if self.stage_reached in FUNNEL_STAGES else 0
+        attempted = list(FUNNEL_STAGES[: idx + 1])
+        passed = []  # legacy rows cannot recover pass semantics; see below
+        failed = self.stage_reached if self.status != STATUS_READY else None
+        reasons = [self.reject_reason] if self.reject_reason else []
+        if self.status == STATUS_READY:
+            # Legacy READY rows passed every stage up to gradient row.
+            passed = list(FUNNEL_STAGES)
+            failed = None
+        return FunnelRowV4(
+            state_id=self.state_id,
+            query_id=self.query_id,
+            coalition_id=self.component_id,
+            member_id=None,
+            channel="legacy_migrated",
+            attempted_stages=attempted,
+            passed_stages=passed,
+            failed_stage=failed,
+            reason_codes=reasons,
+            projection_kind=self.projection_kind or None,
+            n_materialized_steps=0,
+            n_supervised_tokens=self.n_supervised_tokens,
+            detail={
+                **self.detail,
+                "legacy_status": self.status,
+                "legacy_stage_reached": self.stage_reached,
+                "legacy_source_type": self.source_type,
+                "n_target_tokens": self.n_target_tokens,
+            },
+        )
+
+
+@dataclass
+class FunnelRowV4:
+    """One attempt with explicit attempted/passed stage lists (measurement_v4).
+
+    ``passed_stages`` only ever contains stages whose *check actually passed*;
+    ``failed_stage`` + ``reason_codes`` carry the per-stage rejection cause.
+    Legacy ``stage_reached`` semantics (furthest stage *entered*) cannot
+    distinguish a DIRECT pass from a DIRECT-check failure and is superseded.
+    """
+
+    state_id: str
+    query_id: str
+    coalition_id: str
+    member_id: str | None
+    channel: str  # native_event_action | transform_then_policy_action | legacy_migrated
+    attempted_stages: list[str] = field(default_factory=list)
+    passed_stages: list[str] = field(default_factory=list)
+    failed_stage: str | None = None
+    reason_codes: list[str] = field(default_factory=list)
+    projection_kind: str | None = None
+    n_materialized_steps: int = 0
+    n_supervised_tokens: int = 0
+    detail: dict[str, Any] = field(default_factory=dict)
+
+    def mark_attempt(self, stage: str) -> None:
+        if stage not in self.attempted_stages:
+            self.attempted_stages.append(stage)
+
+    def mark_pass(self, stage: str) -> None:
+        self.mark_attempt(stage)
+        if stage not in self.passed_stages:
+            self.passed_stages.append(stage)
+
+    def fail(self, stage: str, reasons: Sequence[str]) -> None:
+        self.mark_attempt(stage)
+        self.failed_stage = stage
+        for r in reasons:
+            if r and r not in self.reason_codes:
+                self.reason_codes.append(str(r))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": FUNNEL_SCHEMA_VERSION_V4,
+            **asdict(self),
+        }
+
 
 @dataclass
 class FunnelCounts:
@@ -96,6 +186,63 @@ class FunnelCounts:
     def count(self, stage: str) -> int:
         idx = FUNNEL_STAGES.index(stage)
         return sum(1 for r in self.rows if FUNNEL_STAGES.index(r.stage_reached) >= idx)
+
+    # -- v4 (attempted/passed) ------------------------------------------
+    def rows_v4(self) -> list["FunnelRowV4"]:
+        return [r.to_v4() for r in self.rows]
+
+    def count_attempted_v4(self, stage: str) -> int:
+        return sum(1 for r in self.rows_v4() if stage in r.attempted_stages)
+
+    def count_pass_v4(self, stage: str) -> int:
+        """Only explicit passes count; a failed DIRECT check is never a DIRECT pass."""
+        return sum(1 for r in self.rows_v4() if stage in r.passed_stages)
+
+    def failure_reason_counts_v4(self, stage: str | None = None) -> dict[str, int]:
+        out: dict[str, int] = {}
+        for r in self.rows_v4():
+            if stage is not None and r.failed_stage != stage:
+                continue
+            for rc in r.reason_codes:
+                out[rc] = out.get(rc, 0) + 1
+        return dict(sorted(out.items(), key=lambda kv: -kv[1]))
+
+    def to_dict_v4(self) -> dict[str, Any]:
+        per_stage: dict[str, dict[str, int]] = {}
+        for stage in FUNNEL_STAGES:
+            per_stage[stage] = {
+                "attempted": self.count_attempted_v4(stage),
+                "passed": self.count_pass_v4(stage),
+                "failed_here": sum(
+                    1 for r in self.rows_v4() if r.failed_stage == stage
+                ),
+            }
+        rows = self.rows_v4()
+        n_supervised = sum(1 for r in rows if r.n_supervised_tokens > 0)
+        n_states = len(rows)
+        n_pass_supervision = self.count_pass_v4(STAGE_SUPERVISION_ROW) or sum(
+            1 for r in rows if STAGE_GRADIENT_ROW in r.passed_stages
+        )
+        return {
+            "schema_version": FUNNEL_SCHEMA_VERSION_V4,
+            "component_id": self.component_id,
+            "per_stage": per_stage,
+            "state_level": {
+                "n_states": n_states,
+                "n_supervision_rows_ready": n_pass_supervision,
+                "supervision_rows_over_states": self._ratio(n_pass_supervision, n_states),
+                "n_states_with_supervised_tokens": n_supervised,
+                "n_queries": len({r.query_id for r in rows}),
+                "n_covered_queries": len(
+                    {r.query_id for r in rows if r.n_supervised_tokens > 0}
+                ),
+                "n_supervised_tokens": sum(r.n_supervised_tokens for r in rows),
+                "denominators_note": "state-level counts; one state may carry "
+                "multiple targets — target-level stats need target rows, not "
+                "state rows",
+            },
+            "failure_reason_counts": self.failure_reason_counts_v4(),
+        }
 
     def _ratio(self, num: int, denom: int) -> Any:
         return "N/A" if denom == 0 else num / denom
@@ -119,6 +266,9 @@ class FunnelCounts:
             "n_queries": n_queries,
             "n_covered_queries": covered,
             "n_supervised_tokens": sum(r.n_supervised_tokens for r in self.rows),
+            "note": "legacy stage_reached>=idx semantics: counts rows that "
+            "REACHED a stage (including rows that failed its check). Use "
+            "to_dict_v4() for attempted/passed semantics",
         }
 
     def status(self, *, min_covered_queries: int = 16, min_supervised_tokens: int = 1) -> str:
@@ -152,6 +302,7 @@ class FunnelCounts:
             "ratios": self.ratios(),
             "n_rows": len(self.rows),
             "stage_counts": {s: self.count(s) for s in FUNNEL_STAGES},
+            "v4": self.to_dict_v4(),
         }
 
 
@@ -719,9 +870,12 @@ __all__ = [
     "CachedSupervisionRow",
     "FrozenTeacherCache",
     "FUNNEL_STAGES",
+    "FUNNEL_SCHEMA_VERSION_V4",
     "FunnelCounts",
     "FunnelRow",
+    "FunnelRowV4",
     "InfraFailure",
+    "STAGE_SUPERVISION_ROW",
     "STATUS_INVALID_MEASUREMENT",
     "STATUS_NO_SUPPORT",
     "STATUS_NO_TRIGGER",

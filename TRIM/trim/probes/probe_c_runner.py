@@ -246,9 +246,20 @@ class PanelResult:
     name_js: dict[str, Any]
     regen: dict[str, Any]
     per_state: list[dict[str, Any]] = field(default_factory=list)
+    # Lossless per-generation records + stats object (guide §8.4): judge_c1
+    # needs the RegenStats, not only the summary dict.
+    regen_stats_obj: Any = None
+    generation_records: list[GenerationRecord] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        payload = asdict(self)
+        payload.pop("regen_stats_obj", None)
+        payload["generation_records"] = [g.to_dict() for g in self.generation_records]
+        return payload
+
+    @property
+    def regen_obj(self) -> Any:
+        return self.regen_stats_obj if self.regen_stats_obj is not None else regen_stats(self.generation_records)
 
 
 def evaluate_fixed_panel(
@@ -360,6 +371,8 @@ def evaluate_fixed_panel(
         name_js=name_agg,
         regen=regen_stats(gen_records).to_dict(),
         per_state=per_state,
+        regen_stats_obj=regen_stats(gen_records),
+        generation_records=gen_records,
     )
 
 
@@ -722,22 +735,37 @@ def stage_screen(
         targets = {
             p["target"]["state_id"]: TeacherTarget(**p["target"]) for p in cache_payload
         }
+        # Split targets by the split of their state (guide §7.1): C_train rows
+        # feed gradients; C_select same-state targets build the held-out K(s).
+        # The legacy code passed train_rows to the candidate constructor for
+        # held-out states, whose state_id filter then dropped everything —
+        # held-out K(s) silently lost its Teacher target.
+        targets_by_state_by_split: dict[str, dict[str, list[TeacherTarget]]] = {
+            SPLIT_TRAIN: {},
+            SPLIT_SELECT: {},
+        }
+        for sid, tgt in targets.items():
+            st = _find_state(states, sid)
+            targets_by_state_by_split.setdefault(st.split, {}).setdefault(sid, []).append(tgt)
+        select_targets_by_state = targets_by_state_by_split.get(SPLIT_SELECT, {})
         # C1 trains only on C_train rows; the C_select panel is the query-disjoint
-        # eval side (its cached targets feed Teacher-sample NLL).
+        # eval side (its cached targets feed Teacher-sample NLL and K(s)).
         train_rows = [
             CachedSupervisionRow(
-                state=_find_state(states, p["state_id"]),
-                target=targets[p["state_id"]],
+                state=_find_state(states, sid),
+                target=targets[sid],
                 funnel=None,
             )
-            for p in cache_payload
-            if p["state_id"] in targets
-            and _find_state(states, p["state_id"]).split == SPLIT_TRAIN
+            for sid in sorted(targets_by_state_by_split.get(SPLIT_TRAIN, {}))
         ]
         train_qids = {r.state.query_id for r in train_rows}
         heldout = [s for s in select_states if s.query_id not in train_qids]
         if not heldout:
-            heldout = select_states  # documented fallback within select split only
+            raise RunnerError(
+                "C_select panel is fully query-overlapped with C_train targets; "
+                "split assignment is broken (no held-out states). Refusing the "
+                "legacy select_states fallback that silently ran on non-held-out data"
+            )
         # Pilot time bounds (reported, never silent): scoring panel + regen cap.
         screen_max_states = int(cfg.raw.get("screen_max_states", 128))
         if len(heldout) > screen_max_states:
@@ -756,9 +784,29 @@ def stage_screen(
         )
         candidate_sets: dict[str, list[tuple[str, dict[str, Any]]]] = {}
         z_teacher_by_state: dict[str, dict[str, float]] = {}
+        target_in_K: dict[str, bool] = {}
         for state in heldout:
-            kset = list(candidate_fn(state, pair, train_rows))
+            # Same-state C_select targets only — never train_rows (§7.1).
+            same_state_rows = [
+                CachedSupervisionRow(state=state, target=tgt, funnel=None)
+                for tgt in select_targets_by_state.get(state.state_id, [])
+            ]
+            kset = list(candidate_fn(state, pair, same_state_rows))
             candidate_sets[state.state_id] = kset
+            kset_ids = {cand_id for cand_id, _ in kset}
+            _tgt = select_targets_by_state.get(state.state_id, [])
+            target_in_K[state.state_id] = (
+                any(
+                    any(
+                        cand_action.get("name") == t.target_action.get("name")
+                        and cand_action.get("arguments") == t.target_action.get("arguments")
+                        for _cand_id, cand_action in kset
+                    )
+                    for t in _tgt
+                )
+                if _tgt
+                else False
+            )
             t_prompt = (
                 list(teacher_prompt_fn(state, None))
                 if teacher_prompt_fn is not None
@@ -782,6 +830,8 @@ def stage_screen(
             "candidate_sets": candidate_sets,
             "z_teacher_by_state": z_teacher_by_state,
             "regen_limit": regen_limit,
+            "target_in_K": target_in_K,
+            "n_select_targets": len(select_targets_by_state),
         }
 
     # Seed-outer loop: one resident Student per seed, exact θ0 restart per candidate.
@@ -850,11 +900,23 @@ def stage_screen(
                     post_nll=post.nll.get("nll_macro", MISSING),
                     pre_name_js=pre.name_js.get("d_k", MISSING),
                     post_name_js=post.name_js.get("d_k", MISSING),
+                    pre_regen=pre.regen_obj,
+                    post_regen=post.regen_obj,
                     support_status=panel["support_status"],
                     delta_nll=cfg.thresholds.delta_nll,
                     delta_dk=cfg.thresholds.delta_dk,
+                    max_dk_regression=float(
+                        cfg.raw.get("max_dk_regression",
+                        cfg.thresholds.delta_dk)
+                    ),
                     eps_name_js=cfg.thresholds.eps_name_js,
                     eps_invalid=cfg.thresholds.eps_invalid,
+                    require_generation_guard=bool(
+                        cfg.raw.get("require_generation_guard", True)
+                    ),
+                    absolute_quality_status=str(
+                        cfg.raw.get("absolute_quality_status", "QUALITY_UNRESOLVED")
+                    ),
                 )
                 row = {
                     "model_id": cfg.model_id,
@@ -872,6 +934,11 @@ def stage_screen(
                     "name_js": post.name_js.get("d_k", MISSING),
                     "generated_invalid_post": post.regen.get("invalid_generated_rate", MISSING),
                     "generated_invalid_pre": pre.regen.get("invalid_generated_rate", MISSING),
+                    "guard_status": verdict.detail.get("guard_status", MISSING),
+                    "target_in_K_rate": (
+                        sum(1 for v in panel["target_in_K"].values() if v)
+                        / max(1, len(panel["target_in_K"]))
+                    ),
                     "g": MISSING,
                     "e": MISSING,
                     "gpu_hours": MISSING,
@@ -888,6 +955,20 @@ def stage_screen(
                     fixed_budget=stage_budget,
                     payload={"pre": pre.to_dict(), "post": post.to_dict(), "row": row},
                 )
+                # Per-generation raw records land on disk before any verdict is
+                # consumed (guide §15: per-state/per-generation first, summary later).
+                gen_dir = out_dir / "generations" / cid / f"seed{seed}"
+                gen_dir.mkdir(parents=True, exist_ok=True)
+                with (gen_dir / f"budget{stage_budget}_pre.jsonl").open(
+                    "w", encoding="utf-8"
+                ) as fh:
+                    for g in pre.generation_records:
+                        fh.write(json.dumps(g.to_dict(), ensure_ascii=False, sort_keys=True) + "\n")
+                with (gen_dir / f"budget{stage_budget}_post.jsonl").open(
+                    "w", encoding="utf-8"
+                ) as fh:
+                    for g in post.generation_records:
+                        fh.write(json.dumps(g.to_dict(), ensure_ascii=False, sort_keys=True) + "\n")
                 # Contract: all READY candidates run 4→8 on one optimizer
                 # trajectory; only pre-registered BORDERLINE candidates continue
                 # to borderline_max_step (16).
@@ -936,11 +1017,30 @@ def stage_confirm(
     if not screen_path.is_file():
         raise RunnerError("SCREEN.json missing; run screen before confirm")
     screen = json.loads(screen_path.read_text(encoding="utf-8"))
+    # Fixed-budget summary (guide §9.4): C2 picks come from the pre-registered
+    # primary budget, aggregated across seeds — never from "any row once
+    # PROMOTEd" (seed11@4 must not override the 8-step result).
+    primary_budget = int(cfg.raw.get("primary_budget", 8))
+    by_component: dict[str, list[dict[str, Any]]] = {}
+    for r in screen.get("rows", []):
+        if int(r.get("fixed_budget") or 0) == primary_budget:
+            by_component.setdefault(str(r["component_id"]), []).append(r)
+
+    def _summary_status(rows: list[dict[str, Any]]) -> str:
+        statuses = [str(r.get("status")) for r in rows]
+        if statuses and all(s == "PROMOTE" for s in statuses):
+            return "PROMOTE"
+        if any(s in {"GUARD_FAIL", "DEPRIORITIZE"} for s in statuses) and not any(
+            s == "PROMOTE" for s in statuses
+        ):
+            return "GUARD_OR_DEPRIORITIZED"
+        return "BORDERLINE"
+
     promote = sorted(
-        {r["component_id"] for r in screen.get("rows", []) if r.get("status") == "PROMOTE"}
+        cid for cid, rows in by_component.items() if _summary_status(rows) == "PROMOTE"
     )
     borderline = sorted(
-        {r["component_id"] for r in screen.get("rows", []) if r.get("status") == "BORDERLINE"}
+        cid for cid, rows in by_component.items() if _summary_status(rows) == "BORDERLINE"
     )
     picks = promote[:2]
     audit_pick = borderline[:1]

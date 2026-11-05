@@ -190,23 +190,109 @@ def prompt_has_teacher_leak(prompt: str) -> bool:
     return any(marker.lower() in lowered for marker in TEACHER_ONLY_PROMPT_MARKERS)
 
 
-def materialize(
+@dataclass
+class MaterializationResult:
+    """Structured materialization outcome with per-action rejection audit.
+
+    ``materialize()`` keeps its legacy list return; new callers use
+    ``materialize_with_audit()`` to get per-action gate + reason codes instead
+    of a silent break.
+    """
+
+    steps: list["ProjectedTrainingStep"]
+    accepted_action_indices: list[int]
+    rejected: list[dict[str, Any]]
+    complete: bool
+
+    @property
+    def reason_counts(self) -> dict[str, int]:
+        out: dict[str, int] = {}
+        for r in self.rejected:
+            for rc in r.get("reasons", []):
+                out[rc] = out.get(rc, 0) + 1
+        return dict(sorted(out.items(), key=lambda kv: -kv[1]))
+
+
+# Per-action rejection gates (structured, one action may carry several codes).
+GATE_REALIZABILITY = "REALIZABILITY_FAILED"
+GATE_ACTION_ROUNDTRIP = "ACTION_ROUNDTRIP_FAILED"
+GATE_CURATE_REPLAY = "CURATE_REPLAY_EXCEPTION"
+GATE_CURATE_AFTER_MISMATCH = "CURATE_AFTER_MISMATCH"
+GATE_STUDENT_PREFIX_LEAK = "STUDENT_PREFIX_LEAK_CHECK_FAILED"
+GATE_STUDENT_SHADOW_TRANSITION = "STUDENT_SHADOW_TRANSITION_FAILED"
+GATE_NO_ALIGNED_ANCHOR = "NO_ALIGNED_ANCHOR"
+GATE_NON_DIRECT = "NON_DIRECT_PROJECTION"
+GATE_DEFERRED_SEQUENTIAL_TARGET = "DEFERRED_SEQUENTIAL_TARGET"
+
+
+def materialize_with_audit(
     projection: ProjectionResult,
     student_snapshot: EnvironmentSnapshot,
     *,
     component_id: str = "",
-) -> list[ProjectedTrainingStep]:
-    """Turn an ALIGN/DIRECT Student tool call into training rows.
+) -> MaterializationResult:
+    """Structured materialize: every gate rejection returns its own reason codes.
 
-    SKIP/ε produces no rows. Recovery macros are not materialized.
+    First-version probe semantics: only the FIRST legal action is materialized
+    as a supervised target (the starting pre-state); later actions in the
+    sequence are recorded as ``DEFERRED_SEQUENTIAL_TARGET`` rejections — they
+    are not silently dropped, but they are also not trained on.
     """
     if projection.kind != ProjectionKind.DIRECT:
-        return []
+        return MaterializationResult(
+            steps=[],
+            accepted_action_indices=[],
+            rejected=[
+                {
+                    "action_index": idx,
+                    "gate": GATE_NON_DIRECT,
+                    "reasons": [f"projection_kind={projection.kind.value}"],
+                    "action_name": str(getattr(a, "name", "") or ""),
+                }
+                for idx, a in enumerate(projection.actions)
+            ]
+            or [
+                {
+                    "action_index": None,
+                    "gate": GATE_NON_DIRECT,
+                    "reasons": [f"projection_kind={projection.kind.value}"],
+                    "action_name": "",
+                }
+            ],
+            complete=False,
+        )
     cid = component_id or projection.component_id or ""
     mask = student_snapshot.harness_mask
     shadow = fork_snapshot(student_snapshot)
     steps: list[ProjectedTrainingStep] = []
-    for action in projection.actions:
+    accepted: list[int] = []
+    rejected: list[dict[str, Any]] = []
+    complete = True
+    for idx, action in enumerate(projection.actions):
+        reasons: list[str] = []
+
+        def _reject(gate: str, extra: list[str] | None = None) -> None:
+            reasons.append(gate)
+            for rc in extra or []:
+                reasons.append(rc)
+            rejected.append(
+                {
+                    "action_index": idx,
+                    "gate": gate,
+                    "reasons": list(reasons),
+                    "action_name": str(getattr(action, "name", "") or ""),
+                    "action_arguments_keys": sorted(
+                        str(k) for k in (getattr(action, "arguments", None) or {})
+                    ),
+                    "visible_doc_ids_count": len(
+                        list((getattr(shadow, "working_memory", None) or {}).get("accessible_doc_ids") or [])
+                    )
+                    if hasattr(shadow, "working_memory")
+                    else None,
+                    "curated_ids_count": len(curated_ids_of(shadow)),
+                }
+            )
+
         shadow.assert_no_future(max_known_step=shadow.step)
         report = check_action_realizability(
             action=action,
@@ -215,14 +301,24 @@ def materialize(
             component_id=cid,
         )
         if not report.passed:
+            _reject(
+                GATE_REALIZABILITY,
+                [str(rc) for rc in (getattr(report, "reason_codes", None) or [])]
+                or [str(getattr(report, "reject_reason", "") or "unrealizable")],
+            )
+            complete = False
             break
         if not validate_roundtrip(action):
+            _reject(GATE_ACTION_ROUNDTRIP)
+            complete = False
             break
         if action.name == "curate":
             before = set(curated_ids_of(shadow))
             try:
                 actual_after, dropped, _obs = apply_curate_via_real_env(shadow, action)
-            except Exception:
+            except Exception as exc:
+                _reject(GATE_CURATE_REPLAY, [f"{type(exc).__name__}"])
+                complete = False
                 break
             expected_after = (before - {str(x) for x in (action.arguments.get("remove_ids") or [])}) | {
                 str(x) for x in (action.arguments.get("add_ids") or [])
@@ -230,9 +326,17 @@ def materialize(
             if dropped or set(actual_after) != expected_after:
                 report.transition_reproducible = False
                 report.reason_codes.append(REJECT_CURATED_CAPACITY)
+                _reject(
+                    GATE_CURATE_AFTER_MISMATCH,
+                    [REJECT_CURATED_CAPACITY]
+                    + ([f"dropped={len(dropped)}"] if dropped else []),
+                )
+                complete = False
                 break
         prompt = render_student_prompt(shadow, component_id=cid)
         if prompt_has_teacher_leak(prompt):
+            _reject(GATE_STUDENT_PREFIX_LEAK)
+            complete = False
             break
         teacher_prompt = render_teacher_prompt(shadow, component_id=cid)
         target_text = render_action(action)
@@ -261,11 +365,59 @@ def materialize(
                 projection_confidence=float(action.confidence),
             )
         )
+        accepted.append(idx)
         try:
             shadow = apply_student_action(shadow, action)
-        except Exception:
+        except Exception as exc:
+            # The accepted prefix stays; the NEXT action's pre-state is broken.
+            rejected.append(
+                {
+                    "action_index": idx + 1,
+                    "gate": GATE_STUDENT_SHADOW_TRANSITION,
+                    "reasons": [f"{type(exc).__name__}"],
+                    "action_name": "",
+                    "note": "previous action accepted; sequence continues from a "
+                    "state we cannot advance to (partial completion)",
+                }
+            )
+            complete = False
             break
-    return steps
+    # First-version probe: supervise only the first legal action; the rest are
+    # explicitly deferred, not silently supervised.
+    if len(steps) > 1:
+        for extra_idx in range(1, len(steps)):
+            rejected.append(
+                {
+                    "action_index": accepted[extra_idx],
+                    "gate": GATE_DEFERRED_SEQUENTIAL_TARGET,
+                    "reasons": ["first_version_supervises_first_action_only"],
+                    "action_name": str(steps[extra_idx].target_action.get("name") or ""),
+                }
+            )
+        steps = steps[:1]
+        accepted = accepted[:1]
+    return MaterializationResult(
+        steps=steps,
+        accepted_action_indices=accepted,
+        rejected=rejected,
+        complete=complete,
+    )
+
+
+def materialize(
+    projection: ProjectionResult,
+    student_snapshot: EnvironmentSnapshot,
+    *,
+    component_id: str = "",
+) -> list[ProjectedTrainingStep]:
+    """Turn an ALIGN/DIRECT Student tool call into training rows.
+
+    SKIP/ε produces no rows. Recovery macros are not materialized.
+    Legacy wrapper over ``materialize_with_audit()`` (same accepted steps).
+    """
+    return materialize_with_audit(
+        projection, student_snapshot, component_id=component_id
+    ).steps
 
 
 def build_projected_row(

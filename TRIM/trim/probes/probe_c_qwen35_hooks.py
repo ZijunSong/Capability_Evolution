@@ -27,8 +27,11 @@ from trim.eval.probe_c_metrics import (
     FAIL_PARSE,
     FAIL_SCHEMA,
     FAIL_TRUNCATION,
+    FINISH_BUDGET_TRUNCATION,
+    GenerationContract,
     GenerationRecord,
 )
+from trim.training.action_validation import validate_action_at_state
 from trim.probes.probe_c_contract import HarnessPairSpec, ProbeCConfig
 from trim.probes.probe_c_data import ProbeCState
 from trim.probes.probe_c_runner import RuntimeHooks
@@ -458,8 +461,60 @@ def make_candidate_set(cfg: ProbeCConfig, candidate_limit: int = 8):
     return _fn
 
 
-def regenerate_fn(backend: Any, state: ProbeCState, pair: HarnessPairSpec | None, *, checkpoint: str):
-    """Fresh greedy generation + real parser/schema/visibility checks (§8.3)."""
+def _generation_contract_from_state(cfg: ProbeCConfig) -> "GenerationContract":
+    """Contract from the collection manifest (never call-site hard-coded).
+
+    Collection rollout used max_new=2048 (batched_env_rollout default); a
+    128-token probe regeneration turned budget exhaustion into fake parse
+    failures (guide §8.1). If the manifest lacks the value we fail loudly.
+    """
+    from trim.eval.probe_c_metrics import GenerationContract
+
+    raw = int((cfg.raw.get("generation") or {}).get("max_new_tokens") or 0)
+    if raw <= 0:
+        raise RuntimeError(
+            "config.generation.max_new_tokens missing; the generation contract "
+            "must be restored from the collection manifest (expected 2048 to "
+            "match probe_c_collect --max-new), not defaulted"
+        )
+    return GenerationContract(
+        max_new_tokens=raw,
+        temperature=0.0,
+        decode="greedy",
+        source="config_resolved",
+    )
+
+
+def _finish_reason(new_ids: list[int], stop_ids: list[int], max_new: int) -> tuple[str, bool]:
+    """(finish_reason, tool_block_complete).
+
+    - ``eos``: a stop token was generated before the budget ran out.
+    - ``BUDGET_TRUNCATION``: max_new reached without any stop token — the
+      generation was cut, parse failures downstream are measurement-class.
+    """
+    from trim.eval.probe_c_metrics import FINISH_BUDGET_TRUNCATION, FINISH_EOS
+
+    if len(new_ids) >= int(max_new):
+        return FINISH_BUDGET_TRUNCATION, False
+    if any(int(t) in set(int(s) for s in stop_ids) for t in new_ids):
+        return FINISH_EOS, True
+    return FINISH_EOS, True
+
+
+def regenerate_fn(
+    backend: Any,
+    state: ProbeCState,
+    pair: HarnessPairSpec | None,
+    *,
+    checkpoint: str,
+    contract: Any | None = None,
+):
+    """Fresh greedy generation + shared legality checks (guide §8.1/§8.3).
+
+    Contract comes from ``config.generation.max_new_tokens`` (collection
+    parity). Raw completion ids/text + finish_reason are always recorded;
+    budget truncation is separated from parse failure (never conflated).
+    """
     import torch
 
     from trim.adapters.components import zero_mask
@@ -468,15 +523,21 @@ def regenerate_fn(backend: Any, state: ProbeCState, pair: HarnessPairSpec | None
     inner = getattr(backend, "backend", backend)  # unwrap ProbeCLoraStudentBackend
     enc = load_encoder_from_backend(inner)
     legal = set(legal_tool_names(harness_mask=zero_mask("Harness-1")))
+    if contract is None:
+        from trim.eval.probe_c_metrics import GenerationContract
+
+        contract = GenerationContract()  # direct-call default (2048 == rollout)
+    max_new = int(getattr(contract, "max_new_tokens", 2048))
     prompt_ids = [int(t) for t in state.effective_student_prompt_ids]
+    stop_ids = [int(t) for t in (enc.stop_token_ids or [])]
     try:
         inp = torch.tensor([prompt_ids], device=inner._device)
         out = inner.model.generate(
             inp,
             do_sample=False,
-            max_new_tokens=128,
-            eos_token_id=list(enc.stop_token_ids or []),
-            pad_token_id=(enc.stop_token_ids or [0])[0],
+            max_new_tokens=max_new,
+            eos_token_id=stop_ids,
+            pad_token_id=(stop_ids or [0])[0],
         )
         new_ids = out[0, inp.size(1) :].tolist()
     except Exception as exc:
@@ -486,9 +547,32 @@ def regenerate_fn(backend: Any, state: ProbeCState, pair: HarnessPairSpec | None
             checkpoint=checkpoint,
             ok=False,
             failure_kind="generate_error",
-            detail={"error": f"generate_failed:{type(exc).__name__}:{exc}"},
+            detail={
+                "error": f"generate_failed:{type(exc).__name__}:{exc}",
+                "contract": getattr(contract, "to_dict", lambda: {})(),
+            },
         )
+    finish, _complete = _finish_reason(new_ids, stop_ids, max_new)
     text = enc.decode_tokens(new_ids)
+    base_detail: dict[str, Any] = {
+        "finish_reason": finish,
+        "n_new_tokens": len(new_ids),
+        "max_new_tokens": max_new,
+        "raw_text_head": text[:400],
+        "raw_completion_ids_head": [int(t) for t in new_ids[:64]],
+        "contract": getattr(contract, "to_dict", lambda: {})(),
+    }
+    if finish == FINISH_BUDGET_TRUNCATION:
+        # Measurement-class failure: the model did not finish; parse outcomes
+        # under truncation are not behavioural evidence.
+        return GenerationRecord(
+            state_id=state.state_id,
+            query_id=state.query_id,
+            checkpoint=checkpoint,
+            ok=False,
+            failure_kind=FAIL_TRUNCATION,
+            detail=base_detail,
+        )
     if not text.strip():
         return GenerationRecord(
             state_id=state.state_id,
@@ -496,6 +580,7 @@ def regenerate_fn(backend: Any, state: ProbeCState, pair: HarnessPairSpec | None
             checkpoint=checkpoint,
             ok=False,
             failure_kind=FAIL_EMPTY,
+            detail=base_detail,
         )
     try:
         parsed = enc.parse_tool_call(text, completion_ids=list(new_ids))
@@ -508,35 +593,25 @@ def regenerate_fn(backend: Any, state: ProbeCState, pair: HarnessPairSpec | None
             checkpoint=checkpoint,
             ok=False,
             failure_kind=FAIL_PARSE,
-            detail={"text_head": text[:200]},
+            detail={**base_detail, "text_head": text[:200]},
         )
     name = str(parsed.tool_name)
-    if name not in legal:
+    args = dict(getattr(parsed, "arguments", None) or {})
+    # Shared action validation (probe/runtime parity, guide §8.3).
+    report = validate_action_at_state(
+        action={"name": name, "arguments": args},
+        state=state,
+        student_mask=zero_mask("Harness-1"),
+    )
+    if not report["valid"]:
         return GenerationRecord(
             state_id=state.state_id,
             query_id=state.query_id,
             checkpoint=checkpoint,
             ok=False,
-            failure_kind=FAIL_SCHEMA,
-            detail={"tool_name": name},
+            failure_kind=report["failure_kind"],
+            detail={**base_detail, "validation": report},
         )
-    # Visibility: doc tools must reference docs visible at this decision.
-    wm = dict(state.student_snapshot.get("working_memory") or {})
-    visible = {str(x) for x in (wm.get("accessible_doc_ids") or [])}
-    args = dict(getattr(parsed, "arguments", None) or {})
-    doc_ref = str(args.get("doc_id") or "")
-    add_ids = [str(x) for x in (args.get("add_ids") or [])]
-    refs = ([doc_ref] if doc_ref else []) + add_ids
-    for ref in refs:
-        if ref and ref not in visible:
-            return GenerationRecord(
-                state_id=state.state_id,
-                query_id=state.query_id,
-                checkpoint=checkpoint,
-                ok=False,
-                failure_kind=FAIL_INACCESSIBLE_REF,
-                detail={"ref": ref},
-            )
     return GenerationRecord(
         state_id=state.state_id,
         query_id=state.query_id,
@@ -544,6 +619,7 @@ def regenerate_fn(backend: Any, state: ProbeCState, pair: HarnessPairSpec | None
         ok=True,
         action={"name": name, "arguments": args},
         decode="greedy",
+        detail=base_detail,
     )
 
 
@@ -619,6 +695,9 @@ def resolve_config(
     state_source_dir: str = "",
     output_root: str = "",
     git_sha: str = "",
+    generation_max_new: int = 0,
+    generation_max_model_len: int = 0,
+    generation_max_turns: int = 0,
 ) -> Path:
     """Freeze model revision / paths / component revisions into a runnable config."""
     import copy
@@ -645,6 +724,40 @@ def resolve_config(
             members[0], git_sha=raw["git_sha"], file_hashes={"members": ",".join(members)}
         )
     raw["component_revisions"] = revs
+    # Generation contract from the collection run (guide §8.1): probe regen
+    # must match the rollout budget; fail loudly rather than default.
+    if "generation" not in raw:
+        gen = {"max_new_tokens": 0, "max_model_len": 0, "max_turns": 0}
+        manifest = None
+        if state_source_dir:
+            from pathlib import Path as _P
+
+            for cand in (
+                _P(state_source_dir) / "COLLECTION_MANIFEST.json",
+                _P(state_source_dir) / "vllm_sessions" / "COLLECTION_MANIFEST.json",
+            ):
+                if cand.is_file():
+                    manifest = json.loads(cand.read_text(encoding="utf-8"))
+                    break
+        if manifest:
+            gen["max_new_tokens"] = int(manifest.get("max_new") or manifest.get("max_new_tokens") or 0)
+            gen["max_model_len"] = int(manifest.get("max_model_len") or 0)
+            gen["max_turns"] = int(manifest.get("max_turns") or 0)
+        # Explicit CLI args override (R1 smoke passes the collect --max-new
+        # value of the run it reuses; still never a silent default).
+        if generation_max_new > 0:
+            gen["max_new_tokens"] = int(generation_max_new)
+            gen["max_model_len"] = int(generation_max_model_len or 0)
+            gen["max_turns"] = int(generation_max_turns or 0)
+        if not gen["max_new_tokens"]:
+            raise RuntimeError(
+                "cannot resolve generation.max_new_tokens: config lacks it, no "
+                "COLLECTION_MANIFEST with generation.max_new under "
+                "state_source_dir, and no explicit --generation-max-new; "
+                "regeneration budget must match the collection rollout (2048), "
+                "never a silent default"
+            )
+        raw["generation"] = gen
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(raw, indent=2, ensure_ascii=False, sort_keys=True), encoding="utf-8")
@@ -663,6 +776,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     p.add_argument("--state-source-dir", default="")
     p.add_argument("--output-root", default="")
     p.add_argument("--git-sha", default="")
+    p.add_argument("--generation-max-new", type=int, default=0)
+    p.add_argument("--generation-max-model-len", type=int, default=0)
+    p.add_argument("--generation-max-turns", type=int, default=0)
     args = parser.parse_args(argv)
     path = resolve_config(
         args.base,
@@ -671,6 +787,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         state_source_dir=args.state_source_dir,
         output_root=args.output_root,
         git_sha=args.git_sha,
+        generation_max_new=int(args.generation_max_new or 0),
+        generation_max_model_len=int(args.generation_max_model_len or 0),
+        generation_max_turns=int(args.generation_max_turns or 0),
     )
     print(f"[probe_c_qwen35_hooks] resolved config -> {path}")
     return 0

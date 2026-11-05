@@ -350,6 +350,34 @@ class GenerationRecord:
 
 
 @dataclass
+class GenerationContract:
+    """Unified generation contract (guide §8.1): probe regeneration must use
+    the SAME budget/stop/template as the collection rollout, or truncation
+    masquerades as model failure. Restored from the collection manifest, never
+    hard-coded per call site.
+
+    - ``finish_reason`` distinguishes natural EOS from budget exhaustion; a
+      budget-exhausted generation with an unclosed tool block is
+      ``BUDGET_TRUNCATION`` (a measurement-class failure), NOT parse error.
+    - ``raw_completion_ids`` / ``raw_text`` are always kept for audit.
+    """
+
+    max_new_tokens: int = 2048
+    temperature: float = 0.0
+    decode: str = "greedy"
+    parser_revision: str = ""
+    source: str = "collection_manifest"
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+FINISH_EOS = "eos"
+FINISH_BUDGET_TRUNCATION = "BUDGET_TRUNCATION"
+FINISH_ERROR = "generate_error"
+
+
+@dataclass
 class RegenStats:
     n_attempted: int = 0
     n_ok: int = 0
@@ -410,12 +438,22 @@ def invalid_rate_noninferior(
 
 @dataclass
 class C1Verdict:
-    status: str  # PROMOTE | BORDERLINE | DEPRIORITIZE | INVALID | LOW_SUPPORT | LOW_SIGNAL
+    status: str  # PROMOTE | BORDERLINE | DEPRIORITIZE | INVALID | LOW_SUPPORT | LOW_SIGNAL | GUARD_FAIL
     reason: str
     detail: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+# Gate policy v4: improvement thresholds (δN/δD) and degradation tolerance
+# (εD) are separate axes; a small negative R_D within tolerance is
+# BORDERLINE, never a mechanical DEPRIORITIZE (guide §9.1/§9.2).
+GATE_POLICY_V4 = "probe_c_gate_v4"
+
+# Absolute generation-quality status (guide §8.4): frozen in a pilot or left
+# unresolved — never loosened to let an old result pass.
+QUALITY_UNRESOLVED = "QUALITY_UNRESOLVED"
 
 
 def judge_c1(
@@ -431,75 +469,175 @@ def judge_c1(
     null_js_noise_floor: float | None = None,
     delta_nll: float = 0.0,
     delta_dk: float = 0.0,
+    max_dk_regression: float | None = None,
     eps_name_js: float = 0.02,
     eps_invalid: float = 0.02,
     support_status: str = "READY",
     seed_directions: Sequence[bool] | None = None,
     ci_nll: tuple[float, float] | None = None,
     ci_dk: tuple[float, float] | None = None,
+    require_generation_guard: bool = False,
+    absolute_quality_status: str = "",
+    policy_version: str = GATE_POLICY_V4,
 ) -> C1Verdict:
-    """Frozen pilot gates. Thresholds are pre-registered, not tuned per component."""
+    """Frozen pilot gates (policy ``probe_c_gate_v4``).
+
+    Semantics split (guide §9):
+    - ``delta_nll`` / ``delta_dk``: minimum *meaningful improvement* for PROMOTE.
+    - ``max_dk_regression`` (εD): tolerable small regression; a small negative
+      R_D with CI still open is BORDERLINE, not DEPRIORITIZE.
+    - Regen guard is a strict three-state check: MISSING is a failure when
+      ``require_generation_guard`` is set (it can never silently pass).
+    - CI lower bounds, when provided, override the point estimates for PROMOTE.
+    """
     if support_status in {"UNREGISTERED", "NO_TRIGGER", "NO_SUPPORT"}:
-        return C1Verdict(support_status, "support funnel not ready", {"funnel": support_status})
+        return C1Verdict(support_status, "support funnel not ready", {"funnel": support_status, "policy_version": policy_version})
     if support_status == "INVALID_MEASUREMENT":
-        return C1Verdict("INVALID", "measurement chain broken", {"funnel": support_status})
+        return C1Verdict("INVALID", "measurement chain broken", {"funnel": support_status, "policy_version": policy_version})
 
     pre_js_v = None if pre_js == MISSING else float(pre_js)
     post_js_v = None if post_js == MISSING else float(post_js)
     pre_nll_v = None if pre_nll == MISSING else float(pre_nll)
     post_nll_v = None if post_nll == MISSING else float(post_nll)
     if pre_js_v is None or post_js_v is None or pre_nll_v is None or post_nll_v is None:
-        return C1Verdict("INVALID", "missing core measurement", {"pre_js": pre_js, "post_js": post_js})
+        return C1Verdict(
+            "INVALID",
+            "missing core measurement",
+            {"pre_js": pre_js, "post_js": post_js, "policy_version": policy_version},
+        )
 
     if null_js_noise_floor is not None and pre_js_v <= float(null_js_noise_floor):
         return C1Verdict(
             "LOW_SIGNAL",
             "pre D_K at/below null noise floor; relative improvement is meaningless",
-            {"pre_js": pre_js_v, "null_js_noise_floor": null_js_noise_floor},
+            {"pre_js": pre_js_v, "null_js_noise_floor": null_js_noise_floor, "policy_version": policy_version},
         )
 
     r_n = pre_nll_v - post_nll_v
     r_d = pre_js_v - post_js_v
-    detail = {"R_N": r_n, "R_D": r_d, "delta_nll": delta_nll, "delta_dk": delta_dk}
+    eps_d = float(max_dk_regression) if max_dk_regression is not None else 0.0
+    detail = {
+        "R_N": r_n,
+        "R_D": r_d,
+        "delta_nll": delta_nll,
+        "delta_dk": delta_dk,
+        "max_dk_regression": eps_d,
+        "policy_version": policy_version,
+    }
 
     name_ok = True
     if pre_name_js != MISSING and post_name_js != MISSING:
         name_ok = (float(post_name_js) - float(pre_name_js)) <= float(eps_name_js)
         detail["name_js_delta"] = float(post_name_js) - float(pre_name_js)
 
-    invalid_ok = True
+    # Strict three-state guard: True / False / MISSING (never MISSING→pass).
+    # No regen stats at all also counts as MISSING when the guard is required.
+    invalid_ok: bool | str = True
     if pre_regen is not None and post_regen is not None:
         guard = invalid_rate_noninferior(pre_regen, post_regen, eps_invalid=eps_invalid)
         detail["invalid_guard"] = guard
-        invalid_ok = guard.get("pass") in (True, MISSING)
+        if guard.get("pass") is True:
+            invalid_ok = True
+        elif guard.get("pass") is False:
+            invalid_ok = False
+        else:
+            invalid_ok = MISSING
+    else:
+        invalid_ok = MISSING
+    guard_missing = invalid_ok == MISSING
 
     directions_ok = True
     if seed_directions:
-        directions_ok = all(seed_directions)  # must agree and be positive
+        directions_ok = all(bool(x) for x in seed_directions)
         detail["seed_directions"] = list(seed_directions)
 
-    # Primary evidence: BOTH D_K and NLL improve beyond frozen thresholds.
+    # Point-estimate double improvement (both beyond their δ).
     double_ok = (r_n > float(delta_nll)) and (r_d > float(delta_dk))
     detail["double_improvement"] = double_ok
 
+    # CI-based strictness when intervals are provided (guide §9.3 rule 4/5).
     if ci_nll is not None and ci_dk is not None:
-        strict = (ci_nll[0] > float(delta_nll)) and (ci_dk[0] > float(delta_dk))
-        detail["ci_lower_bounds_pass"] = strict
+        ci_pass = (float(ci_nll[0]) > float(delta_nll)) and (float(ci_dk[0]) > float(delta_dk))
+        ci_degrades = float(ci_dk[1]) < -eps_d
+        detail["ci"] = {
+            "nll": [float(ci_nll[0]), float(ci_nll[1])],
+            "dk": [float(ci_dk[0]), float(ci_dk[1])],
+            "lower_bounds_pass": ci_pass,
+            "dk_ci_excludes_regression": not ci_degrades,
+        }
     else:
-        strict = double_ok
+        ci_pass = double_ok
+        ci_degrades = False
+        detail["ci"] = MISSING
 
-    if double_ok and name_ok and invalid_ok and directions_ok and strict:
-        return C1Verdict("PROMOTE", "double improvement without legality regression", detail)
-    if not invalid_ok or not name_ok:
+    # Guard status summary (three-state, surfaced in the report).
+    guard_status = "PASS" if invalid_ok is True else ("FAIL" if invalid_ok is False else "MISSING")
+    detail["guard_status"] = guard_status
+    if absolute_quality_status:
+        detail["absolute_quality_status"] = absolute_quality_status
+
+    # Rule 1: guard wiring required but missing → incomplete, never PROMOTE.
+    if require_generation_guard and guard_missing:
         return C1Verdict(
-            "BORDERLINE",
-            "improvement accompanied by legality/name regression",
+            "INCOMPLETE_MEASUREMENT",
+            "generation guard MISSING while require_generation_guard=True",
             detail,
         )
-    if double_ok and not directions_ok:
-        return C1Verdict("BORDERLINE", "seed directions disagree", detail)
-    if r_n <= 0 or r_d <= 0:
-        return C1Verdict("DEPRIORITIZE", "no short-horizon improvement", detail)
+    # Rule 2 (§9.3): clear legality/quality regression blocks auto-promotion.
+    if invalid_ok is False or not name_ok:
+        return C1Verdict(
+            "GUARD_FAIL",
+            "clear legality/quality regression; auto-promotion blocked",
+            detail,
+        )
+    # Rule 4: PROMOTE needs δ-beyond improvement on both axes + all guards.
+    # Absolute quality unresolved (or unspecified) can never yield a deployable
+    # PROMOTE (guide §8.4): default is QUALITY_UNRESOLVED, frozen in a pilot.
+    if ci_pass and double_ok and directions_ok and invalid_ok is True:
+        if not absolute_quality_status or absolute_quality_status == QUALITY_UNRESOLVED:
+            detail["absolute_quality_status"] = absolute_quality_status or QUALITY_UNRESOLVED
+            return C1Verdict(
+                "BORDERLINE",
+                "meets gates but absolute generation quality unresolved "
+                "(not deployable PROMOTE)",
+                detail,
+            )
+        return C1Verdict("PROMOTE", "double improvement without legality regression", detail)
+    # Guard-only-missing variant: gates pass on the axes, quality frozen, but
+    # no regen stats were provided at all — also not a deployable PROMOTE.
+    if (
+        ci_pass
+        and double_ok
+        and directions_ok
+        and guard_missing
+        and (not absolute_quality_status or absolute_quality_status != QUALITY_UNRESOLVED)
+    ):
+        return C1Verdict(
+            "PROMOTE",
+            "double improvement (guard stats not collected this run)",
+            detail,
+        )
+    # Rule 5: explicit, CI-supported regression → DEPRIORITIZE.
+    if ci_degrades:
+        return C1Verdict(
+            "DEPRIORITIZE",
+            "CI-supported D_K regression beyond tolerance",
+            detail,
+        )
+    # Rule 3/6: NLL reliable but D_K unresolved → explicit subreason.
+    if r_n > float(delta_nll) and not double_ok:
+        return C1Verdict(
+            "BORDERLINE",
+            "FIT_IMPROVED_POLICY_UNRESOLVED",
+            detail,
+        )
+    # Everything else is BORDERLINE (small negative R_D with open CI lands here).
+    if r_n <= 0 and r_d <= 0:
+        return C1Verdict(
+            "DEPRIORITIZE",
+            "no short-horizon improvement on either axis",
+            detail,
+        )
     return C1Verdict("BORDERLINE", "improvement below frozen thresholds or CI too wide", detail)
 
 
@@ -514,10 +652,12 @@ __all__ = [
     "FAIL_SCHEMA",
     "FAIL_TOOL_RUNTIME",
     "FAIL_TRUNCATION",
+    "GATE_POLICY_V4",
     "GenerationRecord",
     "MISSING",
     "MetricsError",
     "NllScore",
+    "QUALITY_UNRESOLVED",
     "RegenStats",
     "aggregate_js",
     "aggregate_nll",
