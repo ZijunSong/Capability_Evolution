@@ -1,0 +1,12 @@
+﻿实验组,训练情况,harness配置,Metric,BrowseComp+,LongSealQA,FRAMES,HotpotQA,均值,备注
+exp_a,base model,完整harness,Final-Answer Recall,38.96±1.22,77.49±2.51,90.37±0.40,95.20±0.13,75.51,
+exp_a,,,Turn Mean,36.84±0.07,31.87±0.59,28.08±0.26,15.61±0.23,28.10,
+exp_b,base model,瘦harness,Final-Answer Recall,36.64±0.88,76.33±0.82,89.94±0.24,95.50±0.10,74.61,瘦harness=zero component 瘦运行时（upstream_api 64-worker 统一口径）
+exp_b,,,Turn Mean,36.39±0.15,31.87±0.46,28.21±0.35,14.33±0.48,27.70,
+exp_c,"base model
+RL-outcome（only fa recall）",瘦harness,Final-Answer Recall,37.06±1.18,76.53±1.29,89.69±0.33,95.27±0.24,74.64,zero-rl wmimn 200step adapter（rl/zero recall-only）；vs exp_b +0.03pp 持平
+exp_c,,,Turn Mean,36.74±0.25,32.08±0.22,28.20±0.15,14.13±0.13,27.79,
+exp_d,"base model
+RL-outcome（only fa recall）
+OPSD（teacher：完整harness）",瘦harness,Final-Answer Recall,35.96±0.86,77.28±0.41,90.00±0.24,95.67±0.09,74.73,all-trim cmoww 200step adapter（SR-OPD+CISPO joint，teacher=完整harness esp 联盟投影）；vs exp_b +0.12pp vs exp_c +0.09pp 三方持平；longsealqa +0.95pp 唯一稳定正增益；bcplus -0.68pp s2 拖累边缘
+exp_d,,,Turn Mean,36.65±0.02,31.94±0.59,28.54±0.48,14.26±0.35,27.85,turn 三方不动无行为漂移
