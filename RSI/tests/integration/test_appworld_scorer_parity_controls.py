@@ -186,7 +186,7 @@ def test_appworld_noop_control_initial_state(_clean_experiment_dirs):
         exp = _fresh_experiment(task_id, "noop")
         _actor_run(task_id, exp, code=None)
         rec = _score(task_id, exp)
-        assert rec["metric_name"] == "appworld_strict_success"
+        assert rec["metric_name"] == "appworld_partial_test_pass_rate"
         assert rec["details"]["measurement_status"] == "VALID"
         # The initial state must NOT be scored a strict success (the task has
         # not been attempted); if it ever is, the scorer is reading the wrong

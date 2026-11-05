@@ -465,16 +465,24 @@ class AppWorldScorer:
         pass_count = int(getattr(tracker, "pass_count", 0) or 0)
         pct = float(getattr(tracker, "pass_percentage", 0.0) or 0.0)
         strict_success = bool(getattr(tracker, "success", False))
+        # PR (2026-11-05, r4 plateau post-mortem): the evolution signal used
+        # to read the strict 0/1 binary — with a 9B actor whose strict rate
+        # is 0/16, every candidate scored 0.0 forever and PLATEAU was a
+        # mathematical certainty (3gwab r3, v3hvt r4: 8 candidates all 0.0).
+        # The partial credit (official TGC semantics, H0_v2 baseline 34.74%)
+        # was computed into details and then dropped by every consumer.
+        # value is now the continuous partial rate; strict stays in
+        # ``success`` for confirm-gate semantics.
         return ScoreRecord(
             task_id=private_task_ref.ref_id,
             domain="appworld",
-            metric_name=self.METRIC_STRICT,
-            value=1.0 if strict_success else 0.0,
+            metric_name=self.METRIC_PARTIAL,
+            value=max(0.0, min(1.0, pct / 100.0)),
             success=strict_success,
             details={
                 "measurement_status": "VALID",
-                "metric_version": "appworld_strict_v2",
-                # auxiliary partial credit — NOT the primary metric
+                "metric_version": "appworld_partial_v1",
+                "strict_success": strict_success,
                 "partial_test_pass_rate": max(0.0, min(1.0, pct / 100.0)),
                 "pass_percentage": pct,
                 "pass_count": pass_count,
