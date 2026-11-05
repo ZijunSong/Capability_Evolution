@@ -90,3 +90,10 @@
 - **alfworld-9b r5**（zhfrd succeed）：14 候选评估（0.33~0.75），**champion `622625ded4` macro 0.75**（gen3 当选）= `completion_gate + alfworld_checker` 双组件；进化链 gen0 0.583 → gen3 0.750。**vs r4（渲染修复前）champion 0.25 → r5 0.75**：structured 渲染修复（合法命令可见）把 alfworld 打分整体抬升约 +50pp——这是 harness 修复解锁能力的直接证据。
 - 27B 两路（appworld r4 brurd / alfworld r5 gth6z）running；appworld-9b r4（v3hvt）running。
 - webshop-27b r5 (0.589) 仍是当前全场景最高 champion。
+
+---
+
+## 补充五（2026-11-05：alfworld-27B r5 收官）
+
+- **alfworld-27b r5**（gth6z）：8 候选 0.500~0.833，**champion `83ae9fdf`**（gen0 当选）PLATEAU。27B 把 alfworld 带推到 **0.833 最高单候选**（vs 9B r5 champion 0.75）。
+- appworld-9b r4 / appworld-27b r4 仍在跑（gen0 已 ACCEPTED，panel 评估中）。

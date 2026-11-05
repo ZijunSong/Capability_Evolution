@@ -32,3 +32,4 @@ e1_evolve,Qwen3.5-27B,base model,E1自进化 champion(4组件:completion_gate+lo
 e0_react_v2,Qwen3.5-9B,base model,E0验收 H0-ReAct(answer断链修复后),Goal Score (partial),34.74%,N/A,N/A,N/A,34.74%,+8.54pp vs v1(8/16 答题类任务);strict 仍 0/16;新基线口径 H0_v2;t=2026-11-05 8wuvv
 e0_react_v2,Qwen3.5-9B,base model,E0验收 H0-Act(answer断链修复后),Goal Score (partial),32.14%,N/A,N/A,N/A,32.14%,对照臂
 e1_evolve_v2,Qwen3.5-9B,base model,E1自进化r5 champion(completion_gate+alfworld_checker),Success Rate,待confirm,N/A,N/A,待confirm,待confirm,alfworld panel 0.75(gen3当选);14候选0.33~0.75;vs r4修复前0.25=渲染修复解锁+50pp;t=2026-11-05 zhfrd/r5
+e1_evolve_v2,Qwen3.5-27B,base model,E1自进化r5 champion(83ae9fdf),Success Rate,待confirm,N/A,N/A,待confirm,待confirm,alfworld panel 8候选0.50~0.833(champion gen0 当选);最高单候选0.833 全场景最高;t=2026-11-05 gth6z/r5
