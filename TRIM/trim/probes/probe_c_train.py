@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import math
 import time
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Protocol, Sequence
 
@@ -289,6 +290,33 @@ class CandidateResetManager:
                 "trainable checksum unchanged after updates (model did not move)"
             )
 
+    # -- real checkpoint (guide §10.2: checksum is NOT a checkpoint) -----
+    def save_checkpoint_atomic(self, out_dir: Path, *, tag: str) -> dict[str, Any]:
+        """Atomically persist trainable weights + optimizer + RNG + model
+        weights checksum. tmp write → verify reloadable → rename."""
+        import torch
+
+        payload = self.backend.save_trainable()
+        weights_ck = checksum_payload({"model": payload.get("model")})
+        ck = {
+            "tag": str(tag),
+            "model_weights_checksum": weights_ck,
+            "trainable_checksum": self.theta0_checksum and checksum_payload(payload),
+            "saved_at": time.strftime("%F %T"),
+        }
+        out = Path(out_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        path = out / f"checkpoint_{tag}.pt"
+        tmp = path.with_suffix(".pt.tmp")
+        torch.save({"meta": ck, "payload": payload}, tmp)
+        # Verify reloadable before commit (same wrapping as the pre hash).
+        reloaded = torch.load(tmp, map_location="cpu", weights_only=False)
+        if checksum_payload({"model": reloaded["payload"].get("model")}) != weights_ck:
+            tmp.unlink(missing_ok=True)
+            raise TrainContractError(f"checkpoint verify failed for {tag}")
+        tmp.replace(path)
+        return ck
+
 
 # ---------------------------------------------------------------------------
 # C1 trainer
@@ -342,6 +370,25 @@ class TrainRunResult:
         }
 
 
+@dataclass
+class MicroUpdateSession:
+    """Persistent sampler state across budget stages (guide §10.1).
+
+    4→8→16 are ABSOLUTE optimizer steps on ONE data trajectory: the batch
+    plan is built once, the cursor survives stage boundaries, so
+    ``train_until(session, 4)`` + ``train_until(session, 8)`` consumes the
+    same stream as a direct 8-step run (4+4==8, test-enforced).
+    """
+
+    optimizer_step: int = 0
+    consumed_action_tokens: int = 0
+    batches: list[list[CachedSupervisionRow]] = field(default_factory=list)
+    batch_tokens: list[int] = field(default_factory=list)
+    rng_state: Any = None
+    contract_hash: str = ""
+    n_unique_rows: int = 0
+
+
 class MicroUpdateTrainer:
     """Fixed-Teacher projected-gap micro-updates under a token budget."""
 
@@ -359,6 +406,159 @@ class MicroUpdateTrainer:
         self.loss_scale = float(loss_scale)
         self.action_tokens_per_optimizer_step = int(action_tokens_per_optimizer_step)
         self.world_size = int(world_size)
+
+    # -- persistent-session path (4+4==8 contract) -----------------------
+    def open_session(
+        self,
+        rows: Sequence[CachedSupervisionRow],
+        *,
+        train_seed: int,
+    ) -> MicroUpdateSession:
+        """Build the batch plan ONCE with a seed-deterministic shuffle."""
+        import random
+
+        ordered = list(rows)
+        rng = random.Random(int(train_seed))
+        rng.shuffle(ordered)
+        plan = plan_micro_batches(
+            ordered,
+            action_tokens_per_optimizer_step=self.action_tokens_per_optimizer_step,
+            repeat=1,
+        )
+        session = MicroUpdateSession(
+            batches=list(plan.batches),
+            batch_tokens=list(plan.tokens_per_batch),
+            contract_hash=checksum_payload(
+                {"rows": [r.state.state_id for r in ordered], "tokens": plan.tokens_per_batch}
+            ),
+            n_unique_rows=len(rows),
+        )
+        return session
+
+    def train_until(
+        self,
+        session: MicroUpdateSession,
+        rows: Sequence[CachedSupervisionRow],
+        *,
+        target_absolute_step: int,
+        component_id: str = "",
+        train_seed: int = 0,
+        checkpoint_steps: Sequence[int] = (),
+        checkpoint_dir: Path | None = None,
+        on_step: Callable[[StepRecord], None] | None = None,
+    ) -> TrainRunResult:
+        """Advance ``session`` to ``target_absolute_step`` on the SAME stream.
+
+        Extends the plan by cycling the fixed state set when the stream is
+        exhausted (reuse recorded per MicroBatchPlan semantics); absolute
+        step numbering is authoritative — callers never pass relative steps.
+        """
+        import torch as _torch
+
+        step_records: list[StepRecord] = []
+        checkpoints: dict[int, str] = {}
+        seg_tokens = 0
+        theta0 = self.backend.trainable_checksum()
+        want = int(target_absolute_step)
+        ckpt_set = set(int(c) for c in checkpoint_steps)
+        while session.optimizer_step < want:
+            if not session.batches:
+                raise TrainContractError("session batch stream empty; cannot advance")
+            # Cycle the plan when exhausted (deterministic same-stream reuse).
+            if session.optimizer_step >= len(session.batches):
+                cycle = session.optimizer_step // max(1, len(session.batches))
+                src_idx = session.optimizer_step % len(session.batches)
+            else:
+                src_idx = session.optimizer_step
+            batch = session.batches[src_idx]
+            n_tok = session.batch_tokens[src_idx]
+            start = time.time()
+            z_gap = effective_weight_sum(
+                [w for row in batch for w in row.target.weights]
+            )
+            if z_gap <= 0.0:
+                rec = StepRecord(
+                    step=session.optimizer_step + 1,
+                    loss=0.0, n_tokens=0, z_gap=0.0, grad_norm=None,
+                    seconds=time.time() - start, skipped=True, skip_reason=NO_SUPPORT,
+                )
+                step_records.append(rec)
+                if on_step:
+                    on_step(rec)
+                session.optimizer_step += 1
+                continue
+            for row in batch:
+                self.backend.train_microbatch(
+                    prompt_ids=row.state.effective_student_prompt_ids,
+                    target_ids=row.target.target_action_ids,
+                    teacher_logprobs=row.target.teacher_token_logprobs,
+                    weights=row.target.weights,
+                    z_gap=z_gap,
+                    gate_beta=self.gate_beta,
+                    loss_scale=self.loss_scale,
+                )
+            step_stats = self.backend.optimizer_step()
+            grad_norm = step_stats.get("grad_norm")
+            rec = StepRecord(
+                step=session.optimizer_step + 1,
+                loss=float(step_stats.get("loss", 0.0)),
+                n_tokens=n_tok,
+                z_gap=z_gap,
+                grad_norm=None if grad_norm is None else float(grad_norm),
+                seconds=time.time() - start,
+            )
+            step_records.append(rec)
+            seg_tokens += n_tok
+            session.consumed_action_tokens += n_tok
+            session.optimizer_step += 1
+            if on_step:
+                on_step(rec)
+            if rec.step in ckpt_set:
+                if checkpoint_dir is not None:
+                    ck = self.save_session_checkpoint(session, checkpoint_dir, tag=f"step{rec.step:04d}")
+                    checkpoints[rec.step] = ck["model_weights_checksum"]
+                else:
+                    checkpoints[rec.step] = self.backend.trainable_checksum()
+        return TrainRunResult(
+            component_id=component_id,
+            train_seed=train_seed,
+            steps=step_records,
+            checkpoints=checkpoints,
+            total_tokens=seg_tokens,
+            theta0_checksum=theta0,
+        )
+
+    def save_session_checkpoint(
+        self, session: MicroUpdateSession, out_dir: Path, *, tag: str
+    ) -> dict[str, Any]:
+        """Session + weights atomic checkpoint (guide §10.2)."""
+        import torch as _torch
+
+        payload = self.backend.save_trainable()
+        weights_ck = checksum_payload({"model": payload.get("model")})
+        ck = {
+            "tag": str(tag),
+            "optimizer_step": session.optimizer_step,
+            "consumed_action_tokens": session.consumed_action_tokens,
+            "contract_hash": session.contract_hash,
+            "model_weights_checksum": weights_ck,
+            "saved_at": time.strftime("%F %T"),
+        }
+        out = Path(out_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        path = out / f"checkpoint_{tag}.pt"
+        tmp = path.with_suffix(".pt.tmp")
+        _torch.save({"meta": ck, "payload": payload, "session": {
+            "optimizer_step": session.optimizer_step,
+            "consumed_action_tokens": session.consumed_action_tokens,
+            "contract_hash": session.contract_hash,
+        }}, tmp)
+        reloaded = _torch.load(tmp, map_location="cpu", weights_only=False)
+        if checksum_payload({"model": reloaded["payload"].get("model")}) != weights_ck:
+            tmp.unlink(missing_ok=True)
+            raise TrainContractError(f"session checkpoint verify failed for {tag}")
+        tmp.replace(path)
+        return ck
 
     def train_to_budget(
         self,
@@ -498,6 +698,9 @@ class TorchStudentBackend:
         scheduler: Any = None,
         grad_clip: float = 1.0,
         device: str = "cpu",
+        world_size: int = 1,
+        loss_scale: float = 1.0,
+        gate_beta: float = 5.0,
     ) -> None:
         import torch
 
@@ -507,6 +710,9 @@ class TorchStudentBackend:
         self.scheduler = scheduler
         self.grad_clip = float(grad_clip)
         self.device = device
+        self.world_size = int(world_size)
+        self.loss_scale = float(loss_scale)
+        self.gate_beta = float(gate_beta)
         self._rng_state = torch.random.get_rng_state()
         self._accum_numer: list[Any] = []
 
@@ -629,6 +835,7 @@ class TorchStudentBackend:
 __all__ = [
     "CandidateResetManager",
     "MicroBatchPlan",
+    "MicroUpdateSession",
     "MicroUpdateTrainer",
     "NO_SUPPORT",
     "OBJECTIVE_FROZEN_PROJECTED_GAP",

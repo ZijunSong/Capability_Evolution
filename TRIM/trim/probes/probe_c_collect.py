@@ -499,6 +499,15 @@ def cmd_merge(args: argparse.Namespace) -> int:
         },
         "split_audit": audit,
         "max_states_per_query": MAX_STATES_PER_QUERY,
+        # Generation contract provenance (guide §8.1): regeneration must
+        # restore the SAME budget from this manifest, never a call-site default.
+        "generation": {
+            "max_new": int(args.max_new),
+            "max_model_len": int(args.max_model_len),
+            "max_turns": int(args.max_turns),
+            "group_size": int(args.group_size),
+            "sample": bool(args.sample),
+        },
     }
     (out / "COLLECTION_MANIFEST.json").write_text(
         json.dumps(manifest, indent=2, ensure_ascii=False, sort_keys=True),

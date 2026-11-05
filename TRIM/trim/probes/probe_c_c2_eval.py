@@ -71,7 +71,41 @@ def make_train_ids(states_out: Path, out_path: Path) -> Path:
     return out_path
 
 
-def _h_m_mask() -> dict[str, bool]:
+def _h_m_mask(states_out: Path | None = None) -> dict[str, bool]:
+    """H_m deployment mask from the VERIFIED pair manifest (guide §12.3).
+
+    Hard-coding the trieve member list here was a P1 defect: if the screened
+    member changes, the eval silently deploys the wrong view. Load the
+    requested/effective mask from the audit manifest; fall back to the
+    member-list override only via explicit CLI.
+    """
+    if states_out is not None:
+        manifest = states_out / "runner" / "AUDIT.json"
+        alt = states_out / "AUDIT.json"
+        path = manifest if manifest.is_file() else (alt if alt.is_file() else None)
+        if path is not None:
+            audit = json.loads(path.read_text(encoding="utf-8"))
+            pairs = audit.get("pairs") or {}
+            # Prefer a single-member pair (add_from_h0) whose mask is frozen.
+            for cid, p in sorted(pairs.items()):
+                tm = p.get("teacher_mask") or {}
+                on = sorted(k for k, v in tm.items() if v)
+                if len(on) == 1:
+                    return {k: bool(v) for k, v in tm.items()}
+            # No single-member pair: use the screened candidate with fewest ON.
+            best = None
+            for cid, p in sorted(pairs.items()):
+                tm = p.get("teacher_mask") or {}
+                on = sorted(k for k, v in tm.items() if v)
+                if on and (best is None or len(on) < len(best[1])):
+                    best = (cid, on, tm)
+            if best is not None:
+                print(f"[probe_c_c2] H_m mask from manifest pair {best[0]!r}: on={best[1]}")
+                return {k: bool(v) for k, v in best[2].items()}
+            raise RuntimeError(
+                f"no teacher_mask pairs in {path}; cannot derive H_m deployment "
+                "mask (refusing the legacy hard-coded trieve list)"
+            )
     from trim.adapters.role_masks import eval_mask_for_ids
 
     return eval_mask_for_ids(
@@ -108,7 +142,11 @@ def run_condition(args: argparse.Namespace) -> int:
     if not panel:
         raise RuntimeError(f"empty panel for split={split}")
 
-    mask = _h_m_mask() if args.mask == "hm" else zero_mask("Harness-1")
+    mask = (
+        _h_m_mask(states_out)
+        if args.mask == "hm"
+        else zero_mask("Harness-1")
+    )
     enc = load_model_encoding(str(args.model_path), max_model_len=int(args.max_model_len))
     # Live SEC BM25 searcher is REQUIRED: doc_store_for_row(None) yields an empty
     # pool and every episode silently scores recall=0 (empty environment).
@@ -177,6 +215,9 @@ def run_condition(args: argparse.Namespace) -> int:
                 "n_structurally_valid": int(stats.get("n_structurally_valid") or 0),
                 "n_valids": int(stats.get("n_valids") or 0),
                 "ended": bool(stats.get("ended")),
+                "seed": int(args.seed),
+                "max_new": int(args.max_new),
+                "max_turns": int(args.max_turns),
             }
         )
     path = out / f"PER_QUERY_{condition}_{args.mask}.jsonl"
@@ -213,6 +254,35 @@ def compare(args: argparse.Namespace) -> int:
         "rl_only": _load("rl_only", "h0"),
         "same_view": _load("same_view", "h0"),
     }
+    present = {c: rows for c, rows in panels.items() if rows}
+    if len(present) >= 2:
+        # Panel integrity (guide §12.3): all present conditions must cover the
+        # SAME query set + eval seed + budget. Silent intersection is banned —
+        # mismatched panels mean the comparison is not paired.
+        ref_cond, ref_rows = next(iter(present.items()))
+        ref_q = set(ref_rows)
+        mismatch: dict[str, Any] = {}
+        for cond, rows in present.items():
+            q = set(rows)
+            if q != ref_q:
+                mismatch[cond] = {
+                    "missing_vs_ref": sorted(ref_q - q)[:5],
+                    "extra_vs_ref": sorted(q - ref_q)[:5],
+                    "n": len(q),
+                }
+        if mismatch:
+            raise RuntimeError(
+                f"panel mismatch across conditions (ref={ref_cond} n={len(ref_q)}): "
+                f"{json.dumps(mismatch, ensure_ascii=False)[:400]}; formal compare "
+                "requires the same full query panel per condition — no silent "
+                "intersection"
+            )
+        # Identity checks recorded per condition (seed/budget from rows).
+        seeds = {cond: sorted({str(r.get("seed")) for r in rows.values()}) for cond, rows in present.items()}
+        budgets = {cond: sorted({str(r.get("max_new")) for r in rows.values()}) for cond, rows in present.items()}
+        summary_identity = {"eval_seeds": seeds, "max_new": budgets}
+    else:
+        summary_identity = {"note": "<2 conditions present; no pairing possible"}
     summary: dict[str, Any] = {
         "schema": C2_SCHEMA,
         "means": {
@@ -248,7 +318,13 @@ def compare(args: argparse.Namespace) -> int:
     def _pair(a: str, b: str, name: str) -> None:
         pa, pb = panels.get(a) or {}, panels.get(b) or {}
         if not pa or not pb:
-            summary[name] = {"note": "missing condition panel"}
+            missing = [c for c, rows in ((a, pa), (b, pb)) if not rows]
+            summary[name] = {
+                "status": "MISSING",
+                "missing_conditions": missing,
+                "note": "formal G/E requires both panels; missing condition is "
+                "reported, never silently dropped",
+            }
             return
         stats = paired_query_stats(
             {q: {"recall": r["reward"]} for q, r in pa.items()},
@@ -272,6 +348,7 @@ def compare(args: argparse.Namespace) -> int:
     _pair("no_update", "runtime_m", "runtime_gain")
     _pair("no_update", "rl_only", "rl_gain")
     _pair("same_view", "harnessopd_m", "privilege_gain")
+    summary["panel_identity"] = summary_identity
     summary["note"] = (
         "G_m^8 = J(theta_m^8, H0) - J(theta0, H0); E_m^8 = J(HarnessOPD) - J(RL-only). "
         "C2 restarts from theta0 (C1 weights not carried). Paired by query, 2000 bootstraps."
