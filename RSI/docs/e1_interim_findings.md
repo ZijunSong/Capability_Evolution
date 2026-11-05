@@ -70,3 +70,15 @@
 - **champion `88606c24`** macro **0.589** = **四组件组合 bank**（completion_gate + loop_detector + search_progress_tracker + search_stall_breaker），进化链 gen0(0.389)→gen3(0.500)→gen4(0.561)→gen6(0.589)——**bank 组合式生长首次完整呈现**（guide §7.2 的 within-run composition 设计意图）。
 - 27B vs 9B：27B champion 0.589 > 9B 0.45；27B 组件更丰富（4 vs 2）；27B 的 gen1/2/5/7 保留 incumbent 也符合 baseline 保留语义（同 bank 复测方差仍在）。
 - **未完成**：27B champion 与 9B champion 的独立 confirm 都未做；appworld-27b 的 proposer 层问题（rqdza evaluated=0）仍未解——堵点在 packet/proposer 层非 entry 层。
+
+---
+
+## 更正（2026-11-05：appworld "真零分"判定被推翻）
+
+并发会话的 53 题逐题审计（`docs/badcase_appworld_9b_h0_final_test.md`）实锤：**AppWorld 的 Finish 路径从未把 `Finish.answer` 传给 `supervisor.respond()`**（`appworld_env.py` step() 的 Finish 分支只查 `task_completed()`）——41+12/53 题 answer=NOT_GIVEN，**是 harness 断链，不是模型不会**。
+
+**影响更正**：
+- 我此前"appworld-9b r3 11 候选真零分"的判定作废——候选们在断链的 harness 上跑，0.0 是测量伪影。
+- E0 的"0/16 状态变更"部分保留（真实 DB 操作 49/53 有发生），但 strict=0 的主因是 answer 断链。
+- 修复方向（并发会话 P0）：adapter 代 respond + 重跑 E0 对照 → appworld 基线和进化候选都要在新口径下重建。
+- **教训（与 E0 审计同族）**：harness 断链类 bug 的症状（全零分数）与"能力为零"不可区分，除非逐题对 artifact 审计。这也是文档 §4.6 no-op/已知正确/错误状态三对照必须先跑的原因——no-op 对照只能证明初始状态，"已知正确动作"对照才能证明 answer 链路。
