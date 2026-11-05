@@ -1,0 +1,21 @@
+model,domain,stage,metric,value,measurement_basis,source_run,components_or_note
+9B,webshop,pre-evolution,panel macro (12 tasks harness_select),0.0556,independent paired re-eval (seed 17, 12/12 executed, 1/12 nonzero),t-20261104203246-juytd arm A (eval_harness_select_minimal_1beba6d6_17.json),empty bank (H0 minimal)
+9B,webshop,post-evolution,panel macro (12 tasks harness_select),0.4528,independent paired re-eval (seed 17, 12/12 executed, 9/12 nonzero),t-20261104203246-juytd arm B (eval_harness_select_bank_ae6f28f5_17.json),champion accbce6a: goal_completion_guard + action_recovery_guard
+9B,webshop,post-evolution,paired delta (champion - baseline),+0.3972,paired per-task 8W/0L/4T no regression,t-20261104203246-juytd pair_eval/paired_summary.txt,
+9B,webshop,post-evolution,champion macro (evolve panel),0.4500,evolve selection at gen2 (11 candidates 0.006-0.589),e1_webshop_9b_r9 (t-20261104151829-bojde),reproduces 45.0% vs 45.28% across two measurements
+9B,webshop,pre-evolution (broken scoring chain),panel macro,0.0000,scoring chain broken in r2-r7 (deps/gate/key/torch/index layers) — measurement artifact not model ability,cvjyv/5lzwa/jglnt/d6iup/hfenw/n2bxo,false PLATEAU rows; fixed layer by layer in r8
+9B,alfworld,pre-evolution (broken render),champion macro (12-task panel),0.2500,evolve panel r4 (8hk1b) — structured render missing legal commands,e1_alfworld_9b_r4 (8hk1b),champion 3bb04695: CompletionGuard; gen0 elected
+9B,alfworld,post-evolution,champion macro (12-task panel),0.7500,evolve panel r5 (zhfrd) after render fix (+legal commands visible) — 14 candidates 0.33-0.75,e1_alfworld_9b_r5 (zhfrd),champion 622625ded4: completion_gate + alfworld_checker; gen3 elected
+9B,alfworld,post-evolution,delta (render-fix effect),+0.5000,0.25 -> 0.75 across r4->r5; harness fix unlocks ability not scorer change,r4 vs r5 comparison,
+9B,alfworld,pre-evolution (H0 full-bench reference),TGC full benchmark,0.0099,official 3827/3827 tasks zero-error (NOT comparable to 12-task panel),t-20261103104127-vlkxe (eval_h0_alfworld r7),reference row only
+9B,appworld,pre-evolution,panel macro,N/A,measurement invalidated: Finish.answer never reached supervisor.respond (harness break); 53-task audit overturned true-zero claim,e1_appworld_9b_r3 + badcase_appworld_9b_h0_final_test.md,awaiting adapter respond fix + baseline rebuild
+9B,appworld,post-evolution,panel macro,N/A,same measurement break,e1_appworld_9b_r3,awaiting rebuild
+27B,webshop,pre-evolution,panel macro,0.0000,r3/r4: scoring chain broken (missing RSI_WEBSHOP_FULL_ALLOW in 27B entry) — artifact,e1_webshop_27b_r3/r4 (8trks/apdns),fixed in r5
+27B,webshop,pre-evolution,baseline gen0 best candidate,0.3889,evolve panel r5 gen0 (first valid 27B scoring),e1_webshop_27b_r5 (spzne),proxy for pre-evolution ability on panel (no empty-bank arm run)
+27B,webshop,post-evolution,champion macro (12-task panel),0.5890,evolve panel r5: 16 candidates 0.16-0.617 MAX_GENERATIONS full 8 gens,e1_webshop_27b_r5 (spzne),champion 88606c24: completion_gate + loop_detector + search_progress_tracker + search_stall_breaker (4-component bank grew gen0 0.389 -> gen6 0.589)
+27B,alfworld,post-evolution,champion macro (12-task panel),0.8333,evolve panel r5 (gth6z): 8 candidates 0.50-0.833 PLATEAU at gen0,e1_alfworld_27b_r5 (gth6z),champion 83ae9fdf: completion_gate; highest single candidate across all scenarios
+27B,alfworld,pre-evolution,baseline gen0 best candidate,0.8333,champion elected at gen0 (equals gen0 best) — no separate pre-arm,e1_alfworld_27b_r5 (gth6z),delta vs panel baseline = +0.000 (zero-shot 27B already at ceiling on this panel)
+27B,appworld,pre/post-evolution,panel macro,N/A,proposer layer: evaluated=0 (rqdza/8qimi CANDIDATES_REPEATEDLY_INVALID) + Finish.answer break,e1_appworld_27b_r3/r4,awaiting packet/proposer fix
+CROSS,webshop,post-evolution,model comparison 9B vs 27B champion,0.4528 vs 0.5890,27B champion bank richer (4 vs 2 components); 27B +13.6pp,evolve champions both domains,
+CROSS,alfworld,post-evolution,model comparison 9B vs 27B champion,0.7500 vs 0.8333,27B +8.3pp; 27B peaked at gen0 vs 9B needed 3 gens,e1_alfworld r5 both,
+CROSS,all,note,panel variance warning,>30pp,same-bank adjacent-generation re-measure drift; 12 tasks temp 1.0; independent confirm with fresh asin pool required before claiming gains beyond paired webshop-9B row,e1_webshop_9b_r9 audit,
