@@ -1,0 +1,94 @@
+{
+ "meta": {
+  "domain": "webshop",
+  "model": "Qwen3.5-9B",
+  "job": "afe1d t-20261105221030 (harness-fixed, champion b0ad1c7d macro 0.563)",
+  "phase": "post-evolution (harness-fixed protocol)",
+  "trace_caveat": "PER-STEP TRACES overwritten by the later 27B rerun of the same tasks (final_artifact.json is last-writer-wins). Only per-candidate scores/selection survived."
+ },
+ "generation_history": [
+  {
+   "candidate_id": "6210d4c84549e73498434bdaa1120c75be96a1d9b432d403216e0450e3e836db"
+  },
+  {
+   "generation": 0,
+   "candidate_id": "6210d4c84549e73498434bdaa1120c75be96a1d9b432d403216e0450e3e836db",
+   "macro_score": 0.3055555555555555
+  },
+  {
+   "candidate_id": "3b1bd1879e26bbe61bfc957d184f74dce4f95612e94a42b31b7717636ba36ab0"
+  },
+  {
+   "generation": 0,
+   "candidate_id": "3b1bd1879e26bbe61bfc957d184f74dce4f95612e94a42b31b7717636ba36ab0",
+   "macro_score": 0.08888888888888889
+  },
+  {
+   "generation": 1
+  },
+  {
+   "candidate_id": "b0ad1c7d751c5588f48fff067483414c5e7357ad0dbdc470a7ff02cea4a0a20d"
+  },
+  {
+   "candidate_id": "b0ad1c7d751c5588f48fff067483414c5e7357ad0dbdc470a7ff02cea4a0a20d"
+  },
+  {
+   "generation": 1,
+   "candidate_id": "b0ad1c7d751c5588f48fff067483414c5e7357ad0dbdc470a7ff02cea4a0a20d",
+   "macro_score": 0.5625
+  },
+  {
+   "candidate_id": "3757c8e298582d3ab03e889a7b5ddae4f27582051b4cef2ee417b2fd4ed01316"
+  },
+  {
+   "candidate_id": "3757c8e298582d3ab03e889a7b5ddae4f27582051b4cef2ee417b2fd4ed01316"
+  },
+  {
+   "generation": 1,
+   "candidate_id": "3757c8e298582d3ab03e889a7b5ddae4f27582051b4cef2ee417b2fd4ed01316",
+   "macro_score": 0.3527777777777778
+  },
+  {
+   "generation": 2
+  },
+  {
+   "generation": 2
+  },
+  {
+   "generation": 2
+  },
+  {
+   "generation": 3
+  },
+  {
+   "candidate_id": "659625f61f35ab84fcffc089e26c3dd8010a9f19cab299f77783fe31b0d63dc6"
+  },
+  {
+   "candidate_id": "659625f61f35ab84fcffc089e26c3dd8010a9f19cab299f77783fe31b0d63dc6"
+  },
+  {
+   "generation": 3,
+   "candidate_id": "659625f61f35ab84fcffc089e26c3dd8010a9f19cab299f77783fe31b0d63dc6",
+   "macro_score": 0.5194444444444445
+  },
+  {
+   "generation": 3
+  },
+  {
+   "generation": 4
+  },
+  {
+   "candidate_id": "329ac3f6a8d8719202c3b9baca568ee8c7f185b66ac795cd8ef7fa70b594b2b4"
+  },
+  {
+   "generation": 4,
+   "candidate_id": "329ac3f6a8d8719202c3b9baca568ee8c7f185b66ac795cd8ef7fa70b594b2b4",
+   "macro_score": 0.5055555555555555
+  }
+ ],
+ "champion": {
+  "candidate_id": "b0ad1c7d751c5588f48fff067483414c5e7357ad0dbdc470a7ff02cea4a0a20d",
+  "macro_score": null,
+  "bank_digest": "d37451d298cc276f7ace6eb080f85f080035b7083186ab731e19543a10a5416c"
+ }
+}

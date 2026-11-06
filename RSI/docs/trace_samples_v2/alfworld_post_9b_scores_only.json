@@ -1,0 +1,131 @@
+{
+ "meta": {
+  "domain": "alfworld",
+  "model": "Qwen3.5-9B",
+  "job": "zhfrd t-20261105143859 (harness-fixed, champion 622625de macro 0.75)",
+  "phase": "post-evolution (harness-fixed protocol)",
+  "trace_caveat": "PER-STEP TRACES overwritten by the later 27B rerun of the same tasks (final_artifact.json is last-writer-wins). Only per-candidate scores/selection survived."
+ },
+ "generation_history": [
+  {
+   "generation": 0,
+   "candidate_id": "a0d7e9b39f2c2608bf77177e286e1019deae6b96360d0e76d2084ae51a4448ba",
+   "macro_score": 0.5833333333333334
+  },
+  {
+   "generation": 0,
+   "candidate_id": "0baf0e2610ef0f6113d938183a3f04632f7add73275270bf4bd2f093f48a4f56",
+   "macro_score": 0.3333333333333333
+  },
+  {
+   "candidate_id": "68b538c1bf514fd668141ddc943dd79d093639f971ec7235374d1c1df5bba0cc"
+  },
+  {
+   "generation": 1,
+   "candidate_id": "68b538c1bf514fd668141ddc943dd79d093639f971ec7235374d1c1df5bba0cc",
+   "macro_score": 0.5833333333333334
+  },
+  {
+   "candidate_id": "26f21d859438969ee4d6012a9a39ee74186f24d236c54c4c23c4e5f4154e0633"
+  },
+  {
+   "generation": 1,
+   "candidate_id": "26f21d859438969ee4d6012a9a39ee74186f24d236c54c4c23c4e5f4154e0633",
+   "macro_score": 0.6666666666666666
+  },
+  {
+   "candidate_id": "b7c914598f55a8a29c456e517ade1c38d6dc91e59107481b7b3e9ff687ca3e1e"
+  },
+  {
+   "generation": 2,
+   "candidate_id": "b7c914598f55a8a29c456e517ade1c38d6dc91e59107481b7b3e9ff687ca3e1e",
+   "macro_score": 0.5833333333333334
+  },
+  {
+   "candidate_id": "e946951a0cb93fabc9fadb94f5d7f3528b3060eb66357cb82065c88591bb63ae"
+  },
+  {
+   "candidate_id": "e946951a0cb93fabc9fadb94f5d7f3528b3060eb66357cb82065c88591bb63ae"
+  },
+  {
+   "generation": 2,
+   "candidate_id": "e946951a0cb93fabc9fadb94f5d7f3528b3060eb66357cb82065c88591bb63ae",
+   "macro_score": 0.5
+  },
+  {
+   "candidate_id": "622625ded400b439f9088e7fdc2676c767dcbe17d1fa422bc8a79ba5a2c3334b"
+  },
+  {
+   "generation": 3,
+   "candidate_id": "622625ded400b439f9088e7fdc2676c767dcbe17d1fa422bc8a79ba5a2c3334b",
+   "macro_score": 0.75
+  },
+  {
+   "candidate_id": "7c2d0dac750b2645b456835cae0a3bb9ebf8bacbd0ea2ab2391e317b803082da"
+  },
+  {
+   "generation": 3,
+   "candidate_id": "7c2d0dac750b2645b456835cae0a3bb9ebf8bacbd0ea2ab2391e317b803082da",
+   "macro_score": 0.6666666666666666
+  },
+  {
+   "candidate_id": "095b54e8ba2a34c62281de581d070afc402499d07541cf0ae0a217e38080cc18"
+  },
+  {
+   "generation": 4,
+   "candidate_id": "095b54e8ba2a34c62281de581d070afc402499d07541cf0ae0a217e38080cc18",
+   "macro_score": 0.5833333333333334
+  },
+  {
+   "candidate_id": "73d812f3d02fb1f16b219fab2c9fbacc1b8ac9f86faf1c63baab940137d974b9"
+  },
+  {
+   "generation": 4,
+   "candidate_id": "73d812f3d02fb1f16b219fab2c9fbacc1b8ac9f86faf1c63baab940137d974b9",
+   "macro_score": 0.6666666666666666
+  },
+  {
+   "candidate_id": "2d2da8c25ef25bf102b04db1a69bc0d16a10eee23396ee90e81590bf63bd1fe6"
+  },
+  {
+   "candidate_id": "2d2da8c25ef25bf102b04db1a69bc0d16a10eee23396ee90e81590bf63bd1fe6"
+  },
+  {
+   "generation": 5,
+   "candidate_id": "2d2da8c25ef25bf102b04db1a69bc0d16a10eee23396ee90e81590bf63bd1fe6",
+   "macro_score": 0.6666666666666666
+  },
+  {
+   "candidate_id": "21ac8330d433c4753ff504ffc9e529c2852353c303ad2b5ee741fc71ca7c6714"
+  },
+  {
+   "candidate_id": "21ac8330d433c4753ff504ffc9e529c2852353c303ad2b5ee741fc71ca7c6714"
+  },
+  {
+   "generation": 5,
+   "candidate_id": "21ac8330d433c4753ff504ffc9e529c2852353c303ad2b5ee741fc71ca7c6714",
+   "macro_score": 0.5833333333333334
+  },
+  {
+   "candidate_id": "3c2929486181cd5f0ce01d3a491e0a8ded1a6ba84353b2fe4cb8df7ed542cd27"
+  },
+  {
+   "generation": 6,
+   "candidate_id": "3c2929486181cd5f0ce01d3a491e0a8ded1a6ba84353b2fe4cb8df7ed542cd27",
+   "macro_score": 0.6666666666666666
+  },
+  {
+   "candidate_id": "3fb1112c04721f99d1dc2153cf60ebac7436329950904c6b2cb4fc45b2195879"
+  },
+  {
+   "generation": 6,
+   "candidate_id": "3fb1112c04721f99d1dc2153cf60ebac7436329950904c6b2cb4fc45b2195879",
+   "macro_score": 0.75
+  }
+ ],
+ "champion": {
+  "candidate_id": "622625ded400b439f9088e7fdc2676c767dcbe17d1fa422bc8a79ba5a2c3334b",
+  "macro_score": null,
+  "bank_digest": "c31e0e88b24b1fe3cdae42e9ec6113ccc142705eb5d6fbbbce4ec63a58f8b219"
+ }
+}

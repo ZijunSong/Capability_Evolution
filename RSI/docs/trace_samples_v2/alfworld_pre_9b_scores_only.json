@@ -1,0 +1,66 @@
+{
+ "meta": {
+  "domain": "alfworld",
+  "model": "Qwen3.5-9B",
+  "source": "8hk1b t-20261104104350 (rsi-e1-evolve-alfworld-9b-8gpu-20261104-r2) — pre-doc-fix protocol",
+  "phase": "pre-evolution: champion 3bb04695 macro 0.25; PLATEAU evaluated=6",
+  "trace_caveat": "PER-STEP TRACES NOT SURVIVABLE: final_artifact.json is overwritten per task_id by later runs (zhfrd/gth6z re-evaluated the same tasks). Only scores/selection survived in evolve_result. For full obs-level pre traces see webshop pre (paired eval survived via separate OUT dir).",
+  "macro": 0.25
+ },
+ "generation_history": [
+  {
+   "generation": 0,
+   "candidate_id": "3bb04695646dc99347e868d3dfea35b0edd10ba9beac174d34a6b82a013f7915",
+   "macro_score": 0.25
+  },
+  {
+   "candidate_id": "8bec9e005fad7241930b73f3cc6bce96cc73ca4f2f5f895b232832621138c2be"
+  },
+  {
+   "generation": 0,
+   "candidate_id": "8bec9e005fad7241930b73f3cc6bce96cc73ca4f2f5f895b232832621138c2be",
+   "macro_score": 0.0
+  },
+  {
+   "candidate_id": "818a09bd4eec8e7ed7f79cb339e17402bf64aad3b4956723f47c132e5ab82e27"
+  },
+  {
+   "generation": 1,
+   "candidate_id": "818a09bd4eec8e7ed7f79cb339e17402bf64aad3b4956723f47c132e5ab82e27",
+   "macro_score": 0.0
+  },
+  {
+   "generation": 1
+  },
+  {
+   "generation": 2
+  },
+  {
+   "candidate_id": "e73796f95780fa71b2ce13deb8efa55a5f99ac4027bb75ab292cd68c8cd5058f"
+  },
+  {
+   "generation": 2,
+   "candidate_id": "e73796f95780fa71b2ce13deb8efa55a5f99ac4027bb75ab292cd68c8cd5058f",
+   "macro_score": 0.08333333333333333
+  },
+  {
+   "candidate_id": "074e554f543ce027aed426b06c08ca00423c4418f69a44648c9163555da07d2c"
+  },
+  {
+   "generation": 3,
+   "candidate_id": "074e554f543ce027aed426b06c08ca00423c4418f69a44648c9163555da07d2c",
+   "macro_score": 0.0
+  },
+  {
+   "candidate_id": "7f70eaaf54e5eabfa9fa9cf6d0ab3a7d1294ce5d43237c58ebc7c7e441fc8d18"
+  },
+  {
+   "candidate_id": "7f70eaaf54e5eabfa9fa9cf6d0ab3a7d1294ce5d43237c58ebc7c7e441fc8d18"
+  },
+  {
+   "generation": 3,
+   "candidate_id": "7f70eaaf54e5eabfa9fa9cf6d0ab3a7d1294ce5d43237c58ebc7c7e441fc8d18",
+   "macro_score": 0.08333333333333333
+  }
+ ]
+}

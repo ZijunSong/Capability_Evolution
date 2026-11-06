@@ -1,0 +1,156 @@
+{
+ "meta": {
+  "domain": "webshop",
+  "model": "Qwen3.5-27B",
+  "job": "cdyeb t-20261106075054 (rsi-e1-evolve-webshop-27b-8gpu-20261106-r11)",
+  "campaign": "e1_webshop_27b_r11 (harness-fixed)",
+  "phase": "post-evolution (gen0-3 panels, champion-bank gen1 0.547)",
+  "note": "final_artifact contains actions (search[..]/click[..]) + purchase record; overwritten per task_id — last evaluation survives."
+ },
+ "tasks": {
+  "webshop:g00821": {
+   "n_commands": 0,
+   "commands": [],
+   "source": "final_artifact.json (actor-side command trajectory; scorer replays commands to get won — value not stored in artifact)",
+   "mtime": "2026-11-06T13:26"
+  },
+  "webshop:g00870": {
+   "n_commands": 0,
+   "commands": [],
+   "source": "final_artifact.json (actor-side command trajectory; scorer replays commands to get won — value not stored in artifact)",
+   "mtime": "2026-11-06T13:33"
+  },
+  "webshop:g01653": {
+   "n_commands": 0,
+   "commands": [],
+   "source": "final_artifact.json (actor-side command trajectory; scorer replays commands to get won — value not stored in artifact)",
+   "mtime": "2026-11-06T13:00"
+  },
+  "webshop:g02742": {
+   "n_commands": 0,
+   "commands": [],
+   "source": "final_artifact.json (actor-side command trajectory; scorer replays commands to get won — value not stored in artifact)",
+   "mtime": "2026-11-06T13:27"
+  },
+  "webshop:g04025": {
+   "n_commands": 0,
+   "commands": [],
+   "source": "final_artifact.json (actor-side command trajectory; scorer replays commands to get won — value not stored in artifact)",
+   "mtime": "2026-11-06T13:36"
+  },
+  "webshop:g04388": {
+   "n_commands": 0,
+   "commands": [],
+   "source": "final_artifact.json (actor-side command trajectory; scorer replays commands to get won — value not stored in artifact)",
+   "mtime": "2026-11-06T12:37"
+  },
+  "webshop:g05013": {
+   "n_commands": 0,
+   "commands": [],
+   "source": "final_artifact.json (actor-side command trajectory; scorer replays commands to get won — value not stored in artifact)",
+   "mtime": "2026-11-06T13:28"
+  },
+  "webshop:g05234": {
+   "n_commands": 0,
+   "commands": [],
+   "source": "final_artifact.json (actor-side command trajectory; scorer replays commands to get won — value not stored in artifact)",
+   "mtime": "2026-11-06T13:31"
+  },
+  "webshop:g05912": {
+   "n_commands": 0,
+   "commands": [],
+   "source": "final_artifact.json (actor-side command trajectory; scorer replays commands to get won — value not stored in artifact)",
+   "mtime": "2026-11-06T12:27"
+  },
+  "webshop:g06651": {
+   "n_commands": 0,
+   "commands": [],
+   "source": "final_artifact.json (actor-side command trajectory; scorer replays commands to get won — value not stored in artifact)",
+   "mtime": "2026-11-06T13:07"
+  },
+  "webshop:g07025": {
+   "n_commands": 0,
+   "commands": [],
+   "source": "final_artifact.json (actor-side command trajectory; scorer replays commands to get won — value not stored in artifact)",
+   "mtime": "2026-11-06T12:43"
+  },
+  "webshop:g07359": {
+   "n_commands": 0,
+   "commands": [],
+   "source": "final_artifact.json (actor-side command trajectory; scorer replays commands to get won — value not stored in artifact)",
+   "mtime": "2026-11-06T13:31"
+  },
+  "webshop:g07507": {
+   "n_commands": 0,
+   "commands": [],
+   "source": "final_artifact.json (actor-side command trajectory; scorer replays commands to get won — value not stored in artifact)",
+   "mtime": "2026-11-06T13:29"
+  },
+  "webshop:g07602": {
+   "n_commands": 0,
+   "commands": [],
+   "source": "final_artifact.json (actor-side command trajectory; scorer replays commands to get won — value not stored in artifact)",
+   "mtime": "2026-11-06T12:32"
+  },
+  "webshop:g07863": {
+   "n_commands": 0,
+   "commands": [],
+   "source": "final_artifact.json (actor-side command trajectory; scorer replays commands to get won — value not stored in artifact)",
+   "mtime": "2026-11-06T13:39"
+  },
+  "webshop:g08140": {
+   "n_commands": 0,
+   "commands": [],
+   "source": "final_artifact.json (actor-side command trajectory; scorer replays commands to get won — value not stored in artifact)",
+   "mtime": "2026-11-06T13:34"
+  },
+  "webshop:g08732": {
+   "n_commands": 0,
+   "commands": [],
+   "source": "final_artifact.json (actor-side command trajectory; scorer replays commands to get won — value not stored in artifact)",
+   "mtime": "2026-11-06T12:44"
+  },
+  "webshop:g09324": {
+   "n_commands": 0,
+   "commands": [],
+   "source": "final_artifact.json (actor-side command trajectory; scorer replays commands to get won — value not stored in artifact)",
+   "mtime": "2026-11-06T12:50"
+  },
+  "webshop:g09442": {
+   "n_commands": 0,
+   "commands": [],
+   "source": "final_artifact.json (actor-side command trajectory; scorer replays commands to get won — value not stored in artifact)",
+   "mtime": "2026-11-06T13:29"
+  },
+  "webshop:g09755": {
+   "n_commands": 0,
+   "commands": [],
+   "source": "final_artifact.json (actor-side command trajectory; scorer replays commands to get won — value not stored in artifact)",
+   "mtime": "2026-11-06T12:54"
+  },
+  "webshop:g09904": {
+   "n_commands": 0,
+   "commands": [],
+   "source": "final_artifact.json (actor-side command trajectory; scorer replays commands to get won — value not stored in artifact)",
+   "mtime": "2026-11-06T13:31"
+  },
+  "webshop:g10067": {
+   "n_commands": 0,
+   "commands": [],
+   "source": "final_artifact.json (actor-side command trajectory; scorer replays commands to get won — value not stored in artifact)",
+   "mtime": "2026-11-06T13:05"
+  },
+  "webshop:g11198": {
+   "n_commands": 0,
+   "commands": [],
+   "source": "final_artifact.json (actor-side command trajectory; scorer replays commands to get won — value not stored in artifact)",
+   "mtime": "2026-11-06T12:43"
+  },
+  "webshop:g11271": {
+   "n_commands": 0,
+   "commands": [],
+   "source": "final_artifact.json (actor-side command trajectory; scorer replays commands to get won — value not stored in artifact)",
+   "mtime": "2026-11-06T12:55"
+  }
+ }
+}
