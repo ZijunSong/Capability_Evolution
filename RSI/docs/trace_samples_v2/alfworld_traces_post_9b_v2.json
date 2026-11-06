@@ -1,0 +1,387 @@
+{
+ "meta": {
+  "domain": "alfworld",
+  "model": "Qwen3.5-9B",
+  "job": "toqpp t-20261106165333 (rsi-e1-evolve-alfworld-9b-8gpu-20261106-trace-r6)",
+  "campaign": "e1_alfworld_9b_trace_r6 (harness-fixed, same protocol as zhfrd r5)",
+  "phase": "post-evolution rerun for trace preservation; champion 755b48b8 macro 0.4167, PLATEAU evaluated=7, ok=True",
+  "panel_variance_note": "same protocol as zhfrd r5 (champion 0.75) but panel scores lower this round — panel variance across runs is large (webshop r9 audit: adjacent-generation same-bank deltas >30pp); use zhfrd 0.75 as the headline, this run is the trace artifact."
+ },
+ "tasks": {
+  "alfworld:train/json_2.1.1/train/look_at_obj_in_light-Book-None-DeskLamp-302/trial_T20190909_085155_106731": {
+   "n_commands": 6,
+   "commands": [
+    "go to bed 1",
+    "take book 1 from bed 1",
+    "go to desk 1",
+    "go to sidetable 1",
+    "go to sidetable 2",
+    "use desklamp 1"
+   ],
+   "source": "final_artifact.json (dedicated OUT root runs/e1_alfworld_9b_trace_r6/final_artifacts — no overwrite)",
+   "mtime": "2026-11-06T18:26"
+  },
+  "alfworld:train/json_2.1.1/train/look_at_obj_in_light-Bowl-None-DeskLamp-305/trial_T20190908_233020_632529": {
+   "n_commands": 5,
+   "commands": [
+    "go to desk 1",
+    "take bowl 1 from desk 1",
+    "go to desk 1",
+    "go to dresser 1",
+    "use desklamp 1"
+   ],
+   "source": "final_artifact.json (dedicated OUT root runs/e1_alfworld_9b_trace_r6/final_artifacts — no overwrite)",
+   "mtime": "2026-11-06T18:26"
+  },
+  "alfworld:train/json_2.1.1/train/look_at_obj_in_light-Bowl-None-DeskLamp-316/trial_T20190908_230635_560113": {
+   "n_commands": 3,
+   "commands": [
+    "go to desk 1",
+    "take bowl 1 from desk 1",
+    "use desklamp 1"
+   ],
+   "source": "final_artifact.json (dedicated OUT root runs/e1_alfworld_9b_trace_r6/final_artifacts — no overwrite)",
+   "mtime": "2026-11-06T18:19"
+  },
+  "alfworld:train/json_2.1.1/train/look_at_obj_in_light-Box-None-DeskLamp-205/trial_T20190907_074438_715192": {
+   "n_commands": 22,
+   "commands": [
+    "go to sofa 1",
+    "take box 1 from sofa 1",
+    "go to sidetable 1",
+    "examine box 1",
+    "examine box 1 with desklamp 1",
+    "go to diningtable 1",
+    "go to armchair 1",
+    "look",
+    "examine armchair 1",
+    "go to diningtable 1",
+    "go to sofa 1",
+    "take box 1 from sofa 1",
+    "examine sofa 1",
+    "take box 1 from sofa 1",
+    "move box 1 to sofa 1",
+    "take box 1 from sofa 1",
+    "go to diningtable 1",
+    "go to sidetable 1",
+    "move box 1 to sidetable 1",
+    "take box 1 from sidetable 1",
+    "go to sidetable 3",
+    "use desklamp 1"
+   ],
+   "source": "final_artifact.json (dedicated OUT root runs/e1_alfworld_9b_trace_r6/final_artifacts — no overwrite)",
+   "mtime": "2026-11-06T18:20"
+  },
+  "alfworld:train/json_2.1.1/train/look_at_obj_in_light-Laptop-None-DeskLamp-328/trial_T20190908_201601_178214": {
+   "n_commands": 4,
+   "commands": [
+    "go to desk 1",
+    "take laptop 1 from desk 1",
+    "go to desk 1",
+    "use desklamp 1"
+   ],
+   "source": "final_artifact.json (dedicated OUT root runs/e1_alfworld_9b_trace_r6/final_artifacts — no overwrite)",
+   "mtime": "2026-11-06T18:20"
+  },
+  "alfworld:train/json_2.1.1/train/pick_and_place_simple-AlarmClock-None-SideTable-329/trial_T20190909_013608_170798": {
+   "n_commands": 10,
+   "commands": [
+    "go to bed 1",
+    "go to sidetable 1",
+    "take mug 1 from sidetable 1",
+    "go to bed 1",
+    "go to diningtable 1",
+    "take alarmclock 1 from diningtable 1",
+    "take alarmclock 2 from diningtable 1",
+    "examine diningtable 1",
+    "take alarmclock 1 from diningtable 1",
+    "examine alarmclock 1"
+   ],
+   "source": "final_artifact.json (dedicated OUT root runs/e1_alfworld_9b_trace_r6/final_artifacts — no overwrite)",
+   "mtime": "2026-11-06T18:21"
+  },
+  "alfworld:train/json_2.1.1/train/pick_and_place_simple-Candle-None-Toilet-405/trial_T20190908_131501_794150": {
+   "n_commands": 4,
+   "commands": [
+    "go to countertop 1",
+    "take candle 1 from countertop 1",
+    "go to toilet 1",
+    "move candle 1 to toilet 1"
+   ],
+   "source": "final_artifact.json (dedicated OUT root runs/e1_alfworld_9b_trace_r6/final_artifacts — no overwrite)",
+   "mtime": "2026-11-06T18:18"
+  },
+  "alfworld:train/json_2.1.1/train/pick_and_place_simple-Candle-None-Toilet-427/trial_T20190909_030439_155103": {
+   "n_commands": 10,
+   "commands": [
+    "go to toilet 1",
+    "inventory",
+    "go to countertop 1",
+    "take candle 1 from countertop 1",
+    "go to toilet 1",
+    "put candle 1 on toilet 1",
+    "put candle 1 on toilet tank 1",
+    "put candle 1 on toilet 1",
+    "put candle 1 in toilet 1",
+    "move candle 1 to toilet 1"
+   ],
+   "source": "final_artifact.json (dedicated OUT root runs/e1_alfworld_9b_trace_r6/final_artifacts — no overwrite)",
+   "mtime": "2026-11-06T18:11"
+  },
+  "alfworld:train/json_2.1.1/train/pick_and_place_simple-CellPhone-None-Bed-321/trial_T20190908_231504_321117": {
+   "n_commands": 4,
+   "commands": [
+    "go to armchair 1",
+    "take cellphone 1 from armchair 1",
+    "go to bed 1",
+    "move cellphone 1 to bed 1"
+   ],
+   "source": "final_artifact.json (dedicated OUT root runs/e1_alfworld_9b_trace_r6/final_artifacts — no overwrite)",
+   "mtime": "2026-11-06T18:26"
+  },
+  "alfworld:train/json_2.1.1/train/pick_and_place_simple-CellPhone-None-Bed-324/trial_T20190907_233803_611728": {
+   "n_commands": 4,
+   "commands": [
+    "go to dresser 1",
+    "take cellphone 4 from dresser 1",
+    "go to bed 1",
+    "move cellphone 4 to bed 1"
+   ],
+   "source": "final_artifact.json (dedicated OUT root runs/e1_alfworld_9b_trace_r6/final_artifacts — no overwrite)",
+   "mtime": "2026-11-06T18:26"
+  },
+  "alfworld:train/json_2.1.1/train/pick_and_place_simple-CreditCard-None-ArmChair-206/trial_T20190909_023729_905485": {
+   "n_commands": 7,
+   "commands": [
+    "go to armchair 1",
+    "inventory",
+    "look",
+    "go to coffeetable 1",
+    "take creditcard 1 from coffeetable 1",
+    "go to armchair 1",
+    "put creditcard 1 on armchair 1"
+   ],
+   "source": "final_artifact.json (dedicated OUT root runs/e1_alfworld_9b_trace_r6/final_artifacts — no overwrite)",
+   "mtime": "2026-11-06T17:53"
+  },
+  "alfworld:train/json_2.1.1/train/pick_and_place_simple-CreditCard-None-Sofa-216/trial_T20190909_110532_392327": {
+   "n_commands": 0,
+   "commands": [],
+   "source": "final_artifact.json (dedicated OUT root runs/e1_alfworld_9b_trace_r6/final_artifacts — no overwrite)",
+   "mtime": "2026-11-06T17:53"
+  },
+  "alfworld:train/json_2.1.1/train/pick_and_place_simple-KeyChain-None-SideTable-309/trial_T20190908_214938_408925": {
+   "n_commands": 11,
+   "commands": [
+    "go to sidetable 1",
+    "examine sidetable 1",
+    "go to desk 1",
+    "go to bed 1",
+    "go to drawer 1",
+    "open drawer 1",
+    "take keychain 3 from drawer 1",
+    "examine keychain 3",
+    "go to sidetable 1",
+    "put keychain 3 on sidetable 1",
+    "move keychain 3 to sidetable 1"
+   ],
+   "source": "final_artifact.json (dedicated OUT root runs/e1_alfworld_9b_trace_r6/final_artifacts — no overwrite)",
+   "mtime": "2026-11-06T17:53"
+  },
+  "alfworld:train/json_2.1.1/train/pick_and_place_simple-Knife-None-SideTable-3/trial_T20190906_214318_430974": {
+   "n_commands": 17,
+   "commands": [
+    "go to cabinet 1",
+    "open cabinet 1",
+    "go to drawer 1",
+    "open drawer 1",
+    "go to drawer 2",
+    "open drawer 2",
+    "go to drawer 3",
+    "open drawer 3",
+    "go to cabinet 1",
+    "inventory",
+    "go to countertop 1",
+    "take knife 1 from countertop 1",
+    "go to countertop 1",
+    "go to spoon 2",
+    "put knife 1 on countertop 1",
+    "move knife 1 to countertop 1",
+    "look"
+   ],
+   "source": "final_artifact.json (dedicated OUT root runs/e1_alfworld_9b_trace_r6/final_artifacts — no overwrite)",
+   "mtime": "2026-11-06T18:14"
+  },
+  "alfworld:train/json_2.1.1/train/pick_and_place_simple-Mug-None-SideTable-329/trial_T20190909_032329_497305": {
+   "n_commands": 9,
+   "commands": [
+    "go to bed 1",
+    "go to sidetable 1",
+    "go to dressingtable 1",
+    "inventory",
+    "look",
+    "go to diningtable 1",
+    "take mug 1 from diningtable 1",
+    "go to sidetable 1",
+    "move mug 1 to sidetable 1"
+   ],
+   "source": "final_artifact.json (dedicated OUT root runs/e1_alfworld_9b_trace_r6/final_artifacts — no overwrite)",
+   "mtime": "2026-11-06T18:26"
+  },
+  "alfworld:train/json_2.1.1/train/pick_and_place_simple-Pen-None-SideTable-329/trial_T20190907_133455_179363": {
+   "n_commands": 5,
+   "commands": [
+    "go to diningtable 1",
+    "take pen 1 from diningtable 1",
+    "go to sidetable 1",
+    "put pen 1 on sidetable 1",
+    "move pen 1 to sidetable 1"
+   ],
+   "source": "final_artifact.json (dedicated OUT root runs/e1_alfworld_9b_trace_r6/final_artifacts — no overwrite)",
+   "mtime": "2026-11-06T17:53"
+  },
+  "alfworld:train/json_2.1.1/train/pick_and_place_simple-Pillow-None-Sofa-221/trial_T20190908_175303_977893": {
+   "n_commands": 6,
+   "commands": [
+    "go to armchair 1",
+    "take pillow 1 from armchair 1",
+    "move pillow 1 to sofa 1",
+    "go to sofa 1",
+    "put pillow 1 on sofa 1",
+    "move pillow 1 to sofa 1"
+   ],
+   "source": "final_artifact.json (dedicated OUT root runs/e1_alfworld_9b_trace_r6/final_artifacts — no overwrite)",
+   "mtime": "2026-11-06T17:54"
+  },
+  "alfworld:train/json_2.1.1/train/pick_and_place_simple-Tomato-None-Microwave-13/trial_T20190908_125158_098734": {
+   "n_commands": 28,
+   "commands": [
+    "go to countertop 3",
+    "go to cabinet 17",
+    "go to countertop 1",
+    "go to cabinet 22",
+    "go to cabinet 18",
+    "open cabinet 18",
+    "go to cabinet 23",
+    "go to countertop 3",
+    "inventory",
+    "examine countertop 3",
+    "go to cabinet 25",
+    "go to countertop 1",
+    "go to countertop 3",
+    "go to drawer 7",
+    "open drawer 7",
+    "go to coffeemachine 1",
+    "go to countertop 1",
+    "go to countertop 2",
+    "take tomato 2 from countertop 2",
+    "go to microwave 1",
+    "open microwave 1",
+    "put tomato 2 in microwave 1",
+    "put tomato 2 in microwave 1",
+    "examine tomato 2",
+    "take tomato 2 from countertop 1",
+    "go to countertop 1",
+    "take tomato 2 from countertop 1",
+    "examine tomato 2"
+   ],
+   "source": "final_artifact.json (dedicated OUT root runs/e1_alfworld_9b_trace_r6/final_artifacts — no overwrite)",
+   "mtime": "2026-11-06T18:27"
+  },
+  "alfworld:train/json_2.1.1/train/pick_clean_then_place_in_recep-Cloth-None-Drawer-426/trial_T20190909_100612_910742": {
+   "n_commands": 12,
+   "commands": [
+    "go to sinkbasin 1",
+    "go to towelholder 1",
+    "examine towelholder 1",
+    "take towel 1 from towelholder 1",
+    "go to sinkbasin 1",
+    "clean towel 1 with sinkbasin 1",
+    "go to sink 1",
+    "clean towel 1 with sink 1",
+    "clean towel 1 with sinkbasin 1",
+    "put towel 1 in drawer 1",
+    "open drawer 1",
+    "look"
+   ],
+   "source": "final_artifact.json (dedicated OUT root runs/e1_alfworld_9b_trace_r6/final_artifacts — no overwrite)",
+   "mtime": "2026-11-06T18:27"
+  },
+  "alfworld:train/json_2.1.1/train/pick_clean_then_place_in_recep-Cloth-None-Dresser-413/trial_T20190906_194709_189668": {
+   "n_commands": 2,
+   "commands": [
+    "go to dresser 1",
+    "take cloth 1 from dresser 1"
+   ],
+   "source": "final_artifact.json (dedicated OUT root runs/e1_alfworld_9b_trace_r6/final_artifacts — no overwrite)",
+   "mtime": "2026-11-06T18:26"
+  },
+  "alfworld:train/json_2.1.1/train/pick_clean_then_place_in_recep-Fork-None-CounterTop-23/trial_T20190909_011702_864408": {
+   "n_commands": 15,
+   "commands": [
+    "go to drawer 1",
+    "go to drawer 2",
+    "open drawer 2",
+    "go to sinkbasin 1",
+    "go to fridge 1",
+    "open fridge 1",
+    "inventory",
+    "go to drawer 1",
+    "go to diningtable 1",
+    "take fork 1 from diningtable 1",
+    "go to sinkbasin 1",
+    "clean fork 1 with sinkbasin 1",
+    "put fork 1 on countertop 1",
+    "go to countertop 1",
+    "move fork 1 to countertop 1"
+   ],
+   "source": "final_artifact.json (dedicated OUT root runs/e1_alfworld_9b_trace_r6/final_artifacts — no overwrite)",
+   "mtime": "2026-11-06T17:54"
+  },
+  "alfworld:train/json_2.1.1/train/pick_clean_then_place_in_recep-Kettle-None-Shelf-7/trial_T20190907_200522_086856": {
+   "n_commands": 9,
+   "commands": [
+    "go to sinkbasin 1",
+    "clean kettle with sinkbasin 1",
+    "inventory",
+    "take kettle from sinkbasin 1",
+    "invantage",
+    "look",
+    "go to diningtable 1",
+    "go to sinkbasin 1",
+    "inventory"
+   ],
+   "source": "final_artifact.json (dedicated OUT root runs/e1_alfworld_9b_trace_r6/final_artifacts — no overwrite)",
+   "mtime": "2026-11-06T18:27"
+  },
+  "alfworld:train/json_2.1.1/train/pick_clean_then_place_in_recep-Mug-None-CoffeeMachine-26/trial_T20190907_233121_306180": {
+   "n_commands": 4,
+   "commands": [
+    "go to sinkbasin 1",
+    "go to countertop 1",
+    "go to drawer 1",
+    "open drawer 1"
+   ],
+   "source": "final_artifact.json (dedicated OUT root runs/e1_alfworld_9b_trace_r6/final_artifacts — no overwrite)",
+   "mtime": "2026-11-06T18:17"
+  },
+  "alfworld:train/json_2.1.1/train/pick_clean_then_place_in_recep-SoapBar-None-Toilet-428/trial_T20190907_041404_517664": {
+   "n_commands": 11,
+   "commands": [
+    "go to cabinet 1",
+    "open cabinet 1",
+    "go to toilet 1",
+    "take soapbar 1 from toilet 1",
+    "go to sinkbasin 1",
+    "clean soapbar 1 with sinkbasin 1",
+    "put soapbar 1 on toilet 1",
+    "move soapbar 1 to toilet 1",
+    "put soapbar 1 on toilet 1",
+    "go to toilet 1",
+    "put soapbar 1 on toilet 1"
+   ],
+   "source": "final_artifact.json (dedicated OUT root runs/e1_alfworld_9b_trace_r6/final_artifacts — no overwrite)",
+   "mtime": "2026-11-06T17:54"
+  }
+ }
+}

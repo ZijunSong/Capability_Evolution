@@ -32,7 +32,8 @@ Full per-candidate score tables: `docs/e1_alfworld_evolution_results_9b_27b.csv`
 | `webshop_traces_post_27b.json` | **24 task traces** (action-level: `search[..]` / `click[..]` + purchase record) from the 27B webshop evolution panels (cdyeb). Champion-bank gen1 0.547. |
 | `webshop_traces_pre_9b.json` | **12 task traces (obs-level, steps with obs head/tail + action text)** — paired final eval baseline arm (empty bank), macro 5.56%. The pre-fix behavior reference for webshop. |
 | `alfworld_pre_9b_scores_only.json` | Scores/selection history only (14 evaluated + rejected proposals) for 8hk1b. **Per-step traces not recoverable** (see caveat). |
-| `alfworld_post_9b_scores_only.json` | Scores/selection history for zhfrd (14 evaluated, champion 622625de 0.75). Traces overwritten by the later 27B rerun. |
+| `alfworld_traces_post_9b_v2.json` | **24 task traces (command-level)** from the trace-preservation rerun (toqpp, same fixed-harness protocol as zhfrd; dedicated OUT root — no overwrite). Champion 755b48b8 macro 0.417; panel variance vs zhfrd's 0.75 noted in meta. |
+| `alfworld_post_9b_scores_only.json` | Scores/selection history for zhfrd (14 evaluated, champion 622625de 0.75) — the headline 9B alfworld run. Traces overwritten by the later 27B rerun; the rerun above preserves step-level traces of the same protocol. |
 | `webshop_post_9b_scores_only.json` | Scores/selection history for afe1d (6 evaluated, champion b0ad1c7d 0.563). Traces overwritten by the later 27B rerun. |
 
 ## Trace-availability caveat (honest scope)
