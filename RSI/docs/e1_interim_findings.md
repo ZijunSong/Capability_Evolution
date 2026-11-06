@@ -118,3 +118,11 @@
 
 - **appworld-9b r5**（7fgip）：6 候选 0.289~0.316，PLATEAU 无 champion。**关键读法变化**：gen0-2 全部 `incumbent retained` = **空 bank 基线本身已 ~0.29+**（H0_v2 口径，与 E0-v2 的 34.74% 一致）——候选与基线打平但未超越。断链时代"候选 0.0 vs 基线 0"的假持平已被真实信号取代：AppWorld 的 strict 口径下 9B 候选还有差距要跨。
 - appworld-27B r5（zdbip）running（4 候选 0~0.261）；webshop-27B r11（cdyeb）running（2 候选 0.408~0.514）。
+
+---
+
+## 补充九（2026-11-06：appworld-27B r5 收官）
+
+- **appworld-27b r5**（zdbip succeed ~20h）：8 候选（0~0.261），**champion `5ed3bbf1`**（gen0 当选 macro **0.261**）= 单组件 `ActionValidator`；gen1-3 incumbent retained（27B 基线同样 ~0.26+，与 9B r5 基线 0.29+ 同量级）。PLATEAU 收官。
+- **AppWorld 双模型定案**：9B/27B 候选都与各自基线打平未超越（真信号，断链时代的假持平已消除）；两域 champion（webshop/alfworld）+ appworld honest-PLATEAU。
+- 并发会话推进 trace 聚焦轮：alfworld-9B r6-trace（toqpp running）+ webshop-9B trace-r11（exm1p queued）。
