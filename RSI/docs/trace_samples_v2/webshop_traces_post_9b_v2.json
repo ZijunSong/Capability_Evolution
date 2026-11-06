@@ -1,0 +1,930 @@
+{
+ "meta": {
+  "domain": "webshop",
+  "model": "Qwen3.5-9B",
+  "job": "exm1p t-20261106165357 (rsi-e1-evolve-webshop-9b-8gpu-20261106-trace-r11)",
+  "campaign": "e1_webshop_9b_trace_r11 (harness-fixed, same protocol as afe1d r10)",
+  "phase": "post-evolution rerun for trace preservation; MAX_GENERATIONS run full 8 gens, champion bd397b10, evaluated=16, ok=True",
+  "score_range": "0.139-0.679 (gen1 & gen7 both hit 0.6792)",
+  "panel_variance_note": "same protocol as afe1d r10 (champion 0.563); this run reached 0.679 — panel variance across runs is large; headline stays afe1d 0.563, this run is the trace artifact."
+ },
+ "tasks": {
+  "webshop:g00821": {
+   "n_commands": 16,
+   "actions": [
+    "search[bench style farmhouse white]",
+    "click[B07VNB58YR [SEP] Jolene 4-Drawer Storage Bench - Antique White [SEP] $100.0]",
+    "click[B07VNB58YR [SEP] Jolene 4-Drawer Storage Bench - Antique White [SEP] $100.0]",
+    "click[Jolene 4-Drawer Storage Bench - Antique White]",
+    "click[Jolene 4-Drawer Storage Bench - Antique White]",
+    "click[Jolene 4-Drawer Storage Bench - Antique White]",
+    "click[Jolene 4-Drawer Storage Bench - Antique White]",
+    "click[Jolene 4-Drawer Storage Bench - Antique White]",
+    "click[B07VNB58YR [SEP] Jolene 4-Drawer Storage Bench - Antique White [SEP] $100.0]",
+    "click[Jolene 4-Drawer Storage Bench - Antique White]",
+    "click[Jolene 4-Drawer Storage Bench - Antique White $100.0]",
+    "click[Jolene 4-Drawer Storage Bench - Antique White $100.0]",
+    "click[Jolene 4-Drawer Storage Bench - Antique White $100.0]",
+    "click[Jolene 4-Drawer Storage Bench - Antique White $100.0]",
+    "click[Jolene 4-Drawer Storage Bench - Antique White $100.0]",
+    "click[Jolene 4-Drawer Storage Bench - Antique White $100.0]"
+   ],
+   "bought": false,
+   "purchase": null,
+   "source": "final_artifact.json (dedicated OUT root runs/e1_webshop_9b_trace_r11/final_artifacts — no overwrite)",
+   "mtime": "2026-11-06T21:23"
+  },
+  "webshop:g00870": {
+   "n_commands": 3,
+   "actions": [
+    "search[women knee high over calf medium]",
+    "click[B07ZP16QYL]",
+    "click[buy now]"
+   ],
+   "bought": true,
+   "purchase": {
+    "asin": "B07ZP16QYL",
+    "options": {},
+    "price": 25.948905752678407,
+    "product": {
+     "Attributes": [
+      "sandals women",
+      "high heel",
+      "ankle strap",
+      "open toe",
+      "knee high",
+      "flat sandals",
+      "boots women",
+      "arch support",
+      "shoes women",
+      "non slip"
+     ],
+     "BulletPoints": [
+      "womens booties leopard ",
+      "🌹🌹Promotion:Buy 1 get 3% off,Buy 2 get 5% off,Buy 3 get 8% off ",
+      "Mesh lining ",
+      "Slip-On closure ",
+      "🌸women's top flip flops women's orthotic sandals with great arch support stylish flip flops sandals women's t-bar sandals womens peep toe strappy platform stiletto ladies high heel ankle strap sandals shoes size 3 4 5 6 7 21,flared heel super satin with rhinestone dance shoes ladies style flat sandals women summer roman sandals comfy shoes women's summer rhinestone bead bohemia folk round clip toe sandals boho beach flip flops flat elastic t-strap post thong sandals shoes ",
+      "🌸summer platform ladies shoes summer footwear black flip flops flop sandals wedge white platform leather strappy lace up custom women's one strap tie cognac sandal leather pump shoes taupe patent pumps black peep toe beige heels and womens for women pink in dress heel white black open toe heels tan slingback low heel shoes mid inch high pump and white turquoise black dress pumps pump boots and silver shoes navy heels high peep toe patent heeled blue womens open leather with bow suede floral ",
+      "🌸sneakers canvas sneaker shop order shoes online pink best for women fashion tennis cute black and white leather womens slip on discount boots high heels cool all narrow stylish top shoe outlet suede dressy stores ladies dress brown popular grey gold green vintage buy sale summer affordable wide evening women's casual knee cheap gray running designer backless heel blue clearance colorful wedge mule silver extra footwear ivory platform , <span class=\"a-list-item\">🌸beach slippers wedges slippers thick heels slippers teen slippers peep toe slippers fish mouth slippers boy flip flops teen flip flops casual flip flops beach flip flops non slip flip flops summer shoes breathable shoes soft shoes comfortable shoes platform shoes rhinestone shoes pointed toe shoes wedding shoes classic shoes mountain shoes rhinestone sandals pointed toe sandals shopping sandals wedding sandals classic sandals zipper sandals cross strap sandals ladies sandals mesh sandals</span>, <span class=\"a-list-item\">🌸women's peep toe slingback cutout platform chunky heel sandals women's dawn dress sandal platform women's route mid heel pump sandals cut out ankle strap high heel - open toe sandal pump - chunky wooden heel platform shoe on sale sneakers high top sneakers ladies sneakers toddler ladies sneakers on sale sneakers for women</span>"
+     ],
+     "Description": "Introduction: 🌸🌸Color Disclaimer : Due to monitor settings monitor pixel definitions we cannot guarantee that the color you see on your screen as an exact color of the product.   🌸🌸If you have any questions please feel free to contact us thanks! 🌸🌸2019 Clearance Big Promotion Hot Sale Under 10 5 20 15 Dollars Hot Sale Free Shipping Size 5 5.5 6 6.5 7 7.5 8 8.5 9  9.5 10 10.5 11 11.5 12  Casual Shoes biggest booties big booties blackbooties black booties booties rain booties for women big black booties black big booties girls big booties ankle booties women wedge booties platform booties lace up booties heeled booties leopard booties peep toe booties laced up booties waterproof booties  🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉 🎅lace up anti-slip yellow garden shoes above the knee boots womans size 12 women boots winter clearance women boots ankle women boots with heels women boots knee high women boots wide calf womans boots womans rain boots womans winter boots woman boots for the cold woman boots for rain wonder woman boots for girls woman boots for work black woman boots for winter women boots in wide woman fur inside boots women boots mid calf brown women boots mid calf leather women boots mid calf heel women boots mid calf lace up women boots on sale women boots on sale clearance women boots on clearance woman cut out boots woman motorcycle boots outside zipper women boots over the knee women boots over the knee high wide women boots over the knee high women boots over the knee leather womans plus size jeans boot cut woman plus size boots womans plus size jeans boot cut short work boots woman women boots under 30 women boots under 10 women boots under 20 dollars women boots under 25 womans lace up boots womans lace up ankle boots womans lace up combat boots women boots with buckles women boots with toes out women boots with foam",
+     "Title": "Gibobby Boots for Women Knee High,Mid Calf Boots Retro Knee Middle Tube Boots Low Heel Combat Round Toe Shoes",
+     "asin": "B07ZP16QYL",
+     "name": "Gibobby Boots for Women Knee High,Mid Calf Boots Retro Knee Middle Tube Boots Low Heel Combat Round Toe Shoes",
+     "product_category": "Clothing, Shoes & Jewelry › Women › Shoes › Boots",
+     "query": "women's mules & clogs"
+    }
+   },
+   "source": "final_artifact.json (dedicated OUT root runs/e1_webshop_9b_trace_r11/final_artifacts — no overwrite)",
+   "mtime": "2026-11-06T21:23"
+  },
+  "webshop:g01653": {
+   "n_commands": 20,
+   "actions": [
+    "search[english muffins high fructose]",
+    "click[B0854RDBCH Low Carb Foods English Muffins | Fresh Baked | High Protein | 100% All-natural Ingredients | No Sugar Diabetic Friendly | Maltitol & Artificial Sweetener Free (6 Pack) $22.47]",
+    "click[\\u2190\\u2029\\u2029Low Carb Foods English Muffins | Fresh Baked | High Protein | 100% All-natural Ingredients | No Sugar Diabetic Friendly | Maltitol & Artificial Sweetener Free (6 Pack)\\u2029\\u2029$22.47]",
+    "search[english muffins high fructose]",
+    "click[B07GST4K1T Dave's Killer Bread Killer Classic English Muffins, 13.2 oz $100.0]",
+    "click[B0854RDBCH Low Carb Foods English Muffins | Fresh Baked | High Protein | 100% All-natural Ingredients | No Sugar Diabetic Friendly | Maltitol & Artificial Sweetener Free (6 Pack) $22.47]",
+    "search[english muffins high fructose]",
+    "click[B07GST4K1T Dave's Killer Bread Killer Classic English Muffins, 13.2 oz $100.0]",
+    "search[english muffins high fructose]",
+    "click[B07GST4K1T Dave's Killer Bread Killer Classic English Muffins, 13.2 oz $100.0]",
+    "search[english muffins high fructose]",
+    "click[B09BJBV1HS]",
+    "click[Thomas' Original Nooks and Crannies White English Muffins (3 - Pack)]",
+    "search[english muffins high fructose]",
+    "click[Thomas' Original Nooks and Crannies White English Muffins (3 - Pack)]",
+    "click[Dave's Killer Bread Killer Classic English Muffins, 13.2 oz]",
+    "search[english muffins high fructose]",
+    "click[B07GST4K1T Dave's Killer Bread Killer Classic English Muffins, 13.2 oz $100.0]",
+    "search[english muffins high fructose]",
+    "click[B07GST4K1T]"
+   ],
+   "bought": false,
+   "purchase": null,
+   "source": "final_artifact.json (dedicated OUT root runs/e1_webshop_9b_trace_r11/final_artifacts — no overwrite)",
+   "mtime": "2026-11-06T21:11"
+  },
+  "webshop:g02742": {
+   "n_commands": 3,
+   "actions": [
+    "search[cruelty free hand wash 8 ounces]",
+    "click[B00MHGYTYI]",
+    "click[Buy Now]"
+   ],
+   "bought": true,
+   "purchase": {
+    "asin": "B00MHGYTYI",
+    "options": {},
+    "price": 11.67,
+    "product": {
+     "Attributes": [
+      "aloe vera",
+      "plant based",
+      "natural ingredients",
+      "cruelty free",
+      "long lasting"
+     ],
+     "BulletPoints": [
+      "Cuccio Naturalé Butter Blend White Limetta & Aloe Vera Lotion is a non-oily potent hydration treatment formulated with time released humectants that moisturize & rejuvenate your skin every two hours ",
+      "This intense moisturizing treatment gives 24 hour support for prolonged, long lasting nourishment to your hands, body, and feet, leaving your skin soft and silky all day long; even after hand washing ",
+      "Crafted by beauty professionals & artisans this butter blend is elaborated w/ white limetta which has nourishing & replenishing benefits & aloe vera, a natural antioxidant that soothes and moisturizes ",
+      "This TSA approved emollient rich cream is Paraben & Cruelty Free and elaborated with carefully selected natural ingredients and plant-based preservatives for a scentual spa experience wherever you go ",
+      "Butter Blend White Limetta & Aloe Vera Non-Greasy Hydrating Lotion is part of Cuccio Naturalé's Luxury Spa Products, that includes: Butters, Scrubs, Cuticle Oils & Whips for decadent spa experience "
+     ],
+     "Description": "Cuccio Naturalé Butter Blend White Limetta & Aloe Vera Lotion for Hand, Body and Feet is an intense, daily non-oily hydrating treatment. Its unique 24 hour time-released formula has been specially crafted to leave your skin happy, healthy, and hydrated throughout the day. It is elaborated with white limetta which has nourishing and refreshing properties; aloe vera a natural anti-oxidant that soothes and moisturizes the skin. This refreshing and soothing solution will have your skin looking radiant, rejuvenated, and feeling amazing. It is oh so rich that it keeps your skin hydrated even after hand washing or using hand sanitizers. Cuccio Naturalé's Luxury Spa Products for the hands, body, and feet have been crafted by beauty professionals and artisans. Using natural, non-harmful ingredients, that are cruelty and paraben free, plant derived and contain purified micron filtered water. Indulge in the scentual experience of Cuccio Naturalé and bring the Luxury Spa experience with you wherever you go.",
+     "Title": "Cuccio Naturalé Butter Blend White Limetta & Aloe Vera - Non-Greasy Lotion for Hand, Body & Feet - Refreshing/Soothing - Paraben/Cruelty Free, w/ Natural Ingredients/Plant Based Preservatives - 8 oz.",
+     "asin": "B00MHGYTYI",
+     "name": "Cuccio Naturalé Butter Blend White Limetta & Aloe Vera - Non-Greasy Lotion for Hand, Body & Feet - Refreshing/Soothing - Paraben/Cruelty Free, w/ Natural Ingredients/Plant Based Preservatives - 8 oz.",
+     "product_category": "Beauty & Personal Care › Skin Care › Body › Moisturizers › Body Butters",
+     "query": "hair perms, relaxers & texturizers"
+    }
+   },
+   "source": "final_artifact.json (dedicated OUT root runs/e1_webshop_9b_trace_r11/final_artifacts — no overwrite)",
+   "mtime": "2026-11-06T21:23"
+  },
+  "webshop:g04025": {
+   "n_commands": 3,
+   "actions": [
+    "search[nickel finished one light wall sconce]",
+    "click[B07SK4D2HN]",
+    "click[Buy Now]"
+   ],
+   "bought": true,
+   "purchase": {
+    "asin": "B07SK4D2HN",
+    "options": {},
+    "price": 38.01,
+    "product": {
+     "Attributes": [
+      "nickel finish",
+      "brushed nickel",
+      "light fixture",
+      "led bulb",
+      "wall sconce",
+      "dining room",
+      "living room"
+     ],
+     "BulletPoints": [
+      "Contemporary one-light wall mount light fixture adds beautiful ambiance in a bathroom, living room, hallway or dining room ",
+      "Simply elegant style with brushed nickel finish and frosted glass panel, includes instructions and mounting hardware for easy installation ",
+      "Height 10-3/4 inches, Width 6-5/16 inches, Extends 5-9/16 inches from wall, Back plate height 8-5/8 inches, Back plate width 4-3/4 inches ",
+      "Uses one 60-watt medium-base light bulb (not included), for an energy efficient alternative, choose a Westinghouse 60-watt equivalent LED bulb ",
+      "Five-year limited against defects in materials and workmanship, ETL/CETL listed "
+     ],
+     "Description": "Add beautiful ambiance with the stylish contemporary design of the Westinghouse Enzo James wall sconce light fixture. This simply elegant fixture features a brushed nickel finish, creating a lustrous backdrop to the softly curved, frosted glass panel. Bring distinctive illumination to a powder room, bedroom, dining room and more with this wall sconce. Westinghouse is a trusted, global brand. Westinghouse knows lighting and offers products with exceptional quality, reliability and functionality. Product reference number 63695.",
+     "Title": "Westinghouse Lighting 6369500 Enzo James One-Light Indoor Wall Sconce Light Fixture, Brushed Nickel Finish with Frosted Glass",
+     "asin": "B07SK4D2HN",
+     "name": "Westinghouse Lighting 6369500 Enzo James One-Light Indoor Wall Sconce Light Fixture, Brushed Nickel Finish with Frosted Glass",
+     "product_category": "Tools & Home Improvement › Lighting & Ceiling Fans › Wall Lights › Wall Lamps & Sconces",
+     "query": "sconces"
+    }
+   },
+   "source": "final_artifact.json (dedicated OUT root runs/e1_webshop_9b_trace_r11/final_artifacts — no overwrite)",
+   "mtime": "2026-11-06T21:23"
+  },
+  "webshop:g04388": {
+   "n_commands": 16,
+   "actions": [
+    "search[black bellagio european outdoor carriage light fixture]",
+    "click[B00083HDGS [SEP] Bellagio European Outdoor Carriage Light Fixture Vintage Bronze Curved Arm Hammered Glass Sconce for Exterior House Porch Patio Outside Deck Garage Yard Front Door Garden Home - John Timberland [SEP] $179.99]",
+    "click[Bellagio European Outdoor Carriage Light Fixture Vintage Bronze Curved Arm Hammered Glass Sconce for Exterior House Porch Patio Outside Deck Garage Yard Front Door Garden Home - John Timberland [SEP] $179.99]",
+    "click[Bellagio European Outdoor Carriage Light Fixture Vintage Bronze Curved Arm Hammered Glass Sconce for Exterior House Porch Patio Outside Deck Garage Yard Front Door Garden Home - John Timberland [SEP] $179.99]",
+    "click[Bellagio European Outdoor Carriage Light Fixture Vintage Bronze Curved Arm Hammered Glass Sconce for Exterior House Porch Patio Outside Deck Garage Yard Front Door Garden Home - John Timberland [SEP] $179.99]",
+    "click[Buy Now]",
+    "click[Bellagio European Outdoor Carriage Light Fixture Vintage Bronze Curved Arm Hammered Glass Sconce for Exterior House Porch Patio Outside Deck Garage Yard Front Door Garden Home - John Timberland [SEP] $179.99]",
+    "click[Bellagio European Outdoor Carriage Light Fixture Vintage Bronze Curved Arm Hammered Glass Sconce for Exterior House Porch Patio Outside Deck Garage Yard Front Door Garden Home - John Timberland [SEP] $179.99]",
+    "click[Bellagio European Outdoor Carriage Light Fixture Vintage Bronze Curved Arm Hammered Glass Sconce for Exterior House Porch Patio Outside Deck Garage Yard Front Door Garden Home - John Timberland [SEP] $179.99]",
+    "click[Back to Search]",
+    "search[bellagio european outdoor carriage light fixture black]",
+    "click[B00083HDGS [SEP] Bellagio European Outdoor Carriage Light Fixture Vintage Bronze Curved Arm Hammered Glass Sconce for Exterior House Porch Patio Outside Deck Garage Yard Front Door Garden Home - John Timberland [SEP] $179.99]",
+    "click[Bellagio European Outdoor Carriage Light Fixture Vintage Bronze Curved Arm Hammered Glass Sconce for Exterior House Porch Patio Outside Deck Garage Yard Front Door Garden Home - John Timberland]",
+    "click[Carriage Light 1-Light Sconce in Matte Black with Seedy Glass]",
+    "click[B07NLH86ZT]",
+    "click[Buy Now]"
+   ],
+   "bought": true,
+   "purchase": {
+    "asin": "B07NLH86ZT",
+    "options": {},
+    "price": 53.48,
+    "product": {
+     "Attributes": [],
+     "BulletPoints": [
+      "UL listed ",
+      "matte black finish; seedy glass ",
+      "7W X 8D X 13H ",
+      "HCWO 3 inches ",
+      "1 light 100 watt medium base bulb recommended; pictured with filament style bulb not included "
+     ],
+     "Description": "The Carriage Light outdoor sconce has a romantic design that resembles lanterns that were hung from horse-drawn carriages. A Matte Black finish and seedy glass panels keep with the timeless style and tradition of a bygone era.",
+     "Title": "Carriage Light 1-Light Sconce in Matte Black with Seedy Glass",
+     "asin": "B07NLH86ZT",
+     "name": "Carriage Light 1-Light Sconce in Matte Black with Seedy Glass",
+     "product_category": "Tools & Home Improvement › Lighting & Ceiling Fans › Wall Lights › Wall Lamps & Sconces",
+     "query": "sconces"
+    }
+   },
+   "source": "final_artifact.json (dedicated OUT root runs/e1_webshop_9b_trace_r11/final_artifacts — no overwrite)",
+   "mtime": "2026-11-06T21:07"
+  },
+  "webshop:g05013": {
+   "n_commands": 4,
+   "actions": [
+    "search[1.7 ounce anti-perspirant stick for women]",
+    "click[B0006V7Y8Y [SEP] Donna Karan Cashmere Mist Anti-perspirant/Deodorant Stick For Women,1.7-Ounce]",
+    "click[B0006V7Y8Y]",
+    "click[Buy Now]"
+   ],
+   "bought": true,
+   "purchase": {
+    "asin": "B0006V7Y8Y",
+    "options": {},
+    "price": 100.0,
+    "product": {
+     "Attributes": [
+      "anti perspirant",
+      "sensitive skin"
+     ],
+     "BulletPoints": [
+      "1.7 oz solid deodorant stick, delicately scented with the Donna Karan Cashmere Mist scent ",
+      "Controls wetness and perspiration ",
+      "Perfect for even sensitive skin ",
+      "Apply to underarms only ",
+      "Precautions: Do not apply to broken skin. If rash or irritation develops, discontinue use "
+     ],
+     "Description": "Totally gentle and effective. Delicately scented with Cashmere Mist, this advanced formula also controls wetness and perspiration, keeping you feeling dry and smelling fresh all day. So gentle it can be used immediately after shaving without irritation. Perfect for even sensitive skin.",
+     "Title": "Donna Karan Cashmere Mist Anti-perspirant/Deodorant Stick For Women,1.7-Ounce",
+     "asin": "B0006V7Y8Y",
+     "name": "Donna Karan Cashmere Mist Anti-perspirant/Deodorant Stick For Women,1.7-Ounce",
+     "product_category": "Beauty & Personal Care › Personal Care › Deodorants & Antiperspirants › Antiperspirant Deodorant",
+     "query": "deodorants & antiperspirants"
+    }
+   },
+   "source": "final_artifact.json (dedicated OUT root runs/e1_webshop_9b_trace_r11/final_artifacts — no overwrite)",
+   "mtime": "2026-11-06T21:23"
+  },
+  "webshop:g05234": {
+   "n_commands": 19,
+   "actions": [
+    "search[paraben free lip gloss vitamin e aloe pink pearl]",
+    "click[B0009XNWVC]",
+    "click[pink pearl]",
+    "click[pink pearl]",
+    "click[pink pearl]",
+    "click[Back to Search]",
+    "search[paraben free lip gloss vitamin e aloe pink pearl]",
+    "click[B0009XNWVC]",
+    "click[pink pearl]",
+    "click[pink pearl]",
+    "click[back]",
+    "click[Back to Search]",
+    "search[paraben free lip gloss vitamin e aloe pink pearl]",
+    "search[paraben free lip gloss vitamin e aloe pink pearl]",
+    "click[Palladio Lip Gloss, Icy Mauve, Non-Sticky Lip Gloss, Contains Vitamin E and Aloe, Offers Intense Color and Moisturization, Minimizes Lip Wrinkles, Softens Lips with Beautiful Shiny Finish]",
+    "click[B0009XNWVC]",
+    "click[< Prev]",
+    "click[pink pearl]",
+    "click[pink pearl]"
+   ],
+   "bought": false,
+   "purchase": null,
+   "source": "final_artifact.json (dedicated OUT root runs/e1_webshop_9b_trace_r11/final_artifacts — no overwrite)",
+   "mtime": "2026-11-06T21:23"
+  },
+  "webshop:g05912": {
+   "n_commands": 18,
+   "actions": [
+    "search[canon powershot s200]",
+    "click[Canon PowerShot S200 2MP Digital ELPH Camera w/ 2x Optical Zoom]",
+    "click[Canon PowerShot S200 2MP Digital ELPH Camera w/ 2x Optical Zoom]",
+    "click[Canon PowerShot S200 2MP Digital ELPH Camera w/ 2x Optical Zoom]",
+    "click[Canon PowerShot S200 2MP Digital ELPH Camera w/ 2x Optical Zoom]",
+    "click[Canon PowerShot S200 2MP Digital ELPH Camera w/ 2x Optical Zoom]",
+    "click[Canon PowerShot S200 2MP Digital ELPH Camera w/ 2x Optical Zoom]",
+    "click[Canon PowerShot S200 2MP Digital ELPH Camera w/ 2x Optical Zoom]",
+    "click[Canon PowerShot S200 2MP Digital ELPH Camera w/ 2x Optical Zoom]",
+    "click[Canon PowerShot S200 2MP Digital ELPH Camera w/ 2x Optical Zoom]",
+    "click[Canon PowerShot S200 2MP Digital ELPH Camera w/ 2x Optical Zoom]",
+    "click[Canon PowerShot S200 2MP Digital ELPH Camera w/ 2x Optical Zoom]",
+    "click[Canon PowerShot S200 2MP Digital ELPH Camera w/ 2x Optical Zoom]",
+    "click[Canon PowerShot S200 2MP Digital ELPH Camera w/ 2x Optical Zoom]",
+    "click[Canon PowerShot S200 2MP Digital ELPH Camera w/ 2x Optical Zoom]",
+    "click[Canon PowerShot S200 2MP Digital ELPH Camera w/ 2x Optical Zoom]",
+    "click[Canon PowerShot S200 2MP Digital ELPH Camera w/ 2x Optical Zoom]",
+    "click[Canon PowerShot S200 2MP Digital ELPH Camera w/ 2x Optical Zoom]"
+   ],
+   "bought": false,
+   "purchase": null,
+   "source": "final_artifact.json (dedicated OUT root runs/e1_webshop_9b_trace_r11/final_artifacts — no overwrite)",
+   "mtime": "2026-11-06T21:06"
+  },
+  "webshop:g06651": {
+   "n_commands": 10,
+   "actions": [
+    "search[keto friendly peas beans]",
+    "click[B09NS5HTPX [SEP] STEAMED BEAN SNACK Perfect Mix (Organic Chickpeas, Soybeans, Green Peas, Kidney Beans, Black Beans) Healthy, Plant Protein, Fiber, Vegan, Keto, Ready to Eat -2oz (Pack of 1) [SEP] $3.5 [SEP]]",
+    "click[B09NS5HTPX [SEP] STEAMED BEAN SNACK Perfect Mix (Organic Chickpeas, Soybeans, Green Peas, Kidney Beans, Black Beans) Healthy, Plant Protein, Fiber, Vegan, Keto, Ready to Eat -2oz (Pack of 1) [SEP] $3.5 [SEP] Buy Now]",
+    "click[B09NS5HTPX [SEP] STEAMED BEAN SNACK Perfect Mix (Organic Chickpeas, Soybeans, Green Peas, Kidney Beans, Black Beans) Healthy, Plant Protein, Fiber, Vegan, Keto, Ready to Eat -2oz (Pack of 1) [SEP] $3.5 [SEP] Buy Now]",
+    "click[B09NS5HTPX [SEP] STEAMED BEAN SNACK Perfect Mix (Organic Chickpeas, Soybeans, Green Peas, Kidney Beans, Black Beans) Healthy, Plant Protein, Fiber, Vegan, Keto, Ready to Eat -2oz (Pack of 1) [SEP] $3.5]",
+    "click[Buy Now]",
+    "click[B08NT7XDG1 [SEP] 【Eat More Beans】Organic Fully Cooked Perfect Beans | Steamed bean, USDA Organic Vegan Vegetarian Healthy Keto Food- Variety of Organic Edamame, Chickpea, Black Beans, Green Peas, Kidney Beans (12 Packs, 5 oz) [SEP] $42.59]",
+    "click[【Eat More Beans】Organic Fully Cooked Perfect Beans | Steamed bean, USDA Organic Vegan Vegetarian Healthy Keto Food- Variety of Organic Edamame, Chickpea, Black Beans, Green Peas, Kidney Beans (12 Packs, 5 oz)]",
+    "click[B08NT7XDG1]",
+    "click[Buy Now]"
+   ],
+   "bought": true,
+   "purchase": {
+    "asin": "B08NT7XDG1",
+    "options": {},
+    "price": 42.59,
+    "product": {
+     "Attributes": [
+      "fully cooked",
+      "usda organic",
+      "ready eat",
+      "non gmo",
+      "healthy snack",
+      "certified organic",
+      "gluten free"
+     ],
+     "BulletPoints": [
+      "Packaging may differ from product image due to design change. ",
+      "USDA ORGANIC, NON-GMO, VEGAN, GLUTEN-FREE - We take safety and peace of mind regarding our product very seriously. Our Steamed Bean Perfect Mix is made of organic soy beans, chickpeas, black beans, green peas, kidney beans, and black beans. We only use All-natural, non-GMO, USDA certified organic, and traceability-transparent materials in our factory. ",
+      "FULLY-COOKED, READY TO EAT - Beans are tasty and great source of protein and vitamins. You don't know how to cook them? No problem. It is perfectly STEAMED and FULLY-COOKED. Steaming is far better way of cooking than boiling in many ways. Boiling dissolves important nutrients such as proteins, isoflavones etc., but steaming allows water-soluble nutrients to remain in the beans and keeps the flavor. It is ready to eat or to be added to any dish. ",
+      "PERFECT HEALTHY FOOD FOR VEGETARIANS - Want to be healthy? Eating beans can help! They are rich in protein, fiber, iron, antioxidants, and other essential nutrients - excellent healthy keto food with low calories. Plus, beans are delicious, versatile, and inexpensive! Especially perfect vegan snacks for vegetarian or weight watchers! ",
+      "GOOD FOR ANY TIME OF DAY - It’s difficult to calculate calories, pack a healthy snack and eat during busy days. Our Steamed Bean Perfect Mix is fully-cooked and packed in perfect condition. You can eat any time of day including coffee breaks at work, before and after workout, and it is also a delicious addiction to your favorite soup and salad! ",
+      "IT IS DELICIOUS - Beans and other legumes are delicious foods, not to mention they’re versatile and very nutritious. Our Steamed Bean Perfect Mix is steam-cooked to keep beans' natural flavor. Just try it. You would be presently surprised by its rich and delicious flavor. "
+     ],
+     "Description": "",
+     "Title": "【Eat More Beans】Organic Fully Cooked Perfect Beans | Steamed bean, USDA Organic Vegan Vegetarian Healthy Keto Food- Variety of Organic Edamame, Chickpea, Black Beans, Green Peas, Kidney Beans (12 Packs, 5 oz)",
+     "asin": "B08NT7XDG1",
+     "name": "【Eat More Beans】Organic Fully Cooked Perfect Beans | Steamed bean, USDA Organic Vegan Vegetarian Healthy Keto Food- Variety of Organic Edamame, Chickpea, Black Beans, Green Peas, Kidney Beans (12 Packs, 5 oz)",
+     "product_category": "Grocery & Gourmet Food › Produce › Packaged Produce",
+     "query": "frozen"
+    }
+   },
+   "source": "final_artifact.json (dedicated OUT root runs/e1_webshop_9b_trace_r11/final_artifacts — no overwrite)",
+   "mtime": "2026-11-06T21:13"
+  },
+  "webshop:g07025": {
+   "n_commands": 3,
+   "actions": [
+    "search[vanity light bronze finish glass shades]",
+    "click[B08K2S5R4P]",
+    "click[Buy Now]"
+   ],
+   "bought": true,
+   "purchase": {
+    "asin": "B08K2S5R4P",
+    "options": {},
+    "price": 138.99,
+    "product": {
+     "Attributes": [
+      "bronze finish",
+      "vanity light",
+      "clear glass",
+      "glass shade",
+      "wall lamp",
+      "light fixture",
+      "long lasting",
+      "metal frame",
+      "easy assemble",
+      "living room"
+     ],
+     "BulletPoints": [
+      "4 Lights modern vanity wall light features a metal frame in oil rubbed bronze finish and cylindrical clear glass shades ",
+      "Bathroom vanity light dimensions: Length: 33.25\", depth from wall: 8\", height: 8\", glass shade diameter: 4.33\", Back plate: 7.08\"(L) x 4.33\"(W) x 0.78\"(H). Bulb requirements: 4 * E26 base 60W max (NOT INCLUDED) ",
+      "ETL Listed for safety: Modern wall light for bathroom, vanity, bedroom, living room and other damp locations ",
+      "Easy installation: Comes as parts but easy to assemble all the parts together according to the instructions and easy to hardwire on the wall for long lasting use ",
+      "What you get: 1 x ACLand 4-light vanity wall light. We provide friendly customer service. If you have any questions about ACLand lights, please feel free to contact us. "
+     ],
+     "Description": "",
+     "Title": "ACLand 4-Light Bathroom Vanity Light Fixture, Bath Vanity Sconce Wall Lamp Lighting for Bathroom Bedroom, Oil Rubbed Bronze Finish with Cylindrical Clear Glass Shade",
+     "asin": "B08K2S5R4P",
+     "name": "ACLand 4-Light Bathroom Vanity Light Fixture, Bath Vanity Sconce Wall Lamp Lighting for Bathroom Bedroom, Oil Rubbed Bronze Finish with Cylindrical Clear Glass Shade",
+     "product_category": "Tools & Home Improvement › Lighting & Ceiling Fans › Wall Lights › Vanity Lights",
+     "query": "vanities"
+    }
+   },
+   "source": "final_artifact.json (dedicated OUT root runs/e1_webshop_9b_trace_r11/final_artifacts — no overwrite)",
+   "mtime": "2026-11-06T21:08"
+  },
+  "webshop:g07359": {
+   "n_commands": 5,
+   "actions": [
+    "search[bvlgari blv women perfume]",
+    "click[B004SU8EF6 [SEP] Bvlgari BLV II Eau De Parfum Spray for Women with Satin Pouch, 0.84 Fluid Ounce [SEP] $149.0]",
+    "click[B004SU8EF6 [SEP] Bvlgari BLV II Eau De Parfum Spray for Women with Satin Pouch, 0.84 Fluid Ounce [SEP] $149.0]",
+    "click[B004SU8EF6]",
+    "click[Buy Now]"
+   ],
+   "bought": true,
+   "purchase": {
+    "asin": "B004SU8EF6",
+    "options": {},
+    "price": 149.0,
+    "product": {
+     "Attributes": [
+      "spray women",
+      "parfum spray",
+      "eau parfum"
+     ],
+     "BulletPoints": [
+      "Bvlgari BLV II EDP Spray ",
+      ".84oz with satin Pouch ",
+      "100% Authentic in Retail Box "
+     ],
+     "Description": "This is a beautiful gem from the esteemed luxe jewelry company. This is an oriental woody fragrance for a sophisticated woman and was created by perfumer Jacques Cavalier. Top notes are violet, star anise, liquorice and mandarin; the floral heart of iris absolute is enhanced by patchouli and Haitian vetiver. The base is sultry and incorporates three amber notes, including precious ambergris and sweet benzoin, with nuances of labdanum, Tonka bean and musk at the dry down.",
+     "Title": "Bvlgari BLV II Eau De Parfum Spray for Women with Satin Pouch, 0.84 Fluid Ounce",
+     "asin": "B004SU8EF6",
+     "name": "Bvlgari BLV II Eau De Parfum Spray for Women with Satin Pouch, 0.84 Fluid Ounce",
+     "product_category": "Beauty & Personal Care › Fragrance › Women's › Eau de Parfum",
+     "query": "women's fragrance"
+    }
+   },
+   "source": "final_artifact.json (dedicated OUT root runs/e1_webshop_9b_trace_r11/final_artifacts — no overwrite)",
+   "mtime": "2026-11-06T21:23"
+  },
+  "webshop:g07507": {
+   "n_commands": 20,
+   "actions": [
+    "search[jojoba oil non toxic 128 fl oz]",
+    "click[B00G3LJVJG JOJOBA OIL Cold Pressed Unrefined 100% Pure Natural 32 oz Jojoba Oil Carrier for Essential Oils, Cleansing, Moisturizer for Face, Hair Moisturizer, Ears, Eyelash, Massage, Makeup Remover, Soap Making $33.77]",
+    "click[B07PR7J175 Cliganic Organic Jojoba Oil Bulk, Gallon Size 128oz, 100% Pure - Non-GMO]",
+    "click[B07PR7J175 Cliganic Organic Jojoba Oil Bulk, Gallon Size 128oz, 100% Pure - Non-GMO]",
+    "search[jojoba oil non toxic 128 fl oz pack of 1 price 50]",
+    "click[B01GUAT0IQ HobaCare Organic Jojoba Extract, 32 oz. (946 mL) – Pure Golden Jojoba for Face, Body & Hair – Suitable for All Skin Types – 100% Pure Cold-Pressed Jojoba Oil – 100% USDA Certified Organic $49.99]",
+    "click[B09P9VCHL6 HobaCare Jojoba Extract, 128 oz. (Gallon) – Pure Jojoba for Face, Body, & Hair – Suitable for All Skin Types – 100% Pure Cold-Pressed Jojoba Oil $112.99]",
+    "click[B07PR7J175 Cliganic Organic Jojoba Oil Bulk, Gallon Size 128oz, 100% Pure - Non-GMO]",
+    "click[Back to Search]",
+    "search[jojoba oil 128 fl oz]",
+    "click[B07PR7J175\nCliganic Organic Jojoba Oil Bulk, Gallon Size 128oz, 100% Pure - Non-GMO]",
+    "search[jojoba oil 128 oz non toxic]",
+    "search[jojoba oil 128 fl oz]",
+    "click[B07PR7J175]",
+    "click[128 fl oz (pack of 1)]",
+    "search[jojoba oil 128 fl oz non toxic]",
+    "click[B00G3LJVJG]",
+    "click[128 fl oz (pack of 1)]",
+    "click[128 fl oz (pack of 1)]",
+    "click[Buy Now]"
+   ],
+   "bought": true,
+   "purchase": {
+    "asin": "B00G3LJVJG",
+    "options": {
+     "size": "128 fl oz (pack of 1)"
+    },
+    "price": 33.77,
+    "product": {
+     "Attributes": [
+      "makeup remover",
+      "essential oils"
+     ],
+     "BulletPoints": [
+      "Cocojojo Jojoba Oil is 100% Pure, Natural, Extra Virgin, Cold Pressed, and Unrefined. Jojoba Oil is Grade A – Premium Quality oil from Jojoba nut. ",
+      "NATURAL BENEFITS – Jojoba Oil may be used to help with skin troubles naturally. Jojoba Oil is rich in nutrients that make it perfect for moisturizing skin as well as hair to improve the overall health of skin and hair. Jojoba Oil is also calming to use on skin to keep skin cool and even. ",
+      "SKIN SOOTHING – Jojoba Oil is soothing to use on skin and may help improve skin concerns. The nutrients found in Jojoba Oil has skin calming properties and makes a gentle skin cleanser and moisturizer. ",
+      "CLEANSING – Jojoba Oil can be used as a facial cleanser to clean the skin of impurities and dirt. Jojoba Oil is effective at helping reduce clogged pores to improve the quality and appearance of skin. ",
+      "HAIR BENEFITS – Jojoba Oil can be used in hair to promote healthier hair. Jojoba Oil can improve the quality of hair when used regularly for glossier, stronger hair. "
+     ],
+     "Description": "",
+     "Title": "JOJOBA OIL Cold Pressed Unrefined 100% Pure Natural 32 oz Jojoba Oil Carrier for Essential Oils, Cleansing, Moisturizer for Face, Hair Moisturizer, Ears, Eyelash, Massage, Makeup Remover, Soap Making",
+     "asin": "B00G3LJVJG",
+     "name": "JOJOBA OIL Cold Pressed Unrefined 100% Pure Natural 32 oz Jojoba Oil Carrier for Essential Oils, Cleansing, Moisturizer for Face, Hair Moisturizer, Ears, Eyelash, Massage, Makeup Remover, Soap Making",
+     "product_category": "Beauty & Personal Care › Skin Care › Face › Creams & Moisturizers › Face Oil",
+     "query": "makeup remover"
+    }
+   },
+   "source": "final_artifact.json (dedicated OUT root runs/e1_webshop_9b_trace_r11/final_artifacts — no overwrite)",
+   "mtime": "2026-11-06T21:23"
+  },
+  "webshop:g07602": {
+   "n_commands": 6,
+   "actions": [
+    "search[fat free kosher certified low calorie dried peaches]",
+    "click[Fastachi Dried Peaches - 8 oz Pouch]",
+    "click[Fastachi Dried Peaches - 8 oz Pouch]",
+    "click[Fastachi Dried Peaches - 8 oz Pouch]",
+    "click[B07JQ421BL]",
+    "click[Buy Now]"
+   ],
+   "bought": true,
+   "purchase": {
+    "asin": "B07JQ421BL",
+    "options": {},
+    "price": 8.5,
+    "product": {
+     "Attributes": [
+      "healthy snack"
+     ],
+     "BulletPoints": [
+      "Dried peaches are a healthy snack low in fats and cholesterol and high in carbohydrates, fiber and useful minerals. ",
+      "Great between meal snack, can be used in baking, salads, granola, yogurt...just to name a few. ",
+      "This item is sold in an 8 oz re-sealable pouch. ",
+      "Try also our apricots. "
+     ],
+     "Description": "Fastachi Dried Peaches: Dried peaches (sweet and tart in flavor) are similar to dried California apricots, but larger and have a more mild flavor than the dried California apricot. Dried peaches make a great snack or can be used as an alternative to dried apricots in baking.  Dried peaches are a healthy snack low in fats and cholesterol and high in carbohydrates, fiber and useful minerals.   NUTRITION FACTS: Serv. Size: about 1/4 cup (40g). Servings: about 6. Amount Per Serving: Calories 110, Fat Cal. 0, Total Fat 0g (0% DV), Sat. Fat 0g (0% DV), Trans Fat 0g, Sodium 0mg (0% DV), Total Carb. 25g (81% DV), Fiber 3g (13% DV), Sugars 17g, Protein 1g (3% DV), Vitamin A (15% DV), Vitamin C (4% DV), Iron (10% DV). Not a significant source of Cholest. or Calcium. Percent Daily Values (DV) are based on a 2,000 calorie diet.  this item is sold per 8 oz re-sealable pouch and is only available from Fastachi. allergy information: this product is processed in a facility that also processes peanuts and tree nuts.  PLEASE NOTE: DRIED PEACHES CONTAIN SULFUR DIOXIDE FOR COLOR RETENTION AND MAY CONTAIN OCCASIONAL PIT FRAGMENTS.",
+     "Title": "Fastachi Dried Peaches - 8 oz Pouch",
+     "asin": "B07JQ421BL",
+     "name": "Fastachi Dried Peaches - 8 oz Pouch",
+     "product_category": "Grocery & Gourmet Food › Snacks & Sweets › Snack Foods › Fruit Snacks",
+     "query": "fruit snacks"
+    }
+   },
+   "source": "final_artifact.json (dedicated OUT root runs/e1_webshop_9b_trace_r11/final_artifacts — no overwrite)",
+   "mtime": "2026-11-06T21:07"
+  },
+  "webshop:g07863": {
+   "n_commands": 5,
+   "actions": [
+    "search[extra light beige foundation natural ingredients]",
+    "click[B00028OT8Y [SEP] Gabriel Cosmetics Dual Powder Foundation (Extra Light Beige – Fair to Light/ Neutral Undertones), Natural Pressed mineral powder, Paraben Free, Vegan, Gluten-free, Cruelty-free, Non GMO, Enhanced with Sea Fennel, .32 oz. [SEP] $24.49]",
+    "click[buy now]",
+    "click[B00028OT8Y]",
+    "click[Buy Now]"
+   ],
+   "bought": true,
+   "purchase": {
+    "asin": "B00028OT8Y",
+    "options": {},
+    "price": 24.49,
+    "product": {
+     "Attributes": [
+      "gluten free",
+      "cruelty free",
+      "plant based",
+      "seed oil",
+      "paraben free",
+      "non toxic",
+      "natural ingredients"
+     ],
+     "BulletPoints": [
+      "Formulated to help minimize shine and absorb excess oil without clogging pores or drying out the skin.  This velvety plant-based formula performs both as a foundation and powder for a smooth matte finish ",
+      "Naturally Sourced Ingredients : mica, cetyl palmitate, octyl palmitate, silica, kaolin, persea gratissima (avocado) fruit extract, zinc stearate, simmondsia chinensis (jojoba) seed oil, caprylic/capric triglyceride, lecithin, crithmum maritimum (sea fennel) extract, tocopheryl acetate, iron oxides, titanium dioxide. ",
+      "Key Ingredients & Properties: Enhanced with sea fennel for luxurious texture and ease of application ",
+      "We are 100% Vegan ● Cruelty-Free ● Gluten-Free ● Non-Toxic. Suitable on all Skin types. ",
+      "We use 100% Natural Ingredients and Mineral-Based Ingredients. Made in USA. "
+     ],
+     "Description": "",
+     "Title": "Gabriel Cosmetics Dual Powder Foundation (Extra Light Beige – Fair to Light/ Neutral Undertones), Natural Pressed mineral powder, Paraben Free, Vegan, Gluten-free, Cruelty-free, Non GMO, Enhanced with Sea Fennel, .32 oz.",
+     "asin": "B00028OT8Y",
+     "name": "Gabriel Cosmetics Dual Powder Foundation (Extra Light Beige – Fair to Light/ Neutral Undertones), Natural Pressed mineral powder, Paraben Free, Vegan, Gluten-free, Cruelty-free, Non GMO, Enhanced with Sea Fennel, .32 oz.",
+     "product_category": "Beauty & Personal Care › Makeup › Face › Foundation",
+     "query": "face makeup"
+    }
+   },
+   "source": "final_artifact.json (dedicated OUT root runs/e1_webshop_9b_trace_r11/final_artifacts — no overwrite)",
+   "mtime": "2026-11-06T21:23"
+  },
+  "webshop:g08140": {
+   "n_commands": 3,
+   "actions": [
+    "search[earl grey decaf 20 individually wrapper boxes]",
+    "click[B000GG1OB2]",
+    "click[Buy Now]"
+   ],
+   "bought": true,
+   "purchase": {
+    "asin": "B000GG1OB2",
+    "options": {},
+    "price": 16.02,
+    "product": {
+     "Attributes": [
+      "black tea",
+      "tea bags",
+      "individually wrapped",
+      "herbal tea",
+      "green tea",
+      "kosher certified",
+      "gluten free"
+     ],
+     "BulletPoints": [
+      "King Of Earls: Our Earl Gray Tea brings you the classic full-bodied flavor of black tea with the fruity notes of bergamot oil for a nuanced flavor that is ideal for your morning cup of tea ",
+      "Individually Wrapped: Bigelow Tea always come individually wrapped in foil pouches for peak flavor, freshness and aroma to enjoy everywhere you go! Gluten-free, calorie-free, and Kosher Certified ",
+      "Try Every Flavor: There's a tea for morning, noon, and night time relaxation. Try our English Breakfast, Vanilla Chai, antioxidant Green Tea, decaffeinated teas, organic teas and a variety of our herbal tea bags ",
+      "Blended and Packaged in the USA: In 1945 Ruth Campbell Bigelow created our first tea, Constant Comment, a strong, flavorful black tea blended with aromatic orange peel and sweet warming spices. Today, Bigelow is still 100% Family Owned ",
+      "Uncompromised Quality: Since 1945, Bigelow Tea has been a leader in premium tea and proud to be a Certified B Corporation - meeting the highest verified standards of social and environmental performance, transparency and accountability "
+     ],
+     "Description": "For our special Decaffeinated Earl Grey, we’re adamant about using only the best bergamot oil. We source ours from the same garden in Calabria, Italy year after year. Then we carefully blend this flavorful and aromatic bergamot with a bold handpicked black tea... a recipe like no other.  The Bigelow Tea Story Beginning the moment our founder, Ruth Campbell Bigelow created \"Constant Comment\" Tea in her kitchen in 1945, our family has focused on just one thing trying to make the finest teas possible. Over the years we have introduced many new flavors as well as concepts in tea. Today we offer a selection of deliciously different blends of teas and green teas, a wide variety of herbal teas and teas flavored with real fruit juice. Today Bigelow Tea is the number one specialty tea company in the United States. And to think it all began with the first legendary black tea flavored with golden orange rind and sweet spice \"Constant Comment\"Tea. Bigelow takes immense pride in providing the tea drinking community with the best tea at a great value. We only use hand- picked teas, real spices, flavors and herbs. The flavors and blends we have created are second to none. Some of our teas contain up to twenty different ingredients! And because tea is a leaf that can dry out we take steps to protect it. To keep the teas fresh, we seal our tea bags in protective packets. We simply have to protect those delightful flavors. That's why a cup of Bigelow Tea is aromatic and delicious; a true indulgence for the senses.",
+     "Title": "Bigelow Decaffeinated Earl Grey Black Tea Bags 20-Count Boxes (Pack of 6), 120 Tea Bags Total",
+     "asin": "B000GG1OB2",
+     "name": "Bigelow Decaffeinated Earl Grey Black Tea Bags 20-Count Boxes (Pack of 6), 120 Tea Bags Total",
+     "product_category": "Grocery & Gourmet Food › Beverages › Coffee, Tea & Cocoa › Tea › Green",
+     "query": "pantry staples"
+    }
+   },
+   "source": "final_artifact.json (dedicated OUT root runs/e1_webshop_9b_trace_r11/final_artifacts — no overwrite)",
+   "mtime": "2026-11-06T21:24"
+  },
+  "webshop:g08732": {
+   "n_commands": 3,
+   "actions": [
+    "search[low carb carba-nada roasted fettuccine]",
+    "click[B07GDV2R31]",
+    "click[Buy Now]"
+   ],
+   "bought": true,
+   "purchase": {
+    "asin": "B07GDV2R31",
+    "options": {},
+    "price": 11.92,
+    "product": {
+     "Attributes": [
+      "dietary fiber"
+     ],
+     "BulletPoints": [
+      "Reduced Carb Pasta - 170 Calories per serving. 5 Serving per bag ",
+      "Al Dente Pasta Garlic Flavor. Carba Nada Pasta Garlic Flavor ",
+      "Kosher, high in fiber 7g per serving 25% daily of dietary fiber ",
+      "Simple Cooking directions: cooks in 3 minutes ",
+      "Enjoy in good health! "
+     ],
+     "Description": "Al Dente Pasta Carba-Nada Roasted Garlic Fettuccine 10 Ounce Bag. Kosher, cooks in 3 minutes. Start to enjoy good health in minutes.",
+     "Title": "2 Packs Al Dente Pasta Carba-Nada Roasted Garlic Fettuccine 10 Ounce Bag",
+     "asin": "B07GDV2R31",
+     "name": "2 Packs Al Dente Pasta Carba-Nada Roasted Garlic Fettuccine 10 Ounce Bag",
+     "product_category": "Grocery & Gourmet Food › Pantry Staples › Pasta & Noodles › Pasta › Fettuccine",
+     "query": "eggs & egg substitutes"
+    }
+   },
+   "source": "final_artifact.json (dedicated OUT root runs/e1_webshop_9b_trace_r11/final_artifacts — no overwrite)",
+   "mtime": "2026-11-06T21:08"
+  },
+  "webshop:g09324": {
+   "n_commands": 11,
+   "actions": [
+    "search[toner for sensitive skin 16 fl oz]",
+    "click[B000GCQ04C [SEP] Dickinson's Original Witch Hazel Pore Perfecting Toner, 100% Natural, 16 Ounce Fragrance free [SEP] $4.68]",
+    "click[Dickinson's Original Witch Hazel Pore Perfecting Toner, 100% Natural, 16 Ounce Fragrance free]",
+    "click[Buy now]",
+    "click[Dickinson's Original Witch Hazel Pore Perfecting Toner, 100% Natural, 16 Ounce Fragrance free]",
+    "click[Buy now]",
+    "click[Back with search]",
+    "click[B000GCQ04C [SEP] Dickinson's Original Witch Hazel Pore Perfecting Toner, 100% Natural, 16 Ounce Fragrance free [SEP] $4.68]",
+    "click[B000GCQ04C [SEP] Dickinson's Original Witch Hazel Pore Perfecting Toner, 100% Natural, 16 Ounce Fragrance free [SEP] $4.68]",
+    "click[B00KX32J26]",
+    "click[Buy Now]"
+   ],
+   "bought": true,
+   "purchase": {
+    "asin": "B00KX32J26",
+    "options": {},
+    "price": 4.99,
+    "product": {
+     "Attributes": [
+      "alcohol free",
+      "hyaluronic acid"
+     ],
+     "BulletPoints": [
+      "A gentle, alcohol-free, hydrating toner with the enticing benefit of its rosewater ingredient ",
+      "Powered by our exclusive formula with 98% natural, distilled witch hazel and enhanced with Hyaluronic Acid and Vitamin E ",
+      "Removes impurities, moisturizes skin, and refines pores (and all with a nice, floral scent) ",
+      "Dermatologist recommended witch hazel that contains zero parabens, dyes, sulfates, or gluten ",
+      "Each order includes a single, 16 fl. oz. bottle ",
+      "New Look; Packaging May Vary "
+     ],
+     "Description": "Dickinson's Enhanced Alcohol Free Witch Hazel Hydrating Toner with Rosewater gently nourishes skin with Hyaluronic Acid and Vitamin E as it cleanses, tones, and refreshes for a truly smoother complexion. As described, this alcohol-free formula helps and reconditions skin to maintain its natural, radiant balance while removing impurities. The result? A fresh, ultra-clean feel without tightness for a softer, healthier look. Our exclusive formula is made with 98% natural, distilled witch hazel and contains zero parabens, sulfates, dyes or glutens, plus the added, enhancing ingredient of invigorating rosewater. This comes in a single, 16 oz. bottle. For more than 150 years, natural witch hazel has been the primary ingredient in all of Dickinson's products for truly effective skincare solutions. They'll help to leave your skin feeling healthy and hydrated (and without harsh or confusing ingredients). Only the pure essence of peak-bloom, hand-harvested, and organic-certified New England witch hazel makes its way into our products. Dickinson's also leaves a positive impact on the environment, all while offering products which gently cleanse, tone, and refresh to purify all skin types. A pure clean for a pure, beautiful you: that is the genuine promise of Dickinson's.",
+     "Title": "Dickinson's Enhanced Witch Hazel Hydrating Toner with Rosewater, Alcohol Free, 98% Natural Formula, 16 Fl Oz",
+     "asin": "B00KX32J26",
+     "name": "Dickinson's Enhanced Witch Hazel Hydrating Toner with Rosewater, Alcohol Free, 98% Natural Formula, 16 Fl Oz",
+     "product_category": "Beauty & Personal Care › Skin Care › Face › Toners & Astringents",
+     "query": "face makeup"
+    }
+   },
+   "source": "final_artifact.json (dedicated OUT root runs/e1_webshop_9b_trace_r11/final_artifacts — no overwrite)",
+   "mtime": "2026-11-06T21:09"
+  },
+  "webshop:g09442": {
+   "n_commands": 3,
+   "actions": [
+    "search[fluoride free ayurvedic herbal toothpaste]",
+    "click[B08NTG84WD]",
+    "click[Buy Now]"
+   ],
+   "bought": true,
+   "purchase": {
+    "asin": "B08NTG84WD",
+    "options": {},
+    "price": 4.0,
+    "product": {
+     "Attributes": [
+      "fluoride free"
+     ],
+     "BulletPoints": [
+      ""
+     ],
+     "Description": "Isha Life Herbal Toothpaste draws upon the wisdom of generations of Ayurvedic practitioners and is made with 9 plant extracts. Aimed at improving overall oral health, this unique formula is derived from Camphor, Menthol, Clove, Ginger, Black Pepper, Long Pepper, Harad, Amla, and Licorice. This formulation naturally cleanses teeth and gums and helps keep them strong. Isha Life Herbal toothpaste is made without sodium lauryl sulfate (SLS) and is fluoride-free.",
+     "Title": "Isha 100% Natural Ayurvedic Herbal Toothpaste - SLS and Fluoride Free (1.8 oz), 1 pack",
+     "asin": "B08NTG84WD",
+     "name": "Isha 100% Natural Ayurvedic Herbal Toothpaste - SLS and Fluoride Free (1.8 oz), 1 pack",
+     "product_category": "Beauty & Personal Care › Oral Care › Toothpaste",
+     "query": "toothpaste"
+    }
+   },
+   "source": "final_artifact.json (dedicated OUT root runs/e1_webshop_9b_trace_r11/final_artifacts — no overwrite)",
+   "mtime": "2026-11-06T21:23"
+  },
+  "webshop:g09755": {
+   "n_commands": 12,
+   "actions": [
+    "search[fat free jerky sweet hot]",
+    "click[B00VB1X8JW]",
+    "click[B00VB1X8JW]",
+    "click[< Prev]",
+    "click[B00VB1X8JW]",
+    "click[B000117184]",
+    "click[Page 1 (Total results: 50)]",
+    "click[B00VB1X8JW]",
+    "click[B00VB1X8JW]",
+    "click[< Prev]",
+    "click[B00VB1XHTI]",
+    "click[Buy Now]"
+   ],
+   "bought": true,
+   "purchase": {
+    "asin": "B00VB1XHTI",
+    "options": {},
+    "price": 10.24,
+    "product": {
+     "Attributes": [
+      "beef jerky",
+      "black pepper",
+      "fat free"
+     ],
+     "BulletPoints": [
+      "MADE WITH 100% BEEF : Our Sweet & Hot Beef Jerky is made of lean cuts of 100% premium beef. It's 96% fat free and has no added MSG and no added nitrates or nitrites. ",
+      "GOOD SOURCE OF PROTEIN : Protein is an essential part of diets and Sweet & Hot Beef Jerky is a great way to get more. With 9g of protein and 80 calories per serving, it's a protein-packed meat snack that helps keep you satisfied when you need it most. ",
+      "RESEALABLE SHARING SIZE :The jumbo 5.85 oz. sharing size bag is resealable and has about 6 servings in each bag. It's perfect for sharing with family and friends or to stash in your secret spot and keep all to yourself. ",
+      "FULL ON FLAVOR :It's the best of both worlds: heat and sweet. We marinate each strip of our Sweet & Hot Jerky with a blend of smoky sweet chili and black pepper. This combo builds while you're eating for heat perfectly balanced with a touch of sweet. ",
+      "PERFECT EVERYDAY SNACK : How did ancient civilizations fuel themselves to cross oceans or win sword battles? Meat. If it worked for them, Jack Link's Beef Jerky can help you power thru a late day at work, tackle your honey-do list or fuel a workout. "
+     ],
+     "Description": "Think way back. Like even before that. Ancient civilizations fueled themselves with meat. If it worked for them, it can definitely help you power thru. You may not be crossing treacherous seas, but endless to-dos, kid activities and trying to squeeze in a workout can feel just like it. Jack Link’s Sweet & Hot Beef Jerky is the best of both worlds. Heat and sweet. Made with lean cuts of 100% beef we marinate each strip with a special blend of smoky sweet chili and black pepper. This combination builds while you’re eating for an unforgettable chili heat perfectly balanced with a touch of sweet. Packed with 9g of protein per serving, it’s 96% fat free and has no added MSG, nitrates or nitrites. The jumbo 5.85 oz. sharing size bag is resealable and has about 6 servings in each bag. It’s perfect for sharing with family and friends or to stash in your secret spot and keep all to yourself. Jack Link’s is America’s #1 selling jerky brand. When you open a Jack Link’s meat snack, you get a taste of the American tradition that made this family business a success: hard work, fun and quality products. Our protein snacks are the fuel to help you Feed Your Wild Side.",
+     "Title": "Jack Link’s Beef Jerky, Sweet & Hot, 5.85 oz. Sharing Size Bag – Meat Snack with 9g of Protein & 80 Calories, Made with Premium Beef, No added MSG or Nitrates/Nitrites (Packaging May Vary)",
+     "asin": "B00VB1XHTI",
+     "name": "Jack Link’s Beef Jerky, Sweet & Hot, 5.85 oz. Sharing Size Bag – Meat Snack with 9g of Protein & 80 Calories, Made with Premium Beef, No added MSG or Nitrates/Nitrites (Packaging May Vary)",
+     "product_category": "Grocery & Gourmet Food › Snacks & Sweets › Snack Foods › Meat Snacks › Jerky",
+     "query": "meat snacks"
+    }
+   },
+   "source": "final_artifact.json (dedicated OUT root runs/e1_webshop_9b_trace_r11/final_artifacts — no overwrite)",
+   "mtime": "2026-11-06T21:09"
+  },
+  "webshop:g09904": {
+   "n_commands": 25,
+   "actions": [
+    "search[big and tall levi's men's 505 regular fit jeans machine washable]",
+    "click[Levi's Men's Big and Tall 550 Relaxed Fit Jean, Clif - Stretch, 42W x 36L [id=B01IROIZLG]]",
+    "click[Levi's Men's Big and Tall 550 Relaxed Fit Jean, Clif - Stretch, 42W x 36L [id=B01IROIZLG]]",
+    "click[Levi's Men's 505 Regular Fit Jeans [id=B000HTKOMS]]",
+    "click[Back to Search]",
+    "search[big and tall levi's men's 505 regular fit jeans]",
+    "click[Levi's Men's Big and Tall 550 Relaxed Fit Jean, Clif - Stretch, 42W x 36L [id=B01IROIZLG]]",
+    "click[Back to Search]",
+    "search[big and tall levi's men's 505 regular fit jeans]",
+    "click[Levi's Men's Big and Tall 550 Relaxed Fit Jean, Clif - Stretch, 42W x 36L [id=B01IROIZLG]]",
+    "click[Levi's Men's 505 Regular Fit Jeans [id=B000HTKOMS]]",
+    "search[big and tall levi's men's 505 regular fit jeans]",
+    "click[Levi's Men's Big and Tall 550 Relaxed Fit Jean, Clif - Stretch, 42W x 36L [id=B01IROIZLG]]",
+    "click[B000HTKOMS [SEP] Levi's Men's 505 Regular Fit Jeans [SEP] $22.24 to $69.5]",
+    "click[B000HTKOMS [SEP] Levi's Men's 505 Regular Fit Jeans [SEP] $22.24 to $69.5]",
+    "search[big and tall Levi's men's 505 regular fit jeans machine washable]",
+    "click[B001IROIZLG [SEP] Levi's Men's Big and Tall 550 Relaxed Fit Jean, Clif - Stretch, 42W x 36L [SEP] $49.99]",
+    "click[Back to Search]",
+    "search[levi's men's big and tall 505 regular fit jeans]",
+    "click[B001IROIZLG [SEP] Levi's Men's Big and Tall 550 Relaxed Fit Jean, Clif - Stretch, 42W x 36L [SEP] $49.99]",
+    "click[B000HTKOMS [SEP] Levi's Men's 505 Regular Fit Jeans [SEP] $22.24 to $69.5]",
+    "click[Levi's Men's Big and Tall 550 Relaxed Fit Jean, Clif - Stretch, 42W x 36L]",
+    "search[Levi's Men's Big and Tall 505 Regular Fit Jeans]",
+    "click[B001H0G2RW [SEP] Levi's Boys' Big & Tall 505 Regular Fit Jeans [SEP] $34.99 to $49.99]",
+    "click[Levi's Boys' Big & Tall 505 Regular Fit Jeans]"
+   ],
+   "bought": false,
+   "purchase": null,
+   "source": "final_artifact.json (dedicated OUT root runs/e1_webshop_9b_trace_r11/final_artifacts — no overwrite)",
+   "mtime": "2026-11-06T21:24"
+  },
+  "webshop:g10067": {
+   "n_commands": 20,
+   "actions": [
+    "search[davidson's tea 100 pcs south africa flavored tea bags spiced rooibos chai certified organic]",
+    "click[B000SATGXE Davidson's Tea South African Honeybush, 100-Count Tea Bags]",
+    "click[B000SATIE6 Davidson's Organic (Singell estate) Darjeeling Tea, 16-Ounce Bag]",
+    "click[B000SATIE6 Davidson's Tea Bulk, Organic South African Rooibos, 16 Ounce]",
+    "click[B00DFVD6FC Numi Organic Tea World of Tea Gift Set, 45 Tea Bags, Black, Green, Mate, Rooibos & Herbal Teas (Packaging May Vary)]",
+    "click[B008VRW9FJP Teabloom Organic Herbal Tea, Ruby Spice Chai Loose Leaf Tea, Spicy and Rich Rooibos Chai with No Caffeine, USDA and EU Certified Organic, Fresh Whole Leaf Blend in Reusable Gift Canister, 3 oz/85 g Canister Makes 35-50 Cups]",
+    "click[B000SATIE6 Davidson's Tea Bulk, Organic South African Rooibos, 16 Ounce]",
+    "search[davidson's tea south africa spiced rooibos chai 100 pcs certified organic]",
+    "click[B000SATIE6 Davidson's Tea Bulk, Organic South African Rooibos, 16 Ounce]",
+    "click[B000SATIE6 Davidson's Tea Bulk, Organic South African Rooibos, 16 Ounce]",
+    "click[B000SATIE6 Davidson's Tea Bulk, Organic South African Rooibos, 16 Ounce]",
+    "click[B000SATIE6 Davidson's Tea Bulk, Organic South African Rooibos, 16 Ounce]",
+    "click[B000SATIE6 Davidson's Tea Bulk, Organic South African Rooibos, 16 Ounce]",
+    "click[B000SATIE6]",
+    "click[Price: $15.0]",
+    "click[davidson's tea bulk, organic south african rooibos, 16 ounce]",
+    "click[back with search]",
+    "click[Davidson's Tea Bulk, Organic South African Rooibos, 16 Ounce]",
+    "click[Davidson's Tea Bulk, Organic South African Rooibos, 16 Ounce]",
+    "click[Davidson's Tea Bulk, Organic South African Rooibos, 16 Ounce]"
+   ],
+   "bought": false,
+   "purchase": null,
+   "source": "final_artifact.json (dedicated OUT root runs/e1_webshop_9b_trace_r11/final_artifacts — no overwrite)",
+   "mtime": "2026-11-06T21:12"
+  },
+  "webshop:g11198": {
+   "n_commands": 5,
+   "actions": [
+    "search[keds champion women's for day comfort white]",
+    "click[B0017H8M5A]",
+    "click[white | canvas]",
+    "click[9 x-narrow]",
+    "click[Buy Now]"
+   ],
+   "bought": true,
+   "purchase": {
+    "asin": "B0017H8M5A",
+    "options": {
+     "color": "white | canvas",
+     "size": "9 x-narrow"
+    },
+    "price": 54.286379138013416,
+    "product": {
+     "Attributes": [
+      "rubber sole"
+     ],
+     "BulletPoints": [
+      "Shaft measures approximately low-top from arch ",
+      "Classic canvas upper ",
+      "Cushioned insole ",
+      "Soft breathable lining "
+     ],
+     "Description": "The shoe that defines the term “classic sneaker.” Our Champion canvas sneaker was an instant American classic when it was first introduced (over 100 years ago), and its iconic design, goes-with-everything style, and cushiony comfort has made it a worldwide favorite today.\"클래식 스니커즈\"라는 용어를 정의하는 신발. 챔피언 캔버스 스니커즈는 처음 출시되었을 때(100년 전) 즉석 미국 클래식이었으며, 상징적인 디자인, 모든 스타일과 잘 어울리는 쿠션감 있는 편안함으로 오늘날 전 세계적으로 사랑받는 제품입니다.  Shine on in this sweet fashion sneak from Keds. The Champion Star features a printed canvas upper with a metal lace-up vamp for a perfect fit. A high-walled rubber sole delivers traction and comfort on or off the streets this season.  In 1916, the Keds brand was introduced by the U.S. Rubber Company as the first national athletic and lifestyle footwear brand. At this time, the shoes were called sneakers, a term invented in late 1916 by Keds advertising agency because the rubber soles made the shoes quiet. Worn by Olympic soccer players, scores of National and International tennis champions, and many college athletes, Keds was coined the shoe of champions because of its reputation as America's premier athletic brand. Not only was Keds a leading athletic brand, it was also the brand of choice for leading style icons due to its classic, stylish, and authentic characteristics.",
+     "Title": "Keds Women's Champion Star Fashion Sneaker",
+     "asin": "B0017H8M5A",
+     "name": "Keds Women's Champion Star Fashion Sneaker",
+     "product_category": "Clothing, Shoes & Jewelry › Women › Shoes › Fashion Sneakers",
+     "query": "women's fashion sneakers"
+    }
+   },
+   "source": "final_artifact.json (dedicated OUT root runs/e1_webshop_9b_trace_r11/final_artifacts — no overwrite)",
+   "mtime": "2026-11-06T21:08"
+  },
+  "webshop:g11271": {
+   "n_commands": 15,
+   "actions": [
+    "search[coconut milk rich creamy]",
+    "click[B001HTJ2ES Native Forest Organic Light Coconut Milk Reduced Fat, 13.5 Ounce Cans (Pack of 12);Packaging may Vary $34.68]",
+    "click[B002FJYCN0 Native Forest Organic Coconut Milk, Classic 96 Fl Oz $31.31]",
+    "click[B008G3LY6RP Sunlee Coconut Milk Unsweetened, Canned - Lactose Free, Non Dairy Vegan Milk - 24 Pack of Thai Coconut Milk, Rich & Creamy for Curries, Beverages, Desserts, & Soups (13.5 oz per Can) $45.0]",
+    "click[B002FJYCN0 Native Forest Organic Coconut Milk, Classic 96 Fl Oz $31.31]",
+    "click[Native Forest Organic Coconut Milk, Classic 96 Fl Oz]",
+    "click[add to cart]",
+    "click[Sunlee Coconut Milk Unsweetened, Canned - Lactose Free, Non Dairy Vegan Milk - 24 Pack of Thai Coconut Milk, Rich & Creamy for Curries, Beverages, Desserts, & Soups (13.5 oz per Can)]",
+    "click[B08G3LY6RP Sunlee Coconut Milk Unsweetened, Canned - Lactose Free, Non Dairy Vegan Milk - 24 Pack of Thai Coconut Milk, Rich & Creamy for Curries, Beverages, Desserts, & Soups (13.5 oz per Can) $45.0]",
+    "click[buy now]",
+    "click[buy now]",
+    "click[Back to Search]",
+    "search[coconut milk rich creamy]",
+    "click[B08G3LY6RP]",
+    "click[Buy Now]"
+   ],
+   "bought": true,
+   "purchase": {
+    "asin": "B08G3LY6RP",
+    "options": {},
+    "price": 45.0,
+    "product": {
+     "Attributes": [
+      "coconut milk",
+      "lactose free",
+      "non dairy",
+      "rich creamy",
+      "artificial flavors",
+      "gluten free"
+     ],
+     "BulletPoints": [
+      "PREMIUM QUALITY COCONUTS - Our creamy coconut milk is extracted from the pulp of mature coconuts which are ethically sourced from sustainable growers and have passed strict quality control inspections to ensure high quality. ",
+      "GREAT FOR ASIAN DISHES - A staple ingredient in Thai, Filipino, Indian and other Asian cuisines, the coconut milk will add a rich taste and texture to curries, sauces, and soups. With its sweet taste, it is also a flavorful addition to desserts. ",
+      "THE HEALTHIER CHOICE - The all natural coconut milk is a non dairy milk and a great source of protein, carbohydrates, fiber, vitamin C, folate, iron, and magnesium. And because it is lactose-free, coconut milk is also a usual substitute for milk. ",
+      "ALL NATURAL - Suitable for special diets such as vegan, vegetarian, gluten-free, keto, and lactose free. Our coconut milk also has no added sugar, artificial flavors, and preservatives. ",
+      "CONTENTS - 24 pack of 400 ml or 13.5 ounces of coconut milk "
+     ],
+     "Description": "Our Coconut Milk contains pure and rich coconut milk extracted from mature coconut pulp. A very versatile ingredient, this coconut milk will make any Asian dish creamy and delicious. It is also a perfect dairy substitute for your drinks or desserts.",
+     "Title": "Sunlee Coconut Milk Unsweetened, Canned - Lactose Free, Non Dairy Vegan Milk - 24 Pack of Thai Coconut Milk, Rich & Creamy for Curries, Beverages, Desserts, & Soups (13.5 oz per Can)",
+     "asin": "B08G3LY6RP",
+     "name": "Sunlee Coconut Milk Unsweetened, Canned - Lactose Free, Non Dairy Vegan Milk - 24 Pack of Thai Coconut Milk, Rich & Creamy for Curries, Beverages, Desserts, & Soups (13.5 oz per Can)",
+     "product_category": "Grocery & Gourmet Food › Pantry Staples › Cooking & Baking › Coconut Milk & Cream",
+     "query": "non-dairy milks"
+    }
+   },
+   "source": "final_artifact.json (dedicated OUT root runs/e1_webshop_9b_trace_r11/final_artifacts — no overwrite)",
+   "mtime": "2026-11-06T21:10"
+  }
+ }
+}

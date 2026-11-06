@@ -34,7 +34,8 @@ Full per-candidate score tables: `docs/e1_alfworld_evolution_results_9b_27b.csv`
 | `alfworld_pre_9b_scores_only.json` | Scores/selection history only (14 evaluated + rejected proposals) for 8hk1b. **Per-step traces not recoverable** (see caveat). |
 | `alfworld_traces_post_9b_v2.json` | **24 task traces (command-level)** from the trace-preservation rerun (toqpp, same fixed-harness protocol as zhfrd; dedicated OUT root — no overwrite). Champion 755b48b8 macro 0.417; panel variance vs zhfrd's 0.75 noted in meta. |
 | `alfworld_post_9b_scores_only.json` | Scores/selection history for zhfrd (14 evaluated, champion 622625de 0.75) — the headline 9B alfworld run. Traces overwritten by the later 27B rerun; the rerun above preserves step-level traces of the same protocol. |
-| `webshop_post_9b_scores_only.json` | Scores/selection history for afe1d (6 evaluated, champion b0ad1c7d 0.563). Traces overwritten by the later 27B rerun. |
+| `webshop_traces_post_9b_v2.json` | **24 task traces (action-level: search/click + purchase record)** from the trace-preservation rerun (exm1p, same fixed-harness protocol as afe1d; dedicated OUT root — no overwrite). 8 generations run to MAX_GENERATIONS, 16 candidates 0.139-0.679, champion bd397b10; panel variance vs afe1d 0.563 noted in meta. |
+| `webshop_post_9b_scores_only.json` | Scores/selection history for afe1d (6 evaluated, champion b0ad1c7d 0.563) — the headline 9B webshop run. Traces overwritten by the later 27B rerun; the rerun above preserves step-level traces of the same protocol. |
 
 ## Trace-availability caveat (honest scope)
 
@@ -46,10 +47,11 @@ are overwritten. Surviving step-level traces:
   separate OUT root (`docs/trace_samples/traces_baseline_minimal.json`, the
   original v1 export).
 - alfworld/webshop **post 27B**: the final-state snapshot (24 tasks each).
-- alfworld pre / post-9B, webshop post-9B: **scores only** — the step-level
-  behavior was overwritten by later reruns of the same task ids. The score
-  histories (every candidate, every generation, selection decisions) are
-  complete and are included here instead.
+- alfworld pre / post-9B, webshop post-9B were scores-only **until the
+  2026-11-06 trace-preservation reruns** (toqpp/exm1p, dedicated OUT roots):
+  post-9B step-level traces for BOTH domains are now included above. Only
+  alfworld pre remains scores-only (the pre-fix protocol no longer exists and
+  cannot be rerun).
 
 ## Trace format
 
