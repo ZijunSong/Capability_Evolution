@@ -111,3 +111,10 @@
 
 - **appworld-9b r5**（7fgip）gen0 首个候选 **macro 0.289 非零**——answer 断链修复 + H0_v2 口径下 AppWorld 进化线首次产生真实信号（断链时代 11 候选全 0.0）。gen0 两候选 ACCEPTED，进化推进中。
 - appworld-27b r5（zdbip）仍在首代 panel。
+
+---
+
+## 补充八（2026-11-06：appworld-9B r5 收官——基线已非零，候选未超越）
+
+- **appworld-9b r5**（7fgip）：6 候选 0.289~0.316，PLATEAU 无 champion。**关键读法变化**：gen0-2 全部 `incumbent retained` = **空 bank 基线本身已 ~0.29+**（H0_v2 口径，与 E0-v2 的 34.74% 一致）——候选与基线打平但未超越。断链时代"候选 0.0 vs 基线 0"的假持平已被真实信号取代：AppWorld 的 strict 口径下 9B 候选还有差距要跨。
+- appworld-27B r5（zdbip）running（4 候选 0~0.261）；webshop-27B r11（cdyeb）running（2 候选 0.408~0.514）。
