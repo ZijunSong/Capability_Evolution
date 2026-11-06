@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# r10 (2026-11-05): re-run on the fixed harness — webshop env_doc populated
+# (was PLACEHOLDER) + environment_doc PATH now READ into the profile (E0/E1
+# latent defect: doc content never reached the model). admissible_commands
+# rendering does not apply here (webshop obs has no structured payload).
+# Protocol identity changes → NOT comparable with bojde r9 0.45 directly.
 # RSI E1 (guide §12): 9B Webshop evolution — 8 generations x 2 candidates on
 # the frozen 12+12 official-gated manifest. Analysis runner feeds REAL
 # action/observation steps into the packet (E1-pre steps persistence);
@@ -9,7 +14,7 @@ set -euo pipefail
 RSI_ROOT=/mnt/songzijun/Capability_Evolution/RSI
 MODEL_SRC=/mnt/songzijun/models/Qwen3.5-9B
 MODEL_LOCAL=/tmp/rsi_models/Qwen3.5-9B
-RUNTIME_CFG=$RSI_ROOT/configs/runtime_e1_webshop_9b_r9.yaml
+RUNTIME_CFG=$RSI_ROOT/configs/runtime_e1_webshop_9b_r10.yaml
 export PYTHONPATH="$RSI_ROOT/src:${PYTHONPATH:-}"
 export PYTHONUNBUFFERED=1
 cd "$RSI_ROOT"
@@ -153,7 +158,7 @@ python - <<PY
 import yaml
 cfg = yaml.safe_load(open("$RSI_ROOT/configs/rsi_webshop_react_9b_v3.yaml"))
 cfg["policy"]["model_path"] = "$MODEL_LOCAL"
-cfg["campaign_id"] = "e1_webshop_9b_r9"
+cfg["campaign_id"] = "e1_webshop_9b_r10"
 cfg["execution"]["runs_root"] = "$RSI_ROOT/runs"
 cfg["suite"]["split_manifest"] = "data/splits/e1_webshop_9b.json"
 yaml.safe_dump(cfg, open("$RUNTIME_CFG", "w"), sort_keys=False, allow_unicode=True)
@@ -181,5 +186,5 @@ for line in sys.stdin:
         sys.stdout.flush()
 "
 echo "== E1 evolve done =="
-ls -la "$RSI_ROOT/runs/e1_webshop_9b_r9/evolve/" || true
+ls -la "$RSI_ROOT/runs/e1_webshop_9b_r10/evolve/" || true
 exit 0

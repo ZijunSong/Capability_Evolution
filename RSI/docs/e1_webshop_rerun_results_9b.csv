@@ -1,0 +1,11 @@
+model,phase,metric,value,note
+9B,"pre-rerun (bojde r9, env_doc PLACEHOLDER + doc-PATH broken)",champion macro,0.450,"bojde t-20261104151829, champion accbce6a(gen2), evaluated=11; 旧 harness 口径"
+9B,"pre-rerun (bojde r9, env_doc PLACEHOLDER + doc-PATH broken)",baseline (gen0 best),0.028,"gen0 [0.0278, 0.1944]"
+9B,"pre-rerun (bojde r9, env_doc PLACEHOLDER + doc-PATH broken)",max candidate macro,0.589,gen3 bd8ecc8a(0.5889) 未取代 champion(selection 语义+重测方差)
+9B,"post-rerun (afe1d r10, harness fixed)",job,afe1d t-20261105221030,campaign e1_webshop_9b_r10; webshop env_doc 实文+doc-PATH 读取修复; 六层 infra 链同 bojde
+9B,"post-rerun (afe1d r10, harness fixed)",baseline (gen0 best),0.306,"gen0 [0.3056, 0.0889] vs bojde gen0 [0.0278, 0.1944] — gen0 best 10x↑"
+9B,"post-rerun (afe1d r10, harness fixed)",champion macro,0.563,"champion b0ad1c7d(gen1, completion_gate+guardian), evaluated=6, ok=True PLATEAU"
+9B,"post-rerun (afe1d r10, harness fixed)",max candidate macro,0.563,gen3 0.5194/gen4 0.5056 未超越
+9B,"post-rerun (afe1d r10, harness fixed)",candidates evaluated,6,gen2 全拒(NO_VALID_CANDIDATES)机制内止损
+9B,delta: fixed vs broken harness (webshop),champion macro,0.450 → 0.563 (+0.113),"⚠️protocol identity 变化, 跨代际对照仅作方向参考; 同代内 gen0 best 0.028→0.306 更干净"
+9B,delta: fixed vs broken harness (webshop),baseline gen0 best,0.028 → 0.306 (+0.278),"最干净的对照: 同为 gen0 无组件, 只差 env_doc 是否进 prompt"

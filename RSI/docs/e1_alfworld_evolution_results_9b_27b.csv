@@ -1,0 +1,47 @@
+model,phase,metric,value,note
+9B,"pre-evolution (r4, harness broken)",baseline panel macro (12 tasks),0.083,"8hk1b gen0 best 0.25/champion 0.25; raw baseline 无组件评分未落盘, 以 r4 全场最高 0.25 与分布 0-0.25 为口径"
+9B,"pre-evolution (r4, harness broken)",champion macro,0.250,"8hk1b champion 3bb04695 (gen0 CompletionGuard), evaluated=6"
+9B,"pre-evolution (r4, harness broken)",max candidate macro,0.250,
+9B,"pre-evolution (r4, harness broken)",candidates evaluated,6,ok=False (ok 语义 bug); PLATEAU
+27B,"pre-evolution (r4, harness broken)",baseline panel macro (12 tasks),N/A,8qimi: alfworld deps 缺失→panel probe 跳过→scores={} 假 PLATEAU; 无有效评分
+27B,"pre-evolution (r4, harness broken)",champion macro,N/A,"同上, champion=None"
+27B,"pre-evolution (r4, harness broken)",max candidate macro,N/A,
+27B,"pre-evolution (r4, harness broken)",candidates evaluated,0,
+9B,"post-evolution (r5, harness fixed)",job,zhfrd t-20261105143859,campaign e1_alfworld_9b_r5
+9B,"post-evolution (r5, harness fixed)",baseline macro (gen0 best candidate),0.583,"gen0 scores [0.583, 0.333]"
+9B,"post-evolution (r5, harness fixed)",baseline macro (gen0 mean),0.458,
+9B,"post-evolution (r5, harness fixed)",champion macro,0.750,champion=622625ded400b439
+9B,"post-evolution (r5, harness fixed)",champion vs baseline best delta,+0.167,
+9B,"post-evolution (r5, harness fixed)",max candidate macro,0.750,
+9B,"post-evolution (r5, harness fixed)",mean candidate macro (all gens),0.613,n=14
+9B,"post-evolution (r5, harness fixed)",min candidate macro,0.333,
+9B,"post-evolution (r5, harness fixed)",candidates evaluated,14,"ok=True, stopped=PLATEAU"
+9B,"post-evolution (r5, harness fixed)",generations run,0-6,
+27B,"post-evolution (r5, harness fixed)",job,gth6z t-20261105171718,campaign e1_alfworld_27b_r5
+27B,"post-evolution (r5, harness fixed)",baseline macro (gen0 best candidate),0.833,"gen0 scores [0.833, 0.5]"
+27B,"post-evolution (r5, harness fixed)",baseline macro (gen0 mean),0.667,
+27B,"post-evolution (r5, harness fixed)",champion macro,0.833,champion=83ae9fdf670c70bd
+27B,"post-evolution (r5, harness fixed)",champion vs baseline best delta,+0.000,
+27B,"post-evolution (r5, harness fixed)",max candidate macro,0.833,
+27B,"post-evolution (r5, harness fixed)",mean candidate macro (all gens),0.635,n=8
+27B,"post-evolution (r5, harness fixed)",min candidate macro,0.500,
+27B,"post-evolution (r5, harness fixed)",candidates evaluated,8,"ok=True, stopped=PLATEAU"
+27B,"post-evolution (r5, harness fixed)",generations run,0-3,
+9B,per-generation detail (r5),gen0 candidates,0.583; 0.333,best=0.583 mean=0.458
+9B,per-generation detail (r5),gen1 candidates,0.667; 0.583,best=0.667 mean=0.625
+9B,per-generation detail (r5),gen2 candidates,0.583; 0.500,best=0.583 mean=0.542
+9B,per-generation detail (r5),gen3 candidates,0.750; 0.667,best=0.750 mean=0.708
+9B,per-generation detail (r5),gen4 candidates,0.667; 0.583,best=0.667 mean=0.625
+9B,per-generation detail (r5),gen5 candidates,0.667; 0.583,best=0.667 mean=0.625
+9B,per-generation detail (r5),gen6 candidates,0.750; 0.667,best=0.750 mean=0.708
+27B,per-generation detail (r5),gen0 candidates,0.833; 0.500,best=0.833 mean=0.667
+27B,per-generation detail (r5),gen1 candidates,0.667; 0.583,best=0.667 mean=0.625
+27B,per-generation detail (r5),gen2 candidates,0.667; 0.583,best=0.667 mean=0.625
+27B,per-generation detail (r5),gen3 candidates,0.667; 0.583,best=0.667 mean=0.625
+9B,delta: fixed vs broken harness,champion macro,0.250 → 0.750 (+0.500),"harness 四修复(render admissible_commands/env_doc 实文/doc-PATH 读取)贡献; 修复=给模型公平接口信息, 非 scorer 改动"
+9B,delta: fixed vs broken harness,max candidate macro,0.250 → 0.750 (+0.500),
+27B,delta: fixed vs broken harness,champion macro,N/A → 0.833,修复前 27B 无有效评分(probe skip); 修复后 gen0 即 0.833
+27B,delta: fixed vs broken harness,candidates evaluated,0 → 8,
+9B vs 27B,model-size comparison (fixed harness),champion macro,0.750 vs 0.833 (+0.083 for 27B),"同 12+12 题库同 protocol; 27B gen0 即达峰, 9B 需 3 代"
+9B vs 27B,model-size comparison (fixed harness),baseline gen0 best,0.583 vs 0.833 (+0.250 for 27B),
+9B vs 27B,model-size comparison (fixed harness),champion component family,alfworld_checker+completion_gate vs completion_gate,两规模独立收敛到完成守卫族组件

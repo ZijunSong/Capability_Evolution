@@ -1,0 +1,11 @@
+model,phase,metric,value,note
+27B,"pre-rerun (spzne r5, env_doc PLACEHOLDER + doc-PATH broken)",champion macro,0.589,"spzne t-20261104(champion 88606c24 gen6, 4组件), evaluated=16; 旧协议口径"
+27B,"pre-rerun (spzne r5, env_doc PLACEHOLDER + doc-PATH broken)",baseline (gen0 best),0.500,"gen0 [0.389, 0.5]"
+27B,"post-rerun (cdyeb r11, harness fixed)",job,cdyeb t-20261106075054,campaign e1_webshop_27b_r11; 27B entry 从 9B r10 移植(六层链+env_doc+doc-PATH 修复); 08:01 验真 52G/27B cfg
+27B,"post-rerun (cdyeb r11, harness fixed)",baseline (gen0 best),0.514,"gen0 [0.4083, 0.5139] — vs 9B r10 gen0 best 0.306 (+21pp 同 harness 规模优势)"
+27B,"post-rerun (cdyeb r11, harness fixed)",champion macro,0.547,"gen1 首候选 0.5472 入 archive(未跑 selection 收官, job 在 gen3 后用户确认 stop 收表)"
+27B,"post-rerun (cdyeb r11, harness fixed)",max candidate macro,0.547,
+27B,"post-rerun (cdyeb r11, harness fixed)",candidates evaluated,8,"gen0 [0.408,0.514] gen1 [0.547,0.417] gen2 [0.389,0.408] gen3 [0.519,0.269]; state=stopped(非 formal succeed, 无 evolve_result)"
+27B,"post-rerun (cdyeb r11, harness fixed)",proposer 形状,正常,"gen0-3 提案全过 validator, 无 flat-file 缺 entrypoint"
+27B,delta (webshop 27B),champion macro,0.589(spzne) vs 0.547(cdyeb) — 跨协议方向参考,"⚠️protocol 不同: spzne 无 doc, cdyeb 有 doc; 同代内对照更干净"
+27B,delta (webshop 27B),baseline gen0 best,0.500(spzne) vs 0.514(cdyeb) — 同 harness 27B vs 9B: 0.306→0.514 (+21pp),"核心结论: 修复后 harness 下 27B webshop 规模优势 +21pp(gen0), champion 量级 0.55±0.03 与 9B 0.563 接近"

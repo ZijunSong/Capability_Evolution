@@ -5,11 +5,16 @@
 # dedup + PROPOSAL_STALLED prevent duplicate-proposal burn; baseline (H0)
 # retained per PR-5 selection semantics.
 # Precondition: E0 G1-G4 passed (hf4ax).
+# r5 (2026-11-05): harness fixes — render_event now appends the engine's
+# admissible_commands to every observation (was dropped), alfworld env_doc
+# populated (was PLACEHOLDER), and environment_doc PATH is READ into the
+# profile (was rendered as a bare filename — E0/E1 latent defect). New
+# protocol identity; NOT comparable with r4/0.25 baselines.
 set -euo pipefail
 RSI_ROOT=/mnt/songzijun/Capability_Evolution/RSI
 MODEL_SRC=/mnt/songzijun/models/Qwen3.5-9B
 MODEL_LOCAL=/tmp/rsi_models/Qwen3.5-9B
-RUNTIME_CFG=$RSI_ROOT/configs/runtime_e1_alfworld_9b_r3.yaml
+RUNTIME_CFG=$RSI_ROOT/configs/runtime_e1_alfworld_9b_r5.yaml
 export PYTHONPATH="$RSI_ROOT/src:${PYTHONPATH:-}"
 export PYTHONUNBUFFERED=1
 cd "$RSI_ROOT"
@@ -101,7 +106,7 @@ python - <<PY
 import yaml
 cfg = yaml.safe_load(open("$RSI_ROOT/configs/rsi_alfworld_react_9b_v3.yaml"))
 cfg["policy"]["model_path"] = "$MODEL_LOCAL"
-cfg["campaign_id"] = "e1_alfworld_9b_r4"
+cfg["campaign_id"] = "e1_alfworld_9b_r5"
 cfg["execution"]["runs_root"] = "$RSI_ROOT/runs"
 cfg["suite"]["split_manifest"] = "data/splits/e1_alfworld_9b.json"
 yaml.safe_dump(cfg, open("$RUNTIME_CFG", "w"), sort_keys=False, allow_unicode=True)
@@ -144,5 +149,5 @@ for line in sys.stdin:
         sys.stdout.flush()
 "
 echo "== E1 evolve done =="
-ls -la "$RSI_ROOT/runs/e1_alfworld_9b_r4/evolve/" || true
+ls -la "$RSI_ROOT/runs/e1_alfworld_9b_r5/evolve/" || true
 exit 0
