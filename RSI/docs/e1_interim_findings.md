@@ -133,3 +133,9 @@
 
 - **alfworld-9b trace-r6**（toqpp succeed）：7 候选 0.25~0.417，champion `755b48b8`（gen0 0.417）PLATEAU。**分数带比 r5（0.33~0.75）低**——同 manifest 下 panel 方差的直接展示（跨 run 的 base/candidate 分数不可直接横比，方差警示再次坐实）。
 - webshop-9b trace-r11（exm1p）running。
+
+---
+
+## 补充十一（2026-11-06：webshop-9B trace-r11 收官——8 代单调爬升）
+
+- **webshop-9b trace-r11**（exm1p succeed）：16 候选 0.139~0.679，**MAX_GENERATIONS 跑满 8 代**，**champion `bd397b10` macro 0.679**（gen7）——逐代 0.49→0.48→0.57→0.46→0.59→0.63→0.68 **单调爬升**，trace 聚焦反馈（EvidenceStore 真实步骤）的进化轨迹质量显著优于此前各轮。**超越 27B r5 的 0.589，成为 webshop 全场景最高 champion**。
