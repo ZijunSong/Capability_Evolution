@@ -126,3 +126,10 @@
 - **appworld-27b r5**（zdbip succeed ~20h）：8 候选（0~0.261），**champion `5ed3bbf1`**（gen0 当选 macro **0.261**）= 单组件 `ActionValidator`；gen1-3 incumbent retained（27B 基线同样 ~0.26+，与 9B r5 基线 0.29+ 同量级）。PLATEAU 收官。
 - **AppWorld 双模型定案**：9B/27B 候选都与各自基线打平未超越（真信号，断链时代的假持平已消除）；两域 champion（webshop/alfworld）+ appworld honest-PLATEAU。
 - 并发会话推进 trace 聚焦轮：alfworld-9B r6-trace（toqpp running）+ webshop-9B trace-r11（exm1p queued）。
+
+---
+
+## 补充十（2026-11-06：trace 聚焦轮首批）
+
+- **alfworld-9b trace-r6**（toqpp succeed）：7 候选 0.25~0.417，champion `755b48b8`（gen0 0.417）PLATEAU。**分数带比 r5（0.33~0.75）低**——同 manifest 下 panel 方差的直接展示（跨 run 的 base/candidate 分数不可直接横比，方差警示再次坐实）。
+- webshop-9b trace-r11（exm1p）running。
