@@ -63,3 +63,28 @@ are overwritten. Surviving step-level traces:
 - scores-only (`*_scores_only.json`): `generation_history[]` — every proposer
   attempt with generation, candidate id, and macro score (accepted or
   rejected), plus the final champion.
+
+
+## Paired v3 (2026-11-07): pre/post obs-level traces for 5 of 6 groups
+
+`paired_v3/` contains 10-task obs-level trace pairs (arm A = empty bank
+"pre", arm B = champion bank "post"), from `rsi.cli eval` paired runs on the
+fixed harness — same frozen 12-task split, same seed 17:
+
+| file | domain/model | arm macro (12 tasks) |
+|---|---|---|
+| `webshop_27B_pre.json` / `_post.json` | webshop 27B | 0.597 / 0.422 |
+| `alfworld_9B_pre.json` / `_post.json` | alfworld 9B | 0.333 / 0.583 |
+| `alfworld_27B_pre.json` / `_post.json` | alfworld 27B | 0.500 / 0.583 |
+| webshop 9B pair | see `../traces_baseline_minimal.json` + `../traces_champion_bank.json` (v1 export) | 0.056 / 0.453 |
+| appworld 9B/27B pair | NOT AVAILABLE — the appworld adapter's final_artifact is a reference object (no trajectory file) and eval JSON per_task.steps was empty for its episodes; adapter instrumentation required first. | — |
+
+Each task entry: `value, success, terminated_reason, n_decisions, wall_ms,
+steps[]` where each step is `{kind, action?, obs_head, obs_tail, obs_len}`
+(bounded per-step evidence; the raw event log is unmodified).
+
+Panel-variance caveat applies: single-run paired macros wobble between
+campaigns (webshop-27B champion 0.619 in its evolution run vs 0.422 in this
+paired rerun; alfworld arms land 0.33-0.58 vs 0.75-0.83 headline champions).
+The traces are the artifact of record; headline numbers stay with the formal
+evolve_results.

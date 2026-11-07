@@ -1,0 +1,989 @@
+{
+ "meta": {
+  "domain": "alfworld",
+  "model": "Qwen3.5-9B",
+  "arm": "minimal",
+  "bank_digest": "1beba6d6d709b9b5f6918923d151604cf5c997709a4ce63f5dd49dda9e4f6130",
+  "seed": 17,
+  "split": "harness_select",
+  "n_tasks": 12,
+  "macro": 0.3333,
+  "source": "RSI/runs/e1_alfworld_9b_r5_pair/eval/eval_harness_select_minimal_1beba6d6_17.json",
+  "phase": "pre-evolution (empty bank)"
+ },
+ "tasks": {
+  "alfworld:train/json_2.1.1/train/look_at_obj_in_light-Book-None-DeskLamp-302/trial_T20190909_085155_106731": {
+   "value": 0.0,
+   "success": false,
+   "terminated_reason": "finish",
+   "n_decisions": 4,
+   "wall_ms": 46183.77258872986,
+   "steps": [
+    {
+     "kind": "episode_boundary",
+     "obs_head": "-= Welcome to TextWorld, ALFRED! =-\n\nYou are in the middle of a room. Looking quickly around you, you see a bed 1, a desk 1, a drawer 3, a drawer 2, a drawer 1, a garbagecan 1, a safe 1, a shelf 5, a ",
+     "obs_len": 329,
+     "obs_tail": ", a shelf 1, a sidetable 2, and a sidetable 1.\n\nYour task is to: examine the book with the desklamp.",
+     "order": 0
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"take book from bed 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Nothing happens.",
+     "obs_len": 16,
+     "order": 1
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"go to bed 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "You arrive at bed 1. On the bed 1, you see a book 2, a book 1, a pillow 1, and a teddybear 1.",
+     "obs_len": 93,
+     "order": 2
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"take book 1 from bed 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "You pick up the book 1 from the bed 1.",
+     "obs_len": 38,
+     "order": 3
+    },
+    {
+     "action": "{\"answer\": \"null\", \"artifact_refs\": [], \"type\": \"finish\"}",
+     "kind": "finish",
+     "obs_head": "finished",
+     "obs_len": 8,
+     "order": 4
+    }
+   ]
+  },
+  "alfworld:train/json_2.1.1/train/look_at_obj_in_light-Bowl-None-DeskLamp-305/trial_T20190908_233020_632529": {
+   "value": 0.0,
+   "success": false,
+   "terminated_reason": "finish",
+   "n_decisions": 12,
+   "wall_ms": 57547.673429489136,
+   "steps": [
+    {
+     "kind": "episode_boundary",
+     "obs_head": "-= Welcome to TextWorld, ALFRED! =-\n\nYou are in the middle of a room. Looking quickly around you, you see a bed 1, a desk 1, a drawer 5, a drawer 4, a drawer 3, a drawer 2, a drawer 1, a dresser 1, a ",
+     "obs_len": 298,
+     "obs_tail": "a garbagecan 1, a laundryhamper 1, and a shelf 1.\n\nYour task is to: look at bowl under the desklamp.",
+     "order": 0
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"go to bed 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "You arrive at bed 1. On the bed 1, you see a laptop 2, a laptop 1, a pillow 2, and a pillow 1.",
+     "obs_len": 94,
+     "order": 1
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"go to desk 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "You arrive at desk 1. On the desk 1, you see a book 1, a bowl 1, a cd 1, a creditcard 1, and a mug 1.",
+     "obs_len": 101,
+     "order": 2
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"go to desk 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Nothing happens.",
+     "obs_len": 16,
+     "order": 3
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type None; respond with one JSON object",
+     "obs_len": 77,
+     "obs_ok": false,
+     "order": 4
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"go to desk 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Nothing happens.",
+     "obs_len": 16,
+     "order": 5
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"take bowl 1 from desk 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "You pick up the bowl 1 from the desk 1.",
+     "obs_len": 39,
+     "order": 6
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type None; respond with one JSON object",
+     "obs_len": 77,
+     "obs_ok": false,
+     "order": 7
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"go to desk 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Nothing happens.",
+     "obs_len": 16,
+     "order": 8
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"go to desk 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Nothing happens.",
+     "obs_len": 16,
+     "order": 9
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"go to shelf 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "You arrive at shelf 1. On the shelf 1, you see a alarmclock 2, a alarmclock 1, a creditcard 3, and a creditcard 2.",
+     "obs_len": 114,
+     "order": 10
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type None; respond with one JSON object",
+     "obs_len": 77,
+     "obs_ok": false,
+     "order": 11
+    },
+    {
+     "action": "{\"answer\": null, \"artifact_refs\": [], \"type\": \"finish\"}",
+     "kind": "finish",
+     "obs_head": "finished",
+     "obs_len": 8,
+     "order": 12
+    }
+   ]
+  },
+  "alfworld:train/json_2.1.1/train/pick_and_place_simple-Candle-None-Toilet-405/trial_T20190908_131501_794150": {
+   "value": 0.0,
+   "success": false,
+   "terminated_reason": "finish",
+   "n_decisions": 37,
+   "wall_ms": 79976.18162727356,
+   "steps": [
+    {
+     "kind": "episode_boundary",
+     "obs_head": "-= Welcome to TextWorld, ALFRED! =-\n\nYou are in the middle of a room. Looking quickly around you, you see a bathtubbasin 1, a cabinet 5, a cabinet 4, a cabinet 3, a cabinet 2, a cabinet 1, a counterto",
+     "obs_len": 378,
+     "obs_tail": "a toilet 1, a toiletpaperhanger 1, and a towelholder 1.\n\nYour task is to: put some candle on toilet.",
+     "order": 0
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type None; respond with one JSON object",
+     "obs_len": 77,
+     "obs_ok": false,
+     "order": 1
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"go to bathroom\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Nothing happens.",
+     "obs_len": 16,
+     "order": 2
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"go to toilet 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "You arrive at toilet 1. On the toilet 1, you see a soapbar 1, and a spraybottle 1.",
+     "obs_len": 82,
+     "order": 3
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"look\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "You are facing the toilet 1. Next to it, you see nothing.",
+     "obs_len": 57,
+     "order": 4
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"inventory\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "You are not carrying anything.",
+     "obs_len": 30,
+     "order": 5
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type None; respond with one JSON object",
+     "obs_len": 77,
+     "obs_ok": false,
+     "order": 6
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"inventory\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "You are not carrying anything.",
+     "obs_len": 30,
+     "order": 7
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"take soapbar 1 from toilet 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "You pick up the soapbar 1 from the toilet 1.",
+     "obs_len": 44,
+     "order": 8
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"go to cabinet 5\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "You arrive at cabinet 5. The cabinet 5 is closed.",
+     "obs_len": 49,
+     "order": 9
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"examine cabinet 5\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "The cabinet 5 is closed.",
+     "obs_len": 24,
+     "order": 10
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"open cabinet 5\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "You open the cabinet 5. The cabinet 5 is open. In it, you see a spraybottle 3.",
+     "obs_len": 78,
+     "order": 11
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"go to toilet 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "You arrive at toilet 1. On the toilet 1, you see a spraybottle 1.",
+     "obs_len": 65,
+     "order": 12
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"go to countertop 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "You arrive at countertop 1. On the countertop 1, you see a candle 1, and a spraybottle 2.",
+     "obs_len": 89,
+     "order": 13
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"take candle 1 from countertop 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Nothing happens.",
+     "obs_len": 16,
+     "order": 14
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"examine candle 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Nothing happens.",
+     "obs_len": 16,
+     "order": 15
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"take candle 1 from countertop 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Nothing happens.",
+     "obs_len": 16,
+     "order": 16
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"look\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "You are facing the countertop 1. Next to it, you see nothing.",
+     "obs_len": 61,
+     "order": 17
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"go to sinkbasin 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "You arrive at sinkbasin 1. On the sinkbasin 1, you see nothing.",
+     "obs_len": 63,
+     "order": 18
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type None; respond with one JSON object",
+     "obs_len": 77,
+     "obs_ok": false,
+     "order": 19
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"inventory\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "You are carrying: a soapbar 1.",
+     "obs_len": 30,
+     "order": 20
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"go to toilet 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "You arrive at toilet 1. On the toilet 1, you see a spraybottle 1.",
+     "obs_len": 65,
+     "order": 21
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type None; respond with one JSON object",
+     "obs_len": 77,
+     "obs_ok": false,
+     "order": 22
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"go to countertop 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "You arrive at countertop 1. On the countertop 1, you see a candle 1, and a spraybottle 2.",
+     "obs_len": 89,
+     "order": 23
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"put candle 1 on toilet 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Nothing happens.",
+     "obs_len": 16,
+     "order": 24
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"go to toilet 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "You arrive at toilet 1. On the toilet 1, you see a spraybottle 1.",
+     "obs_len": 65,
+     "order": 25
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"take candle 1 from countertop 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Nothing happens.",
+     "obs_len": 16,
+     "order": 26
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type None; respond with one JSON object",
+     "obs_len": 77,
+     "obs_ok": false,
+     "order": 27
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"take candle 1 from countertop 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Nothing happens.",
+     "obs_len": 16,
+     "order": 28
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"take candle 1 from countertop 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Nothing happens.",
+     "obs_len": 16,
+     "order": 29
+    }
+   ]
+  },
+  "alfworld:train/json_2.1.1/train/pick_and_place_simple-CellPhone-None-Bed-321/trial_T20190908_231504_321117": {
+   "value": 1.0,
+   "success": true,
+   "terminated_reason": "env_done",
+   "n_decisions": 8,
+   "wall_ms": 48174.49671268463,
+   "steps": [
+    {
+     "kind": "episode_boundary",
+     "obs_head": "-= Welcome to TextWorld, ALFRED! =-\n\nYou are in the middle of a room. Looking quickly around you, you see a armchair 1, a bed 1, a diningtable 1, a drawer 2, a drawer 1, a garbagecan 1, a sidetable 2,",
+     "obs_len": 264,
+     "obs_tail": "er 1, a garbagecan 1, a sidetable 2, and a sidetable 1.\n\nYour task is to: put some cellphone on bed.",
+     "order": 0
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type None; respond with one JSON object",
+     "obs_len": 77,
+     "obs_ok": false,
+     "order": 1
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type None; respond with one JSON object",
+     "obs_len": 77,
+     "obs_ok": false,
+     "order": 2
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"go to armchair 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "You arrive at armchair 1. On the armchair 1, you see a cellphone 1.",
+     "obs_len": 67,
+     "order": 3
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type None; respond with one JSON object",
+     "obs_len": 77,
+     "obs_ok": false,
+     "order": 4
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"take cellphone 1 from armchair 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "You pick up the cellphone 1 from the armchair 1.",
+     "obs_len": 48,
+     "order": 5
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type None; respond with one JSON object",
+     "obs_len": 77,
+     "obs_ok": false,
+     "order": 6
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"go to bed 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "You arrive at bed 1. On the bed 1, you see a book 2, a laptop 1, a pillow 2, and a pillow 1.",
+     "obs_len": 92,
+     "order": 7
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"move cellphone 1 to bed 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "You move the cellphone 1 to the bed 1.",
+     "obs_len": 38,
+     "order": 8
+    }
+   ]
+  },
+  "alfworld:train/json_2.1.1/train/pick_and_place_simple-CellPhone-None-Bed-324/trial_T20190907_233803_611728": {
+   "value": 1.0,
+   "success": true,
+   "terminated_reason": "env_done",
+   "n_decisions": 4,
+   "wall_ms": 39193.297713279724,
+   "steps": [
+    {
+     "kind": "episode_boundary",
+     "obs_head": "-= Welcome to TextWorld, ALFRED! =-\n\nYou are in the middle of a room. Looking quickly around you, you see a bed 1, a drawer 10, a drawer 9, a drawer 8, a drawer 7, a drawer 6, a drawer 5, a drawer 4, ",
+     "obs_len": 387,
+     "obs_tail": "a shelf 5, a shelf 4, a shelf 3, a shelf 2, and a shelf 1.\n\nYour task is to: put a cellphone in bed.",
+     "order": 0
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"go to dresser 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "You arrive at dresser 1. On the dresser 1, you see a cellphone 4, a cellphone 2, a creditcard 3, a creditcard 2, a creditcard 1, a desklamp 1, a keychain 1, a pen 3, and a pen 2.",
+     "obs_len": 178,
+     "order": 1
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"take cellphone 4 from dresser 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "You pick up the cellphone 4 from the dresser 1.",
+     "obs_len": 47,
+     "order": 2
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"go to bed 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "You arrive at bed 1. On the bed 1, you see a book 3, a book 2, a book 1, a laptop 1, a pillow 2, and a pillow 1.",
+     "obs_len": 112,
+     "order": 3
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"move cellphone 4 to bed 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "You move the cellphone 4 to the bed 1.",
+     "obs_len": 38,
+     "order": 4
+    }
+   ]
+  },
+  "alfworld:train/json_2.1.1/train/pick_and_place_simple-Knife-None-SideTable-3/trial_T20190906_214318_430974": {
+   "value": 0.0,
+   "success": false,
+   "terminated_reason": "finish",
+   "n_decisions": 9,
+   "wall_ms": 50345.938524246216,
+   "steps": [
+    {
+     "kind": "episode_boundary",
+     "obs_head": "-= Welcome to TextWorld, ALFRED! =-\n\nYou are in the middle of a room. Looking quickly around you, you see a cabinet 4, a cabinet 3, a cabinet 2, a cabinet 1, a coffeemachine 1, a countertop 1, a drawe",
+     "obs_len": 493,
+     "obs_tail": "3, a stoveburner 2, a stoveburner 1, and a toaster 1.\n\nYour task is to: put some knife on sidetable.",
+     "order": 0
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type None; respond with one JSON object",
+     "obs_len": 77,
+     "obs_ok": false,
+     "order": 1
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"go to sidetable 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "You arrive at sidetable 1. On the sidetable 1, you see a cup 1, a saltshaker 1, and a spoon 1.",
+     "obs_len": 94,
+     "order": 2
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"go to cabinet 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "You arrive at cabinet 1. The cabinet 1 is closed.",
+     "obs_len": 49,
+     "order": 3
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"open cabinet 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "You open the cabinet 1. The cabinet 1 is open. In it, you see a kettle 2, and a kettle 1.",
+     "obs_len": 89,
+     "order": 4
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"close cabinet 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "You close the cabinet 1.",
+     "obs_len": 24,
+     "order": 5
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"inventory\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "You are not carrying anything.",
+     "obs_len": 30,
+     "order": 6
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"go to drawer 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "You arrive at drawer 1. The drawer 1 is closed.",
+     "obs_len": 47,
+     "order": 7
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"open drawer 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "You open the drawer 1. The drawer 1 is open. In it, you see nothing.",
+     "obs_len": 68,
+     "order": 8
+    },
+    {
+     "action": "{\"answer\": null, \"artifact_refs\": [], \"type\": \"finish\"}",
+     "kind": "finish",
+     "obs_head": "finished",
+     "obs_len": 8,
+     "order": 9
+    }
+   ]
+  },
+  "alfworld:train/json_2.1.1/train/pick_and_place_simple-Mug-None-SideTable-329/trial_T20190909_032329_497305": {
+   "value": 1.0,
+   "success": true,
+   "terminated_reason": "env_done",
+   "n_decisions": 13,
+   "wall_ms": 47952.17032241821,
+   "steps": [
+    {
+     "kind": "episode_boundary",
+     "obs_head": "-= Welcome to TextWorld, ALFRED! =-\n\nYou are in the middle of a room. Looking quickly around you, you see a bed 1, a diningtable 1, a drawer 4, a drawer 3, a drawer 2, a drawer 1, a garbagecan 1, a si",
+     "obs_len": 274,
+     "obs_tail": "er 1, a garbagecan 1, a sidetable 2, and a sidetable 1.\n\nYour task is to: put some mug on sidetable.",
+     "order": 0
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type None; respond with one JSON object",
+     "obs_len": 77,
+     "obs_ok": false,
+     "order": 1
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"go to sidetable 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "You arrive at sidetable 1. On the sidetable 1, you see a keychain 1.",
+     "obs_len": 68,
+     "order": 2
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type None; respond with one JSON object",
+     "obs_len": 77,
+     "obs_ok": false,
+     "order": 3
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"go to bed 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "You arrive at bed 1. On the bed 1, you see a book 1, a cellphone 3, a cellphone 1, a laptop 1, and a pillow 1.",
+     "obs_len": 110,
+     "order": 4
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"look\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "You are facing the bed 1. Next to it, you see nothing.",
+     "obs_len": 54,
+     "order": 5
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"help\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Available commands:\n  look:                             look around your current location\n  inventory:                        check your current inventory\n  go to (receptacle):               move to a",
+     "obs_len": 866,
+     "obs_tail": " object using a receptacle\n  slice (object) with (object):     slice an object using a sharp object\n",
+     "order": 6
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"inventory\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "You are not carrying anything.",
+     "obs_len": 30,
+     "order": 7
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"go to diningtable 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "You arrive at diningtable 1. On the diningtable 1, you see a alarmclock 1, a cd 1, a cellphone 2, a creditcard 1, a keychain 3, a mug 1, a pen 3, a pen 2, a pen 1, and a pencil 2.",
+     "obs_len": 179,
+     "order": 8
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type None; respond with one JSON object",
+     "obs_len": 77,
+     "obs_ok": false,
+     "order": 9
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"take mug 1 from diningtable 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "You pick up the mug 1 from the diningtable 1.",
+     "obs_len": 45,
+     "order": 10
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type None; respond with one JSON object",
+     "obs_len": 77,
+     "obs_ok": false,
+     "order": 11
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"go to sidetable 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "You arrive at sidetable 1. On the sidetable 1, you see a keychain 1.",
+     "obs_len": 68,
+     "order": 12
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"move mug 1 to sidetable 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "You move the mug 1 to the sidetable 1.",
+     "obs_len": 38,
+     "order": 13
+    }
+   ]
+  },
+  "alfworld:train/json_2.1.1/train/pick_and_place_simple-Tomato-None-Microwave-13/trial_T20190908_125158_098734": {
+   "value": 0.0,
+   "success": false,
+   "terminated_reason": "finish",
+   "n_decisions": 2,
+   "wall_ms": 4125.495944976807,
+   "steps": [
+    {
+     "kind": "episode_boundary",
+     "obs_head": "-= Welcome to TextWorld, ALFRED! =-\n\nYou are in the middle of a room. Looking quickly around you, you see a cabinet 26, a cabinet 25, a cabinet 24, a cabinet 23, a cabinet 22, a cabinet 21, a cabinet ",
+     "obs_len": 862,
+     "obs_tail": "r 3, a stoveburner 2, a stoveburner 1, and a toaster 1.\n\nYour task is to: put a tomato in microwave.",
+     "order": 0
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"go to countertop 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "You arrive at countertop 1. On the countertop 1, you see a bread 1, a cup 1, a fork 1, a knife 1, a lettuce 1, a saltshaker 1, and a spatula 1.",
+     "obs_len": 143,
+     "order": 1
+    },
+    {
+     "action": "{\"answer\": null, \"artifact_refs\": [], \"type\": \"finish\"}",
+     "kind": "finish",
+     "obs_head": "finished",
+     "obs_len": 8,
+     "order": 2
+    }
+   ]
+  },
+  "alfworld:train/json_2.1.1/train/pick_clean_then_place_in_recep-Cloth-None-Drawer-426/trial_T20190909_100612_910742": {
+   "value": 0.0,
+   "success": false,
+   "terminated_reason": "finish",
+   "n_decisions": 19,
+   "wall_ms": 20286.51877975464,
+   "steps": [
+    {
+     "kind": "episode_boundary",
+     "obs_head": "-= Welcome to TextWorld, ALFRED! =-\n\nYou are in the middle of a room. Looking quickly around you, you see a bathtubbasin 1, a countertop 1, a drawer 8, a drawer 7, a drawer 6, a drawer 5, a drawer 4, ",
+     "obs_len": 407,
+     "obs_tail": "tpaperhanger 1, a towelholder 2, and a towelholder 1.\n\nYour task is to: put a clean cloth in drawer.",
+     "order": 0
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type None; respond with one JSON object",
+     "obs_len": 77,
+     "obs_ok": false,
+     "order": 1
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"go to drawer 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "You arrive at drawer 1. The drawer 1 is closed.",
+     "obs_len": 47,
+     "order": 2
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"open drawer 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "You open the drawer 1. The drawer 1 is open. In it, you see nothing.",
+     "obs_len": 68,
+     "order": 3
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"go to sinkbasin 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "You arrive at sinkbasin 1. On the sinkbasin 1, you see a soapbar 2.",
+     "obs_len": 67,
+     "order": 4
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"take rag 2 from towelholder 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Nothing happens.",
+     "obs_len": 16,
+     "order": 5
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"go to towelholder 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "You arrive at towelholder 1. On the towelholder 1, you see a towel 1.",
+     "obs_len": 69,
+     "order": 6
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type None; respond with one JSON object",
+     "obs_len": 77,
+     "obs_ok": false,
+     "order": 7
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"go to towelholder 2\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "You arrive at towelholder 2. On the towelholder 2, you see nothing.",
+     "obs_len": 67,
+     "order": 8
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type None; respond with one JSON object",
+     "obs_len": 77,
+     "obs_ok": false,
+     "order": 9
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"go to handtowelholder 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "You arrive at handtowelholder 1. On the handtowelholder 1, you see a handtowel 1.",
+     "obs_len": 81,
+     "order": 10
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: no action JSON object found in model output; respond with one JSON object",
+     "obs_len": 96,
+     "obs_ok": false,
+     "order": 11
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"go to sinkbasin 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "You arrive at sinkbasin 1. On the sinkbasin 1, you see a soapbar 2.",
+     "obs_len": 67,
+     "order": 12
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"go to bathtubbasin 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "You arrive at bathtubbasin 1. On the bathtubbasin 1, you see nothing.",
+     "obs_len": 69,
+     "order": 13
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"go to sinkbasin 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "You arrive at sinkbasin 1. On the sinkbasin 1, you see a soapbar 2.",
+     "obs_len": 67,
+     "order": 14
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"take soapbar 2 from sinkbasin 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "You pick up the soapbar 2 from the sinkbasin 1.",
+     "obs_len": 47,
+     "order": 15
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"clean soapbar 2 with sinkbasin 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "You clean the soapbar 2 using the sinkbasin 1.",
+     "obs_len": 46,
+     "order": 16
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"go to drawer 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "You arrive at drawer 1. The drawer 1 is open. In it, you see nothing.",
+     "obs_len": 69,
+     "order": 17
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"move soapbar 2 to drawer 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "You move the soapbar 2 to the drawer 1.",
+     "obs_len": 39,
+     "order": 18
+    },
+    {
+     "action": "{\"answer\": \"Task completed.\", \"artifact_refs\": [], \"type\": \"finish\"}",
+     "kind": "finish",
+     "obs_head": "finished",
+     "obs_len": 8,
+     "order": 19
+    }
+   ]
+  },
+  "alfworld:train/json_2.1.1/train/pick_clean_then_place_in_recep-Cloth-None-Dresser-413/trial_T20190906_194709_189668": {
+   "value": 1.0,
+   "success": true,
+   "terminated_reason": "env_done",
+   "n_decisions": 16,
+   "wall_ms": 22965.42717552185,
+   "steps": [
+    {
+     "kind": "episode_boundary",
+     "obs_head": "-= Welcome to TextWorld, ALFRED! =-\n\nYou are in the middle of a room. Looking quickly around you, you see a bathtubbasin 1, a cabinet 4, a cabinet 3, a cabinet 2, a cabinet 1, a countertop 1, a drawer",
+     "obs_len": 433,
+     "obs_tail": " toiletpaperhanger 1, and a towelholder 1.\n\nYour task is to: clean some cloth and put it in dresser.",
+     "order": 0
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type None; respond with one JSON object",
+     "obs_len": 77,
+     "obs_ok": false,
+     "order": 1
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"go to dresser 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "You arrive at dresser 1. On the dresser 1, you see a cloth 1, and a spraybottle 1.",
+     "obs_len": 82,
+     "order": 2
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"take cloth 1 from dresser 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "You pick up the cloth 1 from the dresser 1.",
+     "obs_len": 43,
+     "order": 3
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type None; respond with one JSON object",
+     "obs_len": 77,
+     "obs_ok": false,
+     "order": 4
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type None; respond with one JSON object",
+     "obs_len": 77,
+     "obs_ok": false,
+     "order": 5
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"examine cloth 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "There's nothing special about cloth 1.",
+     "obs_len": 38,
+     "order": 6
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"go to sinkbasin 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "You arrive at sinkbasin 1. On the sinkbasin 1, you see nothing.",
+     "obs_len": 63,
+     "order": 7
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type None; respond with one JSON object",
+     "obs_len": 77,
+     "obs_ok": false,
+     "order": 8
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"clean cloth 1 with sinkbasin 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "You clean the cloth 1 using the sinkbasin 1.",
+     "obs_len": 44,
+     "order": 9
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"move cloth 1 to dresser 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Nothing happens.",
+     "obs_len": 16,
+     "order": 10
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"put cloth 1 on dresser 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Nothing happens.",
+     "obs_len": 16,
+     "order": 11
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"put cloth 1 on dresser 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "Nothing happens.",
+     "obs_len": 16,
+     "order": 12
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"go to dresser 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "You arrive at dresser 1. On the dresser 1, you see a spraybottle 1.",
+     "obs_len": 67,
+     "order": 13
+    },
+    {
+     "kind": "error",
+     "obs_head": "invalid action format: unknown action type None; respond with one JSON object",
+     "obs_len": 77,
+     "obs_ok": false,
+     "order": 14
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"examine cloth 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "This is a clean cloth 1.",
+     "obs_len": 24,
+     "order": 15
+    },
+    {
+     "action": "{\"arguments\": {\"text\": \"move cloth 1 to dresser 1\"}, \"name\": \"command\", \"type\": \"tool_call\"}",
+     "kind": "tool_call",
+     "obs_head": "You move the cloth 1 to the dresser 1.",
+     "obs_len": 38,
+     "order": 16
+    }
+   ]
+  }
+ }
+}
