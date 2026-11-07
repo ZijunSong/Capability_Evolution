@@ -21,6 +21,7 @@ domain strategy ships in the adapter.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from pathlib import Path
 from typing import Any
@@ -76,9 +77,16 @@ class AppWorldAdapter:
     version = APPWORLD_VERSION
     supports_shadow_fork = True
 
-    def __init__(self, data_root: str | None = None, *, max_interactions: int = 40):
+    def __init__(self, data_root: str | None = None, *, max_interactions: int = 40, out_root: str | None = None):
         _require_appworld()
         self._data_root = data_root or os.environ.get("APPWORLD_ROOT", "/mnt/songzijun/datasets/appworld")
+        # Trajectory persistence (paired-v3 trace gap): the adapter kept only
+        # the in-memory replay log — final_artifact was a bare reference with
+        # no file, so appworld had no post-hoc trace samples. When out_root is
+        # set (RSI_APPWORLD_OUT), final_artifact() writes a bounded JSON
+        # trajectory next to the ref (same shape as alfworld/webshop).
+        self._out_root = Path(out_root or os.environ.get("RSI_APPWORLD_OUT") or "")
+        self._trajectory: list[dict[str, Any]] = []
         data_dir = os.path.join(self._data_root, "data")
         # Require real data content — an empty `data/` dir is not an install.
         if not (os.path.isdir(data_dir) and os.listdir(data_dir)):
@@ -135,6 +143,12 @@ class AppWorldAdapter:
         # live world and re-executed the preamble — do NOT call it again.
         self._seed = int(seed)
         self._started = True
+        self._trajectory = [{
+            "kind": "reset",
+            "task_id": self._task_id,
+            "experiment": self._experiment,
+            "instruction_head": str(public_task.instruction)[:400],
+        }]
         return Observation(
             content=(
                 f"AppWorld task ready. Use python_exec to interact with the app APIs. "
@@ -189,6 +203,12 @@ class AppWorldAdapter:
             except Exception as e:  # noqa: BLE001 - submit failure must not mask the finish
                 submit_note = f" answer_submit_error: {e!r}"
             completed = bool(self._env.task_completed())
+            self._trajectory.append({
+                "kind": "finish",
+                "answer_head": (literal or "")[:200],
+                "submitted": submitted,
+                "task_completed": completed,
+            })
             return StepResult(
                 observation=Observation(
                     content=f"finished (task_completed={completed}{submit_note})",
@@ -219,6 +239,13 @@ class AppWorldAdapter:
             self._replay_code.append(code)
         except Exception as e:  # noqa: BLE001 - execution errors are observations
             output = f"EXEC_ERROR: {e!r}"
+        self._trajectory.append({
+            "kind": "tool_call",
+            "tool": "python_exec",
+            "code_head": str(code)[:400],
+            "obs_head": str(output)[:400],
+            "obs_len": len(str(output)),
+        })
         return StepResult(
             observation=Observation(
                 content=str(output),
@@ -359,10 +386,31 @@ class AppWorldAdapter:
         }
 
     def final_artifact(self) -> ArtifactRef:
+        record = {
+            "task_id": self._task_id,
+            "experiment": self._experiment,
+            "trajectory": self._trajectory,
+            "replay_code": list(self._replay_code),
+        }
+        path: str | None = None
+        if self._out_root:
+            try:
+                out_dir = Path(self._out_root) / (
+                    self._task_id.replace(":", "_").replace("/", "_") or "task"
+                )
+                out_dir.mkdir(parents=True, exist_ok=True)
+                fp = out_dir / "final_artifact.json"
+                fp.write_text(
+                    json.dumps(record, indent=1, sort_keys=True, ensure_ascii=False), "utf-8"
+                )
+                path = str(fp)
+            except OSError:
+                path = None  # best-effort: scoring does not depend on the file
         return ArtifactRef(
             ref_id=f"appworld:{self._task_id}:{self._experiment}",
             kind="env_state",
             digest=digest_of({"task": self._task_id, "exp": self._experiment}),
+            path=path,
         )
 
     def _require_started(self) -> None:
