@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from rsi.config import CampaignConfig
+from rsi.contracts.common import digest_of
 from rsi.contracts.errors import ProtocolViolation
 from rsi.harness.loader import load_bank_ref, load_empty_bank
 from rsi.providers.factory import build_policy
@@ -46,7 +47,7 @@ def _build_backend(cfg: CampaignConfig, policy: Any, device: str | None = None):
         model = getattr(policy, "model", None)
         if model is None:
             raise ProtocolViolation("hf_reference backend requires a policy with a torch model")
-        kwargs = dict(lambda_opd=lambda_opd, gate_beta=gate_beta, lr=lr)
+        kwargs = dict(lambda_opd=lambda_opd, gate_beta=gate_beta, lr=lr, source_policy=policy)
         if device:
             kwargs["device"] = device
         return HFReferenceBackend(model=model, **kwargs)
@@ -143,6 +144,53 @@ def run_train(cfg: CampaignConfig, *, bank_ref: str, policy: Any | None = None, 
     dist_info: DistInfo = init_from_env()
     bank = load_bank_ref(bank_ref)  # Teacher bank (H0 + Bk) == "all teacher"
     student_bank = load_empty_bank()  # "zero student": H0 only
+    # PR-09 (guide §8.2): build the runtime parts ONCE, before the execution-
+    # mode branches.  The distributed branch previously referenced
+    # ``runtime_cfg`` / ``_parts`` assigned only in the serial branch — an
+    # UnboundLocalError on the first distributed episode, which the branch's
+    # broad ``except Exception`` converted into a silent reward-0 stream.
+    # Pool workers rebuild from the same raw section and must verify the
+    # contract digest matches (collector_parallel does the digest check).
+    runtime_cfg = cfg.section("runtime")
+    from rsi.runtime.factory import build_runtime_parts
+
+    runtime_parts = build_runtime_parts(runtime_cfg)
+    # PR-05 (guide §5.1): the formal-training gate.  A bank is not a teacher
+    # merely because an evolve run produced it — require a READY readiness
+    # artifact bound to the CURRENT identities before any optimizer step.
+    training_cfg_gate = cfg.section("training")
+    if bool(training_cfg_gate.get("require_teacher_readiness", False)):
+        from rsi.opd.readiness import check_readiness_for_training, load_readiness
+
+        readiness_ref = training_cfg_gate.get("readiness_ref")
+        readiness = load_readiness(readiness_ref) if readiness_ref else None
+        if readiness is not None and readiness.domain not in (None, "", "*"):
+            _gate_domains = list(cfg.section("suite").get("domains") or [])
+            if _gate_domains and readiness.domain not in _gate_domains:
+                raise ProtocolViolation(
+                    f"readiness artifact covers domain {readiness.domain!r} but the "
+                    f"training config targets {_gate_domains!r}"
+                )
+        _gate_env_digest = ""
+        _gate_domains2 = list(cfg.section("suite").get("domains") or [])
+        if _gate_domains2:
+            from rsi.contracts.common import digest_of as _d
+
+            _gate_env_digest = _d(
+                registry.get(_gate_domains2[0]).adapter_factory().environment_identity()
+            )
+        problems = check_readiness_for_training(
+            readiness=readiness,
+            bank_digest=bank.bank_digest,
+            policy_digest=policy.policy_artifact.policy_id,
+            runtime_contract_digest=runtime_parts.profile.digest(),
+            environment_digest=_gate_env_digest,
+        )
+        if problems:
+            raise ProtocolViolation(
+                "teacher readiness gate FAILED — formal OPD training refused:\n- "
+                + "\n- ".join(problems)
+            )
     policy = (
         policy
         if policy is not None
@@ -165,6 +213,26 @@ def run_train(cfg: CampaignConfig, *, bank_ref: str, policy: Any | None = None, 
     from rsi.environments.registry import global_registry
 
     registry = global_registry()
+    # PR-09 (guide §8.4): checkpoints previously wrote EMPTY
+    # runtime_contract_digest / environment_digest — an unversionable
+    # checkpoint identity.  Compute both from the real runtime parts and the
+    # first configured domain's environment identity.
+    from rsi.runtime.loop import build_runtime_contract
+
+    _domains = list(cfg.section("suite").get("domains") or [])
+    _env_identity = registry.get(_domains[0]).adapter_factory().environment_identity() if _domains else {}
+    runtime_contract_digest = digest_of(
+        {
+            "runtime_parts": {
+                "max_actions": runtime_parts.budgets.max_actions,
+                "max_new_tokens": runtime_parts.sampling.max_new_tokens,
+                "temperature": runtime_parts.sampling.temperature,
+                "max_chars": runtime_parts.context_policy.max_chars,
+                "profile": runtime_parts.profile.digest() if runtime_parts.profile else "",
+            },
+        }
+    )
+    environment_digest = digest_of(_env_identity)
     training_cfg = cfg.section("training")
     max_steps = int(training_cfg.get("max_optimizer_steps_per_round", 2))
     per_rank = int(training_cfg.get("episodes_per_rank_per_step", 2))
@@ -198,13 +266,8 @@ def run_train(cfg: CampaignConfig, *, bank_ref: str, policy: Any | None = None, 
                     bundle = registry.get(spec_ep["domain"])
                     provider = bundle.task_provider_factory()
                     task = next(t for t in provider.all_tasks() if t.task_id == spec_ep["task_id"])
-                    from rsi.contracts.policy import SamplingParams
-                    from rsi.runtime.budgets import BudgetSpec
                     from rsi.training.collector import collect_rollouts
 
-                    from rsi.runtime.factory import build_runtime_parts
-
-                    _parts = build_runtime_parts(runtime_cfg)
                     batch = collect_rollouts(
                     policy=policy,
                     teacher_policy=policy,
@@ -214,9 +277,9 @@ def run_train(cfg: CampaignConfig, *, bank_ref: str, policy: Any | None = None, 
                     student_bank=student_bank,
                     teacher_bank=bank,
                     tasks=[task],
-                    budgets=_parts.budgets,
-                    sampling=_parts.sampling,
-                    context_policy=_parts.context_policy,
+                    budgets=runtime_parts.budgets,
+                    sampling=runtime_parts.sampling,
+                    context_policy=runtime_parts.context_policy,
                     collect_opd=spec.use_opd,
                     uncertain_realizability=str(cfg.section("opd").get("uncertain_realizability", "skip")),
                     max_targets_per_decision=int(cfg.section("opd").get("max_targets_per_decision", 1)),
@@ -229,6 +292,11 @@ def run_train(cfg: CampaignConfig, *, bank_ref: str, policy: Any | None = None, 
                     all_rl.extend(batch.rl_rows)
                     all_opd.extend(batch.opd_rows)
                     local_rewards.extend(batch.rewards)
+                except (NameError, UnboundLocalError, ProtocolViolation, KeyError, TypeError, AttributeError) as e:
+                    # PR-09 (guide §8.2): programming/config errors are NOT
+                    # episode outcomes.  Swallowing them produced the "job
+                    # running, zero valid training data" failure mode.
+                    raise
                 except Exception as e:  # noqa: BLE001 - one bad episode must not
                     # kill the rank (which would tear down the whole 32-rank job)
                     local_rewards.append(0.0)
@@ -317,11 +385,8 @@ def run_train(cfg: CampaignConfig, *, bank_ref: str, policy: Any | None = None, 
             episode_log.extend(merged["episodes"])
         else:
             # serial in-process mode
-            from rsi.contracts.policy import SamplingParams
-            from rsi.runtime.budgets import BudgetSpec
             from rsi.training.collector import collect_rollouts
 
-            runtime_cfg = cfg.section("runtime")
             all_rl = []
             all_opd = []
             for domain in {s["domain"] for s in ep_specs}:
@@ -341,9 +406,9 @@ def run_train(cfg: CampaignConfig, *, bank_ref: str, policy: Any | None = None, 
                     student_bank=student_bank,
                     teacher_bank=bank,
                     tasks=tasks,
-                    budgets=_parts.budgets,
-                    sampling=_parts.sampling,
-                    context_policy=_parts.context_policy,
+                    budgets=runtime_parts.budgets,
+                    sampling=runtime_parts.sampling,
+                    context_policy=runtime_parts.context_policy,
                     collect_opd=spec.use_opd,
                     uncertain_realizability=str(cfg.section("opd").get("uncertain_realizability", "skip")),
                     max_targets_per_decision=int(cfg.section("opd").get("max_targets_per_decision", 1)),
@@ -372,8 +437,8 @@ def run_train(cfg: CampaignConfig, *, bank_ref: str, policy: Any | None = None, 
                 identity=CheckpointIdentity(
                     policy_digest=policy.policy_artifact.policy_id,
                     bank_digest=bank.bank_digest,
-                    runtime_contract_digest="",
-                    environment_digest="",
+                    runtime_contract_digest=runtime_contract_digest,
+                    environment_digest=environment_digest,
                     data_digest=cfg.digest(),
                     global_step=global_step,
                     batch_identity=f"step={global_step}",
@@ -398,8 +463,8 @@ def run_train(cfg: CampaignConfig, *, bank_ref: str, policy: Any | None = None, 
         identity = CheckpointIdentity(
             policy_digest=policy.policy_artifact.policy_id,
             bank_digest=bank.bank_digest,
-            runtime_contract_digest="",
-            environment_digest="",
+            runtime_contract_digest=runtime_contract_digest,
+            environment_digest=environment_digest,
             data_digest=cfg.digest(),
             global_step=global_step,
             batch_identity=f"steps={global_step}",

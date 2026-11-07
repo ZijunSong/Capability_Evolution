@@ -109,7 +109,7 @@ def test_parent_feedback_continuity(tmp_path):
 
     diagnosis = diagnose_traces(
         generation=1,
-        per_task={"t1": {"value": 0.0, "terminated_reason": "tool_error"}},
+        per_task={"t1": {"value": 0.0, "success": False, "terminated_reason": "tool_error"}},
     )
     packet = build_packet(
         generation=1,

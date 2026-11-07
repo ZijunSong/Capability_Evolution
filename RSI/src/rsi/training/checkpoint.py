@@ -87,6 +87,20 @@ def save_checkpoint(
         "extra": dict(extra or {}),
         "saved_state": saved,
         "model_digest": state_digest,
+        # PR-09 (guide §8.4): trainable-parameter identity — which tensors are
+        # trained, how many, and the tokenizer identity of the producing
+        # policy.  Previously absent, making checkpoints unverifiable against
+        # the intended LoRA configuration.
+        "trainable": {
+            "n_trainable_params": getattr(backend, "n_trainable_params", None),
+            "n_trainable_tensors": sum(
+                1 for p in backend.model.parameters() if p.requires_grad
+            ),
+            "tokenizer_digest": getattr(backend, "source_policy", None) and getattr(
+                backend.source_policy, "tokenizer_digest", ""
+            )
+            or "",
+        },
     }
     (directory / "checkpoint.json").write_text(
         json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False), "utf-8"

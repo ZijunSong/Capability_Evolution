@@ -335,7 +335,15 @@ class HFPolicy:
         (pathological on Qwen3.x hybrid linear-attention models) and stopped at
         the first trailing ``}``, truncating nested JSON.  This path uses the
         HF KV cache, stops on EOS / complete-JSON / fenced-block, and reports
-        per-token behavior logprobs via transition scores.
+        per-token behavior logprobs from the step logits.
+
+        PR-02 (guide §3.2 B): when ``params.seed`` is set, sampling runs under
+        a LOCAL RNG scope (``torch.random.fork_rng``) — the recorded seed
+        actually drives the sampling instead of being dead metadata, and
+        concurrent/interleaved teacher+student requests in one process cannot
+        consume each other's random stream.  The global RNG state is restored
+        afterwards, so teacher/auxiliary calls leave the student stream
+        untouched.
         """
         torch = self._torch
         self.model.eval()
@@ -353,6 +361,12 @@ class HFPolicy:
         if params.temperature > 0:
             gen_kwargs["temperature"] = float(params.temperature)
             gen_kwargs["top_p"] = float(params.top_p or 1.0)
+        # PR-09 (guide §8.3): pin the behavior distribution explicitly — the
+        # model's generation_config must not silently introduce top-k or
+        # repetition penalties that the new-vs-old logprob comparison would
+        # then ignore (off-policy distortion with no recorded identity).
+        gen_kwargs["top_k"] = 0
+        gen_kwargs["repetition_penalty"] = 1.0
         stopper = _CompleteOutputStop(self.tokenizer, prompt_len)
         try:
             from transformers import StoppingCriteriaList
@@ -361,17 +375,45 @@ class HFPolicy:
         except Exception:  # noqa: BLE001 - ultra-old transformers fallback
             pass
         with torch.no_grad():
-            out = self.model.generate(input_ids, **gen_kwargs)
+            if params.seed is not None:
+                # local RNG scope: the recorded seed drives THIS sample; the
+                # global stream (used by unseeded teacher/aux/proposer calls)
+                # is untouched.  fork_rng with devices=() only swaps CPU state
+                # — CUDA sampling inside generate is governed by the same CPU
+                # seeding path in transformers' sampling loops when a seed is
+                # not passed via generator= (not all versions accept one).
+                with torch.random.fork_rng(devices=() if not str(self.device).startswith("cuda") else [self.device]):
+                    torch.manual_seed(int(params.seed))
+                    out = self.model.generate(input_ids, **gen_kwargs)
+            else:
+                out = self.model.generate(input_ids, **gen_kwargs)
         generated = [int(t) for t in out.sequences[0][prompt_len:].tolist()]
-        # per-token behavior logprobs of the taken tokens
-        logprobs: list[float] = []
-        try:
-            from transformers import compute_transition_scores
-
-            scores = compute_transition_scores(out.sequences, out.scores, normalize_logits=True)
-            logprobs = [float(x) for x in scores[0][: len(generated)].tolist()]
-        except Exception:  # noqa: BLE001 - fall back to zeros with a loud tag
-            logprobs = [0.0] * len(generated)
+        # Per-token behavior logprobs of the taken tokens, computed from the
+        # raw step logits via log_softmax over the full vocab (the same
+        # semantics as compute_transition_scores(normalize_logits=True), but
+        # without importing it — the old try/except silently filled ZEROS on
+        # import failure, which entered CISPO as fake ratios of 1.0 (PR-09,
+        # guide §8.3: a logprob failure must block the RL row, never produce
+        # substitute data).
+        if generated:
+            if not getattr(out, "scores", None):
+                raise RuntimeError(
+                    "model.generate returned no per-step scores — behavior "
+                    "logprobs are unavailable and RL rows must not be built "
+                    "from zero-filled logprobs"
+                )
+            try:
+                step_logits = torch.stack(list(out.scores), dim=0)  # [steps, batch, vocab]
+                logp = torch.log_softmax(step_logits[:, 0, :].float(), dim=-1)
+                taken = out.sequences[0][prompt_len : prompt_len + logp.shape[0]]
+                logprobs = [float(x) for x in logp[torch.arange(logp.shape[0]), taken].tolist()]
+            except Exception as e:  # noqa: BLE001 - loud failure, no zeros
+                raise RuntimeError(
+                    f"behavior logprob computation failed (refusing to emit "
+                    f"zero-filled logprobs): {e!r}"
+                ) from e
+        else:
+            logprobs: list[float] = []
         # strip trailing EOS
         if self.tokenizer.eos_id is not None and generated and generated[-1] == self.tokenizer.eos_id:
             generated = generated[:-1]

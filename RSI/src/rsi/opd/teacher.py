@@ -38,10 +38,21 @@ class TeacherBranch:
     triggered_components: Mapping[str, int]
     cost: CostRecord
     terminated_reason: str
+    # PR-09 (guide §8.1): number of events in ``events`` that existed BEFORE
+    # the first proposed target action was sampled.  The scoring prefix is
+    # events[:pre_target_event_count] — never the full branch (which contains
+    # the target's own execution feedback, letting the teacher "see the
+    # answer" and inflating the gate).
+    pre_target_event_count: int = 0
 
     @property
     def native_actions(self) -> tuple[Action, ...]:
         return tuple(e.action for e in self.events if e.action is not None)
+
+    @property
+    def pre_target_events(self) -> tuple[Event, ...]:
+        """Events strictly before the first proposed target action."""
+        return self.events[: self.pre_target_event_count]
 
 
 @dataclass
@@ -97,6 +108,15 @@ class TeacherForkRunner:
         order = 0
         t0 = monotonic_ms()
         terminated = "max_shadow_events"
+        # PR-09 (guide §8.1): the target-generation prompt is the state at the
+        # decision point itself — i.e. the student prefix + restored component
+        # state, BEFORE any teacher event.  The first teacher sample of the
+        # branch IS the candidate target, so pre_target_event_count starts at
+        # 0: every event in this branch happened at-or-after the target
+        # proposal.  (Branches that need internal retries record those events
+        # here too — the scoring view still must not include them unless they
+        # causally precede the accepted target.)
+        pre_target_event_count = 0
         view = PublicView(
             task=task,
             tool_catalog=catalog,
@@ -121,6 +141,10 @@ class TeacherForkRunner:
             try:
                 action = parse_action(sample.text)
             except ActionParseError as e:
+                # PR-07: a parse error consumed a model call — record it AND
+                # charge it, so malformed-output loops hit the shadow budget
+                # instead of spinning silently.
+                order += 0  # ordering handled by the append below
                 events.append(
                     Event(
                         event_id=Event.make_id(ctx.episode_id, order),
@@ -135,13 +159,63 @@ class TeacherForkRunner:
                     )
                 )
                 order += 1
+                # charge the wasted action so parse-error loops are bounded
+                ledger.charge_action(1)
                 continue
             eff = composition.apply_after_proposal(action, view)
             if eff.veto:
+                # PR-07 (guide §6.4): a veto must generate private FEEDBACK and
+                # consume budget — the pre-fix silent ``continue`` allowed an
+                # infinite free resample loop and hid the veto from the
+                # teacher's own next-prompt history.
+                events.append(
+                    Event(
+                        event_id=Event.make_id(ctx.episode_id, order),
+                        order=order,
+                        component_id="teacher",
+                        event_kind=EventKind.ERROR,
+                        pre_state_digest=fork_env.state_digest(),
+                        post_state_digest=fork_env.state_digest(),
+                        observation=None,
+                        data={"veto_reason": eff.veto_reason, "vetoed_action": str(action)[:200]},
+                        visibility=Visibility.TEACHER_PRIVATE,
+                        cost=CostRecord(actor_output_tokens=len(sample.token_ids)),
+                    )
+                )
+                order += 1
+                view = PublicView(
+                    task=task,
+                    tool_catalog=catalog,
+                    history=tuple(student_events) + tuple(events),
+                    remaining_action_budget=self.max_shadow_events - order,
+                )
                 continue
             if eff.action is not None:
                 action = eff.action
             if isinstance(action, Finish):
+                # PR-07 (guide §6.4): the teacher MUST run the same
+                # before_finish gating as the student runtime — a Finish that
+                # the bank's finish-guard would block is not a branch
+                # termination (and must never become supervision).
+                fin = composition.apply_before_finish(action, view)
+                if fin.block:
+                    events.append(
+                        Event(
+                            event_id=Event.make_id(ctx.episode_id, order),
+                            order=order,
+                            component_id="teacher",
+                            event_kind=EventKind.ERROR,
+                            pre_state_digest=fork_env.state_digest(),
+                            post_state_digest=fork_env.state_digest(),
+                            data={"finish_blocked": fin.block_reason},
+                            visibility=Visibility.TEACHER_PRIVATE,
+                            cost=CostRecord(actor_output_tokens=len(sample.token_ids)),
+                        )
+                    )
+                    order += 1
+                    continue
+                if fin.action is not None:
+                    action = fin.action
                 events.append(
                     Event(
                         event_id=Event.make_id(ctx.episode_id, order),
@@ -207,6 +281,7 @@ class TeacherForkRunner:
             triggered_components=dict(composition.trigger_report()),
             cost=cost,
             terminated_reason=terminated,
+            pre_target_event_count=pre_target_event_count,
         )
 
     def _aux_model(self, prompt: str, max_new_tokens: int) -> str:

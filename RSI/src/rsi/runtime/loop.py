@@ -229,6 +229,7 @@ class MinimalLoop:
                     task=task,
                     episode_id=ctx.episode_id,
                     decision_index=len(decisions),
+                    public_event_end=len(events),
                     snapshot_ref=snap.ref_id,
                     v_digest=v_digest,
                     prompt_ids=prompt_ids,
@@ -267,6 +268,7 @@ class MinimalLoop:
                     task=task,
                     episode_id=ctx.episode_id,
                     decision_index=len(decisions),
+                    public_event_end=len(events),
                     snapshot_ref=snap.ref_id,
                     v_digest=v_digest,
                     prompt_ids=prompt_ids,
@@ -309,6 +311,7 @@ class MinimalLoop:
                         task=task,
                         episode_id=ctx.episode_id,
                         decision_index=len(decisions),
+                    public_event_end=len(events),
                         snapshot_ref=snap.ref_id,
                         v_digest=v_digest,
                         prompt_ids=prompt_ids,
@@ -342,6 +345,7 @@ class MinimalLoop:
                     task=task,
                     episode_id=ctx.episode_id,
                     decision_index=len(decisions),
+                    public_event_end=len(events),
                     snapshot_ref=snap.ref_id,
                     v_digest=v_digest,
                     prompt_ids=prompt_ids,
@@ -382,6 +386,7 @@ class MinimalLoop:
                 task=task,
                 episode_id=ctx.episode_id,
                 decision_index=len(decisions),
+                    public_event_end=len(events),
                 snapshot_ref=snap.ref_id,
                 v_digest=v_digest,
                 prompt_ids=prompt_ids,
@@ -454,6 +459,7 @@ class MinimalLoop:
         old_logprobs: Sequence[float],
         executed_action_text: str | None = None,
         runtime_contract_digest: str = "",
+        public_event_end: int = -1,
     ) -> None:
         decisions.append(
             DecisionRecord(
@@ -473,6 +479,12 @@ class MinimalLoop:
                 sampled_action_token_ids=tuple(int(i) for i in action_token_ids),
                 old_logprobs=tuple(float(x) for x in old_logprobs),
                 action_mask=tuple(1 for _ in action_token_ids),
+                # PR-06 (guide §6.2): the real public-prefix boundary at
+                # sampling time.  The sample happened when ``events`` had
+                # exactly this many entries — any OPD consumer must slice
+                # with it, never with decision_index.
+                public_event_end=public_event_end,
+                actor_sampling_seed=None,
                 executed_action_text=executed_action_text,
                 behavior_policy_version=self.policy.policy_artifact.policy_id,
                 sampling_parameters={

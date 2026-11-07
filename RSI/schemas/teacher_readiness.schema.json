@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "rsi teacher_readiness_v1",
+  "description": "Teacher admission artifact (guide §5.1 / PR-05). Binding a confirmed harness gain to the exact bank/policy/runtime/environment identities; any identity change invalidates the artifact.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "domain",
+    "status",
+    "code_commit",
+    "bank_digest",
+    "policy_digest",
+    "runtime_contract_digest",
+    "environment_digest",
+    "metric_contract_digest",
+    "confirm_manifest_digest",
+    "confirm_result_ref",
+    "validator_version"
+  ],
+  "properties": {
+    "schema_version": {"const": "teacher_readiness_v1"},
+    "domain": {"type": "string", "minLength": 1},
+    "status": {
+      "enum": [
+        "UNMEASURED",
+        "RUNTIME_INVALID",
+        "NO_CONFIRMED_GAIN",
+        "PARTIAL_SIGNAL_ONLY",
+        "GAIN_CONFIRMED_ALIGNMENT_PENDING",
+        "ALIGNMENT_UNSUPPORTED",
+        "READY_FOR_PILOT",
+        "READY_FOR_FORMAL"
+      ]
+    },
+    "code_commit": {"type": "string"},
+    "bank_digest": {"type": "string", "minLength": 8},
+    "policy_digest": {"type": "string", "minLength": 8},
+    "runtime_contract_digest": {"type": "string", "minLength": 8},
+    "environment_digest": {"type": "string", "minLength": 8},
+    "metric_contract_digest": {"type": "string", "minLength": 8},
+    "confirm_manifest_digest": {"type": "string", "minLength": 8},
+    "confirm_result_ref": {"type": "string"},
+    "paired_delta": {"type": ["number", "null"]},
+    "paired_interval": {
+      "type": ["array", "null"],
+      "items": {"type": "number"},
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "alignment_report_ref": {"type": ["string", "null"]},
+    "validator_version": {"type": "string"},
+    "identity_digest": {"type": "string"},
+    "extra": {"type": "object"}
+  },
+  "additionalProperties": false
+}

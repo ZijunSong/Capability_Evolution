@@ -98,10 +98,15 @@ def render_proposer_prompt(
         "manifest_patch.entrypoint format is STRICTLY \"module:Class\" "
         "(e.g. \"components.my_component:MyComponent\") — never a bare class name.\n"
         "Emit PLAIN JSON only (no comments, no trailing commas).\n"
+        "PR-04 evidence contract: \"evidence_refs\" MUST cite task_id[:event_ref] "
+        "entries from the packet's failure fragments (evidence you actually used); "
+        "\"hypothesis\" MUST name the mechanism + expected_trigger + expected_change "
+        "+ possible_regression — generic advice (\"be more careful\", \"reflect when "
+        "needed\") is rejected.\n"
         "{\n"
         '  "parent_bank_digest": "<verbatim from packet>",\n'
         '  "operation": "add",\n'
-        '  "hypothesis": "<mechanism + expected improvement>",\n'
+        '  "hypothesis": "<mechanism; triggers when <expected_trigger>; changes <expected_change>; may regress <possible_regression>>",\n'
         '  "files": [{"path": "components/my_component.py", "content": "<FULL python source>"}],\n'
         '  "delete_paths": [],\n'
         '  "manifest_patch": {\n'
@@ -113,7 +118,7 @@ def render_proposer_prompt(
         '    "required_capabilities": [], "state_schema": {}, "resource_caps": {},\n'
         '    "provenance": {}, "alignment_hints": {}, "kind": "other"\n'
         "  },\n"
-        '  "alignment_hints": {}, "evidence_refs": [],\n'
+        '  "alignment_hints": {}, "evidence_refs": ["<task_id>[:<event/order>]"],\n'
         '  "expected_cost_change": {}, "self_checks": []\n'
         "}\n"
         "Respond with a single JSON object for the CandidatePatch now."

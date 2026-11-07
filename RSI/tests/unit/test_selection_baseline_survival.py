@@ -90,8 +90,8 @@ def test_diagnosis_carries_unknown_needs_trace_for_budget_wall():
     rec = diagnose_traces(
         generation=0,
         per_task={
-            "t1": {"value": 0.0, "terminated_reason": "budget_wall", "n_decisions": 0},
-            "t2": {"value": 0.5, "terminated_reason": "finish", "n_decisions": 12},
+            "t1": {"value": 0.0, "success": False, "terminated_reason": "budget_wall", "n_decisions": 0},
+            "t2": {"value": 0.5, "success": False, "terminated_reason": "finish", "n_decisions": 12},
         },
         baseline_scores=None,
         parent_scores=None,

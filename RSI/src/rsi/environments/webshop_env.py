@@ -411,7 +411,12 @@ class WebShopAdapter:
         return digest_of({"task": self._task_id, "goal_index": self._goal_index, "actions": list(actions)})
 
     def fork(self, snapshot: SnapshotRef) -> "WebShopAdapter":
-        """Replay-prefix fork: a fresh env re-executes the recorded actions."""
+        """Replay-prefix fork AT THE SNAPSHOT POSITION (PR-06, guide §6.3).
+
+        The pre-fix implementation replayed the parent's FULL action log —
+        forking an old decision silently produced the CURRENT state.
+        ``ref_id`` is ``replay:<n>`` (see ``snapshot()``): replay exactly
+        ``n`` actions and verify the digest."""
         child = WebShopAdapter(str(self._root), max_steps=self._max_steps, out_root=str(self._out_root))
         child._task_id = self._task_id
         child._goal_index = self._goal_index
@@ -446,7 +451,16 @@ class WebShopAdapter:
         if browser is not None:
             browser.session_id = child._session
         child._started = True
-        for act in self._actions:
+        # snapshot position (PR-06): explicit from the ref, falling back to
+        # the parent cursor for legacy refs.
+        replay_len = len(self._actions)
+        if snapshot.ref_id.startswith("replay:"):
+            try:
+                replay_len = int(snapshot.ref_id.split(":", 1)[1])
+            except ValueError:
+                pass
+        replay_len = max(0, min(replay_len, len(self._actions)))
+        for act in self._actions[:replay_len]:
             child.step_raw(act)
         if snapshot.kind == "replay_prefix" and snapshot.digest:
             if child._replay_digest(child._actions) != snapshot.digest:

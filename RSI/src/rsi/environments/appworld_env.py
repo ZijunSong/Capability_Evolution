@@ -77,7 +77,7 @@ class AppWorldAdapter:
     version = APPWORLD_VERSION
     supports_shadow_fork = True
 
-    def __init__(self, data_root: str | None = None, *, max_interactions: int = 40, out_root: str | None = None):
+    def __init__(self, data_root: str | None = None, *, max_interactions: int = 40, out_root: str | None = None, run_context: Any = None):
         _require_appworld()
         self._data_root = data_root or os.environ.get("APPWORLD_ROOT", "/mnt/songzijun/datasets/appworld")
         # Trajectory persistence (paired-v3 trace gap): the adapter kept only
@@ -86,6 +86,8 @@ class AppWorldAdapter:
         # set (RSI_APPWORLD_OUT), final_artifact() writes a bounded JSON
         # trajectory next to the ref (same shape as alfworld/webshop).
         self._out_root = Path(out_root or os.environ.get("RSI_APPWORLD_OUT") or "")
+        # PR-02 (guide §3.2 A): optional RunContext for per-arm output identity.
+        self._run_context = run_context
         self._trajectory: list[dict[str, Any]] = []
         data_dir = os.path.join(self._data_root, "data")
         # Require real data content — an empty `data/` dir is not an install.
@@ -108,6 +110,11 @@ class AppWorldAdapter:
         # checkpoint-content digest.
         self._replay_code: list[str] = []
         self._seed: int = 0
+        # PR-01 v3 (guide §3.1 B): the answer value this adapter submitted via
+        # Finish, or the model's own complete_task call (detected from the
+        # executed code).  Once set, a later Finish(None) must not overwrite
+        # the submitted value.
+        self._completion_submitted: Any = None
 
     def check_ready(self) -> tuple[bool, str]:
         """Panel-level capability probe: the apps code bundle must be unpacked
@@ -127,7 +134,16 @@ class AppWorldAdapter:
         # fails to persist for experiment names containing ':' (load then
         # raises).  Sanitize rather than patch vendored code.
         safe_task = self._task_id.replace(":", "_")
-        self._experiment = f"rsi-{safe_task}-{seed}"
+        # PR-02 (guide §3.2 A): when a RunContext is provided, the experiment
+        # name carries the RUN identity (run/arm/bank/replicate hash) so A/B
+        # arms and candidate re-evaluations of one campaign write distinct
+        # AppWorld experiments instead of overwriting each other's output
+        # DBs.  Without a RunContext (legacy paths/tests) the historical
+        # rsi-<task>-<seed> name is kept.
+        if self._run_context is not None:
+            self._experiment = f"rsi-{safe_task}-{self._run_context.experiment_hash()}"
+        else:
+            self._experiment = f"rsi-{safe_task}-{seed}"
         # Actor side: ground truth NEVER loaded here.
         self._env = AppWorld(
             task_id=self._task_id,
@@ -163,31 +179,45 @@ class AppWorldAdapter:
     def step(self, action: Action) -> StepResult:
         self._require_started()
         if isinstance(action, Finish):
-            # PR (2026-11-05 bad-case audit): the official evaluator reads the
-            # predicted answer from the supervisor Task.answer field, which is
-            # only written by ``apis.supervisor.complete_task(answer=...)``.
-            # This branch used to ignore ``Finish.answer`` entirely, so every
-            # scored task read the initial "<<NOT_GIVEN>>" placeholder and the
-            # answer assertion failed 53/53 regardless of the model's work.
-            # Submit the actor's answer on its behalf (answer=None is a valid
-            # submission — the GT for action-less tasks is JSON null).
-            submit_note = ""
-            answer = getattr(action, "answer", None)
-            submitted = False
-            # Always submit on finish: answer=None is a meaningful submission
-            # ("task asks no answer" — the API default marks the task success
-            # with JSON null), matching GT tasks whose answer.json is null.
+            # PR-01 v3 (guide §3.1 B): Finish(answer=...) is the ONLY answer
+            # path — the adapter submits on the model's behalf.  Rules:
+            # (1) type fidelity: inline the JSON literal (json.loads('null') →
+            #     None) so int/float/str/null survive round-trips;
+            # (2) a previously SUBMITTED answer (model already called
+            #     complete_task itself) is authoritative — a later
+            #     Finish(None) must NOT silently overwrite it;
+            # (3) a FAILED submission is completion_submit_failed: ok=False,
+            #     done=False so the model can retry within its remaining
+            #     budget — never a success-looking done=True.
             import json as _json
 
-            # complete_task stores json.dumps(answer); the evaluator does
-            # json.loads on it. The submitted code must decode to the SAME
-            # typed value: inline the JSON literal directly (json.loads('null')
-            # → None) instead of double-encoding, which turned None into the
-            # string 'null' (r3 lesson: json.loads('"null"') is not None).
+            answer = getattr(action, "answer", None)
             try:
                 literal = _json.dumps(answer)
             except (TypeError, ValueError):
                 literal = _json.dumps(str(answer))
+            already_submitted = self._completion_submitted is not None
+            if already_submitted:
+                # keep the earlier value; Finish(None) cannot erase it
+                self._trajectory.append({
+                    "kind": "finish",
+                    "answer_head": (literal or "")[:200],
+                    "submitted": False,
+                    "kept_prior_submission": True,
+                    "task_completed": bool(self._env.task_completed()),
+                })
+                return StepResult(
+                    observation=Observation(
+                        content=(
+                            "finished (task_completed=True, prior answer submission "
+                            f"kept: {self._completion_submitted!r}; Finish answer ignored)"
+                        ),
+                        provenance=ObservationProvenance(source_tool="finish", source_ref=self._task_id),
+                    ),
+                    done=True,
+                    snapshot=self.snapshot(),
+                    cost={"tool_calls": 0},
+                )
             try:
                 submit_code = f"apis.supervisor.complete_task(answer=json.loads({literal!r}))"
                 result = self._env.execute(submit_code)
@@ -195,18 +225,56 @@ class AppWorldAdapter:
                 # r3 lesson: AppWorld's safety_guard returns "Execution failed.
                 # Traceback: …" instead of raising — string-match it too.
                 failed = ("EXEC_ERROR" in text) or ("Execution failed" in text) or ("Traceback" in text)
+                if failed:
+                    # PR-01: submit failure is a RETRYABLE error, not a finish.
+                    self._trajectory.append({
+                        "kind": "completion_submit_failed",
+                        "answer_head": (literal or "")[:200],
+                        "error_head": text[:200],
+                    })
+                    return StepResult(
+                        observation=Observation(
+                            content=(
+                                "answer submission failed — the task is NOT complete. "
+                                f"Runtime feedback: {text[:400]}. Fix the submission "
+                                "(check the answer value / supervisor access) and try "
+                                "Finish again, or keep working within your remaining budget."
+                            ),
+                            ok=False,
+                            error_kind="completion_submit_failed",
+                            provenance=ObservationProvenance(source_tool="finish", source_ref=self._task_id),
+                        ),
+                        done=False,
+                        snapshot=self.snapshot(),
+                        cost={"tool_calls": 0},
+                    )
                 # Record in the replay log so forks reproduce the answer
                 # submission (same contract as python_exec actions).
                 self._replay_code.append(submit_code)
-                submitted = not failed
-                submit_note = f" answer_submitted={literal}" if submitted else f" answer_submit_failed: {text}"
+                self._completion_submitted = answer
+                submit_note = f" answer_submitted={literal}"
             except Exception as e:  # noqa: BLE001 - submit failure must not mask the finish
-                submit_note = f" answer_submit_error: {e!r}"
+                self._trajectory.append({
+                    "kind": "completion_submit_failed",
+                    "answer_head": (literal or "")[:200],
+                    "error_head": repr(e)[:200],
+                })
+                return StepResult(
+                    observation=Observation(
+                        content=f"answer submission raised: {e!r} — task NOT complete; retry Finish after fixing.",
+                        ok=False,
+                        error_kind="completion_submit_failed",
+                        provenance=ObservationProvenance(source_tool="finish", source_ref=self._task_id),
+                    ),
+                    done=False,
+                    snapshot=self.snapshot(),
+                    cost={"tool_calls": 0},
+                )
             completed = bool(self._env.task_completed())
             self._trajectory.append({
                 "kind": "finish",
                 "answer_head": (literal or "")[:200],
-                "submitted": submitted,
+                "submitted": True,
                 "task_completed": completed,
             })
             return StepResult(
@@ -237,18 +305,51 @@ class AppWorldAdapter:
         try:
             output = self._env.execute(code)
             self._replay_code.append(code)
+            # PR-01 v3: record a model-initiated complete_task so a later
+            # Finish(None) cannot silently overwrite its answer.  Detection is
+            # from OUR execution record (code text + success), not ground
+            # truth.  Known limits: complete_task invoked through getattr/
+            # eval indirection is not recognized — the guide forbids treating
+            # substring matching as proof, so this only fires on direct calls.
+            if (
+                self._completion_submitted is None
+                and "complete_task" in code
+                and not ("EXEC_ERROR" in str(output) or "Execution failed" in str(output))
+            ):
+                self._completion_submitted = "model_submitted_complete_task"
         except Exception as e:  # noqa: BLE001 - execution errors are observations
             output = f"EXEC_ERROR: {e!r}"
+        # PR-01 v3 (guide §3.1 C): surface real tool errors as structured
+        # feedback.  The vendor returns "Execution failed. Traceback: …"
+        # strings WITHOUT raising, so `python_exec` failures previously
+        # flowed through as ok=True observations and the loop treated a
+        # crashed snippet as a normal step.  Anchor on the adapter's own
+        # EXEC_ERROR prefix (which cannot appear in a successful print — the
+        # only way "Traceback" reaches us otherwise is a genuine runtime
+        # failure string) plus the vendor's "Execution failed." lead.
+        text = str(output)
+        exec_failed = text.startswith("EXEC_ERROR") or text.startswith("Execution failed.")
+        error_kind = "python_runtime_error" if exec_failed else None
+        if exec_failed:
+            error_source = "python_runtime"
+        elif "message" in text and ("API" in text or "api" in text):
+            error_source = "api"
+        else:
+            error_source = None
         self._trajectory.append({
             "kind": "tool_call",
             "tool": "python_exec",
             "code_head": str(code)[:400],
-            "obs_head": str(output)[:400],
-            "obs_len": len(str(output)),
+            "obs_head": text[:400],
+            "obs_len": len(text),
+            "exec_failed": exec_failed,
+            "error_source": error_source,
         })
         return StepResult(
             observation=Observation(
-                content=str(output),
+                content=text,
+                ok=not exec_failed,
+                error_kind=error_kind,
                 provenance=ObservationProvenance(source_tool="python_exec", source_ref=self._experiment),
             ),
             done=False,
@@ -263,13 +364,18 @@ class AppWorldAdapter:
         invalidating every other live instance — so forks do NOT use
         ``load_state`` on a live base env.  ``fork`` is replay-based instead
         (task book §5.2: replay the legal prefix and verify the digest).
+
+        PR-06 (guide §6.3): the ref encodes the replay position at capture
+        time (``replay:<n>``) so a fork can restore an OLD decision instead
+        of silently replaying the full history (the pre-fix behavior that
+        made every teacher branch see the episode's future).
         """
         self._require_started()
         self._snap_counter += 1
         state_id = self._env.save_state(f"snap{self._snap_counter}")
         digest = self._checkpoint_digest(str(state_id))
         return SnapshotRef(
-            ref_id=str(state_id),
+            ref_id=f"replay:{len(self._replay_code)}",
             digest=digest,
             kind="replay_prefix",
         )
@@ -287,11 +393,14 @@ class AppWorldAdapter:
         return digest_of({"replay": digest_of(self._replay_code), "checkpoint": files})
 
     def fork(self, snapshot: SnapshotRef) -> "AppWorldAdapter":
-        """Replay-prefix fork: a fresh env re-executes the recorded code.
+        """Replay-prefix fork AT THE SNAPSHOT POSITION (PR-06, guide §6.3).
 
         The base environment stays fully live (no ``load_state``/``close_all``).
-        Reproduction is verified against the snapshot digest; a mismatch is a
-        hard error (the task book requires digest verification).
+        The pre-fix implementation replayed ``self._replay_code`` in FULL —
+        forking an old decision produced the CURRENT state, so every teacher
+        branch saw the episode's future.  ``ref_id`` is ``replay:<n>``
+        (see ``snapshot()``): replay exactly ``n`` entries and verify the
+        digest.
         """
         from appworld.environment import AppWorld
 
@@ -310,14 +419,28 @@ class AppWorldAdapter:
         # old explicit child._env.initialize() here called close_all() again,
         # which can tear down the base env's live handles too — the exact
         # fork-correctness hazard the docstring warns about.
-        for code in self._replay_code:
+        replay_len = len(self._replay_code)
+        if snapshot.ref_id.startswith("replay:"):
+            try:
+                replay_len = int(snapshot.ref_id.split(":", 1)[1])
+            except ValueError:
+                pass
+        replay_len = max(0, min(replay_len, len(self._replay_code)))
+        for code in self._replay_code[:replay_len]:
             child._env.execute(code)
             child._replay_code.append(code)
+        # PR-01 v3: if the replayed prefix contains the adapter's own answer
+        # submission (recorded in replay_code), the child inherits the
+        # submitted state so Finish semantics stay consistent in the fork.
+        if self._completion_submitted is not None and any(
+            "complete_task" in c for c in self._replay_code[:replay_len]
+        ):
+            child._completion_submitted = self._completion_submitted
         # verify the replayed state reproduces the snapshot
         child._snap_counter = self._snap_counter
         state_id = child._env.save_state("forkcheck")
         actual = child._checkpoint_digest(str(state_id))
-        expected_replay = digest_of(self._replay_code)
+        expected_replay = digest_of(self._replay_code[:replay_len])
         if digest_of({"replay": expected_replay}) != digest_of({"replay": digest_of(child._replay_code)}):
             raise EnvironmentError_("fork replay log mismatch")
         if snapshot.kind == "replay_prefix" and snapshot.digest:
@@ -395,14 +518,24 @@ class AppWorldAdapter:
         path: str | None = None
         if self._out_root:
             try:
-                out_dir = Path(self._out_root) / (
-                    self._task_id.replace(":", "_").replace("/", "_") or "task"
-                )
+                # PR-02 (guide §3.2 A): when a RunContext is present, the
+                # trajectory lands in the run's ISOLATED episode directory
+                # (runs/<run>/<phase>/<arm>/<bank>/<replicate>/<episode>/) —
+                # never in the shared per-task folder that A/B arms of one
+                # run overwrote each other in.
+                if self._run_context is not None:
+                    out_dir = self._run_context.episode_dir(
+                        str(self._out_root), self._task_id or "task"
+                    )
+                else:
+                    out_dir = Path(self._out_root) / (
+                        self._task_id.replace(":", "_").replace("/", "_") or "task"
+                    )
                 out_dir.mkdir(parents=True, exist_ok=True)
                 fp = out_dir / "final_artifact.json"
-                fp.write_text(
-                    json.dumps(record, indent=1, sort_keys=True, ensure_ascii=False), "utf-8"
-                )
+                from rsi.runtime.run_identity import atomic_write_json
+
+                atomic_write_json(fp, record, overwrite_ok=True)
                 path = str(fp)
             except OSError:
                 path = None  # best-effort: scoring does not depend on the file

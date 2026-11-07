@@ -71,9 +71,23 @@ def diagnose_traces(
     failures: Counter[str] = Counter()
     examples: dict[str, list[str]] = {}
     successes: list[str] = []
+    n_invalid = 0
+    # PR-03 (guide §4.1): unified outcome semantics.  The old `value < 1.0`
+    # rule disagreed with the sibling modules' `value < 1e-9` rule — the same
+    # partial-credit record was both "failure" (here) and "success" (there).
+    # Success = strict success label; INVALID measurements are counted and
+    # excluded from mechanism categories.
+    from rsi.evolution.outcomes import Outcome, classify_outcome
+
     for tid, rec in sorted(per_task.items()):
-        value = float(rec.get("value", 0.0))
-        if value >= 1.0:
+        try:
+            outcome = classify_outcome(rec)
+        except ValueError:
+            outcome = Outcome.INVALID
+        if outcome is Outcome.INVALID:
+            n_invalid += 1
+            continue
+        if outcome is Outcome.SUCCESS:
             successes.append(tid)
             continue
         kind = str(rec.get("error_kind") or rec.get("terminated_reason") or "wrong_result")
@@ -83,8 +97,14 @@ def diagnose_traces(
     ref = parent_scores if parent_scores is not None else baseline_scores
     if ref:
         for tid, rec in sorted(per_task.items()):
+            try:
+                outcome = classify_outcome(rec)
+            except ValueError:
+                continue  # invalid: never a regression datum
             prev = ref.get(tid)
-            if prev is not None and float(prev) >= 1.0 and float(rec.get("value", 0.0)) < 1.0:
+            if prev is not None and outcome is not Outcome.SUCCESS and classify_outcome(
+                {"value": prev, "success": True}
+            ) is Outcome.SUCCESS:
                 regressions.append(tid)
     trigger_total: Counter[str] = Counter()
     cost_sums: dict[str, float] = {}
@@ -106,7 +126,7 @@ def diagnose_traces(
         ),
         success_sample_task_ids=tuple(successes[:max_examples]),
         regression_task_ids=tuple(regressions[:max_examples]),
-        trigger_stats=dict(trigger_total),
+        trigger_stats={**dict(trigger_total), "_invalid_measurements": n_invalid},
         cost_stats=cost_sums,
     )
 

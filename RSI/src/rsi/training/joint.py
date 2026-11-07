@@ -119,6 +119,22 @@ def joint_update(
         )
     if normalizers is None:
         normalizers = GlobalNormalizers.from_rows(rl_rows, opd_rows, world_size=world_size)
+    # PR-09 (guide §8.2): a batch with zero effective RL tokens AND zero OPD
+    # weight carries no training signal.  Calling optimizer_step() on it would
+    # fabricate a step (progress counters advance, no gradient applied).
+    # Report NO_TRAINING_SIGNAL and skip the optimizer entirely; the caller
+    # decides whether to continue or stop the run.
+    effective_rl_tokens = sum(len(r.action_token_ids) for r in rl_rows) if spec.use_rl else 0
+    effective_opd_weight = sum(sum(r.target_mask or ()) for r in opd_rows) if spec.use_opd else 0
+    if effective_rl_tokens == 0 and effective_opd_weight == 0:
+        return JointStepReport(
+            n_rl_rows=len(rl_rows),
+            n_opd_rows=len(opd_rows) if spec.use_opd else 0,
+            n_optimizer_steps=0,
+            rl_metrics={"no_training_signal": 1.0},
+            opd_metrics={"no_training_signal": 1.0},
+            step_metrics={"optimizer_steps": 0.0},
+        )
     backend.zero_grad()
     rl_metrics: dict[str, float] = {}
     opd_metrics: dict[str, float] = {}

@@ -46,6 +46,11 @@ class HFReferenceBackend:
     name: str = "hf_reference"
     consumes_opd: bool = True
     device: str = "cpu"
+    # PR-09 (guide §8.4): the ORIGINAL policy/tokenizer identity.  export_policy()
+    # previously constructed HFPolicy(self.model) without a tokenizer, which
+    # silently fell back to the ByteTokenizer — the exported policy encoded
+    # prompts with a different vocabulary than the policy being trained.
+    source_policy: Any = field(default=None, repr=False)
     _optimizer: Any = field(default=None, repr=False)
     step_count: int = 0
     # distributed hook called right before optimizer.step() (grad all_reduce)
@@ -198,11 +203,29 @@ class HFReferenceBackend:
     def export_policy(self) -> Any:
         from rsi.providers.tiny_hf import HFPolicy
 
-        policy = HFPolicy(self.model, base_model_id=f"hf_reference-step{self.step_count}", device=self.device)
+        # PR-09 (guide §8.4): preserve the source policy's real tokenizer and
+        # chat-template identity.  A tokenizer-less HFPolicy(model) call falls
+        # back to ByteTokenizer, so the exported artifact decoded ids from a
+        # different vocabulary than the policy that produced them.
+        if self.source_policy is not None and getattr(self.source_policy, "tokenizer", None) is not None:
+            policy = HFPolicy(
+                self.model,
+                base_model_id=f"hf_reference-step{self.step_count}",
+                device=self.device,
+            )
+            # graft the REAL tokenizer onto the exported policy wrapper
+            policy.tokenizer = self.source_policy.tokenizer
+            policy.tokenizer_digest = self.source_policy.tokenizer_digest
+            policy.chat_template_digest = self.source_policy.chat_template_digest
+        else:
+            policy = HFPolicy(self.model, base_model_id=f"hf_reference-step{self.step_count}", device=self.device)
         policy.policy_artifact = policy.policy_artifact.__class__.make(
             policy.policy_artifact.base_model_id,
             kind="trained",
             parent_policy_id=policy.policy_artifact.policy_id,
-            extra={"steps": self.step_count},
+            extra={
+                "steps": self.step_count,
+                "tokenizer_digest": getattr(policy, "tokenizer_digest", ""),
+            },
         )
         return policy

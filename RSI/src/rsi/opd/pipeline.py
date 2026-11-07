@@ -9,7 +9,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
+from rsi.contracts.errors import EnvironmentError_
 from rsi.contracts.events import Event
+from rsi.contracts.observation import SnapshotRef
 from rsi.contracts.task import PublicTask
 from rsi.contracts.trace import DecisionRecord, EpisodeTrace
 from rsi.harness.loader import LoadedBank
@@ -75,6 +77,54 @@ class OPDCollectionStats:
         }
 
 
+def _resolve_decision_snapshot(env: Any, decision: DecisionRecord) -> Any:
+    """Resolve the decision's recorded snapshot ref against the live env.
+
+    Two ref families exist:
+
+    - ``replay:<n>`` (AppWorld/ALFWorld/WebShop): the position is encoded in
+      the ref; rebuild the ref at the recorded position and let the adapter's
+      fork re-verify the digest against the replay log.
+    - content-store refs (toy adapters: ``toy_file:<digest16>``): the ref is
+      self-addressed — the digest IS the ref suffix.  Rebuild the ref with
+      the FULL digest so the fork's store lookup and digest check both work
+      (the pre-fix code zeroed the digest and made every toy teacher fork
+      fail closed).
+
+    Legacy empty refs (no snapshot was recorded at all) are a hard error
+    (guide §6.3 fail-closed), never a silent fork-at-future-state.
+    """
+    ref = str(decision.environment_snapshot_ref or "")
+    if not ref:
+        raise EnvironmentError_(
+            f"decision {decision.decision_index} has NO snapshot ref recorded — "
+            "cannot verify the teacher fork's starting state (fail-closed)"
+        )
+    if ref.startswith("replay:"):
+        try:
+            n = int(ref.split(":", 1)[1])
+        except ValueError as e:
+            raise EnvironmentError_(
+                f"decision {decision.decision_index} snapshot ref unresolvable: {ref!r}"
+            ) from e
+        return SnapshotRef(ref_id=f"replay:{n}", digest="", kind="replay_prefix")
+    # content-store ref: "<kind>:<digest[:16]>" — the digest IS self-carried.
+    # The recorded digest in DecisionRecord-era refs is the FULL digest only
+    # if the adapter stored it; the ref suffix is the first 16 hex chars of
+    # the full digest, and the toy store keys by ref_id (which contains the
+    # suffix), so pass ref_id verbatim.  For the digest check, resolve the
+    # full digest from the adapter's store when it exposes one.
+    full_digest = ""
+    store = getattr(env, "_store", None)
+    if store is not None and hasattr(store, "_snaps"):
+        snapped = store._snaps.get(ref)
+        if snapped is not None:
+            from rsi.contracts.common import digest_of
+
+            full_digest = digest_of(snapped)
+    return SnapshotRef(ref_id=ref, digest=full_digest, kind="replay_prefix")
+
+
 def collect_opd_rows(
     *,
     policy: Any,
@@ -115,14 +165,36 @@ def collect_opd_rows(
             continue
         stats.triggered_decisions += 1
         stats.task_clusters.add(task.group_id)
+        # PR-06 (guide §6.2/6.3): the teacher branch must start from the
+        # decision's OWN snapshot and its OWN public prefix.  The pre-fix
+        # code called ``env.snapshot()`` AFTER the rollout finished (the
+        # future state) and passed ``trace.events`` in full (the future
+        # history) — both leaks the future into the teacher's starting
+        # context and invalidate the same-state supervision claim.
+        if decision.public_event_end is None or int(decision.public_event_end) < 0:
+            # legacy record without the boundary: unverifiable prefix → skip
+            stats.skips += 1
+            out.append(
+                DecisionAlignmentRecord(
+                    decision=decision,
+                    alignment_route="skip",
+                    target_kind="none",
+                    opd_row=None,
+                    teacher_branch_ok=False,
+                    reject_reason="no_public_event_end_recorded",
+                )
+            )
+            continue
+        public_end = int(decision.public_event_end)
+        student_prefix_events = tuple(trace.events[:public_end])
         # Teacher fork at this decision's snapshot.
         try:
-            snapshot = env.snapshot()
+            snapshot = _resolve_decision_snapshot(env, decision)
             branch = runner.run_branch(
                 base_env=env,
                 snapshot_ref=snapshot,
                 task=task,
-                student_events=trace.events,
+                student_events=student_prefix_events,
                 decision_index=i,
             )
         except Exception:  # noqa: BLE001 - fork failures are recorded, not fatal
@@ -141,7 +213,7 @@ def collect_opd_rows(
         stats.teacher_fork_success += 1
         stats.extra_cost_ms += branch.cost.wall_ms
 
-        student_events = trace.events  # full public prefix at decision i
+        student_events = student_prefix_events  # exact public prefix at decision i
         student_refs, _ = collect_fact_refs_by_visibility(student_events)
         facts = {r: r for r in student_refs}
         alignment = align_decision(
@@ -180,7 +252,11 @@ def collect_opd_rows(
             teacher_policy=teacher_policy,
             task=task,
             catalog=catalog,
-            teacher_prefix_events=branch.events,
+            # PR-09 (guide §8.1): score under the teacher's TARGET-CAUSAL
+            # prefix only.  The full branch.events includes the target action's
+            # own execution feedback — scoring against it let the teacher
+            # "see the answer" and inflated the gap gate.
+            teacher_prefix_events=branch.pre_target_events,
             student_prompt_text="",  # exact ids from the record are used below
             alignment=alignment,
             student_prompt_token_ids=decision.student_prompt_token_ids,

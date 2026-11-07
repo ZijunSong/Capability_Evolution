@@ -19,6 +19,10 @@ runtime:
   contract: configs/h0_contract.json
   harness: minimal
   context_policy: deterministic_window_v1
+  # guide §5.2: runtime.profile is REQUIRED on every config (toy included) —
+  # the e2e toy campaign was the last config still hitting the no-silent-
+  # fallback guard.
+  profile: react_zero_shot_v1
   max_actions: 4
   max_extra_llm_calls: 2
   max_chars: 2000

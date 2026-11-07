@@ -73,10 +73,18 @@ class Exploder:
 
 
 def _patch(source: str, comp_id: str, parent_digest: str) -> CandidatePatch:
+    # PR-04: the evidence contract requires a mechanism-naming hypothesis and
+    # at least one failure-evidence ref — the old "test" placeholder now
+    # rejects before materialization.
     return CandidatePatch(
         parent_bank_digest=parent_digest,
         operation="add",
-        hypothesis="test",
+        hypothesis=(
+            "mechanism: the hook raises during before_model; expected_trigger: "
+            "every decision; expected_change: error surfaces as component error; "
+            "possible_regression: none"
+        ),
+        evidence_refs=("t1:0",),
         files=(CandidateFile(path=f"components/{comp_id}.py", content=source),),
         manifest_patch={
             "id": comp_id,

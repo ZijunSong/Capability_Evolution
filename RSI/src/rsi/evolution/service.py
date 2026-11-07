@@ -78,10 +78,41 @@ def run_evolve(cfg: CampaignConfig, *, initial_bank_ref: str | None = None) -> d
         # run_panel does not persist traces; the fragment therefore quotes the
         # deterministic render inputs (view digests) plus termination and the
         # component effect summary, which ARE the actor-visible facts.
+        from rsi.evolution.outcomes import Outcome, classify_outcome, is_failure_outcome
+
         failure_cases: list[dict[str, Any]] = []
         success_cases: list[dict[str, Any]] = []
+        invalid_cases: list[dict[str, Any]] = []
+        # PR-04 (guide §4.3): classified failure windows replace the first-8-
+        # steps dump — one error step + its predecessor per mechanism, with
+        # event refs the hypothesis can cite.
+        from rsi.evolution.failure_windows import failure_windows_from_steps
+
+        failure_windows: list[dict[str, Any]] = []
         for tid, m in result.per_task.items():
-            failed = bool(m.get("component_errors")) or float(m.get("value") or 0.0) < 1e-9
+            # PR-03 (guide §4.1): unified outcome classification.  The old
+            # `value < 1e-9` rule sent AppWorld partial-credit trajectories
+            # (value 0.4, strict success False) into the proposer's SUCCESS
+            # summary.  component_errors stay a separate reliability signal —
+            # they no longer overwrite the task outcome.
+            try:
+                outcome = classify_outcome(m)
+            except ValueError:
+                outcome = Outcome.INVALID
+            if outcome is Outcome.INVALID:
+                invalid_cases.append({"task_id": tid, "reason": "invalid_measurement"})
+                continue
+            failed = is_failure_outcome(outcome)
+            if failed:
+                for w in failure_windows_from_steps(
+                    task_id=tid,
+                    steps=(m.get("steps") or []),
+                    terminated_reason=str(m.get("terminated_reason")),
+                    value=float(m.get("value") or 0.0),
+                    success=bool(m.get("success")),
+                    measurement_status=(m.get("details") or {}).get("measurement_status"),
+                ):
+                    failure_windows.append(w.to_json())
             # Real steps first (guide §9): the proposer must see the actual
             # actions/observations, telemetry only as context.
             step_lines = []
@@ -107,6 +138,8 @@ def run_evolve(cfg: CampaignConfig, *, initial_bank_ref: str | None = None) -> d
         return {
             "failure_cases": failure_cases[:8],
             "success_cases": success_cases[:4],
+            "invalid_cases": invalid_cases,
+            "failure_windows": failure_windows[:12],
         }
 
     def result_component_effects(m: dict[str, Any]) -> dict:
@@ -136,7 +169,18 @@ def run_evolve(cfg: CampaignConfig, *, initial_bank_ref: str | None = None) -> d
                 max_per_domain=int(max_per_domain) if max_per_domain else None,
             )
         scores: dict[str, dict[str, float]] = {}
+        # PR-03 (guide §4.1/4.2): EVAL_INVALID records must be rejected
+        # explicitly, not folded into scores as a 0.0 "method failure".
+        invalid_records: dict[str, dict[str, Any]] = {}
         for rec in result.records:
+            meta = dict(rec.details) if isinstance(rec.details, dict) else {}
+            status = str(meta.get("measurement_status") or "VALID").upper()
+            if status in ("EVAL_INVALID", "INVALID"):
+                invalid_records[rec.task_id] = {
+                    "error_kind": meta.get("error_kind"),
+                    "metric_name": rec.metric_name,
+                }
+                continue
             scores.setdefault(rec.domain, {})[rec.task_id] = rec.value
         # PR-5 (audit §5.1): the packet previously received only value/termin-
         # ation with trigger_stats stubbed to {} — the proposer's "evidence"
@@ -169,9 +213,10 @@ def run_evolve(cfg: CampaignConfig, *, initial_bank_ref: str | None = None) -> d
             "scores": scores,
             "per_task": per_task,
             "cost": result.costs.to_json(),
-            "protocol_ok": result.costs.infra_failures == 0,
+            "protocol_ok": result.costs.infra_failures == 0 and not invalid_records,
             "budget_ok": True,
             "component_errors": component_errors,
+            "invalid_records": invalid_records,
             "error_rate": (len(component_errors) / max(1, len(result.per_task))) if component_errors else 0.0,
             "policy_digest": (
                 next(iter(digests)) if len(digests) == 1 else policy.policy_artifact.policy_id
@@ -200,6 +245,10 @@ def run_evolve(cfg: CampaignConfig, *, initial_bank_ref: str | None = None) -> d
             candidates_per_generation=int(evo.get("candidates_per_generation", 2)),
             max_candidate_evaluations=int(evo.get("max_candidate_evaluations", 16)),
             plateau_patience=int(evo.get("plateau_patience", 3)),
+            # PR-04 (guide §11.1): the field existed on EvolutionBudgets but
+            # was never wired from YAML — repairs were silently unlimited-by-
+            # default while configs believed they had set 1.
+            max_candidate_repairs=int(evo.get("max_candidate_repairs", 2)),
         ),
         parent_bank_root=initial_bank.root if initial_bank_ref else None,
         candidates_root=run_dir / "candidates",

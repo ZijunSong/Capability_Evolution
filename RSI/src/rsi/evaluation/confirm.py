@@ -56,6 +56,30 @@ def run_confirm_harness(
 ) -> dict[str, Any]:
     import os
 
+    # PR-05 (guide §5.2): a confirm run consumes the fresh confirm_h split —
+    # when the manifest is authoritative it must actually CONTAIN that split.
+    # The pre-fix behavior let the provider fall back to another unknown task
+    # set (e.g. work_train), silently burning the "fresh" property: the
+    # confirm then re-measured tasks already used for selection/tuning.
+    suite_cfg_confirm = cfg.section("suite")
+    if bool(suite_cfg_confirm.get("manifest_is_authoritative", False)):
+        from rsi.evaluation.data_prep import load_split_manifests
+
+        manifests = load_split_manifests(cfg)
+        missing = []
+        for dom in suite_cfg_confirm.get("domains") or []:
+            manifest = manifests.get(dom)
+            roles = {a.role for a in manifest.assignments} if manifest else set()
+            if "confirm_h" not in roles:
+                missing.append(dom)
+        if missing:
+            raise ProtocolViolation(
+                f"confirm_h split MISSING from the authoritative manifest for "
+                f"domains {missing} — refusing to run a fallback-panel confirm "
+                "(guide §5.2: a confirm without a real fresh split is not a "
+                "confirmation; build a v2 manifest with a confirm_h role first)"
+            )
+
     if workers is None:
         workers = int(os.environ.get("RSI_PANEL_WORKERS") or cfg.section("execution").get("panel_workers", 1) or 1)
     runs_root = cfg.resolve_path(str(cfg.section("execution").get("runs_root", "runs")))
@@ -73,6 +97,7 @@ def run_confirm_harness(
 
     domains: dict[str, Any] = {}
     all_wins = all_losses = all_ties = 0
+    all_strict_wins = all_strict_losses = all_strict_ties = 0
     for dom in sorted(a.suite.domains, key=lambda d: d.domain):
         da = dom.per_task
         db = next((d.per_task for d in b.suite.domains if d.domain == dom.domain), {})
@@ -85,11 +110,41 @@ def run_confirm_harness(
         all_ties += ties
         mean_a = sum(da[t] for t in common) / len(common) if common else 0.0
         mean_b = sum(db[t] for t in common) / len(common) if common else 0.0
+        # PR-03 (guide §4.2): the paired delta is computed on BOTH metrics.
+        # The value metric (AppWorld: partial rate; WebShop: reward) is the
+        # dense signal; the STRICT metric (success labels) is the formal
+        # teacher-admission gate.  For domains where value IS strict (metric
+        # == strict success), the two sets coincide.
+        strict_a = dict(zip(sorted(da), (1.0 if s else 0.0 for s in dom.successes), strict=False))
+        strict_b_dom = next((d for d in b.suite.domains if d.domain == dom.domain), None)
+        strict_b = {}
+        if strict_b_dom is not None:
+            strict_b = dict(
+                zip(sorted(strict_b_dom.per_task),
+                    (1.0 if s else 0.0 for s in strict_b_dom.successes),
+                    strict=False)
+            )
+        swins = sum(1 for t in common if strict_b.get(t, 0.0) > strict_a.get(t, 0.0))
+        slosses = sum(1 for t in common if strict_b.get(t, 0.0) < strict_a.get(t, 0.0))
+        sties = len(common) - swins - slosses
+        all_strict_wins += swins
+        all_strict_losses += slosses
+        all_strict_ties += sties
+        strict_mean_a = sum(strict_a.get(t, 0.0) for t in common) / len(common) if common else 0.0
+        strict_mean_b = sum(strict_b.get(t, 0.0) for t in common) / len(common) if common else 0.0
         domains[dom.domain] = {
             "n_paired": len(common),
             "teacher_mean": mean_b,
             "student_mean": mean_a,
             "delta_h": mean_b - mean_a,
+            # strict-metric paired delta (formal admission gate)
+            "strict_teacher_mean": strict_mean_b,
+            "strict_student_mean": strict_mean_a,
+            "delta_h_strict": strict_mean_b - strict_mean_a,
+            "strict_wins": swins,
+            "strict_losses": slosses,
+            "strict_ties": sties,
+            "metric_name": dom.metric_name,
             "wins": wins,
             "losses": losses,
             "ties": ties,
@@ -97,6 +152,9 @@ def run_confirm_harness(
         }
 
     macro_delta = sum(d["delta_h"] for d in domains.values()) / len(domains) if domains else 0.0
+    macro_delta_strict = (
+        sum(d["delta_h_strict"] for d in domains.values()) / len(domains) if domains else 0.0
+    )
     report = {
         "stage": "CONFIRM_HARNESS",
         "consumed": f"confirm_h[{round_index}]",
@@ -107,13 +165,21 @@ def run_confirm_harness(
         "teacher_arm": "H0+champion_bank",
         "student_arm": "H0_only",
         "delta_h_macro": macro_delta,
+        "delta_h_macro_strict": macro_delta_strict,
         "wins_losses_ties": {"wins": all_wins, "losses": all_losses, "ties": all_ties},
+        "strict_wins_losses_ties": {
+            "wins": all_strict_wins,
+            "losses": all_strict_losses,
+            "ties": all_strict_ties,
+        },
         "domains": domains,
         "synthetic": all(dom.synthetic for dom in a.suite.domains),
         "interpretation": (
             "ΔH = B − A on the SAME fresh confirm_h panel with identical seeds. "
             "Positive ΔH = the champion harness improves the model; ties indicate "
-            "the base model's action quality saturates panel separation."
+            "the base model's action quality saturates panel separation. "
+            "delta_h_strict is the formal teacher-admission metric; delta_h on "
+            "value (AppWorld partial / WebShop reward) supports PARTIAL_SIGNAL_ONLY at most."
         ),
     }
     out_path = out_dir / f"confirm_h_r{round_index}.json"

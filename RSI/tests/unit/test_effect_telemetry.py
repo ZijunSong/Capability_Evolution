@@ -254,6 +254,7 @@ def test_packet_fragments_carried_into_evolve(tmp_path):
     per_task = {
         "t_bad": {
             "value": 0.0,
+            "success": False,
             "terminated_reason": "max_actions",
             "n_decisions": 24,
             "wall_ms": 1234.0,
@@ -261,6 +262,7 @@ def test_packet_fragments_carried_into_evolve(tmp_path):
         },
         "t_good": {
             "value": 1.0,
+            "success": True,
             "terminated_reason": "finish",
             "n_decisions": 5,
             "wall_ms": 100.0,

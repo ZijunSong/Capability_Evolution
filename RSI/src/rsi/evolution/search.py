@@ -271,17 +271,18 @@ class EvolutionSearch:
             improved = False
             if winner is not None:
                 win_score = next(s for m, s in gen_candidates if m.candidate_id == winner.candidate_id)
-                # PR-5: the parent's own measured macro is the bar the winner
-                # must clear; a first-generation candidate equal to the parent
-                # within noise is NOT an improvement (the old `best_macro is
-                # None` branch crowned it unconditionally).
-                if best_macro is None:
-                    baseline_score_macro = baseline_score.macro_score
-                    best_macro = baseline_score_macro
-                if win_score.macro_score > best_macro + 1e-9:
-                    best_macro = win_score.macro_score
+                # PR-03 (guide §4.4): parent replacement is decided by the
+                # CURRENT generation's paired result — candidate vs the
+                # parent measured THIS generation on the same panel.  The
+                # old rule (`win > best_macro`) let one noisy historical
+                # high-water mark block a genuinely improved current parent
+                # indefinitely, and conversely treated a historical max as
+                # reliable teacher evidence.
+                if win_score.macro_score > baseline_score.macro_score + 1e-9:
                     improved = True
                     champion = winner
+                    # historical_best_macro is display-only telemetry now
+                    best_macro = max(best_macro or 0.0, win_score.macro_score)
 
             stale = 0 if improved else stale + 1
             # PR-7 (audit §8.2): repeated equivalent proposals are a DISTINCT
@@ -334,19 +335,30 @@ class EvolutionSearch:
         """PR-4 (audit §5.1): the packet's failure_fragments/success_summaries
         were never filled — the proposer saw only labels.  Build bounded text
         fragments from the real per-task telemetry (decisions, wall, metric,
-        component errors) so hypotheses can quote concrete evidence."""
+        component errors) so hypotheses can quote concrete evidence.
+
+        PR-03 (guide §4.1): outcome routing uses the unified classifier —
+        ``success`` cases are strict successes only; AppWorld partial credit
+        (value>0, success=False) is a PARTIAL_FAILURE fragment.  INVALID
+        measurements never enter either bucket."""
+        from rsi.evolution.outcomes import Outcome, classify_outcome
+
         fragments: list[TraceFragment] = []
         for tid in sorted(per_task):
             meta = dict(per_task[tid] or {})
-            value = meta.get("value")
-            failed = meta.get("component_errors") or (
-                value is not None and float(value) < 1e-9
-            )
-            if failure != bool(failed):
+            try:
+                outcome = classify_outcome(meta)
+            except ValueError:
+                outcome = Outcome.INVALID
+            if outcome is Outcome.INVALID:
+                continue
+            is_failure = outcome in (Outcome.PARTIAL_FAILURE, Outcome.FAILURE)
+            if failure != is_failure:
                 continue
             comp = meta.get("component_errors") or {}
             text = (
-                f"value={value} terminated={meta.get('terminated_reason')} "
+                f"value={meta.get('value')} success={meta.get('success')} "
+                f"outcome={outcome.value} terminated={meta.get('terminated_reason')} "
                 f"n_decisions={meta.get('n_decisions', 0)} wall_ms={meta.get('wall_ms', 0):.0f} "
                 f"metric={meta.get('metric_name')}"
                 + (f" component_errors={comp}" if comp else "")
@@ -371,11 +383,30 @@ class EvolutionSearch:
         """Real action/observation fragments from the analysis runner's
         EvidenceStore (guide §9): telemetry alone cannot distinguish a wrong
         API choice from a missed constraint — the packet carries the actual
-        steps.  Only work_train/evolution_train evidence ever reaches here."""
+        steps.  Only work_train/evolution_train evidence ever reaches here.
+
+        PR-04 (guide §4.3): classified FAILURE WINDOWS take priority over the
+        raw case fragments — they pair the failing action with its
+        predecessor, tag the mechanism (invalid_action | api_error |
+        no_output | budget), and carry event refs for
+        ``failure_evidence_refs``."""
         if not analysis:
             return ()
+        if failure and analysis.get("failure_windows"):
+            out: list[TraceFragment] = []
+            for w in list(analysis["failure_windows"])[:limit]:
+                out.append(
+                    TraceFragment(
+                        task_id=str(w.get("task_id", "?")),
+                        outcome="fail",
+                        events_text=str(w.get("evidence_text", ""))[:max_chars],
+                        decisions=int(w.get("n_decisions", 0) or 0),
+                        error_kind=str(w.get("failure_type", "unknown")),
+                    )
+                )
+            return tuple(out)
         cases = (analysis.get("failure_cases") if failure else analysis.get("success_cases")) or []
-        out: list[TraceFragment] = []
+        out = []
         for c in list(cases)[:limit]:
             text = str(c.get("fragment", ""))[:max_chars]
             if not text:
@@ -402,6 +433,19 @@ class EvolutionSearch:
                 retry_notes.append(f"proposer output rejected: {e}")
                 # 实时落 stdout：否则拒绝原因只活在内存里，跑完查无可查（9fhn3 教训）
                 print(f"[proposer] gen{packet.generation} attempt{_repair} rejected: {e}", flush=True)
+                continue
+            # PR-04 (guide §4.3): the evidence contract — a hypothesis that
+            # only says "be more careful" without citing failure evidence is
+            # rejected before the expensive materialization.
+            from rsi.evolution.failure_windows import hypothesis_quality_problems
+
+            hq = hypothesis_quality_problems(
+                getattr(patch, "hypothesis", ""), tuple(getattr(patch, "evidence_refs", ()) or ())
+            )
+            if hq:
+                last_err = CandidateInvalid("evidence contract violated: " + "; ".join(hq))
+                retry_notes.append("evidence contract violated: " + "; ".join(hq))
+                print(f"[proposer] gen{packet.generation} attempt{_repair} evidence-rejected: {hq}", flush=True)
                 continue
             try:
                 mat = materialize_candidate(

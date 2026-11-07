@@ -335,7 +335,14 @@ class AlfWorldAdapter:
         return digest_of({"task": self._task_id, "commands": list(commands)})
 
     def fork(self, snapshot: SnapshotRef) -> "AlfWorldAdapter":
-        """Replay-prefix fork: a fresh env re-executes the recorded commands."""
+        """Replay-prefix fork AT THE SNAPSHOT POSITION (PR-06, guide §6.3).
+
+        The pre-fix implementation replayed the parent's FULL command log —
+        forking an old decision silently produced the CURRENT state, so every
+        teacher branch saw a future that had not happened yet.  ``ref_id`` is
+        ``replay:<n>`` (see ``snapshot()``): replay exactly ``n`` commands and
+        verify the digest.
+        """
         child = AlfWorldAdapter(
             str(self._root), src_root=str(self._src), max_steps=self._max_steps, out_root=str(self._out_root)
         )
@@ -344,7 +351,16 @@ class AlfWorldAdapter:
         child._gym_env = child._make_env([self._game_file])
         child._state = child._gym_env.reset()
         child._started = True
-        for cmd in self._commands:
+        # snapshot position: explicit from the ref, falling back to the parent
+        # cursor for legacy refs (pre-fix snapshots of THIS adapter's version).
+        replay_len = len(self._commands)
+        if snapshot.ref_id.startswith("replay:"):
+            try:
+                replay_len = int(snapshot.ref_id.split(":", 1)[1])
+            except ValueError:
+                pass
+        replay_len = max(0, min(replay_len, len(self._commands)))
+        for cmd in self._commands[:replay_len]:
             child._step_raw(cmd)
         if snapshot.kind == "replay_prefix" and snapshot.digest:
             if child._replay_digest(child._commands) != snapshot.digest:

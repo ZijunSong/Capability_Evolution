@@ -157,7 +157,13 @@ def toy_finalizer_patch(parent_bank_digest: str) -> CandidatePatch:
     return CandidatePatch(
         parent_bank_digest=parent_bank_digest,
         operation="add",
-        hypothesis="finalizer writes missing out.txt from visible observations before finish",
+        hypothesis=(
+            "mechanism: write missing out.txt from visible observations before "
+            "finish; triggers when episodes terminate with tasks unfinished and "
+            "out.txt absent; expected_change: more strict successes; "
+            "possible_regression: duplicate writes if out.txt already correct"
+        ),
+        evidence_refs=("t1:0",),
         files=(CandidateFile(path="components/toy_finalizer.py", content=TOY_FINALIZER_SOURCE),),
         manifest_patch=manifest_patch,
     )

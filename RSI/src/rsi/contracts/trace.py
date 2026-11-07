@@ -116,6 +116,15 @@ class DecisionRecord:
     sampled_action_token_ids: tuple[int, ...]
     old_logprobs: tuple[float, ...]
     action_mask: tuple[int, ...]
+    # PR-06 (guide §6.2): number of PUBLIC events that existed at sampling
+    # time — the decision's public prefix is ``trace.events[:public_event_end]``.
+    # ``events[:decision_index]`` is WRONG: one decision can contain several
+    # private/error/boundary events.  -1 marks a legacy record without the
+    # field; consumers must treat those as unverifiable and skip.
+    public_event_end: int = -1
+    # PR-06: actor sampling RNG stream identity for this decision (guide
+    # §3.2 B) — the stable derived seed, not the process-global state.
+    actor_sampling_seed: int | None = None
     # PR-4 (audit §9.2): the action a component REWROTE before execution, when
     # that happened.  OPD/RL must never assume executed == sampled tokens; the
     # executed action text is kept here for alignment and audit.
@@ -163,6 +172,8 @@ class DecisionRecord:
             "sampled_action_token_ids": list(self.sampled_action_token_ids),
             "old_logprobs": list(self.old_logprobs),
             "action_mask": list(self.action_mask),
+            "public_event_end": self.public_event_end,
+            "actor_sampling_seed": self.actor_sampling_seed,
             "teacher_prompt_token_ids": list(self.teacher_prompt_token_ids),
             "target_action": self.target_action.to_json() if self.target_action else None,
             "target_token_ids": list(self.target_token_ids),
