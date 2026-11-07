@@ -77,11 +77,18 @@ fixed harness — same frozen 12-task split, same seed 17:
 | `alfworld_9B_pre.json` / `_post.json` | alfworld 9B | 0.333 / 0.583 |
 | `alfworld_27B_pre.json` / `_post.json` | alfworld 27B | 0.500 / 0.583 |
 | webshop 9B pair | see `../traces_baseline_minimal.json` + `../traces_champion_bank.json` (v1 export) | 0.056 / 0.453 |
-| appworld 9B/27B pair | NOT AVAILABLE — the appworld adapter's final_artifact is a reference object (no trajectory file) and eval JSON per_task.steps was empty for its episodes; adapter instrumentation required first. | — |
+| `appworld_9B_pre.json` / `_post.json` | appworld 9B | 0.334 / 0.306 (arm B = best-candidate bank 5411ab39; the evolution run retained the baseline — no champion) |
+| appworld 27B pair | pending — same adapter instrumentation shipped (e9dbc0a), paireval job not yet submitted | — |
 
 Each task entry: `value, success, terminated_reason, n_decisions, wall_ms,
 steps[]` where each step is `{kind, action?, obs_head, obs_tail, obs_len}`
 (bounded per-step evidence; the raw event log is unmodified).
+
+The appworld adapter now persists per-task trajectory JSON under
+`RSI_APPWORLD_OUT` (commit e9dbc0a): 12/12 tasks wrote
+`final_artifact.json` (reset → tool_call → finish + replay_code) in the
+appworld-9B paired run — the appworld trace gap is closed at the adapter
+level; only the 27B paireval job remains.
 
 Panel-variance caveat applies: single-run paired macros wobble between
 campaigns (webshop-27B champion 0.619 in its evolution run vs 0.422 in this
