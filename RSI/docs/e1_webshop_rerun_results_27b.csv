@@ -9,3 +9,11 @@ model,phase,metric,value,note
 27B,"post-rerun (cdyeb r11, harness fixed)",proposer 形状,正常,"gen0-3 提案全过 validator, 无 flat-file 缺 entrypoint"
 27B,delta (webshop 27B),champion macro,0.589(spzne) vs 0.547(cdyeb) — 跨协议方向参考,"⚠️protocol 不同: spzne 无 doc, cdyeb 有 doc; 同代内对照更干净"
 27B,delta (webshop 27B),baseline gen0 best,0.500(spzne) vs 0.514(cdyeb) — 同 harness 27B vs 9B: 0.306→0.514 (+21pp),"核心结论: 修复后 harness 下 27B webshop 规模优势 +21pp(gen0), champion 量级 0.55±0.03 与 9B 0.563 接近"
+27B,"formal completion (wlesk r12, harness fixed, full search)",job,wlesk t-20261107003623,"campaign e1_webshop_27b_r12; r12 entry 同 cdyeb 六层链+env_doc; 第一次提交 dyclw/54ima 连落坏节点 slave130(webshop 数据路径坏, hfenw r6 前科)秒回 0 分已 stop, 第三提落 slave78 成功"
+27B,"formal completion (wlesk r12, harness fixed, full search)",champion macro,0.619,"champion 1e6cec65(gen1), PLATEAU ok=True, evaluated=10; 历史 champion 链: gen1 0.619→gen2 87bcaadb 0.444→gen3 0.486→gen4 0.375(baseline retained 语义)"
+27B,"formal completion (wlesk r12, harness fixed, full search)",baseline (gen0 best),0.375,"gen0 [0.375, 0.000]; gen0 候选2 秒回 0(lat 0)=单例异常, gen1-4 未复现"
+27B,"formal completion (wlesk r12, harness fixed, full search)",max candidate macro,0.619,gen2 0.444/gen3 0.486/gen4 0.375 均未超越
+27B,"formal completion (wlesk r12, harness fixed, full search)",candidates evaluated,10,gen0×2+gen1×2+gen2×2+gen3×2+gen4×2; PLATEAU 提前收官(gen3 后 stale 计 2+gen4 无超越)
+27B,webshop-27B final comparison (fixed harness),champion macro,cdyeb r11 0.547(收表) | wlesk r12 0.619(formal) | spzne r5 0.589(旧协议),r12 为 formal 口径最终值; champion 组件=goal_constraint_tracker
+27B,webshop-27B final comparison (fixed harness),vs 9B,"27B 0.619 vs 9B exm1p 0.679 (9B 略高, panel 方差内) | 9B afe1d 0.563","27B/9B champion 量级一致 0.55-0.68, webshop 域模型规模无显著差异(与 alfworld 的 +8.3pp 27B 优势不同)"
+27B,webshop-27B final comparison (fixed harness),infra notes,"slave130=webshop 坏数据盘节点(秒回 0), slave18/78=健康; 27B 每候选 43-68min; gen 间 analysis 51-78min",节点级故障指纹: latency=0+scores 非空+final_artifacts 0; panel_worker 行被 entry 过滤器吞是常态非异常
