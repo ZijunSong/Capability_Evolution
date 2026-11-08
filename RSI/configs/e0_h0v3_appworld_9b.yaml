@@ -1,0 +1,117 @@
+schema_version: rsi_campaign_v2
+tier: pilot
+campaign_id: h0v3_appworld_9b
+seed: 17
+max_rounds: 1
+
+# AppWorld H0 v3 re-measure (guide §4.5 step 1): after the PR-01 contract-v3
+# fixes (verified API discovery calls, print rule, no generic authenticate,
+# typed Finish, structured runtime errors), re-measure the H0 baseline on the
+# SAME 16 official-gated dev tasks as e0 r3 for a paired comparison, plus the
+# campaign splits (work_train 12 / harness_select 12) that the bounded retry
+# will consume.  Comparison protocol: r3 baseline = partial 34.74% / strict
+# 0/16 under appworld_v1.md; this run uses appworld_v3.md — ANY delta is the
+# H0-interface-fix effect, NOT an evolution gain, and must be reported as such.
+
+policy:
+  initial_artifact: null
+  provider: hf_path
+  model_path: /mnt/songzijun/models/Qwen3.5-9B
+  trainable: false
+  teacher_sync: batch_snapshot
+  adapter_mode: cumulative
+  cross_round_optimizer: reset
+
+runtime:
+  contract: configs/h0_contract.json
+  clock: real_monotonic
+  harness: minimal
+  context_policy: deterministic_window_v1
+  max_actions: 24
+  max_tool_calls: 64
+  max_extra_llm_calls: 2
+  max_chars: 8000
+  max_new_tokens: 512
+  max_wall_ms: 900000
+  temperature: 1.0
+  thinking: false
+  snapshot_mode: lazy_replay
+  rng_streams:
+  - environment
+  - actor
+  - auxiliary
+  - proposer
+  profile: react_zero_shot_v1
+  environment_doc: configs/env_docs/appworld_v3.md
+
+suite:
+  registry: configs/environments.yaml
+  evolution_domains: [appworld]
+  opd_domains: [appworld]
+  selection_domains: [appworld]
+  sealed_eval_domains: []
+  domains: [appworld]
+  # SAME 16-task e0 panel (paired vs r3) + campaign splits via work_train
+  # re-measure in the second pass of the entry script.
+  split_manifest: data/splits/e0_react_appworld.json
+  manifest_is_authoritative: true
+  evolution_role: work_train
+  selection_role: e0_probe
+  opd_role: work_train
+  aggregate: equal_domain_macro
+  shared_model: true
+  shared_bank: true
+  statistics_mode: pilot_reused_dev
+
+scoring:
+  primary: appworld_strict_success
+  auxiliary:
+  - partial_test_pass_rate
+  - declared_finish
+  - cost
+  evaluator_mode: offline_frozen_artifact
+  invalid_measurement: block
+
+# Required by the v2 schema (load_config); this is a MEASUREMENT config — no
+# evolution/training will run from it.
+evolution:
+  seed_mode: empty_each_round
+  proposer_mode: self
+  max_generations: 1
+  candidates_per_generation: 1
+  max_candidate_evaluations: 1
+  plateau_patience: 1
+  editable_scope: bank_only
+
+opd:
+  routes: [explicit_map, native_anchor]
+  max_shadow_events: 4
+  max_targets_per_decision: 1
+  uncertain_realizability: skip
+  objective: gated_projected_gap_v1
+  lambda: 0.01
+  gate_beta: 5.0
+
+training:
+  method: harness_opd_rl
+  backend: hf_reference
+  reward: task_outcome
+  max_optimizer_steps_per_round: 2
+  batch_episodes: 2
+  learning_rate: 0.0001
+
+promotion:
+  policy: configs/promotion_policy.json
+  allow_partial_internalization: true
+
+evaluation:
+  statistics_mode: pilot_reused_dev
+  final_test_access: after_campaign_freeze
+  confirm_panel_per_domain: 4
+
+execution:
+  mode: execute
+  candidate_isolation: subprocess
+  job_backend: local
+  runs_root: runs
+  panel_workers: 8
