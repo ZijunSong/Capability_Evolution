@@ -2,8 +2,11 @@
 runs/
 cands/
 
-# Generated dataset splits (rebuild with `rsi.cli data prepare`)
-data/
+# Generated dataset splits (rebuild with `rsi.cli data prepare`) — EXCEPT
+# frozen manifests: they are the authoritative split identity (checked in,
+# digest-verified at load; regeneration is forbidden once frozen).
+data/*
+!data/splits/
 
 # Python
 __pycache__/

@@ -1,0 +1,355 @@
+{
+  "campaign_id": "toy_smoke",
+  "config_digest": "14936650b5550dfb084b1934181c2ef5222063d257922e2800f273db1237e3a0",
+  "manifests": {
+    "toy_file": {
+      "assignments": [
+        {
+          "role": "work_train",
+          "round_index": null,
+          "task_ids": [
+            "toy_file-17-0000",
+            "toy_file-17-0001",
+            "toy_file-17-0002",
+            "toy_file-17-0003",
+            "toy_file-17-0028",
+            "toy_file-17-0029",
+            "toy_file-17-0030",
+            "toy_file-17-0031"
+          ]
+        },
+        {
+          "role": "harness_select",
+          "round_index": null,
+          "task_ids": [
+            "toy_file-17-0004",
+            "toy_file-17-0005",
+            "toy_file-17-0006",
+            "toy_file-17-0007",
+            "toy_file-17-0032",
+            "toy_file-17-0033",
+            "toy_file-17-0034",
+            "toy_file-17-0035"
+          ]
+        },
+        {
+          "role": "weight_dev",
+          "round_index": null,
+          "task_ids": [
+            "toy_file-17-0008",
+            "toy_file-17-0009",
+            "toy_file-17-0010",
+            "toy_file-17-0011",
+            "toy_file-17-0036",
+            "toy_file-17-0037",
+            "toy_file-17-0038",
+            "toy_file-17-0039"
+          ]
+        },
+        {
+          "role": "confirm_h",
+          "round_index": 0,
+          "task_ids": [
+            "toy_file-17-0012",
+            "toy_file-17-0013",
+            "toy_file-17-0014",
+            "toy_file-17-0015",
+            "toy_file-17-0040",
+            "toy_file-17-0041",
+            "toy_file-17-0042",
+            "toy_file-17-0043"
+          ]
+        },
+        {
+          "role": "confirm_h",
+          "round_index": 1,
+          "task_ids": [
+            "toy_file-17-0012",
+            "toy_file-17-0013",
+            "toy_file-17-0014",
+            "toy_file-17-0015",
+            "toy_file-17-0040",
+            "toy_file-17-0041",
+            "toy_file-17-0042",
+            "toy_file-17-0043"
+          ]
+        },
+        {
+          "role": "confirm_w",
+          "round_index": 0,
+          "task_ids": [
+            "toy_file-17-0016",
+            "toy_file-17-0017",
+            "toy_file-17-0018",
+            "toy_file-17-0019",
+            "toy_file-17-0044",
+            "toy_file-17-0045",
+            "toy_file-17-0046",
+            "toy_file-17-0047"
+          ]
+        },
+        {
+          "role": "confirm_w",
+          "round_index": 1,
+          "task_ids": [
+            "toy_file-17-0016",
+            "toy_file-17-0017",
+            "toy_file-17-0018",
+            "toy_file-17-0019",
+            "toy_file-17-0044",
+            "toy_file-17-0045",
+            "toy_file-17-0046",
+            "toy_file-17-0047"
+          ]
+        },
+        {
+          "role": "final_test",
+          "round_index": null,
+          "task_ids": [
+            "toy_file-17-0020",
+            "toy_file-17-0021",
+            "toy_file-17-0022",
+            "toy_file-17-0023"
+          ]
+        },
+        {
+          "role": "transfer_test",
+          "round_index": null,
+          "task_ids": [
+            "toy_file-17-0024",
+            "toy_file-17-0025",
+            "toy_file-17-0026",
+            "toy_file-17-0027"
+          ]
+        }
+      ],
+      "digest": "3030e6c57c8099265a5846e0d5d8b6f89f409bdd8b0843e02e9f7ffe7bcc7ac1",
+      "domain": "toy_file",
+      "groups": {
+        "toy_file-g0": [
+          "toy_file-17-0000",
+          "toy_file-17-0001",
+          "toy_file-17-0002",
+          "toy_file-17-0003"
+        ],
+        "toy_file-g1": [
+          "toy_file-17-0004",
+          "toy_file-17-0005",
+          "toy_file-17-0006",
+          "toy_file-17-0007"
+        ],
+        "toy_file-g10": [
+          "toy_file-17-0040",
+          "toy_file-17-0041",
+          "toy_file-17-0042",
+          "toy_file-17-0043"
+        ],
+        "toy_file-g11": [
+          "toy_file-17-0044",
+          "toy_file-17-0045",
+          "toy_file-17-0046",
+          "toy_file-17-0047"
+        ],
+        "toy_file-g2": [
+          "toy_file-17-0008",
+          "toy_file-17-0009",
+          "toy_file-17-0010",
+          "toy_file-17-0011"
+        ],
+        "toy_file-g3": [
+          "toy_file-17-0012",
+          "toy_file-17-0013",
+          "toy_file-17-0014",
+          "toy_file-17-0015"
+        ],
+        "toy_file-g4": [
+          "toy_file-17-0016",
+          "toy_file-17-0017",
+          "toy_file-17-0018",
+          "toy_file-17-0019"
+        ],
+        "toy_file-g5": [
+          "toy_file-17-0020",
+          "toy_file-17-0021",
+          "toy_file-17-0022",
+          "toy_file-17-0023"
+        ],
+        "toy_file-g6": [
+          "toy_file-17-0024",
+          "toy_file-17-0025",
+          "toy_file-17-0026",
+          "toy_file-17-0027"
+        ],
+        "toy_file-g7": [
+          "toy_file-17-0028",
+          "toy_file-17-0029",
+          "toy_file-17-0030",
+          "toy_file-17-0031"
+        ],
+        "toy_file-g8": [
+          "toy_file-17-0032",
+          "toy_file-17-0033",
+          "toy_file-17-0034",
+          "toy_file-17-0035"
+        ],
+        "toy_file-g9": [
+          "toy_file-17-0036",
+          "toy_file-17-0037",
+          "toy_file-17-0038",
+          "toy_file-17-0039"
+        ]
+      },
+      "manifest_id": "toy_smoke:toy_file"
+    },
+    "toy_kv": {
+      "assignments": [
+        {
+          "role": "work_train",
+          "round_index": null,
+          "task_ids": [
+            "toy_kv-17-0000",
+            "toy_kv-17-0001",
+            "toy_kv-17-0002",
+            "toy_kv-17-0021",
+            "toy_kv-17-0022",
+            "toy_kv-17-0023"
+          ]
+        },
+        {
+          "role": "harness_select",
+          "round_index": null,
+          "task_ids": [
+            "toy_kv-17-0003",
+            "toy_kv-17-0004",
+            "toy_kv-17-0005",
+            "toy_kv-17-0024",
+            "toy_kv-17-0025",
+            "toy_kv-17-0026"
+          ]
+        },
+        {
+          "role": "weight_dev",
+          "round_index": null,
+          "task_ids": [
+            "toy_kv-17-0006",
+            "toy_kv-17-0007",
+            "toy_kv-17-0008",
+            "toy_kv-17-0027",
+            "toy_kv-17-0028",
+            "toy_kv-17-0029"
+          ]
+        },
+        {
+          "role": "confirm_h",
+          "round_index": 0,
+          "task_ids": [
+            "toy_kv-17-0009",
+            "toy_kv-17-0010",
+            "toy_kv-17-0011"
+          ]
+        },
+        {
+          "role": "confirm_h",
+          "round_index": 1,
+          "task_ids": [
+            "toy_kv-17-0009",
+            "toy_kv-17-0010",
+            "toy_kv-17-0011"
+          ]
+        },
+        {
+          "role": "confirm_w",
+          "round_index": 0,
+          "task_ids": [
+            "toy_kv-17-0012",
+            "toy_kv-17-0013",
+            "toy_kv-17-0014"
+          ]
+        },
+        {
+          "role": "confirm_w",
+          "round_index": 1,
+          "task_ids": [
+            "toy_kv-17-0012",
+            "toy_kv-17-0013",
+            "toy_kv-17-0014"
+          ]
+        },
+        {
+          "role": "final_test",
+          "round_index": null,
+          "task_ids": [
+            "toy_kv-17-0015",
+            "toy_kv-17-0016",
+            "toy_kv-17-0017"
+          ]
+        },
+        {
+          "role": "transfer_test",
+          "round_index": null,
+          "task_ids": [
+            "toy_kv-17-0018",
+            "toy_kv-17-0019",
+            "toy_kv-17-0020"
+          ]
+        }
+      ],
+      "digest": "3ea6c94dd71cfdf0e71122d2d8c9746e44f3c09dc580fd032897b7bb9a5ada6f",
+      "domain": "toy_kv",
+      "groups": {
+        "toy_kv-g0": [
+          "toy_kv-17-0000",
+          "toy_kv-17-0001",
+          "toy_kv-17-0002"
+        ],
+        "toy_kv-g1": [
+          "toy_kv-17-0003",
+          "toy_kv-17-0004",
+          "toy_kv-17-0005"
+        ],
+        "toy_kv-g2": [
+          "toy_kv-17-0006",
+          "toy_kv-17-0007",
+          "toy_kv-17-0008"
+        ],
+        "toy_kv-g3": [
+          "toy_kv-17-0009",
+          "toy_kv-17-0010",
+          "toy_kv-17-0011"
+        ],
+        "toy_kv-g4": [
+          "toy_kv-17-0012",
+          "toy_kv-17-0013",
+          "toy_kv-17-0014"
+        ],
+        "toy_kv-g5": [
+          "toy_kv-17-0015",
+          "toy_kv-17-0016",
+          "toy_kv-17-0017"
+        ],
+        "toy_kv-g6": [
+          "toy_kv-17-0018",
+          "toy_kv-17-0019",
+          "toy_kv-17-0020"
+        ],
+        "toy_kv-g7": [
+          "toy_kv-17-0021",
+          "toy_kv-17-0022",
+          "toy_kv-17-0023"
+        ],
+        "toy_kv-g8": [
+          "toy_kv-17-0024",
+          "toy_kv-17-0025",
+          "toy_kv-17-0026"
+        ],
+        "toy_kv-g9": [
+          "toy_kv-17-0027",
+          "toy_kv-17-0028",
+          "toy_kv-17-0029"
+        ]
+      },
+      "manifest_id": "toy_smoke:toy_kv"
+    }
+  },
+  "schema_version": "rsi_split_v1"
+}
