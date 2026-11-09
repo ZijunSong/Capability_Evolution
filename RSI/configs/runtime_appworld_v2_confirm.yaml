@@ -1,0 +1,99 @@
+schema_version: rsi_campaign_v2
+tier: pilot
+campaign_id: appworld_v2_confirm
+seed: 917
+max_rounds: 1
+policy:
+  initial_artifact: null
+  provider: hf_path
+  model_path: /tmp/rsi_models/Qwen3.5-9B
+  trainable: false
+  teacher_sync: batch_snapshot
+  adapter_mode: cumulative
+  cross_round_optimizer: reset
+runtime:
+  contract: configs/h0_contract.json
+  clock: real_monotonic
+  harness: minimal
+  context_policy: deterministic_window_v1
+  max_actions: 48
+  max_tool_calls: 64
+  max_extra_llm_calls: 2
+  max_chars: 8000
+  max_new_tokens: 512
+  max_wall_ms: 900000
+  temperature: 1.0
+  thinking: false
+  snapshot_mode: lazy_replay
+  rng_streams:
+  - environment
+  - actor
+  - auxiliary
+  - proposer
+  profile: react_zero_shot_v1
+  environment_doc: configs/env_docs/appworld_v3.md
+suite:
+  registry: configs/environments.yaml
+  evolution_domains:
+  - appworld
+  opd_domains:
+  - appworld
+  selection_domains:
+  - appworld
+  sealed_eval_domains: []
+  domains:
+  - appworld
+  split_manifest: data/splits/e1_appworld_9b_v2_confirm.json
+  manifest_is_authoritative: true
+  evolution_role: work_train
+  selection_role: harness_select
+  opd_role: work_train
+scoring:
+  search_metric: partial_test_pass_rate
+  confirm_metric: strict_success
+  auxiliary_metrics:
+  - partial_test_pass_rate
+  invalid_measurement: block
+evolution:
+  proposer_mode: self
+  proposer_max_new_tokens: 1024
+  proposer_max_retries: 2
+  algorithm: archive_code_search
+  seed_mode: empty_each_round
+  max_generations: 4
+  candidates_per_generation: 2
+  max_candidate_evaluations: 8
+  max_candidate_repairs: 1
+  plateau_patience: 2
+  editable_scope: bank_only
+  dev_panel_per_domain: 12
+  frozen_thresholds: false
+opd:
+  routes:
+  - explicit_map
+  - native_anchor
+  max_shadow_events: 4
+  max_targets_per_decision: 1
+  uncertain_realizability: skip
+  objective: gated_projected_gap_v1
+  lambda: 0.01
+  gate_beta: 5.0
+training:
+  method: harness_opd_rl
+  backend: hf_reference
+  reward: task_outcome
+  max_optimizer_steps_per_round: 2
+  batch_episodes: 2
+  learning_rate: 0.0001
+promotion:
+  policy: configs/promotion_policy.json
+  allow_partial_internalization: true
+evaluation:
+  statistics_mode: pilot_reused_dev
+  final_test_access: after_campaign_freeze
+  confirm_panel_per_domain: 4
+execution:
+  mode: execute
+  candidate_isolation: subprocess
+  job_backend: local
+  runs_root: runs
