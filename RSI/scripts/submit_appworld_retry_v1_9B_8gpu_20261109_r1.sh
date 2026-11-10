@@ -4,7 +4,9 @@
 # Check before running: runs/h0v3_appworld_9b_r1/verdict.json gates == ["PASS"]
 set -euo pipefail
 RSI_ROOT=/mnt/songzijun/Capability_Evolution/RSI
+# accept either the 8-GPU run dir (r1) or the 4-GPU run dir (r1g4)
 VERDICT="$RSI_ROOT/runs/h0v3_appworld_9b_r1/verdict.json"
+[ -f "$VERDICT" ] || VERDICT="$RSI_ROOT/runs/h0v3_appworld_9b_r1g4/verdict.json"
 if [ -f "$VERDICT" ]; then
   python3 - "$VERDICT" <<'PY'
 import json, sys
