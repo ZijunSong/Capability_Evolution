@@ -129,7 +129,7 @@ python -m rsi.cli data validate --config "$RUNTIME_CFG" | python -c "import json
 
 echo "== bounded retry: 4 gens x 2 candidates, evidence-contract proposer =="
 export RSI_PANEL_WORKERS=4  # irb8r-verified config (7-worker spawn hung after task 1 on 11-12)
-export RSI_PROPOSER_DEVICE=cuda:0  # share gpu0 with panel (proposer is intermittent; dedicated gpu7 + 7 workers hung)
+export RSI_PROPOSER_DEVICE=cpu  # v2 postmortem: master-side CUDA context (any GPU) before spawn mp froze both runs (evbyz w/ cuda:7, advuk w/ cuda:0); CPU proposer breaks the CUDA coupling entirely
 python -m rsi.cli evolve --config "$RUNTIME_CFG" 2>&1 | tee /tmp/retry_evolve_stream.log | python -u -c "
 import sys
 for line in sys.stdin:
