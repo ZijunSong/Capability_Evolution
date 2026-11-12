@@ -128,8 +128,8 @@ python -m rsi.cli data prepare --config "$RUNTIME_CFG" | python -c "import json,
 python -m rsi.cli data validate --config "$RUNTIME_CFG" | python -c "import json,sys; d=json.load(sys.stdin); assert d.get('ok'), d; print('  validate ok')"
 
 echo "== bounded retry: 4 gens x 2 candidates, evidence-contract proposer =="
-export RSI_PANEL_WORKERS=7
-export RSI_PROPOSER_DEVICE=cuda:7
+export RSI_PANEL_WORKERS=4  # irb8r-verified config (7-worker spawn hung after task 1 on 11-12)
+export RSI_PROPOSER_DEVICE=cuda:0  # share gpu0 with panel (proposer is intermittent; dedicated gpu7 + 7 workers hung)
 python -m rsi.cli evolve --config "$RUNTIME_CFG" 2>&1 | tee /tmp/retry_evolve_stream.log | python -u -c "
 import sys
 for line in sys.stdin:
