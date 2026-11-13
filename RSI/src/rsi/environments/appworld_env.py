@@ -128,6 +128,24 @@ class AppWorldAdapter:
             )
         # AppWorld resolves its root through APPWORLD_ROOT at path-store time.
         os.environ["APPWORLD_ROOT"] = self._data_root
+        # v5 postmortem (2026-11-13, five job hangs): the vendor's init writes
+        # experiment scratch under <APPWORLD_ROOT>/experiments/outputs — ON
+        # JUICEFS. Every job hang froze inside that init (build_main_app
+        # import chain or _prepare_directories shutil.rmtree) while the same
+        # code on the dev box completes in seconds: the cluster's FUSE mount
+        # stalls on metadata ops (rmtree over a 480+-dir outputs tree) under
+        # concurrent multi-pod load. Fix WITHOUT touching vendor code: build
+        # a node-local scratch root (/tmp, RSI_APPWORLD_LOCAL_SCRATCH) whose
+        # `data` symlinks back to the shared JuiceFS data and whose
+        # `experiments/` is node-local; point APPWORLD_ROOT there. The scorer
+        # resolves through the same root on the same node, so evaluation
+        # reads what the actor wrote. Data stays on JuiceFS (read-only).
+        local_scratch = os.environ.get("RSI_APPWORLD_LOCAL_SCRATCH", "/tmp/rsi_appworld_root")
+        if os.environ.get("RSI_APPWORLD_LOCAL_SCRATCH", "1") != "0":
+            self._setup_local_scratch_root(local_scratch)
+        # checkpoint digests + scorer read experiments/ under the ACTIVE root
+        # (node-local scratch when enabled) — keep every consumer consistent.
+        self._data_root = os.environ["APPWORLD_ROOT"]
         self._max_interactions = int(max_interactions)
         self._env: Any = None
         self._task_id: str = ""
@@ -576,6 +594,42 @@ class AppWorldAdapter:
             path=path,
         )
 
+    @staticmethod
+    def _setup_local_scratch_root(local_scratch: str) -> None:
+        """Redirect APPWORLD_ROOT to a node-local scratch root (v5 postmortem).
+
+        Layout under ``local_scratch``:
+          data/        -> symlink to <juicefs data_root>/data  (read-only)
+          experiments/ -> node-local (the stall site: vendor rmtree/mkdir
+                          metadata ops under JuiceFS FUSE load)
+
+        Idempotent; safe across processes on the same node (the scorer
+        resolves the same root and reads the actor's node-local outputs).
+        Set RSI_APPWORLD_LOCAL_SCRATCH=0 to disable (old JuiceFS behavior).
+        """
+        import subprocess
+
+        os.makedirs(local_scratch, exist_ok=True)
+        data_link = os.path.join(local_scratch, "data")
+        real_data = os.path.join(os.environ["APPWORLD_ROOT"], "data")
+        if not os.path.islink(data_link):
+            if os.path.isdir(data_link) and os.listdir(data_link):
+                raise EnvironmentError_(
+                    f"local scratch data dir is not a symlink: {data_link}"
+                )
+            if os.path.lexists(data_link):
+                os.unlink(data_link)
+            os.symlink(real_data, data_link)
+        # ensure the vendor package re-resolves the new root next construction
+        try:
+            import appworld as _aw
+
+            if hasattr(_aw, "update_root"):
+                _aw.update_root(local_scratch)
+        except Exception:  # noqa: BLE001 - vendor import is optional here
+            pass
+        os.environ["APPWORLD_ROOT"] = local_scratch
+
     def _require_started(self) -> None:
         if not self._started:
             raise EnvironmentError_("appworld adapter not reset")
@@ -614,7 +668,12 @@ class AppWorldScorer:
     METRIC_PARTIAL = "appworld_partial_test_pass_rate"
 
     def __init__(self, data_root: str | None = None):
-        self._data_root = data_root or os.environ.get("APPWORLD_ROOT", "/mnt/songzijun/datasets/appworld")
+        # v5 postmortem: the ACTIVE root wins — the adapter redirects
+        # APPWORLD_ROOT to the node-local scratch when enabled, and the scorer
+        # must read the actor's outputs from that same root. An explicitly
+        # passed data_root still takes precedence (off-node evaluation).
+        env_root = os.environ.get("APPWORLD_ROOT", "")
+        self._data_root = data_root or env_root or "/mnt/songzijun/datasets/appworld"
 
     def evaluate(self, final_artifact: ArtifactRef, private_task_ref: PrivateTaskRef) -> ScoreRecord:
         parts = (final_artifact.ref_id or "").split(":")
