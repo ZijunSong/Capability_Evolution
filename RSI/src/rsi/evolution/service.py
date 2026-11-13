@@ -147,7 +147,15 @@ def run_evolve(cfg: CampaignConfig, *, initial_bank_ref: str | None = None) -> d
         return m.get("component_effects") or {}
 
     def panel_runner(bank):
-        if panel_workers >= 2:
+        # v4 postmortem (2026-11-13): evolve's spawn-mp panels hung at the
+        # banner in ALL FOUR job attempts (evbyz/advuk/7blwo/x4zn0) — including
+        # with the vendor import lock and a CPU-only master. The healthy H0
+        # eval (irb8r) and every local single-process repro show the serial
+        # path is reliable (6-10min/task, 1 GPU). RSI_EVOLVE_PANEL_SERIAL=1
+        # forces the serial in-process panel for evolve only; slower but the
+        # only topology with four-for-four evidence of not freezing.
+        serial_panel = os.environ.get("RSI_EVOLVE_PANEL_SERIAL", "") == "1"
+        if panel_workers >= 2 and not serial_panel:
             from rsi.evaluation.parallel import run_panel_mp
 
             result = run_panel_mp(

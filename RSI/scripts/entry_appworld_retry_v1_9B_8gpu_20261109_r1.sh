@@ -128,8 +128,9 @@ python -m rsi.cli data prepare --config "$RUNTIME_CFG" | python -c "import json,
 python -m rsi.cli data validate --config "$RUNTIME_CFG" | python -c "import json,sys; d=json.load(sys.stdin); assert d.get('ok'), d; print('  validate ok')"
 
 echo "== bounded retry: 4 gens x 2 candidates, evidence-contract proposer =="
-export RSI_PANEL_WORKERS=4  # irb8r-verified config (7-worker spawn hung after task 1 on 11-12)
-export RSI_PROPOSER_DEVICE=cpu  # v2 postmortem: master-side CUDA context (any GPU) before spawn mp froze both runs (evbyz w/ cuda:7, advuk w/ cuda:0); CPU proposer breaks the CUDA coupling entirely
+export RSI_EVOLVE_PANEL_SERIAL=1  # v4 postmortem: spawn-mp panels hung in ALL 4 job attempts even with the import lock; serial in-process panel (6-10min/task, irb8r-proven) is the only reliable topology
+export RSI_PANEL_WORKERS=1
+export RSI_PROPOSER_DEVICE=cuda:0  # serial topology: master runs panel+proposer on one GPU in-process, no spawn at all
 python -m rsi.cli evolve --config "$RUNTIME_CFG" 2>&1 | tee /tmp/retry_evolve_stream.log | python -u -c "
 import sys
 for line in sys.stdin:
