@@ -1,0 +1,19 @@
+{
+  "alignment_report_ref": "runs/alfworld_probe_r1/opd/probe_report.json",
+  "bank_digest": "c31e0e88b24b1fe3cdae42e9ec6113ccc142705eb5d6fbbbce4ec63a58f8b219",
+  "code_commit": "ba5891b205833ed53caaf42d9e6a3d747bab8cc1",
+  "confirm_manifest_digest": "0e932f5fe322dd54998fef8a9a195993a989beee17e47098f4e5051441e269ad",
+  "confirm_result_ref": "runs/alfworld_confirm_r1/confirm_h/confirm_h_r0.json",
+  "domain": "alfworld",
+  "environment_digest": "eb8f2aa1a1a985abf3507e7cf154a44cf7af8849c7927bd6b3f109df0c7209b6",
+  "extra": {},
+  "identity_digest": "c591eb221e837ad2c35dd4f09b330aba053284504bf9243c6017d7207ee3d700",
+  "metric_contract_digest": "c32dbaec7f8d23f155403e520d295a43948f4b68eb30aac078b2b46c83efb0b2",
+  "paired_delta": 0.45833333333333326,
+  "paired_interval": null,
+  "policy_digest": "cfbd1c8475b657bd4ce3cf8042a85464cf5234ccc2c11ddfa3f847b7eb559b54",
+  "runtime_contract_digest": "3fb92a4171241879f108c730f7438edf1e9ae212e83db058da07ad78ac667eec",
+  "schema_version": "teacher_readiness_v1",
+  "status": "READY_FOR_PILOT",
+  "validator_version": "environment_registry_v1"
+}
