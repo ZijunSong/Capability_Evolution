@@ -58,16 +58,46 @@ APPWORLD_TOOL_SPEC: tuple[ToolSpec, ...] = (
 
 APPWORLD_VERSION = "appworld-0.1.3+data-0.1.0"
 
+# v3 postmortem (2026-11-13, local repro with faulthandler): parallel panel
+# workers froze inside the vendor's app-module import chain
+# (AppWorld.__init__ -> _execute_preamble -> import_apis_module ->
+# build_main_app -> appworld/apps/todoist/apis.py:1108) when several spawn
+# children initialized AppWorld concurrently. The vendor builds its FastAPI
+# apps at import time with no cross-process guard. Fix: serialize the FIRST
+# appworld import + app build in this process tree behind a file lock —
+# subsequent inits in the same process reuse the imported modules and take
+# the lock only briefly. This is what made evolve's mp panels hang (evbyz /
+# advuk / 7blwo all froze at exactly this chain) while single-worker eval
+# paths never contended.
+_APPWORLD_BUILD_LOCK_PATH = os.environ.get(
+    "RSI_APPWORLD_BUILD_LOCK", "/tmp/rsi_appworld_build.lock"
+)
+
 
 def _require_appworld() -> Any:
+    import fcntl
+
+    lock = open(_APPWORLD_BUILD_LOCK_PATH, "a")
     try:
-        import appworld  # noqa: F401
-    except ImportError as e:
-        raise NotImplementedCapability(
-            "AppWorld adapter requires the optional 'appworld' package "
-            "(pip install -e '.[appworld]'). No fallback environment is used."
-        ) from e
-    return appworld
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        try:
+            import appworld  # noqa: F401
+        except ImportError as e:
+            raise NotImplementedCapability(
+                "AppWorld adapter requires the optional 'appworld' package "
+                "(pip install -e '.[appworld]'). No fallback environment is used."
+            ) from e
+        # Force the vendor's app modules to be built ONCE while holding the
+        # lock: concurrent first-builds across spawn workers deadlocked
+        # inside build_main_app (FastAPI app construction at import time).
+        import appworld.apps.admin  # noqa: F401
+        import appworld.apps.todoist  # noqa: F401  (the repro's stall site)
+        return appworld
+    finally:
+        try:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+        finally:
+            lock.close()
 
 
 class AppWorldAdapter:
@@ -120,7 +150,7 @@ class AppWorldAdapter:
         """Panel-level capability probe: the apps code bundle must be unpacked
         (``appworld install``); a bare pip install ships it encrypted."""
         try:
-            import appworld.apps.admin  # noqa: F401
+            _require_appworld()  # v3: takes the app-build lock
         except Exception as e:  # noqa: BLE001
             return False, f"appworld apps bundle not unpacked ({e!r}); run `appworld install`"
         return True, "ok"
