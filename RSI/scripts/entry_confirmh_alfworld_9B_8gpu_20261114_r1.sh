@@ -52,21 +52,26 @@ from transformers.utils import is_flash_linear_attention_available
 if not is_flash_linear_attention_available():
     sys.exit("[FATAL] fla unavailable")
 
-for mod in ("textworld", "termcolor", "tqdm"):
-    try:
-        __import__(mod)
-    except ImportError:
-        pip(mod, limit=1800)  # textworld pulls numpy/pandas chain — 600s timed out on r1
-try:
-    import alfworld  # noqa: F401
-    print("alfworld importable", flush=True)
-except ImportError:
-    # vendored editable install; its dependency resolution is slow on a cold
-    # node — retry once after a generous per-attempt budget (r1 died at 600s)
-    for _try in range(2):
-        if pip("--no-deps", "/mnt/songzijun/datasets/alfworld_src", limit=1800) == 0:
-            break
-    import alfworld  # noqa: F401
+# r2 postmortem: fresh nodes start WITHOUT the full alfworld dep stack —
+# the e1 evolve entries (y9qbm/v9urg) documented this exact chain. Replicate
+# the proven sequence: termcolor/tqdm/nltk/networkx -> fast-downward-textworld
+# (PddlEnv HARD dep; missing = every task errors "PddlEnv requires
+# fast_downward") -> textworld -> editable vendored alfworld -> FRESH-process
+# import probe (PEP 660 .pth processes only at interpreter start).
+import importlib.util
+pip("termcolor", "tqdm", "nltk", "networkx", limit=900)
+pip("fast-downward-textworld", limit=900)
+if importlib.util.find_spec("textworld") is None:
+    pip("textworld", limit=1800)
+for _try in range(2):
+    if pip("--no-deps", "-e", "/mnt/songzijun/datasets/alfworld_src", limit=1800) == 0:
+        break
+_v = subprocess.run([sys.executable, "-c",
+    "import textworld, alfworld, fast_downward; fast_downward.load_lib(); print('tw+aw+fd ok')"],
+    capture_output=True, text=True, timeout=180)
+print(_v.stdout.strip() or _v.stderr.strip()[-300:], flush=True)
+if _v.returncode != 0:
+    sys.exit("[FATAL] fresh-process tw+aw+fd import probe failed")
 print("ALFWORLD_DEPS_OK", flush=True)
 PY
 
