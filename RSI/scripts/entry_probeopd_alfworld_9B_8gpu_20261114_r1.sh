@@ -79,6 +79,11 @@ cfg = yaml.safe_load(open("$RSI_ROOT/configs/runtime_alfworld_v2_confirm.yaml"))
 cfg["policy"]["model_path"] = "$MODEL_LOCAL"
 cfg["campaign_id"] = "alfworld_probe_r1"
 cfg["execution"]["runs_root"] = "$RSI_ROOT/runs"
+# r1 postmortem: the v2-confirm config carries dev_panel_per_domain=0 (an
+# eval-era inheritance), which made the probe slice work_train[:0] — an EMPTY
+# panel: total_decisions=0, INSUFFICIENT_OPD_SUPPORT with zero evidence. The
+# probe panel size lives here (guide §5.3: 12-24 tasks).
+cfg["evolution"]["dev_panel_per_domain"] = 12
 assert cfg["suite"]["split_manifest"] == "data/splits/e1_alfworld_v2_confirm.json"
 yaml.safe_dump(cfg, open("$RUNTIME_CFG", "w"), sort_keys=False, allow_unicode=True)
 print("cfg ready:", cfg["campaign_id"])
