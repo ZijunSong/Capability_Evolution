@@ -56,12 +56,16 @@ for mod in ("textworld", "termcolor", "tqdm"):
     try:
         __import__(mod)
     except ImportError:
-        pip(mod, limit=600)
+        pip(mod, limit=1800)  # textworld pulls numpy/pandas chain — 600s timed out on r1
 try:
     import alfworld  # noqa: F401
     print("alfworld importable", flush=True)
 except ImportError:
-    pip("--no-deps", "/mnt/songzijun/datasets/alfworld_src", limit=600)
+    # vendored editable install; its dependency resolution is slow on a cold
+    # node — retry once after a generous per-attempt budget (r1 died at 600s)
+    for _try in range(2):
+        if pip("--no-deps", "/mnt/songzijun/datasets/alfworld_src", limit=1800) == 0:
+            break
     import alfworld  # noqa: F401
 print("ALFWORLD_DEPS_OK", flush=True)
 PY
