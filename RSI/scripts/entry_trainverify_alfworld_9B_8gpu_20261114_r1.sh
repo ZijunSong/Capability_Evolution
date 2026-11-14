@@ -52,6 +52,12 @@ pip("flash-linear-attention==0.6.0", limit=600)
 # fla #640) and the training backward died. Pin triton==3.8.0 (SearchAgent
 # r10 lesson: the known-good pin for this flash-linear-attention version).
 pip("triton==3.8.0", limit=900)
+# r5 postmortem: pip installed 3.8.0 (warning-only conflict with torch 2.10's
+# triton==3.6.0 pin) but the training process STILL imported 3.6.0 — the
+# image-baked triton in another site dir wins the import. fla's OWN
+# recommended alternative: install tilelang, which replaces the gated kernel
+# path and bypasses the triton version guard entirely.
+pip("tilelang", limit=900)
 pip("accelerate", limit=300)
 from transformers.utils import is_flash_linear_attention_available
 if not is_flash_linear_attention_available():
