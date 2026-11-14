@@ -47,6 +47,11 @@ if not (torch.cuda.is_available() and n >= MIN_GPUS):
     sys.exit("[FATAL] CUDA unusable")
 from transformers.models import qwen3_5  # noqa: F401
 pip("flash-linear-attention==0.6.0", limit=600)
+# r4 postmortem: the node's triton landed in the [3.4, 3.7.1) bad range — fla
+# REFUSES gated chunk_bwd_dqkwg on Hopper there (incorrect-results guard, see
+# fla #640) and the training backward died. Pin triton==3.8.0 (SearchAgent
+# r10 lesson: the known-good pin for this flash-linear-attention version).
+pip("triton==3.8.0", limit=900)
 pip("accelerate", limit=300)
 from transformers.utils import is_flash_linear_attention_available
 if not is_flash_linear_attention_available():
