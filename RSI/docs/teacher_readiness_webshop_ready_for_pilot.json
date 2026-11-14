@@ -6,12 +6,14 @@
   "confirm_result_ref": "runs/webshop_confirm_r1/confirm_h/confirm_h_r0.json",
   "domain": "webshop",
   "environment_digest": "307344c4f2d2a315168cb5608e525eb5fa2211dea33da9a8ac6c8fc3e2b2b7d6",
-  "extra": {},
+  "extra": {
+    "note": "policy_digest re-bound to the /tmp pre-copied path (job reality); matches ALFWorld binding"
+  },
   "identity_digest": "15bd5940c2b3d4bbb44a8af12ad7518b1b7eb56a64c0d63c5be10c285a7aa616",
   "metric_contract_digest": "c32dbaec7f8d23f155403e520d295a43948f4b68eb30aac078b2b46c83efb0b2",
   "paired_delta": 0.125,
   "paired_interval": null,
-  "policy_digest": "59c9c2518e7614a046299867546d9c271d1955dd83f2e157b269ced861ec7d98",
+  "policy_digest": "63eea503707c6dc017bacc037614c5b50dd82a6cbacf98c44ee6167336ddfa06",
   "runtime_contract_digest": "b5924d2532a11efd058d974f274674e1e68f91c8324365037d9e4e8c04a56416",
   "schema_version": "teacher_readiness_v1",
   "status": "READY_FOR_PILOT",

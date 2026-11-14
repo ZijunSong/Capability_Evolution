@@ -7,7 +7,7 @@ Usage:
     PYTHONPATH=src python scripts/build_teacher_readiness.py \
         --domain appworld --bank runs/c/evolve/champion.json \
         --confirm runs/c/confirm_h/confirm_h_r0.json \
-        --policy /tmp/rsi_models/Qwen3.5-9B \
+        --policy /tmp/rsi_models/Qwen3.5-9B \   # MUST be the job-node path (/tmp pre-copy), not the JuiceFS source
         --runtime-config configs/appworld_retry_v1.yaml \
         --out runs/c/teacher_readiness.json
 """
