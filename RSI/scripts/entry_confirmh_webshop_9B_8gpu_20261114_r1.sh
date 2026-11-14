@@ -17,6 +17,7 @@ RUNTIME_CFG=$RSI_ROOT/configs/runtime_webshop_v2_confirm_r1.yaml
 export PYTHONPATH="$RSI_ROOT/src:${PYTHONPATH:-}"
 export PYTHONUNBUFFERED=1
 cd "$RSI_ROOT"
+export RSI_WEBSHOP_FULL_ALLOW=1   # flavor=all execution gate (r12-proven; 224GB CloudML node) — r1 silently skipped the whole domain without it
 
 echo "== dep preflight (webshop chain, eval-r12-proven) =="
 python - <<'PY'
