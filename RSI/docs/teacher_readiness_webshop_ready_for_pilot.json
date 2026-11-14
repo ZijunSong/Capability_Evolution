@@ -1,0 +1,19 @@
+{
+  "alignment_report_ref": "runs/webshop_probe_r1/opd/probe_report.json",
+  "bank_digest": "a691cf12403ca2243c0a8d356f53c24da9e440639eb36559fd73f194e76b1700",
+  "code_commit": "7091006d977434f4ce7f725e837066a392ffe88a",
+  "confirm_manifest_digest": "0e932f5fe322dd54998fef8a9a195993a989beee17e47098f4e5051441e269ad",
+  "confirm_result_ref": "runs/webshop_confirm_r1/confirm_h/confirm_h_r0.json",
+  "domain": "webshop",
+  "environment_digest": "307344c4f2d2a315168cb5608e525eb5fa2211dea33da9a8ac6c8fc3e2b2b7d6",
+  "extra": {},
+  "identity_digest": "15bd5940c2b3d4bbb44a8af12ad7518b1b7eb56a64c0d63c5be10c285a7aa616",
+  "metric_contract_digest": "c32dbaec7f8d23f155403e520d295a43948f4b68eb30aac078b2b46c83efb0b2",
+  "paired_delta": 0.125,
+  "paired_interval": null,
+  "policy_digest": "59c9c2518e7614a046299867546d9c271d1955dd83f2e157b269ced861ec7d98",
+  "runtime_contract_digest": "b5924d2532a11efd058d974f274674e1e68f91c8324365037d9e4e8c04a56416",
+  "schema_version": "teacher_readiness_v1",
+  "status": "READY_FOR_PILOT",
+  "validator_version": "environment_registry_v1"
+}
