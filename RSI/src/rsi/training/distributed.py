@@ -48,6 +48,8 @@ def init_from_env() -> DistInfo:
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
 
     if world_size > 1:
+        import datetime
+
         import torch
         import torch.distributed as dist
 
@@ -55,7 +57,17 @@ def init_from_env() -> DistInfo:
         if use_cuda:
             torch.cuda.set_device(local_rank)
         if not dist.is_initialized():
-            dist.init_process_group(backend="nccl" if use_cuda else "gloo")
+            # pmhlp postmortem: the default 600s NCCL watchdog killed the pilot
+            # — AlfWorld episode rollouts straggle 10-60min per episode (48
+            # actions × ~30s), so fast ranks hit the mean-reward ALLREDUCE and
+            # timed out while a slow rank was still legitimately rolling out.
+            # Real envs need a timeout ≥ the max per-rank rollout time; 4h
+            # covers a two-episode straggle at the slowest observed pace.
+            timeout_min = int(os.environ.get("RSI_DIST_TIMEOUT_MINUTES", "240"))
+            dist.init_process_group(
+                backend="nccl" if use_cuda else "gloo",
+                timeout=datetime.timedelta(minutes=timeout_min),
+            )
         device = f"cuda:{local_rank}" if use_cuda else "cpu"
         return DistInfo(rank=rank, world_size=world_size, local_rank=local_rank, device=device)
 

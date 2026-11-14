@@ -76,7 +76,7 @@ training:
   max_optimizer_steps_per_round: 50
   checkpoint_every: 5
   rollout_refresh: each_batch
-  episodes_per_rank_per_step: 2
+  episodes_per_rank_per_step: 1
   budget: configs/train_budget.json
   require_teacher_readiness: true
   readiness_ref: runs/webshop_confirm_r1/teacher_readiness.json
