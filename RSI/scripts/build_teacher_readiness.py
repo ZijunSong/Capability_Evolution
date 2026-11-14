@@ -63,8 +63,21 @@ def main() -> int:
 
     # identities
     policy_digest = args.policy or ""
-    if args.policy and Path(args.policy).is_dir():
-        policy_digest = digest_of_text(f"hf_model:{args.policy}")
+    if args.policy:
+        # bind the REAL PolicyArtifact.make(model_path) id — the same
+        # derivation HFPolicy uses. The old hf_model:<path> text digest was a
+        # different formula and made the gate refuse a perfectly matching run
+        # (r2 postmortem, 2026-11-14).
+        policy_digest = digest_of(
+            {
+                "base_model_id": str(args.policy),
+                "kind": "base",
+                "adapter_path": None,
+                "adapter_digest": None,
+                "parent_policy_id": None,
+                "extra": {},
+            }
+        )
     if not policy_digest:
         problems.append("policy identity missing (pass --policy)")
     runtime_digest = ""
@@ -73,7 +86,10 @@ def main() -> int:
         import yaml
 
         raw = yaml.safe_load((RSI_ROOT / args.runtime_config).read_text("utf-8")) or {}
-        runtime_digest = digest_of(raw.get("runtime") or {})
+        # bind the gate's ACTUAL formula: build_runtime_parts(runtime).profile.digest()
+        from rsi.runtime.factory import build_runtime_parts
+
+        runtime_digest = build_runtime_parts(raw.get("runtime") or {}).profile.digest()
         domains = ((raw.get("suite") or {}).get("domains") or [])
         if domains and domains[0] == args.domain:
             try:

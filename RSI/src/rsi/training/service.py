@@ -155,9 +155,17 @@ def run_train(cfg: CampaignConfig, *, bank_ref: str, policy: Any | None = None, 
     from rsi.runtime.factory import build_runtime_parts
 
     runtime_parts = build_runtime_parts(runtime_cfg)
+    policy = (
+        policy
+        if policy is not None
+        else build_policy(cfg, device=dist_info.device if dist_info.is_distributed else os.environ.get("RSI_TRAIN_DEVICE") or None)
+    )
     # PR-05 (guide §5.1): the formal-training gate.  A bank is not a teacher
     # merely because an evolve run produced it — require a READY readiness
     # artifact bound to the CURRENT identities before any optimizer step.
+    # r2 fix: the gate must run AFTER the policy exists (it binds
+    # policy.policy_artifact.policy_id) — r1/r2 died on gate-before-policy
+    # ordering (UnboundLocalError registry, then NoneType.policy_artifact).
     training_cfg_gate = cfg.section("training")
     if bool(training_cfg_gate.get("require_teacher_readiness", False)):
         from rsi.opd.readiness import check_readiness_for_training, load_readiness
@@ -192,11 +200,6 @@ def run_train(cfg: CampaignConfig, *, bank_ref: str, policy: Any | None = None, 
                 "teacher readiness gate FAILED — formal OPD training refused:\n- "
                 + "\n- ".join(problems)
             )
-    policy = (
-        policy
-        if policy is not None
-        else build_policy(cfg, device=dist_info.device if dist_info.is_distributed else os.environ.get("RSI_TRAIN_DEVICE") or None)
-    )
     lora_info = _apply_lora_if_configured(cfg, policy)
     backend = _build_backend(cfg, policy, device=dist_info.device if dist_info.is_distributed else None)
     spec = MethodSpec.resolve(str(cfg.section("training").get("method", "harness_opd_rl")))
