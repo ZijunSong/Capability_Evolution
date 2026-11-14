@@ -175,9 +175,10 @@ def run_train(cfg: CampaignConfig, *, bank_ref: str, policy: Any | None = None, 
         _gate_domains2 = list(cfg.section("suite").get("domains") or [])
         if _gate_domains2:
             from rsi.contracts.common import digest_of as _d
+            from rsi.environments.registry import global_registry as _gr
 
             _gate_env_digest = _d(
-                registry.get(_gate_domains2[0]).adapter_factory().environment_identity()
+                _gr().get(_gate_domains2[0]).adapter_factory().environment_identity()
             )
         problems = check_readiness_for_training(
             readiness=readiness,
