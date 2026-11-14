@@ -18,6 +18,10 @@ export PYTHONPATH="$RSI_ROOT/src:${PYTHONPATH:-}"
 export PYTHONUNBUFFERED=1
 cd "$RSI_ROOT"
 export RSI_WEBSHOP_FULL_ALLOW=1   # flavor=all execution gate (r12-proven; 224GB CloudML node) — r1 silently skipped the whole domain without it
+# r2 postmortem: web_agent_site engine.py imports openai at MODULE load and
+# raises OpenAIError('Missing credentials') without a key (ohukw lesson —
+# eval is fully offline; a placeholder key only lets the import pass).
+export OPENAI_API_KEY="${OPENAI_API_KEY:-sk-placeholder-offline-eval}"
 
 echo "== dep preflight (webshop chain, eval-r12-proven) =="
 python - <<'PY'
