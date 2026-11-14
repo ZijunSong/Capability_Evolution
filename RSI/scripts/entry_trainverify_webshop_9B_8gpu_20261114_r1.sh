@@ -49,6 +49,11 @@ if not (torch.cuda.is_available() and n >= MIN_GPUS):
     sys.exit("[FATAL] CUDA unusable")
 from transformers.models import qwen3_5  # noqa: F401
 pip("flash-linear-attention==0.6.0", limit=600)
+# ALFWorld r4/r5 postmortem carried over: the node's triton lands in the
+# [3.4, 3.7.1) Hopper bad range and image-baked 3.6.0 shadows a pip upgrade —
+# pin 3.8.0 AND install tilelang (fla's recommended gated-kernel path).
+pip("triton==3.8.0", limit=900)
+pip("tilelang", limit=900)
 pip("accelerate", limit=300)  # tiny_hf low_cpu_mem_usage streaming loader
 # r3: causal-conv1d install attempt REMOVED — its sdist build pulls torch
 # 2.15+cu132 into the isolated build env and times out fetching a prebuilt
