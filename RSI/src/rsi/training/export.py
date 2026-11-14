@@ -33,13 +33,23 @@ def export_adapter(backend: Any, out_dir: str | Path, *, parent_policy_id: str |
 
         torch.save(full, out_dir / "model.pt")
         adigest = digest_of({k: [float(x) for x in v.flatten().tolist()[:8]] for k, v in sorted(full.items())})
+    # G3 (guide §8.4): carry the SOURCE policy's tokenizer identity in the
+    # export payload — the trained artifact must be traceable to the same
+    # vocabulary as the policy that produced it.
+    _src_tok = ""
+    _src = getattr(backend, "source_policy", None)
+    if _src is not None:
+        _src_tok = str(getattr(_src, "tokenizer_digest", "") or "")
     artifact = PolicyArtifact.make(
         base_model_id=str(getattr(backend, "name", "hf_reference")),
         kind="trained",
         adapter_path=str(out_dir),
         adapter_digest=adigest,
         parent_policy_id=parent_policy_id,
-        extra={"n_params": sum(1 for _ in backend.model.parameters())},
+        extra={
+            "n_params": sum(1 for _ in backend.model.parameters()),
+            "tokenizer_digest": _src_tok,
+        },
     )
     payload = {"artifact": artifact.to_json(), "adapter_digest": adigest}
     (out_dir / "policy_artifact.json").write_text(json.dumps(payload, indent=2, sort_keys=True), "utf-8")
