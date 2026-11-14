@@ -105,7 +105,12 @@ class HFReferenceBackend:
     def backward_rl(self, rows: Sequence[RLRow], normalizers: GlobalNormalizers) -> dict[str, float]:
         if not rows:
             return {"rl_loss": 0.0, "n_rl_rows": 0.0}
-        total = torch.zeros((), device=self.device)
+        # r3 OOM postmortem: accumulating loss GRAPHS for every row and calling
+        # backward() once retained all rows' activation graphs simultaneously —
+        # a 9B model on one 80G card cannot hold ~150 decisions' graphs. Backward
+        # PER ROW instead (gradients are additive: identical total gradient,
+        # one graph resident at a time). Loss value accumulated under no_grad.
+        loss_sum = 0.0
         clip_hits = 0
         tokens = 0
         for row in rows:
@@ -121,15 +126,15 @@ class HFReferenceBackend:
                 clip_high=self.clip_high,
                 normalizer=float(normalizers.global_action_tokens),
             )
-            total = total + loss_tok
+            loss_tok.backward()
+            loss_sum += float(loss_tok.detach().item())
             with torch.no_grad():
                 ratio = (new_lp.detach() - old_lp).exp()
                 clipped = ratio.clamp(min=self.clip_low, max=self.clip_high)
                 clip_hits += int((ratio != clipped).sum().item())
                 tokens += int(mask.sum().item())
-        total.backward()
         return {
-            "rl_loss": float(total.detach().item()),
+            "rl_loss": loss_sum,
             "n_rl_rows": float(len(rows)),
             "ratio_clip_fraction": clip_hits / max(1, tokens),
         }
@@ -142,7 +147,9 @@ class HFReferenceBackend:
         lam = self.lambda_opd if lambda_opd is None else float(lambda_opd)
         if not rows:
             return {"opd_loss": 0.0, "n_opd_rows": 0.0}
-        total = torch.zeros((), device=self.device)
+        # r3 OOM postmortem: same per-row backward as backward_rl — gradients
+        # accumulate additively; one graph resident at a time.
+        loss_sum = 0.0
         n_tokens = 0
         for row in rows:
             if not row.target_token_ids:
@@ -165,19 +172,20 @@ class HFReferenceBackend:
                 gate_beta=self.gate_beta,
                 gate_mode=self.gate_mode,
             )
-            total = total + scale_projected_gap_loss(
+            loss_row = scale_projected_gap_loss(
                 numer,
                 lambda_opd=lam,
                 z_gap=normalizers.global_opd_weight,
                 world_size=1,
             )
+            loss_row.backward()
+            loss_sum += float(loss_row.detach().item())
             n_tokens += int(mask.sum().item())
         if n_tokens == 0:
             return {"opd_loss": 0.0, "n_opd_rows": float(len(rows)), "skipped_no_tokens": 1.0}
-        total.backward()
         grad_norm = self._grad_norm()
         return {
-            "opd_loss": float(total.detach().item()),
+            "opd_loss": loss_sum,
             "n_opd_rows": float(len(rows)),
             "n_opd_tokens": float(n_tokens),
             "opd_grad_norm": grad_norm,
