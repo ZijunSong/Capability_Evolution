@@ -142,6 +142,7 @@ def run_train(cfg: CampaignConfig, *, bank_ref: str, policy: Any | None = None, 
     )
 
     dist_info: DistInfo = init_from_env()
+    _cfg_path = str(cfg.config_path)  # spawn children reload this exact config
     bank = load_bank_ref(bank_ref)  # Teacher bank (H0 + Bk) == "all teacher"
     student_bank = load_empty_bank()  # "zero student": H0 only
     # PR-09 (guide §8.2): build the runtime parts ONCE, before the execution-
@@ -284,6 +285,8 @@ def run_train(cfg: CampaignConfig, *, bank_ref: str, policy: Any | None = None, 
                     budgets=runtime_parts.budgets,
                     sampling=runtime_parts.sampling,
                     context_policy=runtime_parts.context_policy,
+                    spawn_cfg_path=str(_cfg_path),
+                    bank_ref_for_child=bank_ref,
                     collect_opd=spec.use_opd,
                     uncertain_realizability=str(cfg.section("opd").get("uncertain_realizability", "skip")),
                     max_targets_per_decision=int(cfg.section("opd").get("max_targets_per_decision", 1)),

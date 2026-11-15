@@ -52,30 +52,76 @@ def _empty_trace(task):
     )
 
 
-def _run_episode_child(loop, task, seed, q, task_provider):
-    """Child entry for the episode-timeout wrapper (fork context)."""
-    import time as _time
+def _run_episode_child(config_path, task_dict, seed, bank_ref, q):
+    """Child entry for the episode-timeout wrapper (SPAWN context — a fresh
+    interpreter with its own CUDA context; fork breaks CUDA).
 
+    Builds its own policy + env + loop from the config, runs ONE episode,
+    scores it, and puts back a picklable result bundle. Zero inheritance from
+    the parent (which holds CUDA) — that was the fork-mode bug where every
+    child died on its first CUDA call and the whole training degraded to
+    reward-0 skips (mqg3o evidence)."""
     try:
-        result = loop.run_episode(task, seed=seed)
-        scorer = None
-        # scorer is built by the caller; re-derive from the env the loop holds
-        env = loop.env
+        import yaml
+        from rsi.config import load_config
+
+        cfg = load_config(config_path)
+        # resolve the runtime config the parent prepared (model_path already
+        # pointed at the /tmp pre-copy by the entry)
+        from rsi.providers.factory import build_policy
+        from rsi.harness.loader import load_bank_ref, load_empty_bank
+        from rsi.runtime.factory import build_runtime_parts
+        from rsi.runtime.loop import MinimalLoop
         from rsi.environments.registry import global_registry
 
+        device = "cuda:0"
+        policy = build_policy(cfg, device=device)
+        parts = build_runtime_parts(cfg.section("runtime"))
         registry = global_registry()
-        bundle = registry.get(task.domain)
+        bundle = registry.get(task_dict["domain"])
+        provider = bundle.task_provider_factory()
+        env = bundle.adapter_factory()
+
+        from rsi.contracts.task import PublicTask
+
+        task = PublicTask(
+            task_id=task_dict["task_id"], domain=task_dict["domain"],
+            instruction=task_dict["instruction"], group_id=task_dict["group_id"],
+            metadata=task_dict["metadata"],
+        )
+        loop = MinimalLoop(
+            env=env, policy=policy, bank=load_empty_bank(),
+            budgets=parts.budgets, sampling=parts.sampling,
+            context_policy=parts.context_policy,
+            campaign_id="episode-child", batch_index=0,
+        )
+        result = loop.run_episode(task, seed=seed)
         scorer = bundle.scorer_factory()
         artifact = result.final_artifact
         if artifact is None:
             from rsi.contracts.observation import ArtifactRef
 
             artifact = ArtifactRef(ref_id=task.task_id, kind="answer")
-        record = scorer.evaluate(artifact, task_provider.private_ref(task.task_id))
-        q.put((result, record))
-    except Exception as e:  # noqa: BLE001 - child errors surface as None
+        record = scorer.evaluate(artifact, provider.private_ref(task.task_id))
+        trace_payload = {
+            "decisions": [
+                {
+                    "prompt_token_ids": list(d.student_prompt_token_ids),
+                    "action_token_ids": list(d.sampled_action_token_ids),
+                    "old_logprobs": list(d.old_logprobs),
+                    "action_mask": list(d.action_mask),
+                }
+                for d in result.trace.decisions
+            ],
+            "terminated_reason": result.trace.terminated_reason,
+            "final_answer": result.trace.final_answer,
+        }
+        q.put({"ok": True, "value": record.value, "success": record.success,
+               "details": dict(record.details), "metric_name": record.metric_name,
+               "task_id": record.task_id, "trace": trace_payload})
+    except Exception as e:  # noqa: BLE001 - child errors surface as failure
         try:
-            q.put((None, None))
+            q.put({"ok": False, "error": repr(e)[:500]})
         except Exception:  # noqa: BLE001
             pass
 
@@ -103,6 +149,8 @@ def collect_rollouts(
     campaign_id: str = "train",
     batch_index: int = 0,
     center_advantage: bool = True,
+    spawn_cfg_path: str | None = None,
+    bank_ref_for_child: str | None = None,
 ) -> RolloutBatch:
     """Run Student rollouts (H0), score outcomes, build RL rows, align OPD."""
     from rsi.opd.teacher import TeacherForkRunner
@@ -116,6 +164,8 @@ def collect_rollouts(
     alignment_records: list[DecisionAlignmentRecord] = []
     cost = CostRecord()
     t0 = time.perf_counter()
+    _spawn_cfg_path = spawn_cfg_path
+    _bank_ref_for_child = bank_ref_for_child
 
     teacher_runner = (
         TeacherForkRunner(
@@ -151,55 +201,105 @@ def collect_rollouts(
         # episode is well under 60min).
         import os as _os
         _timeout_min = int(_os.environ.get("RSI_EPISODE_TIMEOUT_MINUTES", "90"))
-        if _timeout_min > 0:
+        if _timeout_min > 0 and _spawn_cfg_path:
+            # SPAWN (not fork): the parent holds CUDA; a forked child cannot use
+            # it (mqg3o: every child died on its first CUDA call). The spawn
+            # child is a fresh interpreter that builds its own policy/env and
+            # runs the episode with its own CUDA context.
             import multiprocessing as _mp
 
-            _ctx = _mp.get_context("fork")
+            _ctx = _mp.get_context("spawn")
             _q = _ctx.Queue()
+            task_dict = {
+                "task_id": task.task_id, "domain": task.domain,
+                "instruction": task.instruction, "group_id": task.group_id,
+                "metadata": dict(task.metadata),
+            }
             _p = _ctx.Process(target=_run_episode_child,
-                              args=(loop, task, seed + i, _q, task_provider), daemon=True)
+                              args=(_spawn_cfg_path, task_dict, seed + i,
+                                    _bank_ref_for_child, _q), daemon=True)
             _p.start()
-            _p.join(timeout=_timeout_min * 60)
+            _payload = None
+            try:
+                _payload = _q.get(timeout=_timeout_min * 60)
+            except Exception:  # noqa: BLE001 - queue.Empty and pickling errors
+                _payload = None
+            _p.join(timeout=60)
             if _p.is_alive():
                 _p.terminate()
                 _p.join(timeout=30)
                 if _p.is_alive():
                     _p.kill()
-                print(f"[collector] episode TIMEOUT after {_timeout_min}min "
-                      f"(task={task.task_id}) — skipped with reward 0", flush=True)
-                from rsi.contracts.observation import ScoreRecord as _SR
+            from rsi.contracts.observation import ScoreRecord as _SR
 
+            if _payload is None or not _payload.get("ok"):
+                _why = "TIMEOUT" if _payload is None else f"child error: {_payload.get('error', '')[:200]}"
+                print(f"[collector] episode FAILED ({_why}) after {_timeout_min}min "
+                      f"(task={task.task_id}) — skipped with reward 0", flush=True)
                 score_records.append(_SR(
                     task_id=task.task_id, domain=task.domain,
-                    metric_name="episode_timeout", value=0.0, success=False,
+                    metric_name="episode_timeout" if _payload is None else "episode_child_failure",
+                    value=0.0, success=False,
                     details={"measurement_status": "VALID",
-                             "error_kind": "episode_timeout",
-                             "timeout_minutes": _timeout_min},
+                             "error_kind": ("episode_timeout" if _payload is None
+                                            else "episode_child_failure"),
+                             "why": _why},
                     scorer_version="collector-timeout", synthetic=False,
                 ))
                 rewards.append(0.0)
                 traces.append(_empty_trace(task))
                 env.close()
                 continue
-            result, record = _q.get() if not _q.empty() else (None, None)
-            if result is None:
-                # child died before putting a result (import/exec failure in
-                # fork mode is rare; treat as timeout-equivalent skip)
-                print(f"[collector] episode child returned no result "
-                      f"(task={task.task_id}) — skipped with reward 0", flush=True)
-                from rsi.contracts.observation import ScoreRecord as _SR
+            # Rebuild the trace rows from the payload: the spawn child ran its
+            # own policy — the token ids/logprobs it recorded ARE the on-policy
+            # behavior of this episode's generation (the same weights as the
+            # parent's batch-snapshot policy by design).
+            tp = _payload["trace"]
+            from rsi.contracts.trace import DecisionRecord as _DR
+            from rsi.opd.records import build_rl_row as _brl
 
-                score_records.append(_SR(
-                    task_id=task.task_id, domain=task.domain,
-                    metric_name="episode_child_failure", value=0.0, success=False,
-                    details={"measurement_status": "VALID",
-                             "error_kind": "episode_child_failure"},
-                    scorer_version="collector-timeout", synthetic=False,
+            _decisions = []
+            for k, dd in enumerate(tp["decisions"]):
+                _decisions.append(_DR(
+                    campaign_id=campaign_id, round_index=0,
+                    batch_index=batch_index, episode_id=f"spawn-{task.task_id}",
+                    decision_index=k,
+                    environment_snapshot_ref="", public_view_digest="",
+                    runtime_contract_digest="", policy_digest="", tokenizer_digest="",
+                    chat_template_digest="", bank_digest="",
+                    student_prompt_token_ids=tuple(dd["prompt_token_ids"]),
+                    sampled_action_token_ids=tuple(dd["action_token_ids"]),
+                    old_logprobs=tuple(dd["old_logprobs"]),
+                    action_mask=tuple(dd["action_mask"]),
                 ))
-                rewards.append(0.0)
-                traces.append(_empty_trace(task))
-                env.close()
-                continue
+            from rsi.contracts.trace import EpisodeTrace as _ET
+
+            _trace = _ET(
+                episode_id=f"spawn-{task.task_id}", task_id=task.task_id,
+                domain=task.domain, policy_digest="", bank_digest="",
+                events=(),
+                decisions=tuple(_decisions),
+                final_answer=tp.get("final_answer"),
+                outcome_reward=None,
+                terminated_reason=tp.get("terminated_reason", "unknown"),
+                synthetic=False,
+            )
+            record = _SR(
+                task_id=task.task_id, domain=task.domain,
+                metric_name=_payload.get("metric_name", "task_success"),
+                value=float(_payload.get("value", 0.0)),
+                success=bool(_payload.get("success", False)),
+                details=dict(_payload.get("details") or {}),
+                scorer_version="spawn-child", synthetic=False,
+            )
+            score_records.append(record)
+            reward = float(reward_fn(_trace, record)) if reward_fn else float(record.value)
+            rewards.append(reward)
+            traces.append(_trace)
+            for dd in _decisions:
+                rl_rows.append(_brl(dd, advantage=reward, reward_ref=task.task_id))
+            env.close()
+            continue
         else:
             result = loop.run_episode(task, seed=seed + i)
         trace = result.trace
