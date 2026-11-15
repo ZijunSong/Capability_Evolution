@@ -60,13 +60,10 @@ import torch, transformers
 # initialize CUDA on all 8 devices NOW so the long pip preflight (up to 40min
 # of CPU-only wheel downloads) doesn't trip the watchdog. Memory touches are
 # tiny; freed before training.
-python - <<'PYK'
-import torch
 for _i in range(torch.cuda.device_count()):
     _d = torch.tensor([1.0], device=f"cuda:{_i}")
     _d += 1
 print("GPU keepalive: touched", torch.cuda.device_count(), "devices", flush=True)
-PYK
 
 n = torch.cuda.device_count() if torch.cuda.is_available() else 0
 print("torch", torch.__version__, "cuda", torch.cuda.is_available(), "devices", n, flush=True)
