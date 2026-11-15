@@ -58,7 +58,15 @@ for mod, pkg in (("yaml", "pyyaml"), ("numpy", "numpy"), ("torch", TORCH_PIN), (
     except ImportError:
         need.append(pkg)
 if need:
-    pip(*need)
+    # r6 postmortem: one combined pip of torch+transformers hit 2400s on a
+    # cold node (mirror throughput variance). Split per-package with retries:
+    # each gets its own 2400s budget and 3 attempts.
+    for pkg in need:
+        for _try in range(3):
+            if pip(pkg, limit=2400) == 0:
+                break
+        else:
+            sys.exit(f"[FATAL] cannot install {pkg!r} after 3 attempts")
 
 import torch, transformers
 n = torch.cuda.device_count() if torch.cuda.is_available() else 0
