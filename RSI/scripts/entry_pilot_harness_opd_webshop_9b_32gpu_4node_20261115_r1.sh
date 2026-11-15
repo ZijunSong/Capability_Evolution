@@ -167,6 +167,22 @@ PY
 
 # ---------------------------------------------------------------- model pre-copy
 echo "== model pre-copy (JuiceFS 32-way read guard, per node) =="
+# df6od postmortem: one node had only 14G free in /tmp (19G model) — the cp
+# died silently and the job failed mid-pre-copy with no error line. Fail LOUD
+# before copying, and retry once on the same node after clearing our own stale
+# copy only (never touch other files).
+_free_gb=$(df -BG --output=avail /tmp | tail -1 | tr -dc '0-9')
+echo "/tmp free: ${_free_gb}G (need 20G)"
+if [ "$_free_gb" -lt 20 ]; then
+  echo "[WARN] /tmp low on space — clearing stale rsi_models copy from prior runs"
+  rm -rf /tmp/rsi_models 2>/dev/null || true
+  _free_gb=$(df -BG --output=avail /tmp | tail -1 | tr -dc '0-9')
+  echo "/tmp free after clean: ${_free_gb}G"
+  if [ "$_free_gb" -lt 20 ]; then
+    echo "FATAL: /tmp still short of space for the 19G model — request a different node" >&2
+    exit 1
+  fi
+fi
 if [ ! -f "$MODEL_LOCAL/config.json" ]; then
   rm -rf "$MODEL_LOCAL"; mkdir -p "$MODEL_LOCAL"
   cp -r "$MODEL_SRC/." "$MODEL_LOCAL/"
