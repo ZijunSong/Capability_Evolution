@@ -67,6 +67,15 @@ if not (torch.cuda.is_available() and n >= MIN_GPUS):
     sys.exit("[FATAL] CUDA unusable")
 from transformers.models import qwen3_5  # noqa: F401
 pip("flash-linear-attention==0.6.0", limit=600)
+# ALFWorld r4/r5 + wqqg0 postmortems: pin triton 3.8.0 (image-baked 3.6.0 is
+# in fla's Hopper bad range) AND install tilelang — the fla recommended gated
+# kernel path that bypasses the triton guard. tilelang's CUDA wheel is
+# multi-GB: 900s timed out on a cold node (wqqg0), use 2400s x2 retries.
+pip("triton==3.8.0", limit=900)
+for _tl_try in range(2):
+    if pip("tilelang", limit=2400) == 0:
+        break
+print("tilelang install attempts done", flush=True)
 pip("accelerate", limit=300)  # tiny_hf low_cpu_mem_usage streaming loader
 # r3: causal-conv1d install attempt REMOVED — its sdist build pulls torch
 # 2.15+cu132 into the isolated build env and times out fetching a prebuilt
