@@ -41,7 +41,7 @@ echo "== dep preflight (alfworld chain + tilelang) =="
 python - <<'PY'
 import importlib.util, subprocess, sys
 MIRROR = "https://pkgs.d.xiaomi.net/artifactory/api/pypi/pypi-virtual/simple"
-def pip(*args, limit=900):
+def pip(*args, limit=2400):
     print("pip", " ".join(args), flush=True)
     r = subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-i", MIRROR, *args], timeout=limit)
     return r.returncode

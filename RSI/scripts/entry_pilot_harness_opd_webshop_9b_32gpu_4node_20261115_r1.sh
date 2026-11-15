@@ -46,7 +46,7 @@ TORCH_PIN = "torch==2.10.0"
 TF_PIN = "transformers==5.17.0"
 MIN_GPUS = 8
 
-def pip(*args, limit=900):
+def pip(*args, limit=2400):
     print("pip", " ".join(args), flush=True)
     r = subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-i", MIRROR, *args], timeout=limit)
     return r.returncode
