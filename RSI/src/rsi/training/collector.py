@@ -40,6 +40,46 @@ class RolloutBatch:
         return len(self.traces)
 
 
+def _empty_trace(task):
+    """Minimal trace for a timed-out episode (no decisions, honest marker)."""
+    from rsi.contracts.trace import EpisodeTrace
+
+    return EpisodeTrace(
+        episode_id=f"timeout-{task.task_id}", task_id=task.task_id,
+        domain=task.domain, policy_digest="", bank_digest="",
+        events=(), decisions=(), final_answer=None, outcome_reward=None,
+        terminated_reason="episode_timeout", synthetic=False,
+    )
+
+
+def _run_episode_child(loop, task, seed, q, task_provider):
+    """Child entry for the episode-timeout wrapper (fork context)."""
+    import time as _time
+
+    try:
+        result = loop.run_episode(task, seed=seed)
+        scorer = None
+        # scorer is built by the caller; re-derive from the env the loop holds
+        env = loop.env
+        from rsi.environments.registry import global_registry
+
+        registry = global_registry()
+        bundle = registry.get(task.domain)
+        scorer = bundle.scorer_factory()
+        artifact = result.final_artifact
+        if artifact is None:
+            from rsi.contracts.observation import ArtifactRef
+
+            artifact = ArtifactRef(ref_id=task.task_id, kind="answer")
+        record = scorer.evaluate(artifact, task_provider.private_ref(task.task_id))
+        q.put((result, record))
+    except Exception as e:  # noqa: BLE001 - child errors surface as None
+        try:
+            q.put((None, None))
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def collect_rollouts(
     *,
     policy: Any,
@@ -102,7 +142,66 @@ def collect_rollouts(
             campaign_id=campaign_id,
             batch_index=batch_index,
         )
-        result = loop.run_episode(task, seed=seed + i)
+        # pmhlp/8qsy3 postmortem: a single rank stuck inside run_episode (C-level
+        # generate/env stall — zero logs for hours) blocks the 31 other ranks at
+        # the next ALLREDUCE until the NCCL watchdog kills the whole job. An
+        # episode-level subprocess timeout converts that failure into a reward-0
+        # skip: the batch loses one episode, the run survives. Enabled via
+        # RSI_EPISODE_TIMEOUT_MINUTES (default 90 — the slowest observed healthy
+        # episode is well under 60min).
+        import os as _os
+        _timeout_min = int(_os.environ.get("RSI_EPISODE_TIMEOUT_MINUTES", "90"))
+        if _timeout_min > 0:
+            import multiprocessing as _mp
+
+            _ctx = _mp.get_context("fork")
+            _q = _ctx.Queue()
+            _p = _ctx.Process(target=_run_episode_child,
+                              args=(loop, task, seed + i, _q, task_provider), daemon=True)
+            _p.start()
+            _p.join(timeout=_timeout_min * 60)
+            if _p.is_alive():
+                _p.terminate()
+                _p.join(timeout=30)
+                if _p.is_alive():
+                    _p.kill()
+                print(f"[collector] episode TIMEOUT after {_timeout_min}min "
+                      f"(task={task.task_id}) — skipped with reward 0", flush=True)
+                from rsi.contracts.observation import ScoreRecord as _SR
+
+                score_records.append(_SR(
+                    task_id=task.task_id, domain=task.domain,
+                    metric_name="episode_timeout", value=0.0, success=False,
+                    details={"measurement_status": "VALID",
+                             "error_kind": "episode_timeout",
+                             "timeout_minutes": _timeout_min},
+                    scorer_version="collector-timeout", synthetic=False,
+                ))
+                rewards.append(0.0)
+                traces.append(_empty_trace(task))
+                env.close()
+                continue
+            result, record = _q.get() if not _q.empty() else (None, None)
+            if result is None:
+                # child died before putting a result (import/exec failure in
+                # fork mode is rare; treat as timeout-equivalent skip)
+                print(f"[collector] episode child returned no result "
+                      f"(task={task.task_id}) — skipped with reward 0", flush=True)
+                from rsi.contracts.observation import ScoreRecord as _SR
+
+                score_records.append(_SR(
+                    task_id=task.task_id, domain=task.domain,
+                    metric_name="episode_child_failure", value=0.0, success=False,
+                    details={"measurement_status": "VALID",
+                             "error_kind": "episode_child_failure"},
+                    scorer_version="collector-timeout", synthetic=False,
+                ))
+                rewards.append(0.0)
+                traces.append(_empty_trace(task))
+                env.close()
+                continue
+        else:
+            result = loop.run_episode(task, seed=seed + i)
         trace = result.trace
         scorer = scorer_factory()
         artifact = result.final_artifact
