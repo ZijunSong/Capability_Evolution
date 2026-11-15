@@ -37,18 +37,6 @@ echo "MULTINODE_ENV master_addr=${MASTER_ADDR} node_rank=${NODE_RANK} master_por
 test -f "$CHAMPION" || { echo "FATAL: champion bank not found: $CHAMPION" >&2; exit 1; }
 
 # ---------------------------------------------------------------- deps
-# GPU-util keepalive (platform force-stops jobs with 30min zero GPU util):
-# initialize CUDA on all 8 devices NOW so the long pip preflight (up to 40min
-# of CPU-only wheel downloads) doesn't trip the watchdog. Memory touches are
-# tiny; freed before training.
-python - <<'PYK'
-import torch
-for _i in range(torch.cuda.device_count()):
-    _d = torch.tensor([1.0], device=f"cuda:{_i}")
-    _d += 1
-print("GPU keepalive: touched", torch.cuda.device_count(), "devices", flush=True)
-PYK
-
 echo "== dep preflight (alfworld chain + tilelang) =="
 python - <<'PY'
 import importlib.util, subprocess, sys
@@ -67,6 +55,19 @@ for mod, pkg in (("yaml", "pyyaml"), ("numpy", "numpy"), ("torch", "torch==2.10.
 if need:
     pip(*need)
 import torch, transformers
+
+# GPU-util keepalive (platform force-stops jobs with 30min zero GPU util):
+# initialize CUDA on all 8 devices NOW so the long pip preflight (up to 40min
+# of CPU-only wheel downloads) doesn't trip the watchdog. Memory touches are
+# tiny; freed before training.
+python - <<'PYK'
+import torch
+for _i in range(torch.cuda.device_count()):
+    _d = torch.tensor([1.0], device=f"cuda:{_i}")
+    _d += 1
+print("GPU keepalive: touched", torch.cuda.device_count(), "devices", flush=True)
+PYK
+
 n = torch.cuda.device_count() if torch.cuda.is_available() else 0
 print("torch", torch.__version__, "cuda", torch.cuda.is_available(), "devices", n, flush=True)
 if not (torch.cuda.is_available() and n >= 8):
