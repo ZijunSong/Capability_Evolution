@@ -218,18 +218,34 @@ def collect_rollouts(
             _p = _ctx.Process(target=_run_episode_child,
                               args=(_spawn_cfg_path, task_dict, seed + i,
                                     _bank_ref_for_child, _q), daemon=True)
-            _p.start()
-            _payload = None
+            # janah postmortem: 32 spawn children starting simultaneously each
+            # load a 19G model -> host-RAM/CUDA-init storm; the NCCL monitor
+            # thread starves 480s and the watchdog aborts the node. Serialize
+            # the children ON EACH NODE with a file lock held for the child's
+            # whole lifetime - one model load at a time per node.
+            import fcntl as _fcntl
+
+            _lock_path = _os.environ.get(
+                "RSI_SPAWN_EPISODE_LOCK", "/tmp/rsi_spawn_episode.lock")
+            _lock_fh = open(_lock_path, "a")
+            _fcntl.flock(_lock_fh.fileno(), _fcntl.LOCK_EX)
             try:
-                _payload = _q.get(timeout=_timeout_min * 60)
-            except Exception:  # noqa: BLE001 - queue.Empty and pickling errors
+                _p.start()
                 _payload = None
-            _p.join(timeout=60)
-            if _p.is_alive():
-                _p.terminate()
-                _p.join(timeout=30)
+                try:
+                    _payload = _q.get(timeout=_timeout_min * 60)
+                except Exception:  # noqa: BLE001 - queue.Empty and pickling errors
+                    _payload = None
                 if _p.is_alive():
-                    _p.kill()
+                    _p.terminate()
+                    _p.join(timeout=30)
+                    if _p.is_alive():
+                        _p.kill()
+            finally:
+                try:
+                    _fcntl.flock(_lock_fh.fileno(), _fcntl.LOCK_UN)
+                finally:
+                    _lock_fh.close()
             from rsi.contracts.observation import ScoreRecord as _SR
 
             if _payload is None or not _payload.get("ok"):
