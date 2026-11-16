@@ -118,6 +118,30 @@ print("steps=", cfg["training"]["max_optimizer_steps_per_round"],
 PY
 
 # ---------------------------------------------------------------- torchrun train
+# ---------------------------------------------------------------- 4-node barrier
+# bkrd9 postmortem: the master hit torchrun's 901s store timeout ("1/4 clients
+# joined") because 3 cold nodes were still in pip preflight. Barrier: each pod
+# writes its ready marker after deps+model-copy, then all pods wait until 4
+# markers exist (max 2h) BEFORE starting torchrun.
+BARRIER_DIR="$RSI_ROOT/runs/.barrier/$(basename "$0" .sh)"
+mkdir -p "$BARRIER_DIR"
+BARRIER_NODE_READY="$BARRIER_DIR/ready_$(hostname)"
+touch "$BARRIER_NODE_READY"
+echo "barrier: $(ls "$BARRIER_DIR" | grep -c ready_)/4 nodes ready"
+for _i in $(seq 1 720); do
+  _n=$(ls "$BARRIER_DIR" 2>/dev/null | grep -c ready_)
+  if [ "$_n" -ge 4 ]; then
+    echo "barrier: all 4 nodes ready after ${_i}0s"
+    break
+  fi
+  sleep 10
+done
+_n=$(ls "$BARRIER_DIR" 2>/dev/null | grep -c ready_)
+if [ "$_n" -lt 4 ]; then
+  echo "FATAL: barrier timeout — only $_n/4 nodes ready after 2h" >&2
+  exit 1
+fi
+
 echo "== torchrun HarnessOPD pilot (nnodes=4 nproc=8 -> 32 ranks) =="
 exec torchrun \
   --nnodes=4 \
