@@ -135,12 +135,15 @@ mkdir -p "$BARRIER_DIR"
 BARRIER_NODE_READY="$BARRIER_DIR/ready_$(hostname)"
 touch "$BARRIER_NODE_READY"
 echo "barrier: $(ls "$BARRIER_DIR" | grep -c ready_)/4 nodes ready"
+# GPU keepalive INSIDE the barrier loop: the platform's 30min-zero-GPU
+# watchdog applies to the barrier wait too (user-extension only buys 2h).
 for _i in $(seq 1 720); do
   _n=$(ls "$BARRIER_DIR" 2>/dev/null | grep -c ready_)
   if [ "$_n" -ge 4 ]; then
     echo "barrier: all 4 nodes ready after ${_i}0s"
     break
   fi
+  python -c "import torch; d=torch.tensor([1.0],device='cuda:0'); d+=1" 2>/dev/null || true
   sleep 10
 done
 _n=$(ls "$BARRIER_DIR" 2>/dev/null | grep -c ready_)
