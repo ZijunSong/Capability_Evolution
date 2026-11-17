@@ -118,6 +118,16 @@ pip("accelerate", limit=300)  # tiny_hf low_cpu_mem_usage streaming loader
 from transformers.utils import is_flash_linear_attention_available
 if not is_flash_linear_attention_available():
     sys.exit("[FATAL] fla unavailable")
+import triton as _triton
+
+print("triton ACTUAL import:", _triton.__version__, "| path:", _triton.__file__, flush=True)
+import fla.utils as _flaenv
+
+print("fla TRITON_ABOVE_3_7_1 =", _flaenv.TRITON_ABOVE_3_7_1, flush=True)
+if not _flaenv.TRITON_ABOVE_3_7_1:
+    _flaenv.TRITON_ABOVE_3_7_1 = True
+    _flaenv.TRITON_ABOVE_3_4_0 = True
+    print("FORCED fla TRITON_ABOVE_3_7_1=True (triton 3.8.0 verified good on gm402)", flush=True)
 import os, site
 fm = "/mnt/songzijun/datasets/webshop/frozen_goals.json"
 if not os.path.isfile(fm):

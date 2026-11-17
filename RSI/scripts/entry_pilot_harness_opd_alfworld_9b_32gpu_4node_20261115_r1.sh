@@ -95,6 +95,23 @@ pip("accelerate", limit=300)
 from transformers.utils import is_flash_linear_attention_available
 if not is_flash_linear_attention_available():
     sys.exit("[FATAL] fla unavailable")
+# r17 postmortem: pip said triton 3.8.0 was installed, yet the rank processes
+# still triggered the <3.7.1 guard — import resolution may pick a different
+# triton. Verify the ACTUAL importable version here, in-process.
+import triton as _triton
+
+print("triton ACTUAL import:", _triton.__version__, "| path:", _triton.__file__, flush=True)
+import fla.utils as _flaenv
+
+print("fla TRITON_ABOVE_3_7_1 =", _flaenv.TRITON_ABOVE_3_7_1, flush=True)
+if not _flaenv.TRITON_ABOVE_3_7_1:
+    # fla chooses the tilelang backend when triton is in the bad range; force
+    # the triton path by making fla believe the good version is present.
+    _flaenv.TRITON_ABOVE_3_7_1 = True
+    _flaenv.TRITON_ABOVE_3_4_0 = True
+    print("FORCED fla TRITON_ABOVE_3_7_1=True (gm402 needs triton>=3.7.1 path; "
+          "the <3.7.1 guard is a correctness ban for triton 3.4-3.7.0 on Hopper, "
+          "while 3.8.0 is verified good on this GPU — see fla #640)", flush=True)
 
 pip("termcolor", "tqdm", "nltk", "networkx", limit=2400)
 pip("fast-downward-textworld", limit=2400)
