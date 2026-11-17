@@ -78,15 +78,15 @@ if not (torch.cuda.is_available() and n >= 8):
     sys.exit("[FATAL] CUDA unusable")
 from transformers.models import qwen3_5  # noqa: F401
 pip("flash-linear-attention==0.6.0", limit=600)
-pip("triton==3.8.0", limit=900)
-pip("tilelang", limit=900)   # fla Hopper gated-kernel path (bypasses triton guard)
+pip("triton==3.8.0", limit=2400)
+pip("tilelang", limit=2400)   # fla Hopper gated-kernel path (bypasses triton guard)
 pip("accelerate", limit=300)
 from transformers.utils import is_flash_linear_attention_available
 if not is_flash_linear_attention_available():
     sys.exit("[FATAL] fla unavailable")
 
-pip("termcolor", "tqdm", "nltk", "networkx", limit=900)
-pip("fast-downward-textworld", limit=900)
+pip("termcolor", "tqdm", "nltk", "networkx", limit=2400)
+pip("fast-downward-textworld", limit=2400)
 if importlib.util.find_spec("textworld") is None:
     pip("textworld", limit=1800)
 for _try in range(2):

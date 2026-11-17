@@ -96,7 +96,7 @@ pip("flash-linear-attention==0.6.0", limit=600)
 # in fla's Hopper bad range) AND install tilelang — the fla recommended gated
 # kernel path that bypasses the triton guard. tilelang's CUDA wheel is
 # multi-GB: 900s timed out on a cold node (wqqg0), use 2400s x2 retries.
-pip("triton==3.8.0", limit=900)
+pip("triton==3.8.0", limit=2400)
 for _tl_try in range(2):
     if pip("tilelang", limit=2400) == 0:
         break
@@ -124,7 +124,7 @@ if not os.path.isfile(fm):
 pip("--ignore-installed", "beautifulsoup4", "thefuzz", "spacy", "flask",
     "pyserini==2.0.0", "rank_bm25==0.2.2", "rich", "tqdm", "gym==0.26.2",
     "emoji", "unidecode", "nltk", "selenium",
-    "torch==2.10.0", "transformers==5.17.0", limit=900)
+    "torch==2.10.0", "transformers==5.17.0", limit=2400)
 SP_DIR = site.getsitepackages()[0]
 DEPS_TGZ = "/mnt/songzijun/datasets/webshop/_deps/cleantext-1.1.4-sitepkg.tgz"
 if os.path.isfile(DEPS_TGZ):
