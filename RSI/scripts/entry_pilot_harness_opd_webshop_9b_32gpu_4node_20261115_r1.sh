@@ -109,6 +109,42 @@ try:
     print("tilelang uninstall rc:", _u.returncode, flush=True)
 except Exception as _e:  # noqa: BLE001
     print("tilelang uninstall error:", repr(_e)[:200], flush=True)
+
+# r17/r18 definitive fix: the fla TRITON_ABOVE_3_7_1 flag is computed at
+# fla.utils import time from triton.__version__; rank processes re-import fla
+# fresh, so ANY launcher-process override is invisible to them (r17 proved
+# this). Patch fla/utils/env.py in-place: on gm402 (Hopper) with triton
+# 3.8.0 installed, the <3.7.1 ban (fla #640) does not apply — force the flag
+# True so fla uses the triton path unconditionally.
+_fla_env = "/usr/local/lib/python3.12/dist-packages/fla/utils/env.py"
+try:
+    import fla.utils as _flaenv_probe
+
+    _probe_flag = _flaenv_probe.TRITON_ABOVE_3_7_1
+except Exception as _e:  # noqa: BLE001
+    _probe_flag = None
+print("fla flag BEFORE patch:", _probe_flag, flush=True)
+_patch_py = (
+    "import re\n"
+    f"p = r'{_fla_env}'\n"
+    "s = open(p).read()\n"
+    "s2 = s.replace('TRITON_ABOVE_3_7_1 = package_version.parse(triton.__version__) >= package_version.parse(\"3.7.1\")',"
+    " 'TRITON_ABOVE_3_7_1 = True  # gm402 patch: triton 3.8.0 verified good (fla #640 bans 3.4-3.7.0 only)')\n"
+    "if s != s2:\n"
+    "    open(p, 'w').write(s2)\n"
+    "    print('env.py patched', flush=True)\n"
+    "else:\n"
+    "    print('env.py already patched or pattern missing', flush=True)\n"
+)
+_r = subprocess.run([sys.executable, "-c", _patch_py], capture_output=True, text=True, timeout=60)
+print(_r.stdout.strip() or _r.stderr.strip()[-200:], flush=True)
+# fresh-process verification
+_v = subprocess.run([sys.executable, "-c",
+    "import triton, fla.utils; print('verify:', triton.__version__, fla.utils.TRITON_ABOVE_3_7_1)"],
+    capture_output=True, text=True, timeout=120)
+print(_v.stdout.strip() or _v.stderr.strip()[-200:], flush=True)
+if "True" not in _v.stdout:
+    sys.exit("[FATAL] fla TRITON_ABOVE_3_7_1 still False after patch — aborting before wasting GPUs")
 pip("accelerate", limit=300)  # tiny_hf low_cpu_mem_usage streaming loader
 # r3: causal-conv1d install attempt REMOVED — its sdist build pulls torch
 # 2.15+cu132 into the isolated build env and times out fetching a prebuilt
