@@ -251,8 +251,12 @@ PY
 # the CloudML job id, cleared at start so retry runs start fresh.
 _JOB_KEY="${MASTER_ADDR}"  # identical on all pods of one job; unique per job
 BARRIER_DIR="$RSI_ROOT/runs/.barrier/$(basename "$0" .sh)/${_JOB_KEY}"
-rm -rf "$BARRIER_DIR"
 mkdir -p "$BARRIER_DIR"
+# szlwn postmortem: the per-job `rm -rf "$BARRIER_DIR"` ran on EVERY pod at
+# startup — a late-starting pod deleted the ready markers already written by
+# earlier pods, so all pods waited forever at 1/4. Only the marker of THIS
+# node's hostname is cleared (retry on the same node), never the directory.
+rm -f "$BARRIER_DIR/ready_$(hostname)"
 BARRIER_NODE_READY="$BARRIER_DIR/ready_$(hostname)"
 touch "$BARRIER_NODE_READY"
 echo "barrier: $(ls "$BARRIER_DIR" | grep -c ready_)/4 nodes ready"
