@@ -97,10 +97,11 @@ pip("flash-linear-attention==0.6.0", limit=600)
 # kernel path that bypasses the triton guard. tilelang's CUDA wheel is
 # multi-GB: 900s timed out on a cold node (wqqg0), use 2400s x2 retries.
 pip("triton==3.8.0", limit=2400)
-for _tl_try in range(2):
-    if pip("tilelang", limit=2400) == 0:
-        break
-print("tilelang install attempts done", flush=True)
+# foqm1 postmortem: tilelang JIT emits CUDA_ERROR_INVALID_IMAGE on gm402
+# (cuModuleLoadData fails in the fla tilelang backend). With triton>=3.7.1 the
+# fla Hopper guard is satisfied, so the triton path is used — uninstall
+# tilelang to force that path.
+pip("pip uninstall -y tilelang", limit=300)
 pip("accelerate", limit=300)  # tiny_hf low_cpu_mem_usage streaming loader
 # r3: causal-conv1d install attempt REMOVED — its sdist build pulls torch
 # 2.15+cu132 into the isolated build env and times out fetching a prebuilt

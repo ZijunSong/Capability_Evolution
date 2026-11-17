@@ -79,7 +79,11 @@ if not (torch.cuda.is_available() and n >= 8):
 from transformers.models import qwen3_5  # noqa: F401
 pip("flash-linear-attention==0.6.0", limit=600)
 pip("triton==3.8.0", limit=2400)
-pip("tilelang", limit=2400)   # fla Hopper gated-kernel path (bypasses triton guard)
+# foqm1 postmortem: tilelang JIT emits CUDA_ERROR_INVALID_IMAGE on gm402
+# (cuModuleLoadData fails in the fla tilelang backend). With triton>=3.7.1 the
+# fla Hopper guard is satisfied, so the triton path is used — uninstall
+# tilelang to force that path.
+pip("pip uninstall -y tilelang", limit=300)
 pip("accelerate", limit=300)
 from transformers.utils import is_flash_linear_attention_available
 if not is_flash_linear_attention_available():
