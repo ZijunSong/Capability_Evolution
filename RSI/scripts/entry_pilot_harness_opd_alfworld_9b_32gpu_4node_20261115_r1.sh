@@ -130,7 +130,14 @@ PY
 # joined") because 3 cold nodes were still in pip preflight. Barrier: each pod
 # writes its ready marker after deps+model-copy, then all pods wait until 4
 # markers exist (max 2h) BEFORE starting torchrun.
-BARRIER_DIR="$RSI_ROOT/runs/.barrier/$(basename "$0" .sh)"
+# cnuiq/r16 postmortem: the barrier dir keyed only by entry basename counted
+# STALE ready markers from previous runs (4 markers spanning 4 different runs
+# were present) — the master passed the barrier instantly while a cold node was
+# still in pip preflight → 901s rendezvous timeout. Fix: per-JOB dir keyed by
+# the CloudML job id, cleared at start so retry runs start fresh.
+_JOB_KEY="${MASTER_ADDR}"  # identical on all pods of one job; unique per job
+BARRIER_DIR="$RSI_ROOT/runs/.barrier/$(basename "$0" .sh)/${_JOB_KEY}"
+rm -rf "$BARRIER_DIR"
 mkdir -p "$BARRIER_DIR"
 BARRIER_NODE_READY="$BARRIER_DIR/ready_$(hostname)"
 touch "$BARRIER_NODE_READY"
