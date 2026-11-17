@@ -101,7 +101,14 @@ pip("triton==3.8.0", limit=2400)
 # (cuModuleLoadData fails in the fla tilelang backend). With triton>=3.7.1 the
 # fla Hopper guard is satisfied, so the triton path is used — uninstall
 # tilelang to force that path.
-pip("pip uninstall -y tilelang", limit=300)
+# io6lg postmortem: pip("pip uninstall ...") passed 'pip uninstall' as a
+# requirement — invalid. Use a direct subprocess call for the uninstall.
+try:
+    _u = subprocess.run([sys.executable, "-m", "pip", "uninstall", "-y", "tilelang"],
+                        capture_output=True, text=True, timeout=300)
+    print("tilelang uninstall rc:", _u.returncode, flush=True)
+except Exception as _e:  # noqa: BLE001
+    print("tilelang uninstall error:", repr(_e)[:200], flush=True)
 pip("accelerate", limit=300)  # tiny_hf low_cpu_mem_usage streaming loader
 # r3: causal-conv1d install attempt REMOVED — its sdist build pulls torch
 # 2.15+cu132 into the isolated build env and times out fetching a prebuilt
