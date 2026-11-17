@@ -48,8 +48,15 @@ MIN_GPUS = 8
 
 def pip(*args, limit=2400):
     print("pip", " ".join(args), flush=True)
-    r = subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-i", MIRROR, *args], timeout=limit)
-    return r.returncode
+    # cnuiq postmortem: subprocess.run RAISES TimeoutExpired on timeout — it
+    # never returns a code, so every `if pip(...) == 0` retry loop silently
+    # died on the first timeout instead of retrying. Convert to a returncode.
+    try:
+        r = subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-i", MIRROR, *args], timeout=limit)
+        return r.returncode
+    except subprocess.TimeoutExpired:
+        print("pip TIMEOUT after", limit, "s", flush=True)
+        return 124
 
 need = []
 for mod, pkg in (("yaml", "pyyaml"), ("numpy", "numpy"), ("torch", TORCH_PIN), ("transformers", TF_PIN)):
