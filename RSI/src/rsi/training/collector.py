@@ -74,7 +74,11 @@ def _run_episode_child(config_path, task_dict, seed, bank_ref, q):
         from rsi.runtime.loop import MinimalLoop
         from rsi.environments.registry import global_registry
 
-        device = "cuda:0"
+        # ypw5 postmortem: the parent rank holds the full model on GPU0; a
+        # spawn child ALSO loading the model on cuda:0 needs 2x19G + activations
+        # on one 80G card -> OOM on every episode. The child runs its rollout on
+        # CPU (slow but correct), keeping GPU0 exclusively with the parent.
+        device = "cpu"
         policy = build_policy(cfg, device=device)
         parts = build_runtime_parts(cfg.section("runtime"))
         registry = global_registry()
