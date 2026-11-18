@@ -17,6 +17,11 @@ CHAMPION="$RSI_ROOT/runs/e1_alfworld_9b_r5/evolve/champion.json"
 
 export PYTHONPATH="$RSI_ROOT/src:${PYTHONPATH:-}"
 export PYTHONUNBUFFERED=1
+# xzibu postmortem: slave23's NCCL internal CUDA allocation OOMed at the first
+# ALLREDUCE after ~8min of episode rollout (misc/strongstream.cc 'Cuda failure
+# out of memory') — expandable_segments reduces fragmentation across the long
+# CPU-heavy rollout + GPU training mix. TRIM-verified pattern.
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 cd "$RSI_ROOT"
 
 # ---------------------------------------------------------------- multinode env
