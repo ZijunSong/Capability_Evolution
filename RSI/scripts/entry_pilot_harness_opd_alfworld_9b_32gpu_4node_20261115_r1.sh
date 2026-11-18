@@ -231,6 +231,7 @@ echo "== torchrun HarnessOPD pilot (nnodes=4 nproc=8 -> 32 ranks) =="
 exec torchrun \
   --nnodes=4 \
   --nproc_per_node=8 \
+  --max-restarts=5 \
   --node_rank="${NODE_RANK}" \
   --master_addr="${MASTER_ADDR}" \
   --master_port="${MASTER_PORT}" \

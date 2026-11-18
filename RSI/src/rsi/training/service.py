@@ -251,6 +251,23 @@ def run_train(cfg: CampaignConfig, *, bank_ref: str, policy: Any | None = None, 
     episode_log: list[dict[str, Any]] = []
     global_step = 0
 
+    # elastic-restart resume (torchrun --max-restarts): if this run_dir already
+    # has checkpoints from a prior attempt of the SAME campaign, resume from
+    # the latest one — otherwise a restart would silently restart from step 0
+    # and overwrite existing step_XXXX dirs.
+    if dist_info.is_main:
+        _ckpts = sorted(run_dir.glob("step_[0-9]*[0-9]/checkpoint.json"))
+        if _ckpts:
+            from rsi.training.checkpoint import load_checkpoint
+
+            _latest = _ckpts[-1].parent
+            try:
+                load_checkpoint(_latest, backend=backend, restore_optimizer=True)
+                global_step = json.loads(_latest.joinpath("checkpoint.json").read_text())["identity"]["global_step"]
+                print(f"[train] resumed from {_latest} at global_step={global_step}", flush=True)
+            except Exception as _e:  # noqa: BLE001
+                print(f"[train] resume failed ({_e!r}) — starting fresh", flush=True)
+
     for step in range(max_steps):
         if dist_info.is_distributed:
             total_eps = per_rank * dist_info.world_size
